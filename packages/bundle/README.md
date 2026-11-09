@@ -150,7 +150,9 @@ bundle 的 patch 行没有显式写配置，核心服务使用 DESIGN 默认值�
 - 冷 DevLead 会话默认只留持久通知记录，不自动 resume（`wakeColdSession: false`）。
 - watch 上限默认 64；命令的候选列表默认截断在 200 行，列表外的会话会回退到 core 的
   `getSession` 解析。
-- 不做 git 克隆 / worktree 管理；不跨进程编排；不替人类做权限决策。
+- 不做 git 克隆 / 通用 worktree 管理；不跨进程编排；不替人类做权限决策。实验性 DSH worktree
+  服务被组合时，`devlead_create_session` 可传 `isolation: "worktree"` 为新会话尽力提供隔离检出；
+  缺少该服务时退化为共享 checkout 并如实上报，绝不失败（默认 Web 组合即无此能力）。
 - 兼容性：`engines.dsh: >=0.2.2-rc.1 <0.3.0`；本地构建 / 发布需要 Node.js ≥ 24.9、pnpm 12。
 
 ## 文档

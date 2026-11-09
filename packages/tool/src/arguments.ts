@@ -12,7 +12,7 @@
 import { isAbsolute } from 'node:path'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { HarnessError } from '@deepseek-ai/dsh-llm'
-import type { DevLeadCreateSessionRequest } from '@yankeguo/dsh-devlead-protocol'
+import type { DevLeadCreateSessionRequest, DevLeadIsolationMode } from '@yankeguo/dsh-devlead-protocol'
 
 /**
  * Model input rejected before the core service is called.
@@ -54,6 +54,12 @@ export interface CreateSessionArgs {
   readonly title?: string
   readonly watch?: boolean
   readonly preset?: string
+  /**
+   * Requested checkout isolation. Kept as a raw string here: the tool schema's
+   * enum is the model-facing contract, and {@link optionalIsolationMode}
+   * hand-checks the same vocabulary before forwarding.
+   */
+  readonly isolation?: string
 }
 
 /** Arguments of `devlead_get_session`. */
@@ -149,6 +155,22 @@ export function optionalWorkspaceRef(value: string | undefined): string | undefi
 }
 
 /**
+ * Validate an optional checkout-isolation mode.
+ *
+ * The tool schema already restricts the model-facing enum; this hand-check keeps
+ * direct callers of {@link createSessionRequest} on the same vocabulary and gives
+ * them the core's stable invalid-input code instead of a loosely typed request.
+ * @param value - optional isolation mode supplied by the caller.
+ * @returns the validated mode, or undefined when omitted.
+ * @throws {@link DevLeadToolInputError} when the value is not `none` or `worktree`.
+ */
+export function optionalIsolationMode(value: string | undefined): DevLeadIsolationMode | undefined {
+  if (value === undefined) return undefined
+  if (value === 'none' || value === 'worktree') return value
+  throw new DevLeadToolInputError(`isolation must be "none" or "worktree", received "${value}"`)
+}
+
+/**
  * Validate the absolute directory a Workspace registration addresses.
  * @param value - model-supplied directory path.
  * @returns the trimmed absolute path.
@@ -193,18 +215,20 @@ export function defaultedLimit(value: number | undefined, field: string, fallbac
  * Assemble the core request of `devlead_create_session`.
  * @param args - validated model arguments.
  * @returns the request handed to `ctx.devLead.createSession`.
- * @throws {@link DevLeadToolInputError} on blank prompt, title, preset, or workspace text.
+ * @throws {@link DevLeadToolInputError} on blank prompt, title, preset, or workspace text, or an unknown isolation mode.
  */
 export function createSessionRequest(args: CreateSessionArgs): DevLeadCreateSessionRequest {
   const workspace = optionalWorkspaceRef(args.workspace)
   const prompt = args.prompt === undefined ? undefined : requirePrompt(args.prompt)
   const title = optionalText(args.title)
   const preset = optionalText(args.preset)
+  const isolation = optionalIsolationMode(args.isolation)
   return {
     ...workspace === undefined ? {} : { workspace },
     ...prompt === undefined ? {} : { prompt },
     ...title === undefined ? {} : { title },
     ...preset === undefined ? {} : { preset },
+    ...isolation === undefined ? {} : { isolation },
     watch: args.watch ?? true,
   }
 }

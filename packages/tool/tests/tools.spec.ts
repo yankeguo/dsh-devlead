@@ -11,16 +11,19 @@ import type { GenericCallView, InferValue } from '@deepseek-ai/dsh-tools'
 import { validateJsonSchemaValue } from '@deepseek-ai/dsh-tools'
 import type {
   DevLeadCreatedSession,
+  DevLeadIsolation,
   DevLeadNotification,
   DevLeadPromptedSession,
   DevLeadSessionView,
   DevLeadWatchMutation,
   DevLeadWorkspaceView,
 } from '@yankeguo/dsh-devlead-protocol'
+import { createSessionRequest, DevLeadToolInputError } from '../src/arguments.ts'
 import {
   CREATE_SESSION_OUTPUT,
   PROMPT_SESSION_OUTPUT,
   WATCH_SESSION_OUTPUT,
+  type IsolationValue,
   type NotificationValue,
   type SessionValue,
   type WorkspaceValue,
@@ -38,6 +41,7 @@ type Assert<T extends true> = T
 type SchemaWorkspaceConforms = Assert<WorkspaceValue extends DevLeadWorkspaceView ? true : false>
 type SchemaSessionConforms = Assert<SessionValue extends DevLeadSessionView ? true : false>
 type SchemaNotificationConforms = Assert<NotificationValue extends DevLeadNotification ? true : false>
+type SchemaIsolationConforms = Assert<IsolationValue extends DevLeadIsolation ? true : false>
 type SchemaCreatedConforms = Assert<
   InferValue<typeof CREATE_SESSION_OUTPUT.schema> extends DevLeadCreatedSession ? true : false
 >
@@ -207,6 +211,41 @@ describe('policy', () => {
     expect(text).toContain('reading the actual diff or commits and the verification output')
     expect(text).toContain('ask the Session to run it and report the output')
   })
+
+  it('advertises worktree isolation only when the Host composes the capability', () => {
+    const harness = bootEnabled()
+    const serialText = harness.sectionText()
+    // Capability off: the fallback paragraph must not promise a worktree.
+    expect(serialText).toContain('no Git worktree isolation is available in this Host composition')
+    expect(serialText).toContain('never let two write Sessions run in the same checkout concurrently')
+    expect(serialText).toContain('Dispatch write Sessions serially')
+    expect(serialText).not.toContain('.agents/worktrees')
+    expect(serialText).not.toContain("isolation:'worktree'")
+    // Capability on: the same section re-resolves per assembly with the full guidance.
+    harness.devLead.worktreeIsolationAvailable = true
+    const worktreeText = harness.sectionText()
+    expect(worktreeText).toContain("devlead_create_session accepts isolation:'worktree'")
+    expect(worktreeText).toContain('run concurrently with another live Session in the same checkout')
+    expect(worktreeText).toContain('interleave their hunks and corrupt each other')
+    expect(worktreeText).toContain('keeps its Workspace membership and header cwd')
+    expect(worktreeText).toContain('<checkout root>/.agents/worktrees/<name>')
+    expect(worktreeText).toContain('Uncommitted files in the checkout are NOT copied into the worktree')
+    expect(worktreeText).toContain('commit or stash them, or verify the checkout is clean')
+    expect(worktreeText).toContain('merge or cherry-pick that branch')
+    expect(worktreeText).toContain('status unavailable or failed')
+    expect(worktreeText).not.toContain('no Git worktree isolation is available')
+    // Flipping the capability back removes the claim again: the text is per-assembly.
+    harness.devLead.worktreeIsolationAvailable = false
+    expect(harness.sectionText()).toBe(serialText)
+  })
+
+  it('stays hidden without DevLead mode even when the capability exists', () => {
+    const harness = boot()
+    const agent = makeAgent('agent-capability-only')
+    harness.devLead.worktreeIsolationAvailable = true
+    harness.devLead.enabled.delete(agent.id)
+    expect(harness.sectionText(agent)).toBe('')
+  })
 })
 
 describe('caller invariant', () => {
@@ -239,10 +278,11 @@ describe('canonical values', () => {
       SchemaWorkspaceConforms,
       SchemaSessionConforms,
       SchemaNotificationConforms,
+      SchemaIsolationConforms,
       SchemaCreatedConforms,
       SchemaPromptedConforms,
       SchemaWatchedConforms,
-    ] = [true, true, true, true, true, true]
+    ] = [true, true, true, true, true, true, true]
     expect(conformance.every(value => value)).toBe(true)
   })
 
@@ -411,7 +451,12 @@ describe('devlead_create_session', () => {
       preset: 'coder',
       watch: true,
     })
-    expect(value).toEqual({ session: SESSION, workspace: WORKSPACE, prompted: true })
+    expect(value).toEqual({
+      session: SESSION,
+      workspace: WORKSPACE,
+      prompted: true,
+      isolation: { requested: 'none', status: 'none' },
+    })
   })
 
   it('sends only the watch policy when the model passes no destination', async () => {
@@ -471,6 +516,144 @@ describe('devlead_create_session', () => {
     harness.devLead.failures.set('createSession', devLeadFailure('DEVLEAD_SESSION_UNAVAILABLE'))
     const error = await failureOf(harness.call('devlead_create_session', { prompt: 'go' }))
     expect(error.code).toBe('DEVLEAD_SESSION_UNAVAILABLE')
+  })
+
+  it('offers isolation as a none/worktree enum with best-effort wording', () => {
+    const harness = boot()
+    const parameters = harness.tool('devlead_create_session').definition.parameters as {
+      properties: { isolation: { type: string; enum: readonly string[]; description: string } }
+    }
+    const isolation = parameters.properties.isolation
+    expect(isolation.type).toBe('string')
+    expect(isolation.enum).toEqual(['none', 'worktree'])
+    expect(isolation.description).toContain('defaults to "none"')
+    expect(isolation.description).toContain('best-effort isolated Git checkout of the owning Workspace')
+    expect(isolation.description).toContain('only when the Host composes the experimental Git worktree service')
+    expect(isolation.description).toContain('never as an error')
+  })
+
+  it('omits isolation from the request when the model does not set it', async () => {
+    const harness = boot()
+    await harness.call('devlead_create_session', { prompt: 'go' })
+    const [, request] = harness.devLead.callsOf('createSession')[0] ?? []
+    expect(request).toEqual({ prompt: 'go', watch: true })
+    expect(request).not.toHaveProperty('isolation')
+  })
+
+  it('passes an explicit worktree isolation request through', async () => {
+    const harness = boot()
+    await harness.call('devlead_create_session', { prompt: 'go', isolation: 'worktree' })
+    const [, request] = harness.devLead.callsOf('createSession')[0] ?? []
+    expect(request).toEqual({ prompt: 'go', watch: true, isolation: 'worktree' })
+  })
+
+  it('passes an explicit none isolation request through', async () => {
+    const harness = boot()
+    await harness.call('devlead_create_session', { isolation: 'none' })
+    const [, request] = harness.devLead.callsOf('createSession')[0] ?? []
+    expect(request).toEqual({ watch: true, isolation: 'none' })
+  })
+
+  it('rejects an unknown isolation mode through the schema layer', async () => {
+    const harness = boot()
+    const error = await failureOf(harness.call('devlead_create_session', { prompt: 'go', isolation: 'branch' }))
+    expect(error.code).toBe('INVALID_ARGS')
+    expect(harness.devLead.callsOf('createSession')).toHaveLength(0)
+  })
+
+  it('returns the default none isolation outcome when none was requested', async () => {
+    const harness = boot()
+    const value = await harness.call('devlead_create_session', { prompt: 'go' })
+    expect(value).toEqual({
+      session: SESSION,
+      workspace: WORKSPACE,
+      prompted: true,
+      isolation: { requested: 'none', status: 'none' },
+    })
+    expectValidOutput(harness, 'devlead_create_session', value)
+  })
+
+  it('carries the active worktree outcome with its branch facts', async () => {
+    const harness = boot()
+    harness.devLead.created = {
+      ...harness.devLead.created,
+      isolation: {
+        requested: 'worktree',
+        status: 'worktree',
+        path: '/tmp/webapp/.agents/worktrees/parser',
+        branch: 'agents/parser-refactor',
+        baseCommit: 'abc1234',
+      },
+    }
+    const value = await harness.call('devlead_create_session', { prompt: 'go', isolation: 'worktree' })
+    expect(value).toEqual({
+      session: SESSION,
+      workspace: WORKSPACE,
+      prompted: true,
+      isolation: {
+        requested: 'worktree',
+        status: 'worktree',
+        path: '/tmp/webapp/.agents/worktrees/parser',
+        branch: 'agents/parser-refactor',
+        baseCommit: 'abc1234',
+      },
+    })
+    expectValidOutput(harness, 'devlead_create_session', value)
+  })
+
+  it('projects unavailable and failed outcomes with their reason and no worktree facts', async () => {
+    const harness = boot()
+    for (const status of ['unavailable', 'failed'] as const) {
+      harness.devLead.created = {
+        ...harness.devLead.created,
+        isolation: { requested: 'worktree', status, reason: `worktree ${status}` },
+      }
+      const value = await harness.call('devlead_create_session', { prompt: 'go', isolation: 'worktree' }) as {
+        isolation: IsolationValue
+      }
+      expect(value.isolation).toEqual({ requested: 'worktree', status, reason: `worktree ${status}` })
+      expect(value.isolation).not.toHaveProperty('path')
+      expectValidOutput(harness, 'devlead_create_session', value)
+    }
+  })
+
+  it('drops absent optional worktree facts instead of serializing undefined', async () => {
+    const harness = boot()
+    harness.devLead.created = {
+      ...harness.devLead.created,
+      isolation: { requested: 'worktree', status: 'worktree' },
+    }
+    const value = await harness.call('devlead_create_session', { isolation: 'worktree' }) as {
+      isolation: IsolationValue
+    }
+    expect(value.isolation).toEqual({ requested: 'worktree', status: 'worktree' })
+    expect(Object.keys(value.isolation).sort()).toEqual(['requested', 'status'])
+    expectValidOutput(harness, 'devlead_create_session', value)
+  })
+})
+
+describe('createSessionRequest isolation validation', () => {
+  it('keeps the existing request shape when isolation is absent', () => {
+    expect(createSessionRequest({ prompt: 'go' })).toEqual({ prompt: 'go', watch: true })
+  })
+
+  it('accepts exactly the two modeled isolation modes', () => {
+    expect(createSessionRequest({ isolation: 'none' })).toEqual({ watch: true, isolation: 'none' })
+    expect(createSessionRequest({ isolation: 'worktree' })).toEqual({ watch: true, isolation: 'worktree' })
+  })
+
+  it('rejects any other isolation value with the invalid-input code', () => {
+    for (const isolation of ['branch', '', 'Worktree', ' worktree ', 'none ']) {
+      let thrown: unknown
+      try {
+        createSessionRequest({ isolation })
+      } catch (error: unknown) {
+        thrown = error
+      }
+      expect(thrown).toBeInstanceOf(DevLeadToolInputError)
+      expect((thrown as DevLeadToolInputError).code).toBe('DEVLEAD_INVALID_INPUT')
+      expect((thrown as Error).message).toContain('isolation must be "none" or "worktree"')
+    }
   })
 })
 

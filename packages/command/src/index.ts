@@ -69,6 +69,7 @@ async function collectStatus(ctx: Context, invocation: CommandInvocation): Promi
   }
   return {
     enabled: view.enabled,
+    worktreeIsolation: ctx.devLead.worktreeIsolationAvailable,
     watched,
     missingWatched,
     notifications: view.notifications.slice(-RECENT_NOTIFICATION_LIMIT),

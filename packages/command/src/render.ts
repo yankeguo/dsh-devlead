@@ -29,6 +29,11 @@ export const HELP_LINE =
 export interface DevLeadStatusSnapshot {
   /** Whether DevLead mode is selected for the receiving Session. */
   readonly enabled: boolean
+  /**
+   * Whether the Host composes the optional experimental Git worktree service,
+   * so a dispatched Session can be isolated into its own checkout.
+   */
+  readonly worktreeIsolation: boolean
   /** Watched Sessions the host could describe, in watch order. */
   readonly watched: readonly DevLeadSessionView[]
   /** Watched Session ids the host could not describe, in watch order. */
@@ -107,6 +112,7 @@ function notificationLines(snapshot: DevLeadStatusSnapshot): string[] {
 export function statusLines(snapshot: DevLeadStatusSnapshot): string[] {
   const lines = [
     `DevLead mode: ${modeLabel(snapshot.enabled)}`,
+    `Worktree isolation: ${snapshot.worktreeIsolation ? 'available' : 'unavailable'}`,
     ...watchedLines(snapshot),
     ...notificationLines(snapshot),
   ]

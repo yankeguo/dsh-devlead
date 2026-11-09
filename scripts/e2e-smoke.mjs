@@ -561,6 +561,15 @@ async function runChecks(client, paths) {
 
   const status = await client.command(leadId, '/devlead status')
   checks.expect('/devlead status prints the enabled mode', /DevLead mode: on/u.test(status?.result?.text ?? ''))
+  // The throwaway profile is the shipped default Web composition (base +
+  // web-app): it must not carry the experimental worktree bundle. DevLead has
+  // to report the missing optional capability and still work normally.
+  checks.expect(
+    'default profile reports no optional worktree isolation',
+    /Worktree isolation: unavailable/u.test(status?.result?.text ?? ''),
+    status?.result?.text?.split('\n').find(line => line.startsWith('Worktree isolation:'))
+      ?? 'no Worktree isolation line',
+  )
 
   const selfWatch = await client.command(leadId, `/devlead watch ${leadId}`)
   checks.expect('self watch settles as a command error', selfWatch?.result?.kind === 'error', selfWatch?.result?.text)

@@ -98,6 +98,9 @@ export class FakeDevLead {
   /** Per-method thrown value, when a test injects one. */
   readonly failures = new Map<string, unknown>()
 
+  /** Backing value of {@link worktreeIsolationAvailable}. */
+  private worktreeCapability = false
+
   /** Workspaces returned by {@link listWorkspaces}. */
   workspaces: DevLeadWorkspaceView[] = [WORKSPACE]
 
@@ -108,7 +111,12 @@ export class FakeDevLead {
   session: DevLeadSessionView = SESSION
 
   /** Result returned by {@link createSession}. */
-  created: DevLeadCreatedSession = { session: SESSION, workspace: WORKSPACE, prompted: true }
+  created: DevLeadCreatedSession = {
+    session: SESSION,
+    workspace: WORKSPACE,
+    prompted: true,
+    isolation: { requested: 'none', status: 'none' },
+  }
 
   /** Result returned by {@link promptSession}. */
   prompted: DevLeadPromptedSession = { sessionId: 'session-1', watched: true, resumed: false }
@@ -132,6 +140,20 @@ export class FakeDevLead {
   /** Arguments of every recorded call to one method, in call order. */
   callsOf(method: string): readonly (readonly unknown[])[] {
     return this.calls.filter(call => call.method === method).map(call => call.args)
+  }
+
+  /**
+   * Whether the fake Host composes a capability-compatible Git worktree
+   * service. Mirrors the real `DevLeadService` getter shape; mutable so a test
+   * can configure the capability-conditional policy and result expectations.
+   */
+  get worktreeIsolationAvailable(): boolean {
+    return this.worktreeCapability
+  }
+
+  /** Configure {@link worktreeIsolationAvailable}. */
+  set worktreeIsolationAvailable(value: boolean) {
+    this.worktreeCapability = value
   }
 
   isEnabled(agent: Agent): boolean {

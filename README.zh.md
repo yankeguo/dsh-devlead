@@ -35,6 +35,7 @@
 | DevLead 模式 | 每个会话一个持久开关；开启后多出 `devlead_*` 工具、DevLead 系统提示与状态条 |
 | 角色模型 | 默认调度：依据已注册元数据判定归属 Workspace → 向对应 Session 发自包含简报 → watch → 审阅交付 → 汇报；只读检查以简报与审阅为界，写入留在归属 Workspace 的 Session（含 lead 自己的 Workspace；仅当人类在本对话中明确授权时由 lead 直接做；记录类文件可依 lead 仓库说明维护） |
 | 标准 DSH 实体 | 子会话是普通 Session（侧边栏可见、人类可打开接管），Workspace 走 `workspaceRegistry`，不是 subagent |
+| 可选 worktree 隔离 | 当 Host 组合了 DSH 实验性 Git worktree 服务（`ctx.worktrees`）时，`devlead_create_session` 可传 `isolation: "worktree"`，让写入型子会话拥有独立分支与检出、不再共享 Workspace checkout；能力检测是可选的，缺少能力时退化为共享 checkout 并在结果里如实上报，绝不报错（见[可选 worktree 隔离](#可选-worktree-隔离)） |
 | 8 个模型工具 | 注册/列出 Workspace，创建/读取/续写/监督 Session，读取通知摘要（见[模型工具](#模型工具)） |
 | 人类命令 | `/devlead`（状态）、`/devlead on|off`、`/devlead watch|unwatch <session>`；会话支持完整 id 或唯一前缀 |
 | 通知回路 | 被监督会话的 `turn/end` 写入持久通知记录，按合并窗口唤醒 DevLead（可配置窗口与冷会话策略） |
@@ -224,7 +225,7 @@ DSH 跳过。
 ```
 /devlead on        # 打开当前会话的 DevLead 模式（需要 Agent live）
 /devlead off       # 关闭；立即停止通知投递，已保留的通知记录仍在 Session 日志里
-/devlead           # 查看状态：开关、监督会话（标题/状态）、最近通知、帮助
+/devlead           # 查看状态：开关、worktree 隔离能力、监督会话（标题/状态）、最近通知、帮助
 /devlead status    # 上一条的显式别名
 ```
 
@@ -232,7 +233,7 @@ DSH 跳过。
 
 | 命令 | 作用 |
 | --- | --- |
-| `/devlead` | 状态：模式、监督会话（标题 / live / running / 最近 turn）、最近通知、帮助行 |
+| `/devlead` | 状态：模式、可选 worktree 隔离是否可用、监督会话（标题 / live / running / 最近 turn）、最近通知、帮助行 |
 | `/devlead status` | 同 `/devlead` |
 | `/devlead on` | 打开当前会话的 DevLead 模式 |
 | `/devlead off` | 关闭当前会话的 DevLead 模式 |
@@ -261,7 +262,9 @@ DSH 跳过。
    目录）。子会话看不到当前对话，所有必要事实都要在 prompt 里重述。新会话默认被 watch 并立即
    开始第一个 turn（空白 Session 在第一个 turn 前不会出现在侧边栏，所以 "创建 + prompt" 是
    常规用法）。若归属 Workspace 里已有处理该请求的 live Session，用 `devlead_prompt_session`
-   续写它，而不是重复创建。
+   续写它，而不是重复创建。当 Host 组合了实验性 worktree 服务、且新会话可能与同一 checkout 里
+   的另一个 Session 并发写入时，传 `isolation: "worktree"`（见[可选 worktree 隔离](#可选-worktree-隔离)）；
+   没有该能力时，绝不要在同一 checkout 里并发运行两个写入型 Session——请串行派发。
 4. 子会话独立运行；人类可以随时在侧边栏打开它、继续对话或接管。
 5. 子会话的 turn 结束（完成/失败/阻塞/取消等）后，DevLead 会话收到通知摘要并被唤醒；模型用
    `devlead_list_sessions` / `devlead_get_session` 查看状态，用 `devlead_prompt_session`
@@ -286,7 +289,7 @@ DSH 跳过。
 | `devlead_list_workspaces` | `{}` | `{ workspaces }` |
 | `devlead_use_workspace` | `path`（必填，绝对路径）、`title?`、`create?`（默认 true） | `{ workspace }` |
 | `devlead_list_sessions` | `workspace?`、`watched_only?`、`limit?` | `{ sessions, watched }` |
-| `devlead_create_session` | `workspace?`、`prompt?`、`title?`、`watch?`（默认 true）、`preset?` | 创建结果 |
+| `devlead_create_session` | `workspace?`、`prompt?`、`title?`、`watch?`（默认 true）、`preset?`、`isolation?`（默认 `none`；`worktree` = 尽力提供隔离检出） | 创建结果（含 `isolation` 结果） |
 | `devlead_get_session` | `session`（必填） | `{ session }` |
 | `devlead_prompt_session` | `session`、`prompt`（必填）、`watch?`（默认 true） | 续写结果 |
 | `devlead_watch_session` | `session`、`watching`（必填 bool） | watch 变更结果 |
@@ -294,6 +297,39 @@ DSH 跳过。
 
 工具把 core 的 `DevLeadError` 翻译成带稳定 code 的 `HarnessError`；阅读状态时请以
 `lastTurn` / `lastTransition` / `lastError` / `lastAssistant` 等字段为准，不要靠猜。
+
+### 可选 worktree 隔离
+
+同一 checkout 里被派发的多个 Session 会交错改文件（混合 hunk 的拆分成本高、风险大）。DevLead
+可以借用 DSH 的**实验性 Git worktree** 能力，让一个被派发的 Session 拥有独立检出——但只在
+该能力确实被组合时，插件本身从不依赖它。
+
+- **做什么。** `devlead_create_session` 接受 `isolation: "worktree"`。在 Session 创建（并挂入
+  Workspace）之后、**首个 prompt 投递之前**，DevLead 请求 Host 的 worktree 服务为该 Session 的
+  Agent 创建分支与检出并进入它。Session 仍保持 Workspace 归属与不可变的 header cwd，侧边栏
+  分组不变；变化的只是它的工作目录（因而 shell/文件操作）——进入
+  `<checkout root>/.agents/worktrees/<自动生成名>`。
+- **能力检测。** DevLead 用可选方式查找服务（`ctx.get('worktrees')`）并 duck-type 其 `create`
+  方法；不 import、不依赖任何 `@deepseek-ai/dsh-experimental-*` 包，任何 `inject` 数组里也没有
+  实验性服务；默认 Web 组合（base + web-app）**不提供**该服务，所以隔离**默认关闭**。要启用，
+  请在 profile 里组合实验性 worktree 服务（例如发行版自带的 "Change requests & worktrees"
+  实验 bundle）——而不是为了 DevLead 额外安装什么。
+- **退化。** 服务缺失/不兼容、或 `git worktree` 执行失败都不会让派发失败：Session 留在
+  Workspace checkout，创建结果带明确结果，首条 prompt 仍会投递：
+  `isolation: { requested: 'worktree', status: 'unavailable' | 'failed', reason }`。结果不是
+  `worktree` 时，lead 必须串行派发写入型 Session，而不是让它们在同一 checkout 并发。`status:
+  'none'` 表示未请求隔离。（防御性边界：若 Host 无法让新建 Session 变为 live，隔离报
+  `unavailable`；此时再要求 prompt 仍会走既有的 `DEVLEAD_SESSION_UNAVAILABLE`——发行版 Session
+  controller 总会返回 live Agent，不会触发该状态。）
+- **需要知道的约束。** worktree 从源 checkout 的 `HEAD` 开始；未提交、已暂存、未跟踪、被忽略的
+  文件**不会**复制过去，隔离 Session 需要的内容请先提交或 stash。子会话的 sandbox 策略必须允许
+  写该检出和共享的 Git 管理目录。分支归 lead 负责：审阅 diff 后 merge / cherry-pick，插件不会
+  自动合并。隔离只
+  作用于**新建** Session——已有 Session 不能被移进 worktree（要新建，或把已有 Session 串行化）。
+- **可见性。** 成功时结果的 `path` / `branch` / `baseCommit` 给出检出信息；`/devlead status`
+  始终打印 `Worktree isolation: available|unavailable`，人类可据此判断 Host 是否具备该能力。
+  DevLead 系统提示只在能力确实存在时才宣传 worktree 用法；`isolation` 参数自身的描述始终把
+  它写成"尽力而为、受能力门控"，而不会声称一定可用。
 
 ## 通知机制
 
@@ -357,6 +393,11 @@ config 是整体替换）。
 `tool` / `command` / `client-ui` 没有部署配置；所有领域限制（watch 上限、通知保留条数等）
 由核心服务与 protocol 常量决定。
 
+可选 worktree 隔离**没有配置键**：是否存在完全由 profile 组合决定（是否挂载实验性 worktree
+服务），是否使用由每次派发的 `isolation` 参数决定。要关闭就停止传 `isolation: "worktree"`
+（或从 profile 移除实验性 worktree 服务）；没有该能力的 Host 保持默认的单 checkout 行为，
+并在结果里报 `unavailable`。
+
 ## 权限模型
 
 - **模式开关只能由人类触发**：`/devlead on|off` 命令或界面开关（composer 工具条图标 /
@@ -382,7 +423,13 @@ config 是整体替换）。
 - **监督上限默认 64、列表默认 200**：可通过配置调整；命令的候选列表按该上限截断，列表之外
   的会话仍可用完整 id 或唯一前缀寻址（core 的身份解析是穷尽的，不受列表上限限制），只是命令
   的歧义提示只基于列表 + watch 集合。
-- **不做 git 仓库创建 / clone / worktree 管理**：用 shell 工具完成，然后注册 Workspace。
+- **不做 git 仓库创建 / clone / 通用 worktree 管理**：用 shell 工具完成，然后注册 Workspace。
+  上文的可选隔离只借用已组合的实验性 DSH worktree 服务；**插件本身不执行任何 Git 操作**——
+  不创建仓库、不 clone / fetch / merge、不管理分支。隔离开出的分支由 lead 安排审阅与
+  merge / cherry-pick（派给某个 Session，或交给人类），且已有 Session 不能迁进 worktree。
+- **worktree 隔离是尽力而为且受能力门控**：没有实验性 worktree 服务（默认 Web profile）时就是
+  不可用；即使有，沙箱过严、checkout 不是 Git 仓库、或生成的分支/检出路径已存在时创建仍可能
+  失败，此时 Session 继续在共享 checkout 运行（结果里如实上报）。未提交改动不会复制进 worktree。
 - **不跨进程 / 跨 DSH 实例编排**；不新增 Remote API；UI 只读 projection + 走命令。
 - **未开启时入口较小**：为了不在每个会话上显示常驻状态条，未开启时只有一个 composer 工具条
   图标；不习惯的话记 `/devlead on` 命令即可。
@@ -409,6 +456,8 @@ config 是整体替换）。
 | 开发 overlay 下 `/devlead on` 报 `gateway/internal: Receiver must be an instance of class Session` | overlay 缺少 linked root（旧版生成物、手写 patch，或 profile 被换过）。重新执行 `pnpm dev:patch --profile <dev>`，确认 `<profile>/node_modules/devlead-repo` 存在后重启；或用 `pnpm e2e` 复现正确流程 |
 | `pnpm dev:patch` 报 profile not found / already enables bundle | 需要专用 dev profile：`dsh devlead --from-default-profile web --dump-config`；已启用本 bundle 的 profile 不能再插入同 id 的 loader row |
 | 对已注册 Workspace 再传 `title` 不生效 | 预期行为：`title` 只用于新注册的 Workspace 记录；已存在的记录保留原标题 |
+| `devlead_create_session` 返回 `isolation.status: "unavailable"` | profile 未组合 DSH 实验性 worktree 服务（默认 Web profile 从不组合）；启用实验性 worktree bundle，或改为串行派发写入型 Session——Session 已创建并仍可在共享 checkout 工作 |
+| `devlead_create_session` 返回 `isolation.status: "failed"` | worktree 服务存在但创建失败（沙箱限制、分支名已存在、非 Git checkout、检出路径已存在等）；`reason` 带 Git/服务错误，Session 仍在共享 checkout 继续 |
 
 ## 开发与验证
 
@@ -425,7 +474,9 @@ pnpm dev:patch      # 生成 overlay 并注册 linked root（见「安装：本�
 `pnpm e2e` 默认走 `patch` 加载流（等价于上面的 dev overlay）；`pnpm e2e --flow installed`
 走 `install-profile` 的包链接流。它只在本地运行（需要已安装的 DSH 运行时），CI 不包含；
 两种加载流都用真实浏览器 HTTP API 驱动，并断言 `/devlead on`、投影翻转、真实子会话 watch、
-被 watch 会话的 `turn/end` → 持久通知 → 投影可见、`/devlead off`。
+被 watch 会话的 `turn/end` → 持久通知 → 投影可见、`/devlead off`。E2E 的一次性 profile 就是
+发行版默认 Web 组合，因此也顺带验证「不启用实验性插件」的姿态：`/devlead status` 必须显示
+`Worktree isolation: unavailable`，且其余功能照常工作。
 
 测试布局（详见 [`docs/DESIGN.md`](docs/DESIGN.md) §9）：
 

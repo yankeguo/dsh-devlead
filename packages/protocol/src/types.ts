@@ -220,6 +220,45 @@ export interface DevLeadSessionView {
   readonly createdAt?: number
 }
 
+/**
+ * Checkout isolation requested for one created Session.
+ *
+ * `worktree` is a best-effort request: the Host uses the experimental Git
+ * worktree service when it is composed, and reports a non-active outcome
+ * instead of failing when it is not. `none` (the default) keeps the existing
+ * behavior, where the Session works directly in the Workspace checkout.
+ */
+export type DevLeadIsolationMode = 'none' | 'worktree'
+
+/**
+ * What actually happened to a requested checkout isolation.
+ *
+ * `none` — no isolation was requested; `worktree` — a worktree was created and
+ * the new Session's working directory was entered into it; `unavailable` — the
+ * Host composes no compatible worktree service (or the new Session was not
+ * live), so the Session works in the Workspace checkout; `failed` — the
+ * service exists but creation failed, again leaving the Session in the
+ * Workspace checkout. Only the first two are requested outcomes; `unavailable`
+ * and `failed` are never errors.
+ */
+export type DevLeadIsolationStatus = 'none' | 'worktree' | 'unavailable' | 'failed'
+
+/** Outcome of the checkout-isolation attempt for one created Session. */
+export interface DevLeadIsolation {
+  /** Requested mode after defaulting (omitted requests resolve to `none`). */
+  readonly requested: DevLeadIsolationMode
+  /** What actually happened. */
+  readonly status: DevLeadIsolationStatus
+  /** Canonical worktree checkout path; present only when `status` is `worktree`. */
+  readonly path?: string
+  /** Branch created for the worktree; present only when `status` is `worktree`. */
+  readonly branch?: string
+  /** Commit the worktree branch started from; present only when `status` is `worktree`. */
+  readonly baseCommit?: string
+  /** Diagnostic for an `unavailable` or `failed` outcome. */
+  readonly reason?: string
+}
+
 /** Request shape of one token-less Session creation inside a Workspace. */
 export interface DevLeadCreateSessionRequest {
   /** Target Workspace id or registered path. Omitted uses the lead's own directory. */
@@ -232,6 +271,13 @@ export interface DevLeadCreateSessionRequest {
   readonly watch?: boolean
   /** Optional Agent preset id. */
   readonly preset?: string
+  /**
+   * Optional checkout isolation for the new Session. Defaults to `none`.
+   * `worktree` is applied before the initial prompt is admitted, only when the
+   * Host composes a compatible experimental Git worktree service; a missing
+   * capability or a creation failure is reported in the result, never thrown.
+   */
+  readonly isolation?: DevLeadIsolationMode
 }
 
 /** Result of one DevLead session creation. */
@@ -242,6 +288,8 @@ export interface DevLeadCreatedSession {
   readonly workspace: DevLeadWorkspaceView
   /** Whether an initial prompt was admitted. */
   readonly prompted: boolean
+  /** Checkout-isolation outcome; always present, `none` unless requested. */
+  readonly isolation: DevLeadIsolation
 }
 
 /** One watch-set mutation result. */

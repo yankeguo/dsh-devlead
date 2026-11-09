@@ -16,6 +16,9 @@ import type { InferValue, ValueSchemaSpec } from '@deepseek-ai/dsh-tools'
 import { DEVLEAD_TRANSITIONS } from '@yankeguo/dsh-devlead-protocol'
 import type {
   DevLeadCreatedSession,
+  DevLeadIsolation,
+  DevLeadIsolationMode,
+  DevLeadIsolationStatus,
   DevLeadNotification,
   DevLeadProjection,
   DevLeadPromptedSession,
@@ -23,6 +26,17 @@ import type {
   DevLeadWatchMutation,
   DevLeadWorkspaceView,
 } from '@yankeguo/dsh-devlead-protocol'
+
+/** Every checkout-isolation mode the tool surface exposes, in declaration order. */
+export const DEVLEAD_ISOLATION_MODES: readonly DevLeadIsolationMode[] = ['none', 'worktree']
+
+/** Every checkout-isolation outcome status, in declaration order. */
+export const DEVLEAD_ISOLATION_STATUSES: readonly DevLeadIsolationStatus[] = [
+  'none',
+  'worktree',
+  'unavailable',
+  'failed',
+]
 
 /**
  * Wrap one canonical value schema into the `output` declaration of
@@ -103,6 +117,30 @@ export const SESSION_VIEW_SCHEMA = {
   },
 } as const
 
+/** Enforced schema of one checkout-isolation outcome. */
+export const ISOLATION_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    requested: {
+      type: 'string',
+      required: true,
+      enum: [...DEVLEAD_ISOLATION_MODES],
+      description: 'Requested isolation mode after defaulting; omitted requests resolve to none.',
+    },
+    status: {
+      type: 'string',
+      required: true,
+      enum: [...DEVLEAD_ISOLATION_STATUSES],
+      description: 'What actually happened: none or worktree are requested outcomes; unavailable and failed left the Session in the Workspace checkout.',
+    },
+    path: { type: 'string', description: 'Canonical worktree checkout path, present only when status is worktree.' },
+    branch: { type: 'string', description: 'Branch created for the worktree, present only when status is worktree.' },
+    baseCommit: { type: 'string', description: 'Commit the worktree branch started from, present only when status is worktree.' },
+    reason: { type: 'string', description: 'Diagnostic for an unavailable or failed outcome.' },
+  },
+} as const
+
 /** Enforced schema of one notification. */
 export const NOTIFICATION_SCHEMA = {
   type: 'object',
@@ -129,6 +167,9 @@ export type WorkspaceValue = InferValue<typeof WORKSPACE_VIEW_SCHEMA>
 
 /** Canonical value of one Session row. */
 export type SessionValue = InferValue<typeof SESSION_VIEW_SCHEMA>
+
+/** Canonical value of one checkout-isolation outcome. */
+export type IsolationValue = InferValue<typeof ISOLATION_SCHEMA>
 
 /** Canonical value of one notification. */
 export type NotificationValue = InferValue<typeof NOTIFICATION_SCHEMA>
@@ -172,6 +213,25 @@ export function sessionValue(view: DevLeadSessionView): SessionValue {
     ...view.lastAssistant === undefined ? {} : { lastAssistant: view.lastAssistant },
     ...view.updatedAt === undefined ? {} : { updatedAt: view.updatedAt },
     ...view.createdAt === undefined ? {} : { createdAt: view.createdAt },
+  }
+}
+
+/**
+ * Project one checkout-isolation outcome onto the canonical value.
+ *
+ * Optional worktree facts are dropped when absent: they only exist for an
+ * active outcome, and the lossless-JSON boundary rejects `undefined` members.
+ * @param isolation - outcome assembled by the core service.
+ * @returns the detached canonical value.
+ */
+export function isolationValue(isolation: DevLeadIsolation): IsolationValue {
+  return {
+    requested: isolation.requested,
+    status: isolation.status,
+    ...isolation.path === undefined ? {} : { path: isolation.path },
+    ...isolation.branch === undefined ? {} : { branch: isolation.branch },
+    ...isolation.baseCommit === undefined ? {} : { baseCommit: isolation.baseCommit },
+    ...isolation.reason === undefined ? {} : { reason: isolation.reason },
   }
 }
 
@@ -234,6 +294,7 @@ export const CREATE_SESSION_OUTPUT = jsonOutput({
     session: required(SESSION_VIEW_SCHEMA),
     workspace: required(WORKSPACE_VIEW_SCHEMA),
     prompted: { type: 'boolean', required: true },
+    isolation: required(ISOLATION_SCHEMA),
   },
 } as const)
 
@@ -284,6 +345,7 @@ export function createdSessionValue(created: DevLeadCreatedSession): InferValue<
     session: sessionValue(created.session),
     workspace: workspaceValue(created.workspace),
     prompted: created.prompted,
+    isolation: isolationValue(created.isolation),
   }
 }
 

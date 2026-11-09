@@ -28,6 +28,8 @@ import { DEVLEAD_DEFAULT_MAX_WATCHED } from '@yankeguo/dsh-devlead-protocol'
 import type {
   DevLeadCreatedSession,
   DevLeadCreateSessionRequest,
+  DevLeadIsolation,
+  DevLeadIsolationMode,
   DevLeadNotification,
   DevLeadProjection,
   DevLeadProjectionState,
@@ -49,6 +51,7 @@ import {
   devLeadProjectionDefinition,
   devLeadProjectionView,
 } from './fold.ts'
+import { worktreeCapabilityOf } from './isolation.ts'
 import { DevLeadNotificationHub } from './notification.ts'
 import {
   collectSessionIds,
@@ -266,6 +269,21 @@ export class DevLeadService extends Service {
     return this.resolved
   }
 
+  /**
+   * Whether this Host currently composes a usable experimental Git worktree
+   * service, so a `worktree` isolation request can be attempted.
+   *
+   * The check is structural and evaluated at call time, so a Host that loads or
+   * unloads the capability while DevLead is running reports its current state.
+   * DevLead itself never depends on the experimental package: without it, the
+   * getter is simply `false` and `createSession` reports an `unavailable`
+   * isolation outcome.
+   * @returns whether Git worktree isolation is available.
+   */
+  get worktreeIsolationAvailable(): boolean {
+    return worktreeCapabilityOf(this.ctx) !== undefined
+  }
+
   // ---------------------------------------------------------------------------
   // Mode
   // ---------------------------------------------------------------------------
@@ -457,13 +475,23 @@ export class DevLeadService extends Service {
   /**
    * Create one ordinary Session in a Workspace and optionally prompt it.
    *
+   * A requested `worktree` checkout isolation is applied best effort between
+   * the watch update and the initial prompt: when the Host composes no
+   * compatible Git worktree service, the new Session is not live, or creation
+   * fails, the result reports an `unavailable`/`failed` isolation outcome and
+   * the call still succeeds, with the Session working in the Workspace
+   * checkout.
+   *
    * Cancellation is cooperative: the signal is checked before each awaited
    * stage, so a cancelled call stops before it watches or prompts the new
    * Session. Session creation itself is not abortable once started.
    * @param agent - exact live lead Agent.
-   * @param request - Workspace, optional title, initial prompt, watch policy, and preset.
-   * @param signal - cancellation checked between stages.
-   * @returns the created Session and the Workspace it joined.
+   * @param request - Workspace, optional title, initial prompt, watch policy,
+   *   preset, and checkout isolation mode.
+   * @param signal - cancellation checked between stages and threaded into the
+   *   worktree creation.
+   * @returns the created Session, the Workspace it joined, and the
+   *   checkout-isolation outcome.
    * @throws {@link DevLeadError} when the mode is off, the Host cannot create
    *   Sessions, or the destination is not usable.
    */
@@ -503,6 +531,13 @@ export class DevLeadService extends Service {
       this.tryRename(created.sessionId, request.title.trim())
     }
     if (watch) await this.setWatching(agent, created.sessionId, true, signal)
+    // Isolation must run before the prompt is admitted: the new Session's Agent
+    // is still blank, so entering the isolated checkout cannot lose context.
+    // The capability is resolved and called best effort; only cancellation
+    // throws out of this stage.
+    signal?.throwIfAborted()
+    const isolation = await this.isolateSession(created.sessionId, request.isolation ?? 'none', signal)
+    signal?.throwIfAborted()
     const prompt = request.prompt?.trim() ?? ''
     const prompted = prompt.length > 0
     if (prompted) {
@@ -513,6 +548,7 @@ export class DevLeadService extends Service {
       session: await devLeadSessionView(deps, sessionId, true),
       workspace: await devLeadWorkspaceView(workspace),
       prompted,
+      isolation,
     }
   }
 
@@ -739,6 +775,68 @@ export class DevLeadService extends Service {
         + 'name a Workspace or path explicitly',
         failure.code,
       )
+    }
+  }
+
+  /**
+   * Attempt the checkout isolation requested for a freshly created Session.
+   *
+   * Isolation is best effort and never fails the creation call: a missing or
+   * malformed capability, a Session that is not live, and a rejected creation
+   * are all reported in the result, leaving the Session usable in its Workspace
+   * checkout. Cancellation is the only throwing path, and it wins over a
+   * reported failure so an aborted call is not misreported as a worktree
+   * failure.
+   * @param sessionId - freshly created Session identity.
+   * @param mode - requested isolation mode; `none` never touches the capability.
+   * @param signal - cancellation checked before the attempt and threaded into
+   *   the worktree creation.
+   * @returns the isolation outcome.
+   */
+  private async isolateSession(
+    sessionId: ReturnType<typeof toSessionId>,
+    mode: DevLeadIsolationMode,
+    signal?: AbortSignal,
+  ): Promise<DevLeadIsolation> {
+    if (mode !== 'worktree') return { requested: 'none', status: 'none' }
+    signal?.throwIfAborted()
+    const capability = worktreeCapabilityOf(this.ctx)
+    if (capability === undefined) {
+      return {
+        requested: 'worktree',
+        status: 'unavailable',
+        reason: 'this Host composes no Git worktree service, so the Session stays in its Workspace checkout',
+      }
+    }
+    // The worktree service changes the CALLING Agent's working directory, so the
+    // new child Agent must own the call: the lead (or any other Agent) would
+    // move the wrong Session. A Session that is already cold has no such Agent
+    // and stays in its Workspace checkout.
+    const child = this.ctx.agents.get(sessionId)
+    if (child === undefined) {
+      return {
+        requested: 'worktree',
+        status: 'unavailable',
+        reason: `Session "${String(sessionId)}" is not live, so no worktree can be created for it`,
+      }
+    }
+    try {
+      const checkout = await capability.create(child, {}, signal)
+      return {
+        requested: 'worktree',
+        status: 'worktree',
+        path: checkout.path,
+        branch: checkout.branch,
+        baseCommit: checkout.baseCommit,
+      }
+    } catch (error: unknown) {
+      // A cancellation observed while Git worked must reject the call, not be
+      // reported as a failure the Session survived.
+      signal?.throwIfAborted()
+      this.ctx.logger.warn(
+        `devlead: could not create a Git worktree for Session "${String(sessionId)}": ${thrownMessage(error)}`,
+      )
+      return { requested: 'worktree', status: 'failed', reason: thrownMessage(error) }
     }
   }
 

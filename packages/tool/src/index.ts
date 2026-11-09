@@ -26,7 +26,7 @@ import {
   requireSessionRef,
 } from './arguments.ts'
 import { runTool } from './errors.ts'
-import { DEVLEAD_POLICY } from './policy.ts'
+import { devLeadPolicy } from './policy.ts'
 import {
   presentCreateSessionCall,
   presentGetSessionCall,
@@ -118,7 +118,9 @@ export function apply(ctx: Context): void {
   ctx.systemPrompt.section({
     name: 'devlead:policy',
     order: ctx.systemPrompt.getSectionOrder('TOOL_SUBAGENT'),
-    text: ({ agent }) => agent !== undefined && ctx.devLead.isEnabled(agent) ? DEVLEAD_POLICY : '',
+    text: ({ agent }) => agent !== undefined && ctx.devLead.isEnabled(agent)
+      ? devLeadPolicy({ worktreeIsolation: ctx.devLead.worktreeIsolationAvailable })
+      : '',
   })
 
   ctx.tools.register(defineTool({
@@ -230,6 +232,14 @@ export function apply(ctx: Context): void {
       preset: {
         type: 'string',
         description: 'Optional Agent preset id for the new Session.',
+      },
+      isolation: {
+        type: 'string',
+        enum: ['none', 'worktree'],
+        description: 'Optional checkout isolation for the new Session; defaults to "none". "worktree" asks for a '
+          + 'best-effort isolated Git checkout of the owning Workspace for the new Session. It is applied only when '
+          + 'the Host composes the experimental Git worktree service, and a non-active outcome (unavailable or '
+          + 'failed) is returned in the isolation field of the result, never as an error.',
       },
     },
     output: CREATE_SESSION_OUTPUT,

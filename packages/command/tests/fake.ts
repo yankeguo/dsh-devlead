@@ -33,7 +33,14 @@ export type DevLeadListSessionsOptions = NonNullable<Parameters<DevLeadService['
  */
 type FakeDevLeadSurface = Pick<
   DevLeadService,
-  'isEnabled' | 'setEnabled' | 'view' | 'listSessions' | 'getSession' | 'watchSession' | 'notifications'
+  | 'isEnabled'
+  | 'setEnabled'
+  | 'view'
+  | 'listSessions'
+  | 'getSession'
+  | 'watchSession'
+  | 'notifications'
+  | 'worktreeIsolationAvailable'
 >
 
 /** Fixed epoch milliseconds used by every notification fixture. */
@@ -112,6 +119,8 @@ export function notification(
 export class FakeDevLead implements FakeDevLeadSurface {
   /** Current persistent mode switch. */
   enabled = false
+  /** Whether the host reports the optional worktree-isolation capability. */
+  worktreeIsolationAvailable = false
   /** Complete watch set, in add order. */
   watching: string[] = []
   /** Retained notification digest, oldest first. */

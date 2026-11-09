@@ -16,6 +16,7 @@ import { NOW, notification, sessionView } from './fake.ts'
 function snapshot(overrides: Partial<DevLeadStatusSnapshot> = {}): DevLeadStatusSnapshot {
   return {
     enabled: true,
+    worktreeIsolation: false,
     watched: [],
     missingWatched: [],
     notifications: [],
@@ -79,12 +80,18 @@ describe('statusLines', () => {
   it('renders the off state with no watch set and no notifications', () => {
     expect(statusLines(snapshot({ enabled: false }))).toEqual([
       'DevLead mode: off',
+      'Worktree isolation: unavailable',
       'Watched sessions: none',
       'Recent notifications: none',
       'DevLead mode is off: no notification wakes this Session until it is turned on again.',
       'Turn DevLead mode on with: /devlead on',
       HELP_LINE,
     ])
+  })
+
+  it('reports whether optional worktree isolation is composed', () => {
+    expect(statusLines(snapshot({ worktreeIsolation: true }))).toContain('Worktree isolation: available')
+    expect(statusLines(snapshot({ worktreeIsolation: false }))).toContain('Worktree isolation: unavailable')
   })
 
   it('renders the mode, counted watch set, and running rows in watch order', () => {

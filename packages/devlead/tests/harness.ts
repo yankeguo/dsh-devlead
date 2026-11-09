@@ -30,6 +30,7 @@ import type { DevLeadNotification, DevLeadProjectionState } from '@yankeguo/dsh-
 import { decodeNotificationRecord, modeRecord, watchRecord } from '../src/domain.ts'
 import { applyDevLeadProjection, emptyDevLeadProjectionState } from '../src/fold.ts'
 import DevLeadService from '../src/index.ts'
+import type { WorktreeCheckout } from '../src/isolation.ts'
 import { DevLeadNotificationHub } from '../src/notification.ts'
 
 /** Deterministic instant used for every seeded record and fake title. */
@@ -532,6 +533,61 @@ export class FakeSessionController {
   }
 }
 
+/** One recorded call of {@link FakeWorktreesCapability}. */
+export interface FakeWorktreeCall {
+  /** Agent the service passed as the worktree owner. */
+  readonly agent: Agent
+  /** Request body the service passed. */
+  readonly request: object
+  /** Cancellation signal the service passed, when one was threaded in. */
+  readonly signal: AbortSignal | undefined
+  /** Messages already admitted into the owning Agent when the call arrived. */
+  readonly followupsAtCall: number
+}
+
+/** Deterministic checkout reported by an unscripted {@link FakeWorktreesCapability}. */
+export const FAKE_WORKTREE = {
+  path: '/fake/repo/.agents/worktrees/dsh-fake',
+  branch: 'dsh-fake',
+  baseCommit: '0123456789abcdef0123456789abcdef01234567',
+} as const
+
+/**
+ * Fake optional `ctx.worktrees` capability: records every call and replays a
+ * scripted (or deterministic) checkout. It is provided only when a spec asks
+ * for it, so the absent-capability path remains the default in every other
+ * booted harness.
+ */
+export class FakeWorktreesCapability {
+  /** Every `create` call, in order. */
+  readonly calls: FakeWorktreeCall[] = []
+  /** When set, every `create` call throws this error. */
+  createError: Error | undefined
+  /** Scripted `create` body; unset reports {@link FAKE_WORKTREE}. */
+  createHandler: ((call: FakeWorktreeCall) => WorktreeCheckout | Promise<WorktreeCheckout>) | undefined
+
+  /**
+   * Record one call, then report the scripted checkout.
+   * @param agent - Agent the service passes as the worktree owner.
+   * @param request - request body the service passes.
+   * @param signal - cancellation signal the service passes.
+   * @returns the created checkout.
+   */
+  async create(agent: Agent, request: object = {}, signal?: AbortSignal): Promise<WorktreeCheckout> {
+    const followups = (agent as unknown as { followups?: readonly unknown[] }).followups
+    const call: FakeWorktreeCall = {
+      agent,
+      request,
+      signal,
+      followupsAtCall: followups?.length ?? 0,
+    }
+    this.calls.push(call)
+    if (this.createError !== undefined) throw this.createError
+    if (this.createHandler !== undefined) return await this.createHandler(call)
+    return { ...FAKE_WORKTREE }
+  }
+}
+
 /** Monotonic counter so every booted harness has deterministic unique ids. */
 let bootCounter = 0
 
@@ -599,6 +655,8 @@ export interface BootServiceOptions {
   readonly sessionController?: FakeSessionController
   /** Fake Session query engine to provide (cold logs and titles). */
   readonly sessionQuery?: FakeSessionQuery
+  /** Fake optional Git worktree capability to provide; omitted models a Host without it. */
+  readonly worktrees?: FakeWorktreesCapability
   /** Whether a durability participant is registered; false models an unpersisted Host. */
   readonly persistence?: boolean
   /** When set, the durability participant rejects with this failure. */
@@ -621,6 +679,7 @@ export interface ServiceHarness {
   readonly workspaceRegistry: FakeWorkspaceRegistry | undefined
   readonly sessionController: FakeSessionController | undefined
   readonly sessionQuery: FakeSessionQuery | undefined
+  readonly worktrees: FakeWorktreesCapability | undefined
   /** Dispose this harness's context and stop tracking it. */
   dispose(): Promise<void>
 }
@@ -663,6 +722,9 @@ export async function bootService(options: BootServiceOptions = {}): Promise<Ser
   if (options.workspaceRegistry !== undefined) ctx.provide('workspaceRegistry', options.workspaceRegistry.asRegistry())
   if (options.sessionController !== undefined) ctx.provide('sessionController', options.sessionController.asService())
   if (options.sessionQuery !== undefined) ctx.provide('sessionQuery', options.sessionQuery.asService())
+  // Provided only when asked for: every other spec deliberately models a Host
+  // that composes no experimental Git worktree service.
+  if (options.worktrees !== undefined) ctx.provide('worktrees', options.worktrees)
   await ctx.plugin(DevLeadService, options.config ?? {})
   liveContexts.push(ctx)
   return {
@@ -676,6 +738,7 @@ export async function bootService(options: BootServiceOptions = {}): Promise<Ser
     workspaceRegistry: options.workspaceRegistry,
     sessionController: options.sessionController,
     sessionQuery: options.sessionQuery,
+    worktrees: options.worktrees,
     dispose: () => disposeContext(ctx),
   }
 }

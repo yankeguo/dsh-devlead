@@ -43,6 +43,7 @@ Documentation: [Design notes (中文)](docs/DESIGN.md) · [Publishing guide (中
 | DevLead mode | One durable switch per session; enabling it adds the `devlead_*` tools, the DevLead system prompt, and the status strip |
 | Role model | Dispatch-first: determine the owning Workspace from registered metadata, send a self-contained brief to a Session there, watch it, review the delivery, report; read-only inspection is bounded to the brief and the review, writes stay in the owning Workspace's Session (including the lead's own workspace; direct work only when the human explicitly authorizes it in this conversation; record-file upkeep may follow the lead's repository instructions) |
 | Standard DSH entities | Child sessions are ordinary Sessions (visible in the sidebar; humans can open and take them over); Workspaces go through `workspaceRegistry`, not subagents |
+| Optional worktree isolation | When the Host composes DSH's experimental Git worktree service (`ctx.worktrees`), `devlead_create_session` can request `isolation: "worktree"` so a writing Session gets its own branch and checkout instead of sharing the Workspace checkout; detection is optional and a missing capability degrades to the shared checkout with a reported status, never an error (see [Optional worktree isolation](#optional-worktree-isolation)) |
 | 8 model tools | Register/list Workspaces, create/read/continue/watch Sessions, read the notification digest (see [Model tools](#model-tools)) |
 | Human commands | `/devlead` (status), `/devlead on\|off`, `/devlead watch\|unwatch <session>`; sessions are addressable by full id or unique prefix |
 | Notification loop | A watched session's `turn/end` writes a durable notification and wakes the DevLead through a coalescing window (configurable window and cold-session policy) |
@@ -253,7 +254,7 @@ the DevLead icon in the composer toolbar while off, the strip switch while on.
 
 | Command | Purpose |
 | --- | --- |
-| `/devlead` | status: mode, watched sessions (title / live / running / latest turn), latest notifications, help line |
+| `/devlead` | status: mode, whether optional worktree isolation is available, watched sessions (title / live / running / latest turn), latest notifications, help line |
 | `/devlead status` | alias of `/devlead` |
 | `/devlead on` | enable DevLead mode for the current session |
 | `/devlead off` | disable DevLead mode for the current session |
@@ -291,6 +292,10 @@ the DevLead icon in the composer toolbar while off, the strip switch while on.
    blank Session does not appear in the sidebar before its first turn, so "create + prompt" is the
    normal usage). If the owning Workspace already has a live Session working on the request,
    continue it with `devlead_prompt_session` instead of opening a duplicate.
+   When the Host composes the experimental worktree service and the new Session may write
+   concurrently with another Session in the same checkout, pass `isolation: "worktree"` (see
+   [Optional worktree isolation](#optional-worktree-isolation)); without that capability, never
+   run two writing Sessions in the same checkout at the same time — dispatch them serially.
 4. The child runs independently; the human can open it from the sidebar, continue the
    conversation, or take over at any time.
 5. When a child's turn settles (completed / failed / blocked / cancelled / …), the DevLead
@@ -321,7 +326,7 @@ DevLead session:
 | `devlead_list_workspaces` | `{}` | `{ workspaces }` |
 | `devlead_use_workspace` | `path` (required, absolute), `title?`, `create?` (default true) | `{ workspace }` |
 | `devlead_list_sessions` | `workspace?`, `watched_only?`, `limit?` | `{ sessions, watched }` |
-| `devlead_create_session` | `workspace?`, `prompt?`, `title?`, `watch?` (default true), `preset?` | creation result |
+| `devlead_create_session` | `workspace?`, `prompt?`, `title?`, `watch?` (default true), `preset?`, `isolation?` (default `none`; `worktree` = best-effort isolated checkout) | creation result (including the `isolation` outcome) |
 | `devlead_get_session` | `session` (required) | `{ session }` |
 | `devlead_prompt_session` | `session`, `prompt` (required), `watch?` (default true) | prompt result |
 | `devlead_watch_session` | `session`, `watching` (required bool) | watch mutation result |
@@ -329,6 +334,50 @@ DevLead session:
 
 Tools translate the core's `DevLeadError` into a `HarnessError` with a stable code. When reading
 state, trust `lastTurn` / `lastTransition` / `lastError` / `lastAssistant` instead of guessing.
+
+### Optional worktree isolation
+
+Multiple Sessions dispatched into the same checkout can interleave their edits (mixed working-tree
+hunks are expensive and risky to separate). DevLead can borrow DSH's **experimental Git worktree**
+facility to give one dispatched Session its own checkout, but only when that facility is actually
+composed — the plugin never depends on it.
+
+- **What it does.** `devlead_create_session` accepts `isolation: "worktree"`. After the Session is
+  created (and attached to the Workspace) but **before** its first prompt is admitted, DevLead asks
+  the Host's worktree service to create a branch and checkout for that Session's Agent and enters
+  it. The Session keeps its Workspace membership and its immutable header cwd, so the sidebar
+  grouping is unchanged; only its working directory (and therefore its shell/file operations)
+  moves into `<checkout root>/.agents/worktrees/<generated name>`.
+- **Capability detection.** DevLead looks the service up optionally (`ctx.get('worktrees')`) and
+  duck-types its `create` method. No `@deepseek-ai/dsh-experimental-*` package is imported or
+  required, no experimental service is in any `inject` array, and the default Web composition
+  (base + web-app) does **not** provide it: isolation is therefore **off by default**. Enable it
+  by composing the experimental worktree service in the profile (for example the shipped
+  "Change requests & worktrees" experimental bundle) — never by installing anything extra just for
+  DevLead.
+- **Degradation.** A missing or malformed service, or a failed `git worktree` run, never fails the
+  dispatch: the Session stays in the Workspace checkout, the creation result carries an explicit
+  outcome, and an initial prompt is still admitted:
+  `isolation: { requested: 'worktree', status: 'unavailable' | 'failed', reason }`. When the
+  outcome is not `worktree`, the lead must serialize writing Sessions instead of running them in
+  the same checkout concurrently. `status: 'none'` means no isolation was requested. (One
+  defensive corner: if the Host cannot make the newly created Session live, isolation reports
+  `unavailable`, and prompting it still fails with the pre-existing
+  `DEVLEAD_SESSION_UNAVAILABLE` error — the shipped Session controller never produces that state
+  because it returns a live Agent.)
+
+- **Constraints worth knowing.** The worktree starts at the source checkout's `HEAD`; uncommitted,
+  staged, untracked, and ignored files are **not** copied, so commit or stash anything the
+  isolated Session must see. The child Session's sandbox policy must allow writing the checkout and the shared Git
+  administration directory. The lead owns the branch: review the diff and merge or cherry-pick it
+  when the work is accepted; nothing is merged automatically. Isolation applies only to newly
+  created Sessions — an existing Session cannot be moved into a worktree (create a new one, or
+  serialize the existing Sessions).
+- **Visibility.** The result field reports `path` / `branch` / `baseCommit` on success, and
+  `/devlead status` always prints `Worktree isolation: available|unavailable`, so a human can tell
+  whether the Host could isolate at all. The DevLead system prompt advertises worktree isolation
+  only when the capability is present; the `isolation` parameter's own description always
+  documents it as best-effort and capability-gated, never as available.
 
 ## Notification loop
 
@@ -398,6 +447,12 @@ the profile's `cordis.patch.yml` — DSH replaces a row's whole config):
 `tool` / `command` / `client-ui` have no deployment configuration; all domain limits (watch cap,
 notification retention, etc.) are owned by the core service and protocol constants.
 
+Optional worktree isolation has **no configuration key**: whether it exists is decided entirely by
+the profile composition (is the experimental worktree service mounted?) and whether it is used is
+decided per dispatch by the `isolation` argument. To disable it, stop passing
+`isolation: "worktree"` (or remove the experimental worktree service from the profile); a Host
+without it keeps the default single-checkout behavior and reports `unavailable`.
+
 ## Permission model
 
 - **Only humans can flip the mode:** `/devlead on|off`, or the UI switch (composer-toolbar icon /
@@ -430,8 +485,17 @@ notification retention, etc.) are owned by the core service and protocol constan
   capped by that limit. Sessions beyond the listing are still addressable by full id or unique
   prefix (core identity resolution is exhaustive and not capped by the listing limit); only the
   command's ambiguity hints are based on the listing + watch set.
-- **No git repository creation / clone / worktree management:** use shell tools, then register
-  the Workspace.
+- **No Git repository creation / clone / general worktree management:** use shell tools, then
+  register the Workspace. The optional per-Session isolation described above only borrows an
+  already-composed experimental DSH worktree service; the plugin itself performs no Git
+  operations — it does not create repositories, clone, fetch, merge, or manage branches. The lead
+  must arrange review and merge/cherry-pick of an isolated branch (by dispatching it to a Session
+  or leaving it to the human), and existing Sessions cannot be re-homed into a worktree.
+- **Worktree isolation is best-effort and capability-gated:** without the experimental worktree
+  service (the default Web profile) it is simply unavailable; with it, creation can still fail
+  under a restrictive sandbox, in a non-Git checkout, or when the generated branch or checkout
+  path already exists, and the Session then continues in the shared checkout (reported in the
+  result). Uncommitted changes are not copied into a worktree.
 - **No cross-process / cross-DSH-instance orchestration;** no custom Remote API; the UI only reads
   the projection and goes through commands.
 - **Small off-state entry point:** to avoid a permanent strip on every conversation, the off
@@ -462,6 +526,8 @@ notification retention, etc.) are owned by the core service and protocol constan
 | Under a dev overlay, `/devlead on` throws `gateway/internal: Receiver must be an instance of class Session` | the overlay has no linked root (stale generated overlay, hand-written patch, or the profile was swapped). Re-run `pnpm dev:patch --profile <dev>` and confirm `<profile>/node_modules/devlead-repo` exists, then restart; or use `pnpm e2e` to run the correct flow |
 | `pnpm dev:patch` reports profile not found / already enables bundle | a dedicated dev profile is required: `dsh devlead --from-default-profile web --dump-config`; a profile that enables this bundle cannot take a second loader row with the same id |
 | Passing `title` to an already-registered Workspace has no effect | expected: `title` only applies when registering a new Workspace record; an existing record keeps its title |
+| `devlead_create_session` reports `isolation.status: "unavailable"` | the profile does not compose DSH's experimental worktree service (the default Web profile never does); either enable the experimental worktree bundle or dispatch writing Sessions serially — the Session was still created and works in the shared checkout |
+| `devlead_create_session` reports `isolation.status: "failed"` | the worktree service is present but creation failed (restrictive sandbox, existing branch name, non-Git checkout, existing checkout path); the `reason` carries the Git/service error, and the Session continues in the shared checkout |
 
 ## Development and verification
 
@@ -480,6 +546,9 @@ pnpm dev:patch      # generate the overlay and register the linked root (see "In
 (needs an installed DSH runtime) and CI does not include it. Both flows drive the real browser
 HTTP API and assert `/devlead on`, the projection flip, watching a real child session, the
 watched child's `turn/end` → durable notification → visible projection, and `/devlead off`.
+The throwaway profile uses the shipped default Web composition, so the run also proves the
+no-experimental-plugin posture: `/devlead status` must report `Worktree isolation: unavailable`
+and the rest of the product must keep working.
 
 Test layout (details in [`docs/DESIGN.md`](docs/DESIGN.md) §9, Chinese):
 

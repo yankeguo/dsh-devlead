@@ -115,6 +115,15 @@ describe('devlead command status', () => {
     expect(text(result)).toContain('DevLead mode: on')
   })
 
+  it('reports whether the Host composes the optional worktree service', async () => {
+    const { handler, service } = boot()
+    const withoutCapability = await run(handler, '')
+    expect(text(withoutCapability)).toContain('Worktree isolation: unavailable')
+    service.worktreeIsolationAvailable = true
+    const withCapability = await run(handler, '')
+    expect(text(withCapability)).toContain('Worktree isolation: available')
+  })
+
   it('shows live and cold watched Sessions with their latest turn', async () => {
     const { handler, service } = boot()
     service.enabled = true

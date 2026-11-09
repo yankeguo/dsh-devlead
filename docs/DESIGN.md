@@ -140,6 +140,9 @@ export class DevLeadService extends Service {
 
   // 通知
   notifications(agent: Agent, options?: { limit?: number }): DevLeadNotification[]
+
+  // 可选能力（不是 inject；只做只读探测，见 §4.3）
+  get worktreeIsolationAvailable(): boolean
 }
 ```
 
@@ -160,7 +163,9 @@ export class DevLeadService extends Service {
 - `createSession`：先做 watch 容量预检（避免创建成功后才发现超限）→ 解析目标 Workspace
   （id / path / 缺省用 lead 自己的 cwd 并自动注册）→ `ctx.sessionController.create({ workspaceId })`
   （该调用会自动 mkdir 并把 Session 挂进 Workspace 的账目）→ 可选
-  `ctx.sessionTitle.rename(session, title)` → 可选 prompt。注意：空白 Session 在第一次 turn
+  `ctx.sessionTitle.rename(session, title)` → 可选 watch → **可选 worktree 隔离（见 §4.3）**
+  → 可选 prompt。隔离失败不会让创建失败；结果里的 `isolation` 字段如实上报
+  `none` / `worktree` / `unavailable` / `failed`。注意：空白 Session 在第一次 turn
   开始前不会出现在侧边栏，因此"创建+prompt"是常规用法。
 - `promptSession`：先校验归档与冷会话激活能力（避免半应用的 watch 副作用）→
   `sessionController.resolveAgent(sessionId)` 拿 live Agent（冷会话会被 resume）→
@@ -239,6 +244,64 @@ DevLead 无需额外工具调用即可判断是否要介入。
 - 所有可选服务都用 `ctx.get(...)` 判空，缺席时降级而不是报错（headless/SDK 组合可能没有）；
   读取被取消时重新抛出 `AbortError`，不把取消降级成"事实未知"。
 
+### 4.3 可选 worktree 隔离（能力检测与退化）
+
+同一 checkout 里多个被派发 Session 并发写文件时，工作区会出现交错的 hunk；hunk 级拆分提交
+成本高且易错。DSH 提供实验性的 Git worktree 设施（`ctx.worktrees`，默认不组合）可以把一个
+Session 的工作目录切到独立分支/检出，DevLead 用它**可选地**隔离新建 Session——但本套件不依赖
+该实验包。
+
+**能力检测（无硬依赖）**
+
+- 不用 `inject`、不 import 任何 `@deepseek-ai/dsh-experimental-*`（**连 type-only import 也不
+  允许**），`package.json` 里也没有该包的任何依赖/peer 声明。
+- `DevLeadService` 在调用点用 cordis 的无类型重载 `this.ctx.get('worktrees')` 取服务，再用本
+  地结构化接口 + 运行时 duck typing（对象且 `create` 是函数）收窄；服务缺席/不兼容时一律视为
+  `unavailable`。
+- 公开只读 getter `worktreeIsolationAvailable` 供工具层判断是否渲染 worktree 相关提示；它也
+  只反映"Host 当前是否组合了兼容服务"，不是配置项。
+- 能力可在运行时出现/消失（插件行被 reload）；每次派发重新探测，不缓存跨 turn 的结论。
+
+**调用时序与作用对象**
+
+1. `sessionController.create({ workspaceId })` 创建普通 Session，并挂入 Workspace 账目；
+2. 等创建返回的 Agent 已是 live（`ctx.agents.get(created.sessionId)`；这正是 `admitPrompt`
+   已有的前提），取该 **子 Agent** 作为 worktree 服务的调用者；
+3. 调 `worktrees.create(childAgent, {}, signal)`（名字由服务按 Session id 生成、基线 `HEAD`），
+   服务内部对该子 Agent 执行 `workingDirectory.set`，把子会话的工作目录切进检出；
+4. 之后才 `admitPrompt` 投递首条 prompt，因此子会话的第一个 turn 从 worktree 开始。
+
+安全顺序的关键是"子会话在首个 prompt 之前是空白、不会自己跑 turn"，所以第 2/3 步与创建之间
+不存在并发窗口；反过来先 prompt 再切目录会让首批工具调用落在共享 checkout，因此禁止。
+
+**归属与路径影响**
+
+- 服务改的是"有效工作目录"（`working-directory/change` 事件），**不改** Session header 的 cwd，
+  因此 Workspace 成员关系、侧边栏分组、项目归属都不变；会话列表里的 `cwd` 仍是 Workspace 路径，
+  隔离结果由 `DevLeadCreatedSession.isolation`（`path`/`branch`/`baseCommit`）单独上报。
+- 默认位置 `<源 checkout 根>/.agents/worktrees/<自动名>`；未提交/暂存/未跟踪/被忽略的文件**不会**
+  复制到 worktree。分支由 lead 审阅后自行 merge / cherry-pick，插件不自动合并。
+- Git 操作在**子会话的 sandbox/file policy**下执行（`sandboxPolicy.resolve({ session: child })`）：
+  子会话策略必须允许写检出目录与共享 Git 管理目录，否则创建失败。受限策略、非 Git 目录、
+  重名分支/已存在的检出路径等都属于可预期失败（脏工作区本身不是失败原因，只是未提交内容不会
+  被复制）。
+- 隔离只适用于**新建** Session：已有 Session 的 header cwd 不可重挂，`attachSession` 也拒绝
+  与 Workspace 路径不等的 cwd；已有会话之间靠串行化规避冲突。
+
+**退化与诊断**
+
+| 情形 | `isolation` 结果 | 行为 |
+| --- | --- | --- |
+| 未请求（默认） | `{requested:'none',status:'none'}` | 与旧行为完全一致 |
+| 服务组合且创建成功 | `{requested:'worktree',status:'worktree',path,branch,baseCommit}` | 子会话在 worktree 中开始第一个 turn |
+| 服务未组合 / 不兼容 | `{requested:'worktree',status:'unavailable',reason}` | 不抛错；Session 仍创建、仍 prompt，在共享 checkout 工作 |
+| 子 Agent 非 live（防御性） | `{requested:'worktree',status:'unavailable',reason}` | Session 已创建；若同一次调用还要求 prompt，则走既有的 `DEVLEAD_SESSION_UNAVAILABLE`（发行版 controller 返回 live Agent，不会出现该状态） |
+| 服务存在但创建抛错 | `{requested:'worktree',status:'failed',reason}` | 记 warning；Session 仍创建、仍 prompt；可能残留分支/检出（服务语义） |
+
+`/devlead status` 始终打印 `Worktree isolation: available|unavailable`，人类与 E2E 都能直接
+判断当前 profile 是否具备该能力。系统提示只在能力存在时教模型使用 `isolation: "worktree"`，
+缺失时改为要求"同一 checkout 的写入型 Session 必须串行派发"，不会无条件声称支持。
+
 ## 5. 模型工具（`@yankeguo/dsh-tool-devlead`）
 
 全部工具都带 `when: ({ agent }) => ctx.devLead.isEnabled(agent)`，只在 DevLead 会话可见。
@@ -248,7 +311,7 @@ DevLead 无需额外工具调用即可判断是否要介入。
 | `devlead_list_workspaces` | `{}` | `{ workspaces: DevLeadWorkspaceView[] }` |
 | `devlead_use_workspace` | `path`(必填，绝对路径), `title?`, `create?`(默认 true，缺失目录 mkdir) | `{ workspace }` |
 | `devlead_list_sessions` | `workspace?`(id 或 path), `watched_only?`, `limit?` | `{ sessions, watched: string[] }` |
-| `devlead_create_session` | `workspace?`, `prompt?`, `title?`, `watch?`(默认 true), `preset?` | `DevLeadCreatedSession` |
+| `devlead_create_session` | `workspace?`, `prompt?`, `title?`, `watch?`(默认 true), `preset?`, `isolation?`(默认 `none`；`worktree` = 尽力隔离) | `DevLeadCreatedSession`（含 `isolation` 结果） |
 | `devlead_get_session` | `session`(必填) | `{ session }` |
 | `devlead_prompt_session` | `session`(必填), `prompt`(必填), `watch?`(默认 true) | `DevLeadPromptedSession` |
 | `devlead_watch_session` | `session`(必填), `watching`(必填 bool) | `DevLeadWatchMutation` |
@@ -274,6 +337,15 @@ DevLead 无需额外工具调用即可判断是否要介入。
   汇报格式；每次组装按当前 Agent 重新求值，关闭模式后下一步即消失。`devlead_create_session`
   的工具描述与 `workspace` 参数说明同步强调「把工作派发到归属 Workspace 的 Session」，避免
   模型把「创建 + prompt」当成本会话的直接实现入口。
+- `isolation` 参数只接受 `'none'` / `'worktree'`（其余报 `DEVLEAD_INVALID_INPUT`），默认不发；
+  结果 schema 新增必填 `isolation` 对象（`requested` 必填 `none|worktree`；`status` 必填
+  `none|worktree|unavailable|failed`；可选 `path`/`branch`/`baseCommit`/`reason`）。工具描述
+  写明"默认 none、`worktree` 是尽力而为、缺少能力时结果里如实上报而不是报错"。
+- policy 文案变成能力条件化：仅在 `ctx.devLead.worktreeIsolationAvailable` 为真时追加「并发
+  写入型 Session 用 `isolation:'worktree'` 隔离；会话仍属原 Workspace；文件在新分支
+  `<checkout>/.agents/worktrees/<name>`；未提交改动不复制；由 lead 审阅/合并该分支；结果为
+  unavailable/failed 时改串行」；为假时追加「没有 worktree 隔离；同一 checkout 的写入型
+  Session 必须串行派发」。每次组装按当前 Agent 与当前能力重新求值，不会无条件声称支持。
 
 ## 6. 人类命令（`@yankeguo/dsh-command-devlead`）
 
@@ -291,7 +363,9 @@ DevLead 无需额外工具调用即可判断是否要介入。
   空白），**不接受**完整命令行；多余参数、未知子命令、空参数、成对/不配对引号都有明确错误。
 - 状态输出用普通文本行（`CommandResult { kind: 'success', text }`），且模式 / watch 集合 /
   通知摘要来自**同一次 projection 读取**，避免列表 await 期间看到更新的 digest 与更旧的
-  watch 行。
+  watch 行。状态固定包含 `Worktree isolation: available|unavailable`（读
+  `ctx.devLead.worktreeIsolationAvailable`），让人类与 E2E 直接看到 Host 是否组合了可选的
+  worktree 隔离能力；该行只是能力说明，不改变任何状态。
 - `on` 需要当前 Agent live；`off` 立即生效（正在投递的通知保留在日志里）。
 - 附件由 `CommandRuntime` 在 handler 之前拒绝（定义不声明 `input.attachments`），handler 不
   重复实现该策略。
@@ -372,13 +446,18 @@ UI 分两态，避免在每个会话上显示常驻条：
   因此每次持久写、日志事件、projection drive 与监听器派发都按生产方式跑。覆盖严格解码器
   （字段漂移 / 缺失字段 / 时间范围）、fold identity 复用、通知泵（合并窗口 / 去重 / 重试 /
   冷会话 / 归档 / dispose / 零延迟代际守卫）、Workspace 与 Session 编排、列表排序与截断、
-  列表窗口外的身份解析、写路径的取消语义。
+  列表窗口外的身份解析、写路径的取消语义，以及可选 worktree 隔离的两种形态（fake
+  `ctx.worktrees` 存在时按"创建→隔离→prompt"顺序调用子 Agent 的 `create`；缺席/畸形/抛错时
+  降级为 `unavailable`/`failed`，Session 仍创建并 prompt，绝不抛错）。
 - `tool`：用 fake `ctx.devLead` + fake `ctx.tools`/`ctx.systemPrompt` 捕获工具定义，验证
   `when` gating、参数校验、值渲染、编译期 schema↔protocol 一致性、运行时 output schema
   校验、错误翻译、每个工具的 execute 转发与取消信号转发、presentCall replay 纯净性，以及
-  policy 文案的角色边界契约（默认调度、写入归属、归属未明时先问或注册、无空会话）。
+  policy 文案的角色边界契约（默认调度、写入归属、归属未明时先问或注册、无空会话）；另覆盖
+  `isolation` 参数映射与非法值、创建结果四种 `isolation` 状态的投影，以及 policy 按
+  `worktreeIsolationAvailable` 真/假两种形态的条件文案。
 - `command`：解析（rawInput 契约 / 引号 / 空白 / 未知子命令）、前缀寻址（唯一 / 歧义 / 缺失
-  / 列表窗口外回退）、渲染、穷尽错误码映射、单次 projection 快照。
+  / 列表窗口外回退）、渲染、穷尽错误码映射、单次 projection 快照；状态里的
+  `Worktree isolation: available|unavailable` 行也按 fake 能力断言。
 - `client-ui`：纯函数（format / 准入状态机 gate+reducer / results 分类 / 样式 token 契约 /
   侧边栏行标记 predicate / locale 完整性与占位符一致）；组件保持薄，逻辑都下沉到可测纯函数。
 - 全仓 `pnpm typecheck && pnpm test && pnpm build` 是 `pnpm verify`；`pnpm check:packages`
@@ -405,14 +484,28 @@ UI 分两态，避免在每个会话上显示常驻条：
   boot graph、`/devlead` 命令注册、`devLead` projection 默认值、`on/off` 翻转、真实子会话
   watch、被 watch 会话 `turn/end` → 持久通知 → 投影可见、以及自 watch 拒绝。子会话的模型
   凭据被剥掉，因此 turn 稳定以 provider error 结束（真实 `turn/end`，不花 token）；实例在
-  结束时按 PID 关闭。该命令只在本地跑，CI 不含。
+  结束时按 PID 关闭。该命令只在本地跑，CI 不含。E2E 的一次性 profile 是发行版默认 Web 组合
+  （base + web-app，不含任何实验性 bundle），因此额外断言 `/devlead status` 里
+  `Worktree isolation: unavailable`：既证明可选能力缺席时插件照常工作，也作为"无实验性插件
+  硬依赖"的真实运行时证据。
 - 手动验收路径：开一个会话 → `/devlead on`（或点开关）→ 让模型
   `devlead_use_workspace` 注册一个仓库 → `devlead_create_session` 创建子会话并下发任务 →
   子会话跑完后 DevLead 被唤醒 → 状态条显示监督列表与通知；人类可打开子会话继续参与。
+- 可选 worktree 隔离的手动验收（需要实验性组合，本地 E2E 的默认 profile 故意没有它）：
+  在 profile 里启用 "Change requests & worktrees" 实验 bundle（或挂载
+  `@deepseek-ai/dsh-experimental-worktree` + `@deepseek-ai/dsh-tool-worktree`）→ `/devlead status`
+  应显示 `Worktree isolation: available` → 对一个真实 git 仓库
+  `devlead_create_session` 传 `isolation: "worktree"` → 结果应带 `path`/`branch`/`baseCommit`，
+  git 仓库里出现该 worktree、子会话首个 turn 从该路径开始，且会话仍归属原 Workspace。
+  没有实验性组合时，同一条调用应返回 `unavailable` 且子会话在共享 checkout 正常运行。
 
 ## 11. 非目标（本版本）
 
-- 不做 git 仓库创建/clone/worktree 管理（用 shell 工具完成，然后注册 Workspace）。
+- 不做 git 仓库创建/clone/通用 worktree 管理（用 shell 工具完成，然后注册 Workspace）。
+  可选的 per-Session 隔离（§4.3）只借用已组合的实验性 DSH worktree 服务：插件本身不执行任何
+  Git 操作——不创建仓库、不 clone/fetch/merge、不管理分支；隔离分支的审阅与 merge/cherry-pick
+  由 lead 安排（派给 Session 或交给人类），且已有 Session 不能迁进 worktree。缺少该服务时仍走
+  单 checkout；与旧版相比新增的只是 `isolation` 结果字段、状态行的能力展示与串行派发提示。
 - 不做跨进程/跨 DSH 实例编排。
 - 不新增 Remote API（第三方不可用 Typert 生成管线），UI 只读 projection + 走命令。
 - 不自动 resume 冷 DevLead 会话（可配置 `wakeColdSession`，默认关闭）。
