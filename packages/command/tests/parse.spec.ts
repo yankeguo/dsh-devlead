@@ -24,6 +24,12 @@ describe('parseDevLeadCommand', () => {
     expect(parseDevLeadCommand('Off')).toEqual({ kind: 'off' })
   })
 
+  it('parses the reset subcommand case-insensitively', () => {
+    expect(parseDevLeadCommand('reset')).toEqual({ kind: 'reset' })
+    expect(parseDevLeadCommand('RESET')).toEqual({ kind: 'reset' })
+    expect(parseDevLeadCommand('  reset  ')).toEqual({ kind: 'reset' })
+  })
+
   it('parses watch and unwatch with their Session reference', () => {
     expect(parseDevLeadCommand('watch session-alpha')).toEqual({ kind: 'watch', session: 'session-alpha' })
     expect(parseDevLeadCommand('WATCH session-alpha')).toEqual({ kind: 'watch', session: 'session-alpha' })
@@ -63,7 +69,7 @@ describe('parseDevLeadCommand', () => {
   })
 
   it('rejects stray arguments after a no-argument subcommand', () => {
-    for (const line of ['on now', 'off now', 'status please']) {
+    for (const line of ['on now', 'off now', 'status please', 'reset now']) {
       const command = parseDevLeadCommand(line)
       expect(command.kind).toBe('invalid')
       expect(command.kind === 'invalid' ? command.message : '').toContain('does not take an argument')
@@ -114,7 +120,7 @@ describe('parseDevLeadCommand', () => {
 
   it('exposes one stable usage line and its advertised grammar', () => {
     expect(USAGE).toBe(`Usage: /devlead ${COMMAND_GRAMMAR}`)
-    for (const token of ['on', 'off', 'watch <session>', 'unwatch <session>']) {
+    for (const token of ['on', 'off', 'reset', 'watch <session>', 'unwatch <session>']) {
       expect(COMMAND_GRAMMAR).toContain(token)
     }
   })

@@ -35,6 +35,7 @@ type FakeDevLeadSurface = Pick<
   DevLeadService,
   | 'isEnabled'
   | 'setEnabled'
+  | 'reset'
   | 'view'
   | 'listSessions'
   | 'getSession'
@@ -129,6 +130,13 @@ export class FakeDevLead implements FakeDevLeadSurface {
   sessions: DevLeadSessionView[] = []
   /** Sessions the core can resolve but the bounded listing does not return. */
   extraSessions: DevLeadSessionView[] = []
+  /**
+   * Corrupt-replay failure text. While set, the fake behaves like a frozen
+   * fold: reads reject with `DEVLEAD_PROJECTION_INVALID`, turning the mode on is
+   * refused, and turning it off recovers by discarding the damaged state (the
+   * fake's stand-in for the core's reset record).
+   */
+  frozenReason: string | null = null
   /** Ordered log of service calls made by the command. */
   readonly calls: string[] = []
   /** Options of every `listSessions` call, in call order. */
@@ -185,7 +193,34 @@ export class FakeDevLead implements FakeDevLeadSurface {
   /** @inheritdoc */
   async setEnabled(_agent: DevLeadCommandAgent, enabled: boolean, _signal?: AbortSignal): Promise<void> {
     this.calls.push(`setEnabled:${enabled}`)
+    if (this.frozenReason !== null) {
+      // Mirrors the core recovery contract: dropping into disabled is the one
+      // direction a frozen fold can keep honoring (it appends a reset record);
+      // turning the mode on refuses instead of silently discarding the records.
+      if (enabled) {
+        throw new FakeDevLeadError(
+          'DEVLEAD_PROJECTION_INVALID',
+          `${this.frozenReason}; run /devlead reset first`,
+        )
+      }
+      this.applyReset()
+      return
+    }
     this.enabled = enabled
+  }
+
+  /** @inheritdoc */
+  async reset(_agent: DevLeadCommandAgent, _signal?: AbortSignal): Promise<void> {
+    this.calls.push('reset')
+    this.applyReset()
+  }
+
+  /** Drop every durable-looking fact exactly like a committed reset record. */
+  private applyReset(): void {
+    this.enabled = false
+    this.watching = []
+    this.feed = []
+    this.frozenReason = null
   }
 
   /** @inheritdoc */
@@ -195,6 +230,9 @@ export class FakeDevLead implements FakeDevLeadSurface {
     readonly notifications: readonly DevLeadNotification[]
   } {
     this.calls.push('view')
+    if (this.frozenReason !== null) {
+      throw new FakeDevLeadError('DEVLEAD_PROJECTION_INVALID', this.frozenReason)
+    }
     return {
       enabled: this.enabled,
       sessions: [...this.watching],

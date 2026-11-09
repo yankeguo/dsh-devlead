@@ -8,8 +8,12 @@ plugin-market 等）。审计对象是本仓库的 6 个包（`protocol`、`devl
 
 > 快照说明：本仓库行号取 2026-11-09 14:50 工作树快照。并行开发会移动行号，引用时请以
 > 「文件 + 符号/上下文」为准。本审计只读仓库源码与安装运行时，未改动任何实现文件；
-> `~/.dsh` 未被修改（见 §7.1 的前后校验）。其后的打磨轮次修改了实现与测试，最新验证
-> 计数见 §7.6。
+> `~/.dsh` 未被修改（见 §7.1 的前后校验）。其后的打磨轮次（0.1.1）与 **0.2.0** 修改了实现、
+> 测试与 E2E：0.2.0 新增 cold lead 索引重建（`sessionQuery` + `sessionProjectionCache` 可选
+> 探测，仍然零声明）、`/devlead reset` 持久记录、`useWorkspace(agent, request)` 与
+> `wakeColdSession` 默认 `true`；E2E 扩为多阶段（阶段 1b 重启验证冷 lead 索引重建；阶段 2
+> 在一次性 profile 里显式追加官方实验 forge bundle 以验证 worktree happy path，这不是产品
+> 依赖）。最新验证计数见 §7.6。
 
 ## 1. 结论摘要
 
@@ -31,11 +35,15 @@ plugin-market 等）。审计对象是本仓库的 6 个包（`protocol`、`devl
 
 运行证据（本轮工作树，由 Lead 执行）：在一次性 `DSH_HOME` + `--from-default-profile web`
 生成的默认 Web 组合上，`node scripts/e2e-smoke.mjs --no-build --flow patch` 与
-`--flow installed` 均 **33/33 检查通过**，其中包含断言 `default profile reports no optional
-worktree isolation` → `Worktree isolation: unavailable`，以及 summary 不携带 digest 的
-`devLeadMode` 行；`pnpm build` 与 `node scripts/check-packages.mjs`（`OK (6 packages)`）同样
-通过。即「无实验性 bundle 的默认 profile 可构建、可安装、可启动、可运行」在本工作树已有真实
-端到端证据，而非计划（详见 §7.4）。
+`--flow installed` 均 **61/61**（0.2.0 起多阶段：阶段 1 的默认组合断言、阶段 1b 的重启冷
+lead 索引重建断言、阶段 2 的 experimental forge 组合断言），阶段 1 包含断言
+`default profile reports no optional worktree isolation` → `Worktree isolation: unavailable`，
+以及 summary 不携带 digest 的 `devLeadMode` 行；阶段 2 是**同一脚本在一次性 scratch profile
+里显式追加官方实验 bundle** 验证 worktree happy path，用于证明「可选能力一旦组合就能工作」，
+不构成产品对实验包的任何声明/依赖；
+`pnpm build` 与 `node scripts/check-packages.mjs`（`OK (6 packages)`）同样通过。即
+「无实验性 bundle 的默认 profile 可构建、可安装、可启动、可运行」在本工作树已有真实端到端
+证据，而非计划（详见 §7.4）。
 
 ## 2. 判定口径与证据来源
 
@@ -62,8 +70,9 @@ worktree isolation` → `Worktree isolation: unavailable`，以及 summary 不�
 | E2 | DSH 官方源码 **tag `dsh-v0.2.2-rc.1`（commit 66491b05e3）**：组合 patch 文件、入口语义、服务定义 | `git show dsh-v0.2.2-rc.1:<path>`。`dsh-base`/`dsh-web-app` 的 `cordis.patch.yml` 与 E1 安装包内文件**逐字节一致**（`package.json` 仅 `workspace:*` 被发布归一化为版本号） |
 | E3 | 默认组合的**运行时 dump**：在临时 `DSH_HOME` 用 `--from-default-profile web --dump-config` 生成的组合树 | §7.1 的可复现命令；291 个 `@deepseek-ai/*` 名字行，0 个实验/可选 bundle 包，`~/.dsh` 未改 |
 | E4 | 仓库单元测试：真实 cordis `Context` + 真实 `SessionStore`/`SessionProjectionRegistry`，可选服务用内存 fake，实验性服务缺席 | `packages/devlead/tests/harness.ts`（`bootService`）；`packages/devlead/tests/service.spec.ts`、`isolation.spec.ts` |
-| E5 | `scripts/e2e-smoke.mjs`：一次性 profile 走默认 Web 组合并在真实 Web 运行时上做产品断言。**已在本轮工作树由 Lead 实跑：`--no-build --flow patch` → 33/33 通过**（含默认 profile 无 worktree 隔离、summary 不携带 `devLead` digest 的断言） | `scripts/e2e-smoke.mjs`（`runChecks()` 的 boot-graph / summary projection / worktree-isolation 断言） |
+| E5 | `scripts/e2e-smoke.mjs`：一次性 profile 走默认 Web 组合并在真实 Web 运行时上做产品断言。**0.2.0 起多阶段：阶段 1（默认组合）+ 阶段 1b（同一加载流/scratch home 重启，验证冷 lead 索引重建）+ 阶段 2（一次性 scratch profile 显式追加官方实验 forge bundle、验证 worktree happy path），每条加载流 61/61**（含默认 profile 无 worktree 隔离、summary 不携带 `devLead` digest 的断言；`--no-worktree` 跳过阶段 2 = 39/39） | `scripts/e2e-smoke.mjs`（`runChecks()` / `runRehydrationChecks()` / `runWorktreeChecks()`、`enableWorktreeBundle()`、`linkProbePackage()`；probe 为私有测试包 `scripts/e2e-probe/**`，不进入 workspace/build/check-packages） |
 | E6 | 打包不变式检查：host 运行期 `@deepseek-ai/*` 导入必须是 peer、DSH 包不得作为直接/optional 依赖、不得声明实验包、浏览器 `@deepseek-ai/*` 导入必须落在 module table、`dsh.client.inject` 与 root devDeps / module table 一致 | `scripts/check-packages.mjs`（import scan / dependency placement / client inject 三组检查）；本次运行 `node scripts/check-packages.mjs` → `OK (6 packages)` |
+| E7 | **0.2.0 冷重建就绪证据**：E2E 阶段 1b 在真实 Host 重启后暴露了 `sessionQuery` 已定义但持久语料仍 live-only 的竞态；最终实现为有界 corpus-readiness barrier（`packages/devlead/src/persistence.ts` 的只读探针 + `awaitCorpusReady`），单元测试与 E2E 阶段 1b 双重覆盖 | `docs/DESIGN.md` §4.1.1；`packages/devlead/tests/service.spec.ts`（cold lead rehydration 用例组）；`scripts/e2e-smoke.mjs` 阶段 1b |
 
 > ⚠️ **源码 checkout 的陷阱（重要）**：本机 DSH 源码 checkout 的 HEAD 是
 > `fcc0ad46`，`git describe` = `dsh-v0.2.2-rc.1-811-gfcc0ad46`——它是
@@ -233,9 +242,10 @@ module table 里。E1 佐证：安装运行时 `dsh/node_modules/@deepseek-ai/` 
 - 其中以 **H 形态**（必需 inject / 运行期值导入 / 必需 peer）依赖的 `@deepseek-ai/*` 有 9 个
   （cordis、schemastery、dsh-agent、dsh-session、dsh-session-projection、dsh-llm、dsh-tools、
   dsh-system-prompt、dsh-commands），外加第三方库 zod，全部由 `dsh-base` 或安装运行时提供；
-- 以 **S 形态**（可选 `ctx.get` / optional peer）依赖的 5 个（workspace、session-controller、
-  session-title、session-query、worktrees），前四个中两个仅 Web 默认提供、两个 base 默认提供，
-  worktrees 属实验性默认关闭但**零声明、仅探测**；
+- 以 **S 形态**（可选 `ctx.get` / optional peer）探测的能力共 7 个：package 级 optional peer 4 个
+  （workspace、session-controller、session-title、session-query；前两个仅 Web 默认提供，后两个
+  base 默认提供），零声明仅探测的服务 3 个（worktrees 属实验性默认关闭；0.2.0 新增
+  `sessionProjectionCache` 与 `sessionPersistence`，都来自 base 默认行，见 §6.1）；
 - 引用到的第三方库 2 个（`zod`、`react`），均由平台提供；实验性插件 **0 个**，第三方插件
   **0 个**。
 
@@ -309,8 +319,18 @@ module table 里。E1 佐证：安装运行时 `dsh/node_modules/@deepseek-ai/` 
 | `workspaceRegistry` | `src/index.ts:342,713,857`；`src/views.ts:134,220,430`；`src/notification.ts:425` | 列表跳过 Workspace 维度；写操作抛 `DEVLEAD_WORKSPACE_NOT_FOUND`；归档判定按"未归档" | `packages/devlead/tests/service.spec.ts:543-560`（无 registry 时明确报码） |
 | `sessionController` | `src/index.ts:505,589,896`；`src/notification.ts:499` | `createSession` 抛 `DEVLEAD_SESSION_UNAVAILABLE`；冷会话 prompt 同样报码；通知的冷唤醒静默跳过 | `service.spec.ts:1026-1028`、`:967-990`（无 controller / resolver 失败） |
 | `sessionTitle` | `src/index.ts:845-855`；`src/views.ts:179`；`src/notification.ts:352` | 标题字段省略；`rename` 跳过并 warn（不使创建失败） | `tests/harness.ts:320-364`（fake 服务形状）；服务实际由 base 默认提供 |
-| `sessionQuery` | `src/views.ts:140,184,302,474` | 冷会话/批量标题读降级，live Session 行仍可列出 | `service.spec.ts:729-743`（query 引擎抛错时保留 live 行） |
+| `sessionQuery` | `src/views.ts:140,184,302,474`；`src/index.ts`（`persistedLeadRecords` 冷扫描） | 冷会话/批量标题读降级，live Session 行仍可列出；无 query 时冷 lead 不重建索引 | `service.spec.ts:729-743`（query 引擎抛错时保留 live 行）、`service.spec.ts` 冷重建用例（无 query 只恢复 live） |
+| `sessionProjectionCache`（0.2.0 新增探测） | `src/projection-cache.ts`（`projectionCacheOf` / `devLeadPrefilterOf`） | 冷重建退化为"只恢复 live lead"，并 warning 一次；冷扫描不读任何持久日志 | `service.spec.ts` 冷重建用例（`rehydrates only live leads when no projection cache is composed`） |
+| `sessionPersistence`（0.2.0 新增探测，仅就绪判定） | `src/persistence.ts`（`persistedSessionsOf` 结构化探针）；`src/index.ts`（`awaitCorpusReady` / `armRehydrationRetry`） | 缺失时先 live-attach 回退并等待一次性 `ctx.inject` 重试；权威 cold scan 前 await corpus-readiness barrier（persistence 的完整存储 id 与 query 的 persisted 语料比对，100ms 轮询、有界 2s，超时 warning + best-effort），从未组合则冷扫描不执行（不 per-event 扫描） | `service.spec.ts` 冷重建用例（persistence 就绪前等待、stale corpus 等待、永不就绪时 live 仍可用、readiness 扫描一次、query engine 晚到、one-shot 保持 armed） |
 | `worktrees`（实验） | `src/isolation.ts`（`worktreeCapabilityOf`；`ctx.get('worktrees')`）；`src/index.ts`（`worktreeIsolationAvailable` / `isolateSession`） | `isolation: {requested:'worktree', status:'unavailable'/'failed', reason?}`；创建与 prompt 照常（唯一例外是防御性的"子 Agent 非 live"：隔离报 `unavailable`，若同时要求 prompt 则仍走既有 `DEVLEAD_SESSION_UNAVAILABLE`；发行版 controller 不会触发） | `packages/devlead/tests/isolation.spec.ts`（缺失/非 live/失败/畸形服务/动态提供/取消） |
+
+**0.2.0 新增的可选服务（cold lead 索引重建，零声明）**：只用
+`ctx.get('sessionQuery')`、`ctx.get('sessionProjectionCache')`（结构化 `cachedSnapshot` 探测）
+与 `ctx.get('sessionPersistence')`（`src/persistence.ts` 的结构化 `list()` 只读探针，用于
+corpus-readiness barrier 的就绪判定）三个可选服务；三者都是 `dsh-base` 默认行，但 DevLead
+不 import、不 `static inject`、不在 `package.json` 声明它们。缺失时的退化：无 query /
+persistence → 不扫描持久语料、只恢复 live lead（且不 per-event 扫描）；无 projection cache
+→ 冷扫描不读任何日志、只恢复 live lead 并 warning 一次。
 
 ### 6.2 必需 `inject` 逐项核验
 
@@ -325,6 +345,9 @@ module table 里。E1 佐证：安装运行时 `dsh/node_modules/@deepseek-ai/` 
 **没有任何必需 `inject` 指向实验性/默认关闭服务。** 新的 optional worktree 隔离也没有破坏
 这条基线：`packages/devlead/tests/isolation.spec.ts`（`experimental dependency surface`） 直接断言 `static inject` 仍是
 `['agents','sessions','sessionProjections']`、且 `package.json` 不含 `dsh-experimental`。
+0.2.0 的 cold 重建为等待 `sessionPersistence` 就绪使用了一次性 `ctx.inject(['sessionPersistence'], …)`
+回调——这是 cordis 的**运行期可选服务 fiber**（未组合时永不触发、插件照常激活），不是
+`static inject`，因此不改变 H1 判定，也没有新增依赖声明。
 
 ### 6.3 `peerDependenciesMeta` 逐项
 
@@ -366,9 +389,17 @@ Web/Desktop 完整支持"，见 §9 R5。
   `DSH:packages/experimental/tool-worktree/cordis.patch.yml:1-5`、
   `DSH:packages/experimental/forge-bundle/cordis.patch.yml:2`、
   服务名 `worktrees` 见 `DSH:packages/experimental/worktree/src/index.ts:61-79`。
-- E2E 断言默认组合下 `Worktree isolation: unavailable` 且其余功能正常（本轮已实跑 33/33
-  通过）：`scripts/e2e-smoke.mjs:561-571`；文档承诺见 `README.md:338-356`、
-  `docs/DESIGN.md:247-262`。
+- E2E 阶段 1 断言默认组合下 `Worktree isolation: unavailable` 且其余功能正常；**0.2.0 新增
+  阶段 2**：同一脚本、同一 scratch root/profile，停实例 → 向 profile 的
+  `dsh.profile.bundles` 追加官方 `@deepseek-ai/dsh-experimental-forge-bundle`（由安装版内置
+  官方 inventory 解析，无需 pnpm install / 网络 / lockfile 变更）→ 把私有测试包
+  `scripts/e2e-probe` 链接进 profile 的 `node_modules/@yankeguo/` 作为 linked root → 生成 probe
+  patch 插入其插件行 → 用**同一加载流**重启 → 断言 `Worktree isolation: available` 与真实 Git
+  worktree happy path（见 §7.4）。阶段 1b 用同一 scratch home 重启同一加载流验证冷 lead
+  索引重建（D2 的端到端证据）。两条加载流各 **61/61**（27 + 12 + 22）；`--no-worktree` 跳过阶段 2
+  （39/39）。probe 包 `@yankeguo/dsh-devlead-e2e-probe`（0.0.0）是私有测试资产，不发布、
+  不进 workspace/build/check-packages。文档承诺见 README 的 Notification loop / Development
+  and verification 与 `docs/DESIGN.md` §10（行号随并行开发漂移，引用按小节）。
 
 ## 7. 验证方式与证据
 
@@ -421,25 +452,63 @@ DSH_HOME="$TMP/home" dsh devlead-audit --from-default-profile web --dump-config 
 - `tool` / `command` 测试完全不 boot DSH 运行时（`packages/tool/tests/harness.ts:282-303`、
   `packages/command/tests/fake.ts` 用结构化 fake），从测试侧确认它们只依赖注入的服务接口。
 
-### 7.4 E2E 路径（E5，已由 Lead 在本轮工作树实跑：patch / installed 各 33/33 通过）
+### 7.4 E2E 路径（E5，0.2.0 多阶段；patch / installed 各 61/61 通过）
 
 `scripts/e2e-smoke.mjs` 的路线：
 
-1. `createProfile()`（`:232-240`）：`dsh <scratch> --from-default-profile web --dump-config`，
+**阶段 1（默认组合）**
+
+1. `createProfile()`：`dsh <scratch> --from-default-profile web --dump-config`，
    `DSH_HOME=临时目录` → 一次性 profile 只有 base+web-app；
-2. `installProfile()`（`:280-288`）或 `dev-patch` 流把套件装进该一次性 profile；
-3. 启动真实 Web 运行时（`:300+`），用浏览器同款 HTTP API 断言；
+2. `installProfile()` 或 `dev-patch` 流把套件装进该一次性 profile；
+3. 启动真实 Web 运行时，用浏览器同款 HTTP API 断言；
 4. boot graph 断言 client 条目及其 `dsh.client.inject`；
 5. `session/list` summary 断言 `devLeadMode` 存在且 digest 级 `devLead` 不在 summary（侧栏
    标记的传输契约）；
 6. `/devlead status` 断言 `Worktree isolation: unavailable`，证明默认组合不含实验 worktree
    bundle、可选能力缺席时套件照常工作。
 
-**实际结果（Lead，本轮工作树）**：`node scripts/e2e-smoke.mjs --no-build --flow patch` 与
-`--flow installed` 均 → **33/33 checks PASS**，含 `Session-list summary excludes the
-digest-bearing devLead projection` 与 `default profile reports no optional worktree
-isolation :: Worktree isolation: unavailable`。这证明「默认 Web 组合（base+web-app，无任何实验 bundle）
-可安装、可启动、可产出全部产品行为」，是本审计结论最强的运行时证据。
+**阶段 1b（冷 lead 索引重建）**
+
+1. 停掉阶段 1 实例（**同一加载流、同一 scratch root、同一一次性 `DSH_HOME`**，从不同时跑两个
+   实例），用同一 `--patch`/installed 加载方式重启；
+2. 冷 lead（没有 live Agent、只有持久日志）读取 `devLead` projection：仍是 enabled、仍带
+   watched 子会话与第一条通知 —— 证明 Host 重启后 hub 从持久记录重建了索引；
+3. 对冷子会话发第二次 prompt（`sessionController.resolveAgent` resume）→ 子会话产生新的
+   `turn/end` → 冷 lead 投影里出现**新的**持久通知（只有重建索引 + `wakeColdSession` 默认
+   true 才会发生）；
+4. lead 被 resume 后 `/devlead status` 正常列出 watched 子会话与最近通知，最后 `/devlead off`
+   翻转成功。
+
+**阶段 2（实验组合 worktree happy path；`--no-worktree` 跳过）**
+
+1. 停掉阶段 1 实例（同一 scratch root / 同一 profile）；
+2. `enableWorktreeBundle()`：把官方 `@deepseek-ai/dsh-experimental-forge-bundle` 追加进该
+   profile 的 `dsh.profile.bundles`。它由安装版内置的官方 bundle inventory 解析，**不需要
+   pnpm install、不联网、不改 lockfile**；
+3. `linkProbePackage()`：把私有测试包 `scripts/e2e-probe`
+   （`@yankeguo/dsh-devlead-e2e-probe`，0.0.0）链接到 profile 的
+   `node_modules/@yankeguo/`，作为 linked root；
+4. `writeProbePatch()`：生成 probe overlay，插入 probe 插件行；patch 流把它叠加在原有 devlead
+   overlay 之上，installed 流的 devlead 行仍来自 profile bundle 选择；
+5. 用**同一加载流**重启 → `/devlead status` 断言 `Worktree isolation: available` → 通过 probe
+   命令调用 core `useWorkspace(agent, request)` 注册 scratch workspace，再
+   `createSession({ isolation: 'worktree' })` 创建未 prompt 的子会话并返回 JSON；
+6. 断言隔离结果与真实 Git 状态：`status:'worktree'`、`path`/`branch`/`baseCommit` 非空、检出
+   位于 `<workspace>/.agents/worktrees/`、`git worktree list --porcelain` 含该路径、
+   `git show-ref --verify refs/heads/<branch>` 成功、`baseCommit === git rev-parse HEAD`、
+   子会话有效 cwd == 检出路径、header cwd 保持为 workspace、Session 仍归属该 Workspace；
+7. 停实例。scratch workspace 在 harness 里初始化成真实 git 仓库（一次 seed commit），因此这是
+   真实 Git happy path，不是 mock。
+
+**实际结果（Lead/e2e-dev，本轮工作树）**：`node scripts/e2e-smoke.mjs --no-build --flow patch`
+与 `--flow installed` 均 → **61/61 checks PASS**（阶段 1 27 + 阶段 1b 12 + 阶段 2 22），阶段 1 含
+`Session-list summary excludes the digest-bearing devLead projection` 与 `default profile
+reports no optional worktree isolation :: Worktree isolation: unavailable`，阶段 1b 验证
+Host 重启后的冷 lead 索引重建，阶段 2 含 `Worktree isolation: available` 与 worktree happy
+path 断言。这证明「默认 Web 组合（base+web-app，无任何实验 bundle）可安装、可启动、可产出
+全部产品行为」，持久状态可跨重启重建，并且可选 worktree 能力一旦被组合即可端到端工作；
+是本审计结论最强的运行时证据。
 
 **诚实边界**：E2E 只 `fetch /` 取 `__DSH_BOOT__` 并走 HTTP RPC，**不执行浏览器 JS**，因此它
 证明的是"Host 侧全部功能 + client 条目进入 boot graph 且携带声明的 injects"，**不直接证明
@@ -456,11 +525,14 @@ grep -rn "dsh-experimental" packages/*/src packages/*/tests packages/*/package.j
   packages/bundle/cordis.patch.yml scripts
 ```
 
-结果：**仅 3 处命中，且都是"必须不包含"的反向断言**（源码扫描、每个 manifest、bundle
-patch；`packages/devlead/tests/isolation.spec.ts` 的 `experimental dependency surface`）。
-`worktrees` 字面量在 src/清单中仅 2 处命中：`packages/devlead/src/isolation.ts` 的
-`ctx.get('worktrees')` 与 `packages/tool/src/policy.ts:56` 的提示文案；**无 inject、无
-import、无 package.json 声明**。
+结果：`packages/*`、`packages/bundle/cordis.patch.yml` 中的命中都是"必须不包含"的反向断言
+（源码扫描、每个 manifest、bundle patch；`packages/devlead/tests/isolation.spec.ts` 的
+`experimental dependency surface`）。`scripts/e2e-smoke.mjs` 额外以字符串常量
+`WORKTREE_BUNDLE = '@deepseek-ai/dsh-experimental-forge-bundle'` 引用官方包——那是 E2E 阶段 2
+在**一次性 scratch profile** 里显式组合实验能力所必需（不是产品依赖、不写入任何 manifest/
+lockfile，`check-packages` 仍通过）。`worktrees` 字面量在 src 中仅出现在
+`packages/devlead/src/isolation.ts` 的 `ctx.get('worktrees')` 与 `packages/tool/src/policy.ts`
+的提示文案；**无 inject、无 import、无 package.json 声明**。
 
 打包不变式本次已运行通过：`node scripts/check-packages.mjs` → `check-packages: OK (6 packages)`。
 该检查是本审计的 H1/H2/H3 兜底：host 运行期 `@deepseek-ai/*` 导入必须声明为 peer；
@@ -471,12 +543,14 @@ DSH 包不得作为直接/optional 依赖、不得声明 `dsh-experimental`；�
 
 - 本审计自己执行：只读检查 + 临时 `DSH_HOME` 的 dump-config 实验（§7.1）+ E1 asar 读取
   （§7.2）+ 静态扫描（§7.5）+ `node scripts/check-packages.mjs`（通过）。
-- Lead 在本轮工作树执行并通过（最终值）：`pnpm typecheck`（exit 0）、`pnpm test`（21 文件 /
-  467 tests，含新增 isolation 13 项）、`pnpm build`（6 目标）、`node scripts/check-packages.mjs`
-  （`OK (6 packages)`）、`node scripts/e2e-smoke.mjs --no-build --flow patch`（**33/33 通过**）
-  与 `--flow installed`（**33/33 通过**），含默认组合 `Worktree isolation: unavailable` 与
-  summary 不携带 digest 的断言。
-- 发布前仍需做：registry 安装回归（R3），以及 §9 R8 的"真实实验组合 happy path"手动验收。
+- Lead 在 0.2.0 工作树执行并通过（最终值）：`pnpm verify`（typecheck + `pnpm test`：
+  22 文件 / 558 tests + 7 个构建产物）、`node scripts/check-packages.mjs`
+  （`OK (6 packages)`）、`node scripts/e2e-smoke.mjs --no-build --flow patch` 与
+  `--flow installed`（各 **61/61**：阶段 1 27 + 阶段 1b 12 + 阶段 2 22），含默认组合
+  `Worktree isolation: unavailable`、Host 重启后冷 lead 索引重建、可选 worktree 组合
+  `available`、summary 不携带 digest 的断言，以及真实 Git worktree happy path。
+- 发布前仍需做：registry 安装回归（R3）。§9 R8 已由 0.2.0 的 E2E 阶段 2 覆盖（真实实验组合
+  happy path），不再是"未实测"项。
 
 ## 8. 与 `.tmp/research/workspace-api.md` 的差异
 
@@ -511,7 +585,7 @@ DSH 包不得作为直接/optional 依赖、不得声明 `dsh-experimental`；�
 | R5 | headless/acp/sdk 组合可安装本套件但 dispatch 不可用（§6.4），当前只有 README 一句"面向默认 Web 组合" | 低-中 | 决策：是否在详细文档/插件描述中显式标注"Web/Desktop 完整支持；headless/ACP 仅模式与只读可用"？代码侧不建议加硬限制（会妨碍未来组合） |
 | R6 | `dsh.client.inject` 里有非 client row 的名字（`dsh-client-ui-primitives`）；rc.1 loader 忽略之，保留作文档（`docs/AUDIT.md` 遗留限制） | 低 | 观察：若未来 DSH 改为严格校验 inject 名字，需移除该项；当前不动 |
 | R7 | `dsh-api-gateway`（提供 client `remote` 服务）未在本套件任何清单中出现 | 低 | 它是默认组合的传递依赖，且我们的代码没有直接 import/peer；保持不声明（声明反而会误导安装） |
-| R8 | **worktree 隔离 happy path 未在真实实验组合上实测**：本机默认 E2E profile 故意不含实验 bundle，单元测试只对 structural fake 覆盖活跃分支；已对照安装版 `dsh-experimental-worktree` 源码核对签名与"先建 worktree 再投首条消息"的官方时序 | 低-中（发布前建议补一次） | 手动验收配方见 `docs/DESIGN.md` §10；若未来把 forge/worktree bundle 纳入 CI profile，可把该配方脚本化 |
+| R8 | ~~worktree 隔离 happy path 未在真实实验组合上实测~~：**0.2.0 已解决**。本地 E2E 阶段 2 在一次性 profile 里显式追加官方 `@deepseek-ai/dsh-experimental-forge-bundle`，通过私有 probe 命令走 `useWorkspace(agent, request)` + `createSession({ isolation: 'worktree' })`，对真实 git 仓库端到端断言 isolation 结果、worktree/分支存在、baseCommit、子会话有效 cwd 与 header cwd、Workspace 归属 | 已关闭 | 保留为本地验收的一部分（每流 61/61）；无需再手动验收 |
 
 ## 10. 附录：复现命令
 

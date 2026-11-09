@@ -7,11 +7,11 @@
 DSH API 语义、错误路径、并发与生命周期、性能、打包与安装路径，并补齐回归测试与本机真实
 DSH 端到端验证。
 
-> **快照说明**：本文件是**上一轮**全量审计的历史记录，其中的测试/ E2E 计数（399 tests、
-> 25/25 checks）记录的是当时的工作树。当前工作树新增了可选 worktree 隔离与依赖姿态审计，
-> 最新验证数字与结论见 [`DESIGN.md`](DESIGN.md) §12 与
-> [`OPTIONAL-DEPENDENCIES.md`](OPTIONAL-DEPENDENCIES.md)（当前：21 文件 / 467 tests、
-> e2e patch / installed 各 33/33）。
+> **快照说明**：本文件 §1–§9 是**上一轮**全量审计的历史记录，其中的测试 / E2E 计数（399 tests、
+> 25/25 checks）记录的是当时的工作树。此后工作树新增了可选 worktree 隔离与依赖姿态审计
+> （0.1.1），并完成了 **0.2.0** 的六个决策项与 nits（见 §10.2）。最新验证数字与结论见
+> [`DESIGN.md`](DESIGN.md) §12 与 [`OPTIONAL-DEPENDENCIES.md`](OPTIONAL-DEPENDENCIES.md)
+> （当前：22 文件 / 558 tests；E2E 各 61/61）。
 
 ## 1. 结论摘要
 
@@ -176,16 +176,20 @@ watch → 子会话 `turn/end`（无模型凭据，稳定 provider error）生�
 
 ## 9. 遗留限制与风险
 
-- 组件/Hook 的接线没有 React 渲染器单测（仓库不引入新依赖）：由 tsc + esbuild + 真实 DSH 的
-  boot graph/E2E 覆盖；纯逻辑（准入状态机、格式化、locale、样式契约）有单测。两个 UI 状态
-  （toolbar 图标 / 开启后的 DevLeadBar）在真实 Chrome 里对隔离 DSH 实例做过人工渲染验证，
-  并据此刷新了 `docs/screenshots/devlead-toggle-off.png` 与 `devlead-bar.png`。
+- ~~组件/Hook 的接线没有 React 渲染器单测（仓库不引入新依赖）~~：0.2.0 已补
+  `react-test-renderer` 渲染测试（纯 node、无 jsdom，见 §10.2 D8(e)）；此前的覆盖来自
+  tsc + esbuild + 真实 DSH 的 boot graph/E2E，两个 UI 状态（toolbar 图标 / 开启后的
+  DevLeadBar）也在真实 Chrome 里对隔离 DSH 实例做过人工渲染验证，并据此刷新了
+  `docs/screenshots/devlead-toggle-off.png` 与 `devlead-bar.png`。
 - 前缀解析（非精确 id）仍需要列出持久化语料；精确 id 有快路径。没有 `sessionQuery` 时只有
   live / watched 的精确 id 可解析（能力与之前一致）。
 - `listSessions` 仍会为候选行批量读取一次标题/header（`createdAt` 排序需要 cold header）；
   这是一次批量 observation，不是逐条日志读取。
-- 通知在此前已排队未投递的 notice 存在时不会重复唤醒（持久 digest 是权威，模型可调用
-  `devlead_notifications`）；这是刻意设计。
+- ~~通知在此前已排队未投递的 notice 存在时不会重复唤醒~~：0.2.0 改为**保留 pending、
+  1s recheck**（inbox 里的 notice 被消费/取消后立即补投，不再丢唤醒；持久 digest 仍是权威，
+  模型可调用 `devlead_notifications`），见 §10.2 D5。
+- 损坏的 `plugin:devlead/*` 记录不再不可恢复：人类可运行 `/devlead reset`（或冻结时
+  `/devlead off`）追加 reset 记录并从空状态重来；旧版本无法执行该恢复（见 §10.2 D6）。
 - **`stateSchema` 的边界不变量（本轮修复）**：手工损坏的 checkpoint 中出现重复 watch id、
   重复 notification id、超出 `Date` 范围的 `at`、超过 64 条的 digest，或 id 与
   `sessionId/turn/transition` 不一致时，`stateSchema` 现在会校验失败；registry 丢弃该 cache
@@ -197,8 +201,12 @@ watch → 子会话 `turn/end`（无模型凭据，稳定 provider error）生�
 
 ## 10. 后续打磨轮次（2026-11-09，文档与实现同步）
 
-本节记录在上一轮全量审计之后的一轮代码/文档打磨；前面的历史章节保持原样，最新行为以本节、
+本节记录全量审计之后的两轮代码/文档打磨；前面的历史章节保持原样，最新行为以本节、
 [`DESIGN.md`](DESIGN.md) 与 [`OPTIONAL-DEPENDENCIES.md`](OPTIONAL-DEPENDENCIES.md) 为准。
+§10.1 是 0.1.1 的打磨记录（历史）；§10.2 是 **0.2.0**：上一轮遗留的六个"仍需决策"项与
+nits 已全部拍板并落地，含 breaking 影响与 file/test 证据。
+
+### 10.1 0.1.1 打磨（历史）
 
 **正确性与边界**
 
@@ -218,13 +226,13 @@ watch → 子会话 `turn/end`（无模型凭据，稳定 provider error）生�
 
 - `e2e-smoke.mjs --root` 使用真实 containment + scratch marker，拒绝删除非本脚本目录；子进程
   环境按凭据模式清理；readiness 超时先终止子进程。
-- `devlead_use_workspace` 工具要求 live 调用者；core `useWorkspace` 的 caller-free API 例外已
-  在 README/DESIGN 明确。
+- `devlead_use_workspace` 工具要求 live 调用者（0.2.0 起 core `useWorkspace` 也接收 Agent，
+  见 §10.2 D3）。
 - `check-packages.mjs` 支持多行/副作用/动态 import，新增 DSH 直接依赖、实验包、
   `dsh.client.inject` 与 root devDeps/module table 的校验；publish workflow 在发布前也运行该
   检查。
 - E2E 新增 `Session-list summary excludes the digest-bearing devLead projection` 断言；
-  patch 与 installed 两条加载流均为 **33/33**。
+  patch 与 installed 两条加载流均为 **33/33**（0.2.0 扩为多阶段 1 / 1b / 2，见 §10.2）。
 
 **文档**
 
@@ -236,13 +244,45 @@ watch → 子会话 `turn/end`（无模型凭据，稳定 provider error）生�
 - 各包新增简短 README（protocol / devlead / tool / command / client-ui），bundle README 同步
   cold lead、blank 行与 E2E 运行方式。
 
-**验证（最终工作树）**
+### 10.2 0.2.0：六个待决策项与 nits 全部落地
 
-- `pnpm verify` exit 0（21 文件 / 467 tests，6 个构建 target）。
+上一轮 §10 末尾"仍需决策"的六项（`isolation` 必填字段发布、cold lead 索引重建、
+`useWorkspace` 参数/默认建目录、`promptSession` 半 watch 补偿、`hasQueuedNotice` 丢 batch、
+真实实验组合下的 worktree happy path）已全部按**正确语义**拍板并实现；六个 nits 一并修复。
+0.2.0 是 minor（0.x 允许 breaking），不 tag、不发布，改动留在工作树。
+
+| # | 决策项 | 选定行为 | 理由 | Breaking 影响 / 兼容 | 实现（file:symbol） | 测试证据 |
+| --- | --- | --- | --- | --- | --- | --- |
+| D1 | `DevLeadCreatedSession.isolation` 必填字段的发布声明 | 正式声明为 0.2.0 breaking；`isolation` 语义不变。tool 的 value 层保留对旧 core 缺失该字段的防御性回退 `{ requested:'none', status:'none' }` | 0.x minor 允许 breaking；混装旧 core + 新 tool 不崩溃，但不再是被支持的发版组合 | 直接读 `created.isolation` 的宿主插件需升级 core；6 包应整体升级 | `packages/protocol/src/types.ts`（`DevLeadCreatedSession.isolation`）；`packages/tool/src/value.ts`（回退） | `packages/tool/tests/tools.spec.ts`（isolation 四态投影）；`packages/devlead/tests/service.spec.ts`（创建结果） |
+| D2 | cold lead 索引重建 + `wakeColdSession` 默认值 | Host 重启/插件重载后，`[Service.init]` 在 `hub.start()` 后跑冷扫描（`hub.rehydrate(persistedLeadRecords())`）：live 无 Agent 会话直接 fold；persisted 候选经 projection cache 零 I/O 预筛 + `readSession` 精确 fold（unknown 全量读取上限 64，cache 明确 enabled 的候选不计入、明确 disabled/空 watch 的直接跳过；无 cache 服务时冷扫描完全不读日志、只一次 warning）；`rehydrate` 幂等、不要求 Agent/Session live。**就绪条件是 `sessionQuery` + 可选 `sessionPersistence` 双双组合**（query engine 异步绑定 persistence 前 `listSessions()` 只返回 live-only 行）：init **await** 一个 corpus-readiness barrier——live-attach 回退 → 一个 macrotask → 用 `src/persistence.ts` 的 `persistedSessionsOf` 读取 `sessionPersistence.list()` 的完整存储会话 id：0 个则立即就绪；否则每 100ms 轮询、有界 2s 等 `sessionQuery` 的 persisted 行包含全部 id，超时 warning + best-effort；随后**唯一一次**权威 cold scan，标记 `rehydrated` 并解绑重试（Host 在索引重建前不会报告 application-ready）。in-process `agent/disposed` 保留 lead runtime 与反向索引，因此 dispose 后仍观察 watched 会话、继续写持久通知。`wakeColdSession` 默认改为 `true`：冷 lead 有队列时 `resolveAgent` 后补写并投递；`false` 保留队列等人类打开。E2E 阶段 1b 在真实 Host 上暴露并修复了最初的 readiness 竞态（`sessionQuery` 已存在但 persistence 绑定未就绪 → 空语料），最终实现以双就绪为权威条件 | 现存缺陷：`bootstrap()` 只看 live Agent、冷 lead 不产生任何通知；DevLead 的职责就是被 watched 会话的 turn/end 唤醒，Host 重启后仍应如此 | **默认值变更**：升级后 Host 重启会自动 resume 冷 lead 投递（不希望后台 resume 的部署显式设 `wakeColdSession:false`） | `devlead/src/index.ts`（`MAX_COLD_LEAD_LOG_READS`、`REHYDRATION_READINESS_TIMEOUT_MS`/`POLL_MS`、`rehydrated`、`[Service.init]`、`rehydrateFromPersistence`、`runRehydration`、`awaitCorpusReady`、`finalizeRehydration`、`armRehydrationRetry`、`persistedLeadRecords(scanPersisted)`）；`devlead/src/persistence.ts`（`persistedSessionsOf` 只读探针）；`devlead/src/notification.ts`（`DevLeadPersistedLead`、`rehydrate`、`unsaved`、`persistUnsaved`、`flush`）；`devlead/src/projection-cache.ts`（`projectionCacheOf`/`devLeadPrefilterOf`） | `packages/devlead/tests/service.spec.ts`（`FakeSessionQuery`/`FakeProjectionCache`、cache 预筛、精确折叠损坏跳过、live 无 Agent、默认 true、`waits for the optional persistence binding before adopting cold leads`、`waits out a stale corpus listing before the authoritative scan`、`loads and serves live leads when the corpus never becomes consistent`、`runs the readiness scan once and stops retrying after it`、`does not scan the persisted corpus on events while persistence is absent`、`keeps the one-shot rehydration retry armed until the query engine exists`、`rehydrates only live leads when no projection cache is composed`、`never fails the plugin load when the persisted scan rejects`）；`packages/devlead/tests/notification.spec.ts`（`rehydrate` 幂等、unsaved 补写、`wakeColdSession:false` 不投递）；E2E 阶段 1b（真实 Host 重启后冷 lead 从持久日志重建索引并产生新通知） |
+| D3 | `useWorkspace` 的调用者与默认建目录 | core 新签名 `useWorkspace(agent, { path, title?, create? }, signal?)`；先 `assertReady`（live + 模式开启）；**`create` 默认 `false`**：默认绝不 mkdir，缺目录报 `DEVLEAD_DIRECTORY_MISSING`（文案提示 retry with `create: true`），只有显式 `true` 才 `mkdir -p` 后重试一次 | Workspace 注册是 Host 级副作用；目录创建影响大，模型必须先征得人类显式同意；tool 与 core 语义统一 | **core API breaking**：`useWorkspace(path, options)` 调用方改为传 Agent + request；行为上"缺目录自动创建"变为显式 opt-in | `devlead/src/index.ts`（`useWorkspace`）；`tool/src/index.ts`（`devlead_use_workspace`）；`tool/src/policy.ts`；`protocol/src/types.ts`（`DevLeadUseWorkspaceRequest`） | `packages/devlead/tests/service.spec.ts`（模式关闭/非 live/默认不 mkdir/显式 true 才 mkdir/title 只作用新记录）；`packages/tool/tests/tools.spec.ts`（默认 false 转发、显式 true、signal 转发、schema 描述） |
+| D4 | `promptSession` 自动 watch 的失败/取消补偿 | 采用**补偿**而非"admission 成功后再 watch"：`added` 时 admission 前 `setWatching(true)`（否则极快的 turn/end 会落在 watch 之前丢第一次唤醒）；admission/resume 失败或取消时，用不带 signal 的 `setWatching(false)` 移除**本次新增**的 watch（失败只 warning），再抛原错误；已有显式 watch 与 `watch:false` 不改变 | 半应用状态（watch 了但没投递）不可接受；"先 admission 再 watch"会丢第一次通知 | 语义收紧：失败/取消不再留下本次新增的 watch；成功路径 `watched` 仍从 durable state 读取 | `devlead/src/index.ts`（`promptSession` 的 `alreadyWatched`/`added`/补偿） | `packages/devlead/tests/service.spec.ts`（admission 抛错、resume 抛错、取消、已 watch 不受影响、`watch:false` 不变） |
+| D5 | `hasQueuedNotice` 丢 batch | **保留 pending、不投递也不丢弃**：inbox 已有未投递 devlead notice 时不取 batch，arm 1s recheck timer（复用 `runtime.timer`）；recheck 时 notice 已消费/取消则正常投递，仍排队则继续等；`agent/status` idle 钩子立即重试。持久 digest 始终权威（记录先写） | 旧行为新 batch 可能永远不再触发唤醒（持久记录在、唤醒丢） | 行为修正，无 API 变化：inbox 有 notice 时唤醒延后到 1s 内或 idle 时，而不是被丢弃 | `devlead/src/notification.ts`（`flush` 的 `hasQueuedNotice` 分支、`scheduleRetry`、`DELIVERY_RETRY_MS`） | `packages/devlead/tests/notification.spec.ts`（第二个 batch 保留、`drainInbox` + 推进 1s 只投一次、`cancelInbox` 边界、unwatch/模式关闭/dispose 清理 timer） |
+| D6 | 损坏 fold 的恢复路径 | 新增持久记录 `plugin:devlead/reset`（`{ kind:'devlead/reset', version:1, at }`）；两个投影 fold 在冻结检查**之前**处理 reset：合法 reset 回到空状态（disabled、空 watch、空 digest、failure:null），坏 payload 保持冻结。core 新增 `reset(agent, signal?)`（只 `assertLive`）；`setEnabled(false)` 在冻结时写 reset 恢复，`setEnabled(true)` 抛 `DEVLEAD_PROJECTION_INVALID` 提示先 reset。command 新增人类专属 `/devlead reset`；`/devlead off` 在冻结时直接走恢复路径；错误文案提示 reset 并说明会丢弃 watch/digest | 一条损坏记录永久锁死会话不可接受；但隐式丢弃人类可能想检查的记录同样不可接受，所以恢复必须是显式人类动作 | **新增持久记录类型**（旧版本 fold 会忽略它：不崩溃但无法恢复）；新增 core 方法 `reset()` 与命令 `reset`；恢复后旧记录保留在日志但不再 fold | `protocol/src/types.ts`（`DEVLEAD_RESET_RECORD_TYPE`、`DevLeadResetRecord`）；`devlead/src/domain.ts`（`resetRecord`、`decodeResetRecord`）；`devlead/src/fold.ts`（两个 `apply*Projection` 的 reset 分支、`freezeProjection`）；`devlead/src/index.ts`（`reset`、`setEnabled` 冻结分支）；`devlead/src/notification.ts`（`onSessionEvent` 对 reset 也 `syncLead`）；`command/src/parse.ts` / `index.ts` / `render.ts` | `packages/devlead/tests/fold.spec.ts`（reset 解冻两投影、坏 reset 不解冻、reset 后正常 fold）；`service.spec.ts`（setEnabled off 恢复、on 报错、reset 幂等、hub 索引清空）；`packages/command/tests/parse.spec.ts` / `handler.spec.ts`（parse/usage、reset 渲染、off 冻结恢复、status 冻结友好错误） |
+
+nits（D8）：
+
+| nit | 选定行为 | 实现（file:symbol） | 测试证据 |
+| --- | --- | --- | --- |
+| (a) `ensureStyleTag` 跨实例 refcount | 以 `Symbol.for(...)` 为 key 挂在 `globalThis` 的共享状态 `{ refs, element }`：首个实例创建 `<style>`，后续实例复用并刷新 `textContent`，每个 disposer 递减、归零才移除，避免 HMR 新旧模块实例交替时旧 disposer 删掉新实例仍在用的标签 | `client-ui/src/client/styles.ts`（`ensureStyleTag`） | `packages/client-ui/tests/styles.spec.ts`（多次调用；`vi.resetModules()` + 动态 import 模拟第二模块实例；旧实例 dispose 后标签仍在；全部 dispose 后移除） |
+| (b) command 并发点击 title/body 不一致 | `executeMode`/`executeWatch` 变更后重新取一次快照，title 由 post-mutation 快照的真实状态派生、body 永远来自同一快照（如 "DevLead mode is off (another command changed it)."） | `command/src/index.ts`（`modeTitle`、`watchTitle`、`snapshotWatches`） | `packages/command/tests/handler.spec.ts`（fake 在 mutation 中翻转/回滚状态，断言 title 与 body 一致） |
+| (c) 通知记录崩溃窗口未 flush | `record()` 追加通知记录后 fire-and-forget `ctx.sessions.flush(session)`（失败 warning，不影响投递）；digest 投递时既有 flush 保留 | `devlead/src/notification.ts`（`appendNotificationRecord`、`checkpoint`） | `packages/devlead/tests/notification.spec.ts`（harness 记录 flush 次数 / 失败路径） |
+| (d) `warnedFailures` dispose/reopen 后重复 warning | 有界集合（上限 256，FIFO 淘汰），`removeLead` 不再清；只在 `stateOf` 读回有效状态时删除该 id：同一损坏 Session 一个 Host 生命周期只 warning 一次 | `devlead/src/notification.ts`（`warnedFailures`、`trimWarnedFailures`、`removeLead`）；protocol 常量 | `packages/devlead/tests/notification.spec.ts`（dispose/reopen 不重复 warning、reset 后恢复可再 warning） |
+| (e) React 组件/hook 渲染测试 | 新增 devDependency `react-test-renderer@18.3.1` + `@types/react-test-renderer`（纯 node、无 jsdom，与仓库 React 18 对齐）；组件把 `useProjection`/`useSessions`/`useSessionStatus` 作为 props，因此只 mock `@deepseek-ai/dsh-client-ui-primitives`；用 `act` 驱动 | 根 `package.json`（devDependencies）；`packages/client-ui/tests/*.spec.tsx` | 覆盖 DevLeadBar enabled/disabled、SR live region/label、pending 禁用、失败文案；DevLeadIconToggle 分支与隐藏失败活区；SessionMark/HoverMark；`useDevLeadAdmission` 单击提交、双击单次提交、卸载不 setState、失败保留与 `resetKey` 清空 |
+
+**验证（0.2.0 最终工作树）**
+
+- `pnpm verify`：typecheck 通过 + **22 文件 / 558 tests**（`pnpm test`）。
+- `pnpm build`：7 个 `lib/*.js` 与 bundle 校验通过。
 - `node scripts/check-packages.mjs` → `OK (6 packages)`。
-- `node scripts/e2e-smoke.mjs --no-build --flow patch` 与
-  `node scripts/e2e-smoke.mjs --no-build --flow installed` → 各 33/33 通过。
+- E2E 多阶段（默认 profile 全量断言 + 重启验证冷 lead 索引重建（阶段 1b，D2 的端到端证据）
+  + 叠加实验 bundle 的 worktree happy path（阶段 2））：`node scripts/e2e-smoke.mjs --no-build
+  --flow patch` 与 `--flow installed` → 各 **61/61**（阶段 1 27 + 阶段 1b 12 + 阶段 2 22）；
+  `--no-worktree` 跳过阶段 2 → **39/39**（阶段 1 + 1b）。
+- 版本：根 `package.json` 与 6 个可发布包均为 `0.2.0`；`check-packages` 校验版本锁步。
 
-**仍需决策**：`isolation` 必填字段对应的 minor 版本发布；cold lead 的持久化索引重建；
-`useWorkspace` 是否改为 Agent 参数/默认不建目录；`promptSession` resume/admission 失败后的
-半 watch 补偿；`hasQueuedNotice` 丢弃 batch 的语义；真实实验组合下的 worktree happy path 验收。
+**文档（0.2.0）**：README / README.zh 同步配置默认值（`wakeColdSession` true、`create`
+默认 false）、cold rehydration、`/devlead reset`、通知 queued-notice 语义与多阶段 E2E；
+DESIGN 更新 §3 记录表（reset）、§4 API/约束/promptSession 补偿、§4.1/§4.1.1 冷 lead 重建、
+§6 命令与恢复、§8 错误码、§9 测试策略、§10 多阶段验收、§11 非目标；AUDIT §10 即本节；
+PUBLISHING / OPTIONAL-DEPENDENCIES 与各包 README 同步；`docs/releases/v0.2.0.md` 为发布说明。

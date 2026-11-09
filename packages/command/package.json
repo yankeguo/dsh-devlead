@@ -1,6 +1,6 @@
 {
   "name": "@yankeguo/dsh-command-devlead",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Human-facing /devlead command: enable or disable DevLead mode for the current session and inspect the lead's managed workspaces, sessions, and notifications.",
   "license": "MIT",
   "type": "module",

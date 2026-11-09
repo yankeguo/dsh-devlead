@@ -15,6 +15,12 @@ custom Remote API, no optimistic state flips, and no direct Host access; all dur
 from the `devLead` / `devLeadMode` projections. The locale namespace is `devlead` with `zh` and
 `en` dictionaries.
 
+Style injection is reference-counted across **module instances** (`Symbol.for(...)` key on `globalThis`):
+HMR old/new instances can coexist without an old disposer removing the `<style>` tag a new instance
+still uses. The two entry points and `useDevLeadAdmission` have React render tests using
+`react-test-renderer` (devDependency only, pure node, no jsdom); the style-tag refcount is covered
+by a second-module-instance test (`vi.resetModules()` + dynamic import).
+
 Known UI limits: the mark is subject to the projection-cache backfill described in the repository
 README, and DSH 0.2.2-rc.1 does not render the trailing seat on a blank (no-turn-yet) Session row.
 
@@ -36,5 +42,6 @@ dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 
 `@yankeguo/dsh-client-ui-devlead` 是浏览器半边：未开启时的 composer 工具条图标、开启后的
 DevLeadBar、侧边栏会话行标记；只读 `devLead`/`devLeadMode` projection 并发送 `/devlead`
-命令。已知 mark 回填与 blank 行限制见根 README。完整中文文档见
+命令。0.2.0 起样式注入用跨模块实例引用计数（HMR 新旧实例交替不误删标签），两个入口与准入
+hook 用 `react-test-renderer` 做渲染测试。已知 mark 回填与 blank 行限制见根 README。完整中文文档见
 [根 README.zh.md](https://github.com/yankeguo/dsh-devlead/blob/main/README.zh.md)与[设计说明](https://github.com/yankeguo/dsh-devlead/blob/main/docs/DESIGN.md)。

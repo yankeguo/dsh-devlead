@@ -27,6 +27,7 @@ import {
   DEVLEAD_NOTIFICATION_RECORD_TYPE,
   DEVLEAD_MODE_RECORD_TYPE,
   DEVLEAD_RECORD_VERSION,
+  DEVLEAD_RESET_RECORD_TYPE,
   DEVLEAD_WATCH_RECORD_TYPE,
   DEVLEAD_DEFAULT_MAX_WATCHED,
   DEVLEAD_DEFAULT_NOTIFICATION_RETENTION,
@@ -38,6 +39,7 @@ import type {
   DevLeadModeRecord,
   DevLeadNotification,
   DevLeadNotificationRecord,
+  DevLeadResetRecord,
   DevLeadTransition,
   DevLeadWatchRecord,
 } from '@yankeguo/dsh-devlead-protocol'
@@ -50,12 +52,19 @@ export {
   DEVLEAD_NOTIFICATION_RECORD_TYPE,
   DEVLEAD_MODE_RECORD_TYPE,
   DEVLEAD_RECORD_VERSION,
+  DEVLEAD_RESET_RECORD_TYPE,
   DEVLEAD_WATCH_RECORD_TYPE,
   DEVLEAD_DEFAULT_MAX_WATCHED,
   DEVLEAD_DEFAULT_NOTIFICATION_RETENTION,
   notificationId,
 }
-export type { DevLeadNotification, DevLeadModeRecord, DevLeadWatchRecord, DevLeadNotificationRecord }
+export type {
+  DevLeadNotification,
+  DevLeadModeRecord,
+  DevLeadWatchRecord,
+  DevLeadNotificationRecord,
+  DevLeadResetRecord,
+}
 
 /** Durable attribution of one message DevLead authored for another Session. */
 export interface DevLeadRelayMessageSource {
@@ -91,6 +100,8 @@ declare module '@deepseek-ai/dsh-session/types' {
     'plugin:devlead/watch': DevLeadWatchRecord
     /** One watched-session transition notification. */
     'plugin:devlead/notification': DevLeadNotificationRecord
+    /** Reset marker discarding every earlier DevLead record of the Session. */
+    'plugin:devlead/reset': DevLeadResetRecord
   }
 }
 
@@ -147,6 +158,18 @@ export function watchRecord(sessions: readonly string[], at: number): DevLeadWat
  */
 export function notificationRecord(notification: DevLeadNotification): DevLeadNotificationRecord {
   return { kind: 'devlead/notification', version: DEVLEAD_RECORD_VERSION, notification }
+}
+
+/**
+ * Build one durable reset record payload.
+ *
+ * The record carries no state: replay discards every earlier DevLead record of
+ * the Session, so both projections restart from their empty initial state.
+ * @param at - epoch milliseconds of the reset.
+ * @returns the record payload.
+ */
+export function resetRecord(at: number): DevLeadResetRecord {
+  return { kind: 'devlead/reset', version: DEVLEAD_RECORD_VERSION, at }
 }
 
 /**
@@ -398,6 +421,29 @@ export function decodeNotificationRecord(value: unknown): DevLeadNotification {
   expectFields(record, label, ['kind', 'version', 'notification'])
   expectEnvelope(record, DEVLEAD_NOTIFICATION_RECORD_TYPE, 'devlead/notification')
   return decodeNotification(record.notification)
+}
+
+/**
+ * Decode one persisted reset record.
+ *
+ * A reset marker is the only owned record replay applies while a previous
+ * record has frozen the fold, so its own payload is validated just as strictly:
+ * a malformed reset must not silently discard a damaged Session's state (the
+ * human can retry `/devlead reset`).
+ * @param value - persisted payload.
+ * @returns the decoded reset record.
+ * @throws when the payload is not a valid reset record.
+ */
+export function decodeResetRecord(value: unknown): DevLeadResetRecord {
+  const record = expectRecord(value, DEVLEAD_RESET_RECORD_TYPE)
+  const label = 'reset record'
+  expectFields(record, label, ['kind', 'version', 'at'])
+  expectEnvelope(record, DEVLEAD_RESET_RECORD_TYPE, 'devlead/reset')
+  return {
+    kind: 'devlead/reset',
+    version: DEVLEAD_RECORD_VERSION,
+    at: decodeInstant(record.at, `${label} at`),
+  }
 }
 
 /**

@@ -16,7 +16,7 @@ import { DEVLEAD_COMMAND_NAME } from '@yankeguo/dsh-devlead-protocol'
  * Grammar advertised to command-aware clients: the text after
  * `Usage: /devlead `.
  */
-export const COMMAND_GRAMMAR = '[status|on|off|watch <session>|unwatch <session>]'
+export const COMMAND_GRAMMAR = '[status|on|off|reset|watch <session>|unwatch <session>]'
 
 /** One-line usage hint shown by every invalid input. */
 export const USAGE = `Usage: /${DEVLEAD_COMMAND_NAME} ${COMMAND_GRAMMAR}`
@@ -26,6 +26,7 @@ export type DevLeadCommand =
   | { readonly kind: 'status' }
   | { readonly kind: 'on' }
   | { readonly kind: 'off' }
+  | { readonly kind: 'reset' }
   | { readonly kind: 'watch'; readonly session: string }
   | { readonly kind: 'unwatch'; readonly session: string }
   | { readonly kind: 'invalid'; readonly message: string }
@@ -102,10 +103,10 @@ function parseSessionArgument(subcommand: 'watch' | 'unwatch', text: string): De
  * Parse the `/devlead` grammar.
  *
  * A bare command (or the explicit `status` alias) shows the lead's status;
- * `on` and `off` flip the human-only mode switch; `watch` and `unwatch` take
- * one Session reference. Keywords are case-insensitive; a Session reference is
- * never lower-cased, and one pair of matching surrounding quotes is stripped
- * from it.
+ * `on` and `off` flip the human-only mode switch; `reset` discards a damaged
+ * durable state; `watch` and `unwatch` take one Session reference. Keywords are
+ * case-insensitive; a Session reference is never lower-cased, and one pair of
+ * matching surrounding quotes is stripped from it.
  *
  * `rawInput` is the text following the registered command name (DSH's
  * `CommandInvocation.rawInput` contract), so the leading separator whitespace
@@ -122,6 +123,7 @@ export function parseDevLeadCommand(rawInput: string): DevLeadCommand {
     case 'status': return { kind: 'status' }
     case 'on': return { kind: 'on' }
     case 'off': return { kind: 'off' }
+    case 'reset': return { kind: 'reset' }
     default: break
   }
   const { head, rest } = splitHead(input)
@@ -133,6 +135,7 @@ export function parseDevLeadCommand(rawInput: string): DevLeadCommand {
     case 'status':
     case 'on':
     case 'off':
+    case 'reset':
       return unexpectedArgument(head)
     default:
       return invalid(`Unknown /devlead subcommand "${head}".`)

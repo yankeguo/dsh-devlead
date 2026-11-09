@@ -1,0 +1,15 @@
+{
+  "name": "@yankeguo/dsh-devlead-e2e-probe",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Private E2E probe plugin: drives the DevLead worktree-isolation happy path from a real Host command.",
+  "main": "./index.mjs",
+  "exports": {
+    ".": "./index.mjs"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "~4.1.0",
+    "@deepseek-ai/dsh-commands": "^0.2.2-rc.1"
+  }
+}

@@ -6,19 +6,83 @@
  * It boots a throwaway DSH_HOME under the OS temp directory (never `~/.dsh`),
  * loads the suite through one of the two documented local flows, logs in with
  * the launch token over the same HTTP API the browser uses, and asserts the
- * product behaviors that only appear in a real Host:
+ * product behaviors that only appear in a real Host.
  *
- *   - the browser half is discovered (boot graph client entry + declared injects);
- *   - `/devlead` is a registered human command and the `devLead` projection is
- *     served with its default wire value;
- *   - the summary-sized `devLeadMode` projection is registered, follows the mode,
- *     and rides the `session/list` summary rows the sidebar renders, while the
- *     digest-bearing `devLead` value stays out of those summaries;
- *   - `/devlead on` / `/devlead off` flip the durable mode and the projection
- *     follows it;
- *   - `watch` addresses a real child Session and self-watch is rejected;
- *   - a watched child `turn/end` writes a durable notification into the lead
- *     Session and the projection exposes it.
+ * Every flow runs three phases against the same scratch root and the same
+ * throwaway profile (phase 1 and phase 1b also share the same durable DSH_HOME
+ * state):
+ *
+ *   phase 1 — default composition. The shipped default Web profile (base +
+ *             web-app) carries no experimental worktree bundle, so DevLead must
+ *             report the optional capability as unavailable and keep working
+ *             normally:
+ *               - the browser half is discovered (boot graph client entry +
+ *                 declared injects);
+ *               - `/devlead` is a registered human command and the `devLead`
+ *                 projection is served with its default wire value;
+ *               - the summary-sized `devLeadMode` projection is registered,
+ *                 follows the mode, and rides the `session/list` summary rows
+ *                 the sidebar renders, while the digest-bearing `devLead` value
+ *                 stays out of those summaries;
+ *               - `/devlead on` flips the durable mode and both projections
+ *                 follow it;
+ *               - `watch` addresses a real child Session and self-watch is
+ *                 rejected;
+ *               - a watched child `turn/end` writes a durable notification into
+ *                 the lead Session and the projection exposes it;
+ *               - `/devlead status` reports `Worktree isolation: unavailable`.
+ *             27 checks. The final `/devlead status` + `/devlead off` checks
+ *             move to phase 1b, so this instance is stopped with the enabled
+ *             mode, watch set, and notification digest still durable for the
+ *             restart assertions.
+ *
+ *   phase 1b — cold lead rehydration. The SAME loading flow restarts against
+ *             the SAME scratch home; the restarted Host must rebuild the state
+ *             the stopped process left in the Session logs:
+ *               - the cold lead's projection still folds as enabled and still
+ *                 carries the watched child and the first-turn notification
+ *                 (read from the durable log without activating the Session);
+ *               - a second prompt resumes the cold child Session;
+ *               - its turn-2 `turn/end` produces a NEW notification in the cold
+ *                 lead's projection, which only happens when the hub rebuilt
+ *                 its watch index from persisted records (D2 rehydrate) and
+ *                 resumed the cold lead to persist and deliver the wake
+ *                 (`wakeColdSession` defaults to `true`);
+ *               - the resumed, now-live lead answers `/devlead status` (watched
+ *                 child + recent notification) and the final `/devlead off`.
+ *             12 checks.
+ *
+ *   phase 2 — experimental worktree composition. The same profile's
+ *             `dsh.profile.bundles` gains the official
+ *             `@deepseek-ai/dsh-experimental-forge-bundle` (the installed app's
+ *             bundle inventory resolves it at boot, so no `pnpm install` runs),
+ *             the private `scripts/e2e-probe` package is linked as a profile
+ *             package under `node_modules/@yankeguo/`, and the SAME loading flow
+ *             restarts with one extra `--patch` overlay inserting the probe row
+ *             (the patch flow keeps its devlead overlay as the first
+ *             `--patch`). The probe registers the lead directory as a
+ *             Workspace, creates an unprompted Session with
+ *             `isolation: 'worktree'`, and returns the created result as JSON.
+ *             Phase 2 asserts `/devlead status` reports `Worktree isolation:
+ *             available` and verifies the real facts: the checkout lives under
+ *             `<workspace>/.agents/worktrees/`, Git lists the worktree, the
+ *             branch ref exists, `baseCommit` equals the workspace `HEAD`, the
+ *             child Session's effective working directory is the checkout, its
+ *             header cwd stays the Workspace path, and the Session belongs to
+ *             the registered Workspace. The scratch workspace is a real Git
+ *             repository (one seed commit) because the worktree service
+ *             branches from its `HEAD`.
+ *             22 checks.
+ *
+ * `--no-worktree` runs phases 1 + 1b only (debugging escape hatch when the
+ * experimental composition cannot boot on this machine).
+ *
+ * Check counts: phase 1 = 27, phase 1b = 12, phase 2 = 22, so every flow
+ * reports 61/61 checks when all three phases pass (`--no-worktree` stops after
+ * phase 1b: 39/39). Run both flows before a release:
+ *
+ *   node scripts/e2e-smoke.mjs --flow patch
+ *   node scripts/e2e-smoke.mjs --flow installed
  *
  * Two loading flows are exercised because they resolve the DSH runtime
  * differently:
@@ -45,7 +109,8 @@
  *
  * Usage:
  *   node scripts/e2e-smoke.mjs [--flow patch|installed] [--no-build]
- *                              [--root <dir>] [--port <n>] [--verbose]
+ *                              [--no-worktree] [--root <dir>] [--port <n>]
+ *                              [--verbose]
  *
  * Environment:
  *   DSH_BIN   CLI to boot (default: `dsh` on PATH, for example the packaged
@@ -59,13 +124,17 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
-  readdirSync,
   readFileSync,
+  readdirSync,
+  readlinkSync,
+  realpathSync,
   rmSync,
+  symlinkSync,
+  unlinkSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -75,6 +144,14 @@ const SCRATCH_NAME = 'devlead-e2e'
 const SCRATCH_MARKER = '.devlead-e2e-scratch'
 /** Name of the profile `node_modules` link that registers the checkout as a linked root. */
 const REPO_LINK_NAME = 'devlead-repo'
+/** Official optional bundle whose layer composes the experimental Git worktree capability. */
+const WORKTREE_BUNDLE = '@deepseek-ai/dsh-experimental-forge-bundle'
+/** Private E2E probe package in `scripts/e2e-probe`, linked as a profile package in phase 2. */
+const PROBE_PACKAGE = '@yankeguo/dsh-devlead-e2e-probe'
+/** Command the probe registers; phase 2 dispatches `/${PROBE_COMMAND}`. */
+const PROBE_COMMAND = 'devlead-e2e-worktree'
+/** Default checkout pool of the experimental worktree service, relative to the repository root. */
+const WORKTREE_DIRECTORY = '.agents/worktrees'
 /**
  * Environment names that carry a model-provider or infrastructure credential.
  * The child runtime is supposed to fail deterministically without provider
@@ -93,12 +170,17 @@ const READY_TIMEOUT_MS = 120_000
 const TURN_TIMEOUT_MS = 60_000
 /** Upper bound for the projection to expose the notification. */
 const NOTIFICATION_TIMEOUT_MS = 20_000
+/** Upper bound for a restarted Host to rehydrate, resume a cold lead, and expose its new notification. */
+const COLD_NOTIFICATION_TIMEOUT_MS = 45_000
 
 const USAGE = `Usage: node scripts/e2e-smoke.mjs [options]
 
 Options:
   --flow <patch|installed>  loading flow to exercise (default: patch)
   --no-build                reuse the current packages/*/lib artifacts
+  --no-worktree             run phases 1 + 1b only; skip the experimental worktree
+                            composition (debugging escape hatch, the default runs
+                            all three phases)
   --root <dir>              scratch directory under ${tmpdir()} (default: a unique one);
                             an existing root is reused only when it carries ${SCRATCH_MARKER}
   --port <n>                Web port; 0 lets the OS pick one (default: 0)
@@ -114,11 +196,17 @@ function messageOf(error) {
   return String(error)
 }
 
+/** Hide the launch token in a runtime URL before printing or logging it. */
+function redactUrl(url) {
+  return url.replace(/\?token=.*$/u, '?token=…')
+}
+
 /** Parse the command line, exiting on invalid input or an explicit help request. */
 function parseArgs(argv) {
   const options = {
     flow: 'patch',
     build: true,
+    worktree: true,
     root: undefined,
     port: 0,
     verbose: false,
@@ -147,6 +235,7 @@ function parseArgs(argv) {
         break
       }
       case '--no-build': options.build = false; break
+      case '--no-worktree': options.worktree = false; break
       case '--verbose': options.verbose = true; break
       case '--help':
       case '-h':
@@ -224,8 +313,36 @@ function prepareScratch(options) {
     config: join(base, 'config'),
   }
   for (const directory of Object.values(paths)) mkdirSync(directory, { recursive: true })
-  writeFileSync(join(base, SCRATCH_MARKER), 'created by scripts/e2e-smoke.mjs\n')
+  // DSH's Workspace registry canonicalizes every path with `fs.realpath`, and
+  // the scratch root may sit below a symlink (on macOS `/var` points at
+  // `/private/var`). Canonicalize the scratch paths up front so Session cwds,
+  // Workspace paths, and the Git assertions all describe the same spelling.
+  for (const key of Object.keys(paths)) paths[key] = realpathSync(paths[key])
+  writeFileSync(join(paths.base, SCRATCH_MARKER), 'created by scripts/e2e-smoke.mjs\n')
   return paths
+}
+
+/**
+ * Initialize the scratch workspace as a real Git repository with one commit.
+ *
+ * The phase-2 experimental worktree service branches from the checkout's
+ * `HEAD` and checks the branch out below `<repository root>/.agents/worktrees/`;
+ * a plain directory makes every isolation attempt fail. The seed commit also
+ * gives `baseCommit === git rev-parse HEAD` a stable value to assert.
+ * @param paths - scratch paths (already canonical).
+ */
+function initScratchRepository(paths) {
+  const cwd = paths.workspace
+  run('git', ['init', '--quiet', '--initial-branch', 'main'], { cwd })
+  // A local identity and disabled commit signing keep the seed commit
+  // independent of the machine's global Git configuration.
+  run('git', ['config', 'user.name', 'DevLead E2E'], { cwd })
+  run('git', ['config', 'user.email', 'devlead-e2e@example.invalid'], { cwd })
+  run('git', ['config', 'commit.gpgsign', 'false'], { cwd })
+  writeFileSync(join(cwd, '.gitignore'), '.agents/\n')
+  writeFileSync(join(cwd, 'README.md'), '# DevLead E2E workspace\n\nSeed commit for the worktree-isolation phase.\n')
+  run('git', ['add', '.gitignore', 'README.md'], { cwd })
+  run('git', ['commit', '--quiet', '-m', 'chore: seed the DevLead E2E workspace'], { cwd })
 }
 
 /** Resolve the DSH CLI to boot. */
@@ -271,6 +388,11 @@ function createProfile(paths, dshBinary) {
   }
 }
 
+/** Absolute directory of the throwaway profile. */
+function profileDirectory(paths) {
+  return join(paths.home, 'profiles', SCRATCH_NAME)
+}
+
 /**
  * Absolute path of the linked-root symlink `scripts/dev-patch.mjs` registers in
  * a profile: DeepSeek Harness app-boot treats a symlink under the active
@@ -281,7 +403,7 @@ function createProfile(paths, dshBinary) {
  * @returns the symlink path under the throwaway profile's `node_modules`.
  */
 function repoLinkPath(paths) {
-  return join(paths.home, 'profiles', SCRATCH_NAME, 'node_modules', REPO_LINK_NAME)
+  return join(profileDirectory(paths), 'node_modules', REPO_LINK_NAME)
 }
 
 /**
@@ -317,6 +439,97 @@ function installProfile(paths) {
   ], { inherit: true })
 }
 
+/**
+ * Select the official experimental bundle that composes the Git worktree
+ * capability in the throwaway profile.
+ *
+ * The bundle is part of the installed app's official-bundle inventory
+ * (`@deepseek-ai/dsh-official-bundles` lists it as an optional bundle), so
+ * app-boot resolves its layer from the installation at the next start: no
+ * `pnpm install`, no package version edit, and no lockfile write happens here.
+ * This runs after the phase-1 instance was stopped, so the manifest edit cannot
+ * race a live HMR re-read.
+ * @param paths - scratch paths.
+ * @returns the selected bundle name.
+ */
+function enableWorktreeBundle(paths) {
+  const manifestPath = join(profileDirectory(paths), 'package.json')
+  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
+  if (manifest === null || typeof manifest !== 'object' || Array.isArray(manifest)) {
+    throw new Error(`${manifestPath} must hold a JSON object`)
+  }
+  manifest.dsh ??= {}
+  if (manifest.dsh === null || typeof manifest.dsh !== 'object' || Array.isArray(manifest.dsh)) {
+    throw new Error(`${manifestPath} has a non-object dsh field; refusing to rewrite it`)
+  }
+  manifest.dsh.profile ??= {}
+  if (manifest.dsh.profile === null || typeof manifest.dsh.profile !== 'object' || Array.isArray(manifest.dsh.profile)) {
+    throw new Error(`${manifestPath} has a non-object dsh.profile field; refusing to rewrite it`)
+  }
+  const bundles = manifest.dsh.profile.bundles
+  if (bundles !== undefined && !Array.isArray(bundles)) {
+    throw new Error(`${manifestPath} has a non-array dsh.profile.bundles; refusing to guess`)
+  }
+  const nextBundles = Array.isArray(bundles) ? bundles : []
+  if (!nextBundles.includes(WORKTREE_BUNDLE)) nextBundles.push(WORKTREE_BUNDLE)
+  manifest.dsh.profile.bundles = nextBundles
+  writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`)
+  return WORKTREE_BUNDLE
+}
+
+/**
+ * Link `scripts/e2e-probe` as a profile package under
+ * `<profile>/node_modules/@yankeguo/`.
+ *
+ * The symlink points outside the profiles tree, so DeepSeek Harness app-boot
+ * treats it as a linked root: the probe's `@deepseek-ai/*` peer dependencies
+ * resolve to the installation's runtime modules, exactly like the suite's own
+ * links in both loading flows. The `--patch` row then names the package by
+ * specifier, which the Loader resolves from the profile directory.
+ * @param paths - scratch paths.
+ * @returns the probe package's linked path.
+ */
+function linkProbePackage(paths) {
+  const scope = join(profileDirectory(paths), 'node_modules', '@yankeguo')
+  mkdirSync(scope, { recursive: true })
+  const linkPath = join(scope, PROBE_PACKAGE.replace(/^@[^/]+\//u, ''))
+  const target = join(ROOT, 'scripts', 'e2e-probe')
+  if (isSymlink(linkPath)) {
+    const current = resolve(dirname(linkPath), readlinkSync(linkPath))
+    if (current === target) return linkPath
+    unlinkSync(linkPath)
+  } else if (existsSync(linkPath)) {
+    throw new Error(`${linkPath} exists and is not a symlink; remove it and rerun`)
+  }
+  symlinkSync(target, linkPath, 'dir')
+  return linkPath
+}
+
+/**
+ * Write the phase-2 `--patch` overlay that inserts the private probe row.
+ *
+ * Both loading flows apply `--patch` overlays after their bundle and user
+ * layers, so the probe row loads after every devlead row. The patch flow also
+ * passes its existing devlead overlay first; the installed flow passes only
+ * this probe overlay (its suite rows come from the profile's bundle selection).
+ * @param paths - scratch paths.
+ * @returns path of the generated probe patch.
+ */
+function writeProbePatch(paths) {
+  const linkName = PROBE_PACKAGE.replace(/^@[^/]+\//u, '')
+  const text = [
+    '# Generated by scripts/e2e-smoke.mjs (phase 2) — inserts the private E2E probe row.',
+    `# The profile also needs the linked root "node_modules/@yankeguo/${linkName}" -> ${join(ROOT, 'scripts', 'e2e-probe')}.`,
+    '- insert:',
+    '    - id: devlead-e2e-probe',
+    `      name: '${PROBE_PACKAGE}'`,
+    '',
+  ].join('\n')
+  const patchPath = join(paths.config, 'devlead-e2e-probe.patch.yml')
+  writeFileSync(patchPath, text)
+  return patchPath
+}
+
 /** Build the child environment with provider/infrastructure credentials removed. */
 function childEnvironment(paths) {
   const env = { ...process.env, DSH_HOME: paths.home }
@@ -327,15 +540,21 @@ function childEnvironment(paths) {
 }
 
 /**
- * Spawn the isolated Web runtime and resolve its tokenized launch URL.
+ * Spawn the isolated Web runtime with one composition's `--patch` overlays and
+ * resolve its tokenized launch URL.
+ * @param paths - scratch paths.
+ * @param dshBinary - CLI to boot.
+ * @param options - parsed command-line options (flow, port, verbose).
+ * @param phase - phase descriptor: `label` names the log file and `patches` are
+ *   the `--patch` overlays applied after the profile's bundle/user layers.
  * @returns {Promise<{ child: import('node:child_process').ChildProcess, url: string, logPath: string }>}
  *   spawned process, launch URL, and the log file receiving its output.
  */
-async function startWeb(paths, dshBinary, options) {
+async function startWeb(paths, dshBinary, options, phase) {
   const args = ['--profile', SCRATCH_NAME]
-  if (options.flow === 'patch') args.push('--patch', join(paths.config, 'devlead.patch.yml'))
+  for (const patchPath of phase.patches) args.push('--patch', patchPath)
   args.push('--no-open', '--host', '127.0.0.1', '--port', String(options.port))
-  const logPath = join(paths.logs, `web-${options.flow}.log`)
+  const logPath = join(paths.logs, phase.label === '' ? `web-${options.flow}.log` : `web-${options.flow}-${phase.label}.log`)
   const chunks = []
   const child = spawn(dshBinary, args, {
     cwd: paths.workspace,
@@ -539,7 +758,16 @@ async function waitFor(read, timeoutMs, intervalMs = 500) {
   }
 }
 
-/** Run every product check against the booted instance. */
+/**
+ * Run every phase-1 product check against the default-composition instance.
+ *
+ * Stops before the final `/devlead status` + `/devlead off` checks: those run
+ * in phase 1b against the restarted Host, so the durable state (enabled mode,
+ * watch set, notification digest) survives for the rehydration assertions.
+ * @param client - authenticated client of the phase-1 instance.
+ * @param paths - scratch paths.
+ * @returns the check count and the durable identities phase 1b continues with.
+ */
 async function runChecks(client, paths) {
   const checks = new Checks()
   await client.login()
@@ -653,6 +881,103 @@ async function runChecks(client, paths) {
     notification?.error?.slice(0, 120),
   )
 
+  checks.summarize()
+  // The restart phase continues against the same durable Sessions; hand over
+  // every identity its assertions need. The final `/devlead status` and
+  // `/devlead off` checks deliberately run there: they exercise the lead after
+  // the restarted Host has rehydrated it (and after a cold wake resumed it), so
+  // the phase-1 instance is stopped with DevLead mode still enabled.
+  return {
+    count: checks.results.length,
+    leadId,
+    childId,
+    notificationId: notification?.id,
+  }
+}
+
+/**
+ * Run the phase-1b cold-rehydration checks against a restarted Host.
+ *
+ * Phase 1 leaves the lead Session DevLead-enabled with one watched child and
+ * one durable turn-1 notification, then stops the Host. This phase boots the
+ * SAME composition against the SAME scratch home and verifies the D2 behavior
+ * that unit tests can only fake:
+ *
+ *   - the cold lead's projection still folds from the durable log without
+ *     activating the Session (mode, watch set, notification digest);
+ *   - a second prompt resumes the cold child, and its turn-2 `turn/end` reaches
+ *     the lead only when the hub rebuilt its watch index from persisted records
+ *     (rehydrate) and resumed the cold lead to persist + deliver the wake
+ *     (`wakeColdSession` defaults to true);
+ *   - the resumed, now-live lead answers `/devlead status` and the final
+ *     `/devlead off` (moved here because disabling must happen on this
+ *     instance).
+ * @param client - authenticated client of the restarted instance.
+ * @param paths - scratch paths (unused identities aside, kept for symmetry).
+ * @param state - identities handed over by phase 1.
+ * @returns the number of checks performed.
+ */
+async function runRehydrationChecks(client, paths, state) {
+  void paths
+  const checks = new Checks()
+  await client.login()
+  const { leadId, childId, notificationId } = state
+
+  // `session/projections` serves a cold Session's projected values from the
+  // durable log without activating it, so this read is the direct evidence
+  // that the projection fold survived the restart.
+  const coldProjection = (await client.projections(leadId))?.values?.devLead
+  checks.expect(
+    'restarted Host still reports the cold lead as DevLead-enabled',
+    coldProjection?.enabled === true,
+    JSON.stringify(coldProjection?.enabled),
+  )
+  checks.expect(
+    'restarted Host still folds the watched child into the cold lead set',
+    (coldProjection?.sessions ?? []).includes(childId),
+    JSON.stringify(coldProjection?.sessions),
+  )
+  checks.expect(
+    'the cold lead projection retains the first-turn notification after restart',
+    (coldProjection?.notifications ?? []).some(notification => notification.id === notificationId),
+    JSON.stringify((coldProjection?.notifications ?? []).map(notification => notification.id)),
+  )
+
+  const prompt = await client.rpc('session/prompt', {
+    request: {
+      requestId: client.nextId('rehydrate-prompt'),
+      sessionId: childId,
+      mode: 'queue',
+      content: [{ type: 'text', text: 'devlead e2e smoke: second turn after a Host restart, expected to settle as a provider error' }],
+    },
+  })
+  checks.expect('cold child Session accepts a second prompt after restart', prompt?.accepted === true)
+  await client.rpc(
+    'session/wait',
+    { request: { sessionId: childId, timeoutMs: TURN_TIMEOUT_MS } },
+    TURN_TIMEOUT_MS + 15_000,
+  )
+
+  // This notification only exists when (a) the hub rebuilt the lead's watch
+  // index from durable state at startup, and (b) the cold lead was resumed and
+  // the unsaved notification was persisted + delivered. A cold Host that forgot
+  // the watch index, or a `wakeColdSession: false` regression, both time out.
+  const restartNotification = await waitFor(async () => {
+    const projection = (await client.projections(leadId))?.values?.devLead
+    const latest = (projection?.notifications ?? []).at(-1)
+    return latest?.sessionId === childId && latest.id !== notificationId ? latest : undefined
+  }, COLD_NOTIFICATION_TIMEOUT_MS)
+  checks.expect('restarted Host wakes on the watched cold child turn/end', restartNotification !== undefined, restartNotification?.id)
+  checks.expect(
+    'the restart notification is the second-turn provider failure',
+    restartNotification?.turn === 2
+      && restartNotification?.transition === 'error'
+      && restartNotification?.id === `${childId}:2:error`,
+    `${String(restartNotification?.turn)}:${String(restartNotification?.transition)}`,
+  )
+
+  // The cold wake resumed the lead Agent; the remaining phase-1 tail now runs
+  // against the live lead on the restarted Host.
   const statusAfter = await client.command(leadId, '/devlead status')
   checks.expect('/devlead status lists the recent notification', /Recent notifications:/u.test(statusAfter?.result?.text ?? ''))
   checks.expect('/devlead status lists the watched child', (statusAfter?.result?.text ?? '').includes(childId))
@@ -666,36 +991,274 @@ async function runChecks(client, paths) {
   checks.expect('devLeadMode projection reports disabled after /devlead off', mode3?.enabled === false)
 
   checks.summarize()
+  return checks.results.length
 }
 
-/** Run one flow end-to-end and tear the instance down. */
+/**
+ * Capture one Git invocation's output for the phase-2 assertions.
+ * @param cwd - repository directory the command runs against.
+ * @param args - arguments after `git -C <cwd>`.
+ * @returns the completed child process (`status`/`stdout`/`stderr`).
+ */
+function gitResult(cwd, args) {
+  return spawnSync('git', ['-C', cwd, ...args], { encoding: 'utf8' })
+}
+
+/**
+ * Run the phase-2 worktree-isolation checks against the experimental
+ * composition.
+ *
+ * The probe command performs the Host-side actions (`useWorkspace` +
+ * `createSession({ isolation: 'worktree' })`) and reports its result as JSON;
+ * this function only compares that report against independent facts: the
+ * filesystem, Git itself, and the Workspace/Session identity the result
+ * carries. No new Remote API is involved.
+ * @param client - authenticated client of the phase-2 instance.
+ * @param paths - scratch paths; `paths.workspace` is the seeded Git repository.
+ * @returns the number of checks performed.
+ */
+async function runWorktreeChecks(client, paths) {
+  const checks = new Checks()
+  await client.login()
+
+  const lead = await client.createSession(paths)
+  const leadId = lead.sessionId
+  checks.expect('phase 2 session/create returns a lead Session', typeof leadId === 'string' && leadId.length > 0, leadId)
+
+  const commands = await client.rpc('commands/list', { agentId: leadId })
+  const probeCommand = commands.find(command => command.name === PROBE_COMMAND)
+  checks.expect('probe command is registered', probeCommand !== undefined, probeCommand?.description)
+
+  const on = await client.command(leadId, '/devlead on')
+  checks.expect('phase 2 /devlead on settles success', on?.result?.kind === 'success', on?.result?.text?.split('\n')[0])
+
+  const status = await client.command(leadId, '/devlead status')
+  checks.expect(
+    'experimental composition reports worktree isolation available',
+    /Worktree isolation: available/u.test(status?.result?.text ?? ''),
+    status?.result?.text?.split('\n').find(line => line.startsWith('Worktree isolation:'))
+      ?? 'no Worktree isolation line',
+  )
+
+  const probeExecution = await client.command(leadId, `/${PROBE_COMMAND}`)
+  const probeText = probeExecution?.result?.text ?? ''
+  const probeSucceeded = probeExecution?.result?.kind === 'success'
+  checks.expect('probe command settles success', probeSucceeded, probeSucceeded ? undefined : probeText.slice(0, 500))
+  let answer
+  try {
+    answer = JSON.parse(probeText)
+  } catch {
+    answer = undefined
+  }
+  checks.expect(
+    'probe returns the created/child JSON contract',
+    typeof answer === 'object' && answer !== null
+      && typeof answer.created === 'object' && answer.created !== null
+      && typeof answer.child === 'object' && answer.child !== null,
+  )
+
+  const created = answer?.created ?? {}
+  const child = answer?.child ?? {}
+  const isolation = created.isolation ?? {}
+  const workspace = created.workspace ?? {}
+  const isolationPath = typeof isolation.path === 'string' ? isolation.path : ''
+  const repositoryRoot = paths.workspace
+  const worktreeRoot = join(repositoryRoot, WORKTREE_DIRECTORY)
+
+  // The isolation outcome the Host reported.
+  checks.expect('isolation reports the requested worktree mode', isolation.requested === 'worktree', isolation.requested)
+  checks.expect('isolation reports a created worktree', isolation.status === 'worktree', isolation.status)
+  checks.expect('isolation reports a checkout path', isolationPath.length > 0, isolation.path)
+  checks.expect('isolation reports a branch', typeof isolation.branch === 'string' && isolation.branch.length > 0, isolation.branch)
+  checks.expect('isolation reports a base commit', typeof isolation.baseCommit === 'string' && isolation.baseCommit.length > 0, isolation.baseCommit)
+  checks.expect('the checkout directory exists', isolationPath.length > 0 && existsSync(isolationPath), isolationPath)
+  checks.expect(
+    'the checkout is inside the workspace worktree pool',
+    isolationPath.length > 0 && isolationPath.startsWith(`${worktreeRoot}${sep}`),
+    `${isolationPath} inside ${worktreeRoot}`,
+  )
+
+  // The real Git facts an independent reviewer can verify.
+  const head = gitResult(repositoryRoot, ['rev-parse', 'HEAD'])
+  checks.expect(
+    'isolation baseCommit equals the repository HEAD',
+    head.status === 0 && head.stdout.trim() === isolation.baseCommit,
+    head.status === 0 ? `${head.stdout.trim()} vs ${String(isolation.baseCommit)}` : head.stderr.trim(),
+  )
+  const worktreeList = gitResult(repositoryRoot, ['worktree', 'list', '--porcelain'])
+  checks.expect(
+    'git worktree list registers the checkout',
+    worktreeList.status === 0 && worktreeList.stdout.split('\n').includes(`worktree ${isolationPath}`),
+    worktreeList.status === 0 ? isolationPath : worktreeList.stderr.trim(),
+  )
+  const branchRef = gitResult(repositoryRoot, ['show-ref', '--verify', `refs/heads/${String(isolation.branch)}`])
+  checks.expect(
+    'the isolation branch ref exists',
+    branchRef.status === 0,
+    branchRef.status === 0 ? String(isolation.branch) : branchRef.stderr.trim(),
+  )
+
+  // The child Session's header and effective directories are different facts:
+  // isolation moves the effective directory only, never the project header.
+  checks.expect(
+    'probe reports the created child Session id',
+    typeof child.sessionId === 'string' && child.sessionId === created.session?.sessionId,
+    `${String(child.sessionId)} vs ${String(created.session?.sessionId)}`,
+  )
+  checks.expect(
+    "child Session's effective cwd is the worktree checkout",
+    isolationPath.length > 0 && child.effectiveCwd === isolationPath,
+    `${String(child.effectiveCwd)} vs ${isolationPath}`,
+  )
+  checks.expect(
+    "child Session's header cwd stays the workspace",
+    child.headerCwd === repositoryRoot,
+    `${String(child.headerCwd)} vs ${repositoryRoot}`,
+  )
+
+  // Workspace membership the created result must prove.
+  checks.expect(
+    'created Session belongs to a Workspace',
+    typeof created.session?.workspaceId === 'string' && created.session.workspaceId.length > 0,
+    created.session?.workspaceId,
+  )
+  checks.expect(
+    'created Session belongs to the registered Workspace',
+    typeof created.session?.workspaceId === 'string'
+      && created.session.workspaceId === workspace.workspaceId
+      && typeof workspace.workspaceId === 'string' && workspace.workspaceId.length > 0,
+    `${String(created.session?.workspaceId)} vs ${String(workspace.workspaceId)}`,
+  )
+  checks.expect(
+    'the registered Workspace is the scratch workspace',
+    workspace.path === repositoryRoot,
+    `${String(workspace.path)} vs ${repositoryRoot}`,
+  )
+
+  checks.summarize()
+  return checks.results.length
+}
+
+/**
+ * Report one failed phase with the runtime log tail and keep the scratch root
+ * for inspection.
+ * @param flow - loading flow label ("patch"/"installed").
+ * @param phase - human-readable phase label.
+ * @param error - thrown failure.
+ * @param logPath - phase log file, when the runtime was started.
+ * @param paths - scratch paths.
+ */
+function reportPhaseFailure(flow, phase, error, logPath, paths) {
+  console.error(`\nE2E SMOKE FAIL (${flow}, ${phase}): ${messageOf(error)}`)
+  if (logPath !== undefined && existsSync(logPath)) {
+    const tail = readFileSync(logPath, 'utf8').trim().split('\n').slice(-25).join('\n')
+    console.error(`--- tail of ${logPath} ---\n${tail}`)
+  }
+  console.error(`--- scratch root kept at ${paths.base} ---`)
+  process.exitCode = 1
+}
+
+/** Run one flow end-to-end (all phases) and tear every booted instance down. */
 async function runFlow(options) {
   const dshBinary = resolveDshBinary()
   const dshVersion = requireDshVersion(dshBinary)
   buildPackages(options)
   const paths = prepareScratch(options)
+  initScratchRepository(paths)
   console.log(`e2e-smoke: flow ${options.flow}, DeepSeek Harness ${dshVersion}`)
   console.log(`e2e-smoke: scratch root ${paths.base}`)
 
-  createProfile(paths, dshBinary)
-  if (options.flow === 'patch') writePatchOverlay(paths)
-  else installProfile(paths)
-
-  const { child, url, logPath } = await startWeb(paths, dshBinary, options)
-  console.log(`e2e-smoke: web ${url.replace(/\?token=.*$/u, '?token=…')}`)
   try {
-    await runChecks(new WebClient(url), paths)
-    console.log(`\nE2E SMOKE PASS (${options.flow}); logs: ${paths.logs}`)
+    createProfile(paths, dshBinary)
+    /** Phase-1 `--patch` overlay of the patch flow; later phases keep it. */
+    let devleadOverlay
+    if (options.flow === 'patch') devleadOverlay = writePatchOverlay(paths)
+    else installProfile(paths)
+    const phaseOnePatches = devleadOverlay === undefined ? [] : [devleadOverlay]
+
+    // ------------------------------------------------------------------------
+    // Phase 1: the shipped default composition (no experimental bundle).
+    // ------------------------------------------------------------------------
+    console.log('\n=== phase 1: default Web composition ===')
+    const phaseOne = await startWeb(paths, dshBinary, options, { label: '', patches: phaseOnePatches })
+    console.log(`e2e-smoke: phase 1 web ${redactUrl(phaseOne.url)}`)
+    let phaseOneState
+    try {
+      phaseOneState = await runChecks(new WebClient(phaseOne.url), paths)
+    } catch (error) {
+      reportPhaseFailure(options.flow, 'phase 1', error, phaseOne.logPath, paths)
+      await stopInstance(phaseOne.child)
+      return
+    }
+    await stopInstance(phaseOne.child)
+    console.log(`e2e-smoke: phase 1 passed (${String(phaseOneState.count)} checks; mode/watch/digest left durable)`)
+
+    // ------------------------------------------------------------------------
+    // Phase 1b: cold lead rehydration on a restarted Host, same scratch home.
+    // ------------------------------------------------------------------------
+    console.log('\n=== phase 1b: cold lead rehydration after restart ===')
+    const phaseOneB = await startWeb(paths, dshBinary, options, { label: 'phase1b', patches: phaseOnePatches })
+    console.log(`e2e-smoke: phase 1b web ${redactUrl(phaseOneB.url)}`)
+    let phaseOneBCount = 0
+    try {
+      phaseOneBCount = await runRehydrationChecks(new WebClient(phaseOneB.url), paths, phaseOneState)
+    } catch (error) {
+      reportPhaseFailure(options.flow, 'phase 1b', error, phaseOneB.logPath, paths)
+      await stopInstance(phaseOneB.child)
+      return
+    }
+    await stopInstance(phaseOneB.child)
+    console.log(`e2e-smoke: phase 1b passed (${String(phaseOneBCount)} checks)`)
+
+    if (!options.worktree) {
+      const phaseOneTotal = phaseOneState.count + phaseOneBCount
+      console.log(`\nE2E SMOKE PASS (${options.flow})`)
+      console.log(`  phase 1 (default profile): ${String(phaseOneState.count)}/${String(phaseOneState.count)} checks`)
+      console.log(`  phase 1b (cold lead rehydration): ${String(phaseOneBCount)}/${String(phaseOneBCount)} checks`)
+      console.log(`  total: ${String(phaseOneTotal)}/${String(phaseOneTotal)} checks; phase 2 skipped (--no-worktree)`)
+      console.log(`logs: ${paths.logs}`)
+      return
+    }
+
+    // ------------------------------------------------------------------------
+    // Phase 2: same scratch root/profile, experimental worktree composition.
+    // ------------------------------------------------------------------------
+    console.log('\n=== phase 2: experimental worktree composition ===')
+    const bundle = enableWorktreeBundle(paths)
+    const probeLink = linkProbePackage(paths)
+    const probePatch = writeProbePatch(paths)
+    console.log(`e2e-smoke: selected ${bundle}; linked probe ${probeLink}`)
+    // The patch flow keeps its devlead overlay and adds the probe overlay after
+    // it; the installed flow's devlead rows come from the profile bundle list,
+    // so the probe overlay is its only `--patch`.
+    const patches = devleadOverlay === undefined ? [probePatch] : [devleadOverlay, probePatch]
+    let phaseTwo
+    try {
+      phaseTwo = await startWeb(paths, dshBinary, options, { label: 'worktree', patches })
+    } catch (error) {
+      reportPhaseFailure(options.flow, 'phase 2 boot', error, undefined, paths)
+      return
+    }
+    console.log(`e2e-smoke: phase 2 web ${redactUrl(phaseTwo.url)}`)
+    let phaseTwoCount = 0
+    try {
+      phaseTwoCount = await runWorktreeChecks(new WebClient(phaseTwo.url), paths)
+    } catch (error) {
+      reportPhaseFailure(options.flow, 'phase 2', error, phaseTwo.logPath, paths)
+    } finally {
+      await stopInstance(phaseTwo.child)
+    }
+    if (process.exitCode === 1) return
+    const total = phaseOneState.count + phaseOneBCount + phaseTwoCount
+    console.log(`\nE2E SMOKE PASS (${options.flow})`)
+    console.log(`  phase 1 (default profile): ${String(phaseOneState.count)}/${String(phaseOneState.count)} checks`)
+    console.log(`  phase 1b (cold lead rehydration): ${String(phaseOneBCount)}/${String(phaseOneBCount)} checks`)
+    console.log(`  phase 2 (experimental worktree composition): ${String(phaseTwoCount)}/${String(phaseTwoCount)} checks`)
+    console.log(`  total: ${String(total)}/${String(total)} checks; logs: ${paths.logs}`)
   } catch (error) {
     console.error(`\nE2E SMOKE FAIL (${options.flow}): ${messageOf(error)}`)
-    if (existsSync(logPath)) {
-      const tail = readFileSync(logPath, 'utf8').trim().split('\n').slice(-25).join('\n')
-      console.error(`--- tail of ${logPath} ---\n${tail}`)
-    }
     console.error(`--- scratch root kept at ${paths.base} ---`)
     process.exitCode = 1
-  } finally {
-    await stopInstance(child)
   }
 }
 

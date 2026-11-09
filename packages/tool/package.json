@@ -1,6 +1,6 @@
 {
   "name": "@yankeguo/dsh-tool-devlead",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Model-facing DevLead tools: register and list DSH Workspaces, create and steer ordinary Sessions, read session status, watch state changes, and read the lead's notification feed.",
   "license": "MIT",
   "type": "module",

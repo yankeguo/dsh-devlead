@@ -32,6 +32,7 @@ import { applyDevLeadProjection, emptyDevLeadProjectionState } from '../src/fold
 import DevLeadService from '../src/index.ts'
 import type { WorktreeCheckout } from '../src/isolation.ts'
 import { DevLeadNotificationHub } from '../src/notification.ts'
+import type { SessionProjectionCacheLike } from '../src/projection-cache.ts'
 
 /** Deterministic instant used for every seeded record and fake title. */
 export const T0 = 1_700_000_000_000
@@ -39,6 +40,30 @@ export const T0 = 1_700_000_000_000
 /** Flush pending microtasks without touching the clock. */
 export async function flushMicrotasks(rounds = 64): Promise<void> {
   for (let index = 0; index < rounds; index += 1) await Promise.resolve()
+}
+
+/**
+ * Let a few macrotask boundaries pass and settle the microtasks they queue. The
+ * service registers its readiness rehydration through an optional-service fiber
+ * and then defers the scan by one task, so a single timer tick is not enough for
+ * the whole chain.
+ */
+export async function nextTask(): Promise<void> {
+  for (let index = 0; index < 3; index += 1) {
+    await new Promise<void>((resolve) => { setTimeout(resolve, 0) })
+    await flushMicrotasks(256)
+  }
+  await flushMicrotasks(1_024)
+}
+
+/**
+ * Advance real time (the service specs use real timers), then settle the
+ * microtasks the elapsed callbacks queued.
+ * @param ms - milliseconds to wait.
+ */
+export async function sleep(ms: number): Promise<void> {
+  await new Promise<void>((resolve) => { setTimeout(resolve, ms) })
+  await flushMicrotasks(512)
 }
 
 /** Extract the visible text of one admitted message. */
@@ -116,6 +141,16 @@ export class FakeAgent {
 
   /** Drop every pending inbox message, emulating a drain by the driven loop. */
   drainInbox(): void {
+    this.inbox.nextTurn.splice(0)
+    this.inbox.nextStep.splice(0)
+  }
+
+  /**
+   * Drop every pending inbox message without a loop consuming it, emulating a
+   * cancelled/withdrawn notice. Unlike {@link drainInbox} this models the
+   * delivery-retry boundary: the notice disappears with no turn executed.
+   */
+  cancelInbox(): void {
     this.inbox.nextTurn.splice(0)
     this.inbox.nextStep.splice(0)
   }
@@ -369,10 +404,16 @@ export type FakeResolveHandler = (
   sessionId: SessionId,
 ) => { agent: Agent } | { error: { message: string; code: string } }
 
+/** One persisted Session row as {@link FakeSessionQuery} serves it. */
+interface FakePersistedSession {
+  readonly header: SessionHeader
+  readonly events: readonly SessionEvent[]
+  readonly title?: string
+}
+
 /** Fake `ctx.sessionQuery`: scripted cold logs and folded titles. */
 export class FakeSessionQuery {
-  private readonly logs = new Map<string, readonly SessionEvent[]>()
-  private readonly titles = new Map<string, string>()
+  private readonly rows = new Map<string, FakePersistedSession>()
   /** When set, every corpus listing call rejects. */
   listError: Error | undefined
   /** When set, every log/title read rejects. */
@@ -385,25 +426,46 @@ export class FakeSessionQuery {
   readTitleSnapshotsCalls = 0
   /** Number of single title reads requested. */
   readTitleCalls = 0
+  /**
+   * Number of upcoming corpus listings that report an empty result (one-shot),
+   * emulating a persistence backend whose index is still warming up.
+   */
+  emptyListings = 0
 
   /**
-   * Seed one persisted Session's log and folded title.
+   * Seed one persisted Session's log and folded title with a synthetic header
+   * carrying only its identity. Use {@link seedRecord} when the header facts
+   * (origin, cwd, title) matter to the code under test.
    * @param sessionId - persisted Session identity.
    * @param events - complete raw event log.
    * @param title - folded title, when one exists.
    * @returns this fake, for chaining.
    */
   seed(sessionId: string, events: readonly SessionEvent[], title?: string): this {
-    this.logs.set(sessionId, [...events])
-    if (title !== undefined) this.titles.set(sessionId, title)
+    return this.seedRecord({ id: SessionId(sessionId) } as unknown as SessionHeader, events, title)
+  }
+
+  /**
+   * Seed one persisted Session row with a real header.
+   * @param header - header captured from a real Session log.
+   * @param events - complete raw event log.
+   * @param title - folded title, when one exists.
+   * @returns this fake, for chaining.
+   */
+  seedRecord(header: SessionHeader, events: readonly SessionEvent[], title?: string): this {
+    this.rows.set(String(header.id), title === undefined ? { header, events: [...events] } : { header, events: [...events], title })
     return this
   }
 
   /** Every persisted Session record, newest-listed first. */
-  async listSessions(): Promise<Array<{ header: SessionHeader }>> {
+  async listSessions(): Promise<Array<{ header: SessionHeader; live: boolean; persisted: boolean }>> {
     this.listSessionsCalls += 1
     if (this.listError !== undefined) throw this.listError
-    return [...this.logs.keys()].map(id => ({ header: { id: SessionId(id) } as unknown as SessionHeader }))
+    if (this.emptyListings > 0) {
+      this.emptyListings -= 1
+      return []
+    }
+    return [...this.rows.values()].map(row => ({ header: row.header, live: false, persisted: true }))
   }
 
   /**
@@ -411,12 +473,12 @@ export class FakeSessionQuery {
    * @param sessionId - persisted Session identity.
    * @returns the complete raw event log.
    */
-  async readSession(sessionId: SessionId): Promise<{ events: readonly SessionEvent[] }> {
+  async readSession(sessionId: SessionId): Promise<{ session: SessionHeader; inheritedEventCount: number; events: readonly SessionEvent[] }> {
     this.readSessionCalls += 1
     if (this.readError !== undefined) throw this.readError
-    const events = this.logs.get(String(sessionId))
-    if (events === undefined) throw new Error(`persisted Session ${String(sessionId)} does not exist`)
-    return { events }
+    const row = this.rows.get(String(sessionId))
+    if (row === undefined) throw new Error(`persisted Session ${String(sessionId)} does not exist`)
+    return { session: row.header, inheritedEventCount: 0, events: row.events }
   }
 
   /**
@@ -427,11 +489,11 @@ export class FakeSessionQuery {
   async readTitleSnapshot(sessionId: SessionId): Promise<{ session: SessionHeader; title?: SessionTitleSnapshot }> {
     this.readTitleCalls += 1
     if (this.readError !== undefined) throw this.readError
-    const events = this.logs.get(String(sessionId))
-    if (events === undefined) throw new Error(`persisted Session ${String(sessionId)} does not exist`)
+    const row = this.rows.get(String(sessionId))
+    if (row === undefined) throw new Error(`persisted Session ${String(sessionId)} does not exist`)
     const title = this.snapshotOf(String(sessionId))
     return {
-      session: { id: sessionId } as unknown as SessionHeader,
+      session: row.header,
       ...(title === undefined ? {} : { title }),
     }
   }
@@ -459,10 +521,11 @@ export class FakeSessionQuery {
     if (this.readError !== undefined) throw this.readError
     return sessionIds.map((sessionId) => {
       const title = this.snapshotOf(String(sessionId))
+      const header = this.rows.get(String(sessionId))?.header ?? ({ id: sessionId } as unknown as SessionHeader)
       return {
         status: 'fulfilled' as const,
         value: {
-          session: { id: sessionId } as unknown as SessionHeader,
+          session: header,
           ...(title === undefined ? {} : { title }),
         },
       }
@@ -475,7 +538,7 @@ export class FakeSessionQuery {
    * @returns the snapshot, or undefined.
    */
   private snapshotOf(sessionId: string): SessionTitleSnapshot | undefined {
-    const title = this.titles.get(sessionId)
+    const title = this.rows.get(sessionId)?.title
     if (title === undefined) return undefined
     return { title, messageSeqs: [], source: { kind: 'user' }, eventSeq: 0 as never, updatedAt: T0 }
   }
@@ -483,6 +546,106 @@ export class FakeSessionQuery {
   /** Session-query-shaped value for `ctx.provide`. */
   asService(): SessionQueryEngine {
     return this as unknown as SessionQueryEngine
+  }
+}
+
+/** Scripted cached projection row of one Session. */
+export interface FakeCachedProjectionRow {
+  /** Projection values map; the cache stores one entry per registered unit. */
+  readonly values?: Readonly<Record<string, unknown>>
+}
+
+/**
+ * Fake `ctx.sessionProjectionCache`: scripted `cachedSnapshot(header)` rows keyed
+ * by Session identity, exactly the structural slice cold lead rehydration reads.
+ */
+export class FakeProjectionCache {
+  private readonly rows = new Map<string, FakeCachedProjectionRow>()
+  /** Number of `cachedSnapshot` lookups. */
+  lookupCalls = 0
+  /** When set, every lookup throws this failure. */
+  lookupError: Error | undefined
+
+  /**
+   * Seed one cached row.
+   * @param sessionId - persisted Session identity.
+   * @param row - cached row value.
+   * @returns this fake, for chaining.
+   */
+  set(sessionId: string, row: FakeCachedProjectionRow): this {
+    this.rows.set(sessionId, row)
+    return this
+  }
+
+  /**
+   * Seed one cached `devLead` digest value.
+   * @param sessionId - persisted Session identity.
+   * @param state - enabled flag and watch set the cached digest reports.
+   * @returns this fake, for chaining.
+   */
+  setDevLead(sessionId: string, state: { readonly enabled: boolean; readonly sessions?: readonly string[] }): this {
+    const values = {
+      devLead: {
+        enabled: state.enabled,
+        sessions: state.sessions ?? [],
+        notifications: [],
+      },
+    }
+    return this.set(sessionId, { values })
+  }
+
+  /**
+   * Drop one cached row.
+   * @param sessionId - persisted Session identity.
+   * @returns whether a row was removed.
+   */
+  delete(sessionId: string): boolean {
+    return this.rows.delete(sessionId)
+  }
+
+  /**
+   * Serve one cached row by Session identity.
+   * @param header - persisted Session header.
+   * @returns the cached row, or undefined when absent.
+   */
+  cachedSnapshot(header: unknown): FakeCachedProjectionRow | undefined {
+    this.lookupCalls += 1
+    if (this.lookupError !== undefined) throw this.lookupError
+    const id = (header as { id?: unknown } | undefined)?.id
+    return typeof id === 'string' ? this.rows.get(id) : undefined
+  }
+
+  /** Projection-cache-shaped value for `ctx.provide`. */
+  asService(): SessionProjectionCacheLike {
+    return this as unknown as SessionProjectionCacheLike
+  }
+}
+
+/**
+ * Fake optional `ctx.sessionPersistence`: scripted complete listing of stored
+ * Session ids, used as the corpus-readiness predicate.
+ */
+export class FakeSessionPersistence {
+  /** Session ids the fake reports as stored. */
+  ids: string[] = []
+  /** Number of `list` calls requested. */
+  listCalls = 0
+  /** When set, every `list` call rejects (composed but not usable yet). */
+  listError: Error | undefined
+
+  /**
+   * List every stored Session snapshot.
+   * @returns one snapshot per stored id.
+   */
+  async list(): Promise<Array<{ header: { id: string } }>> {
+    this.listCalls += 1
+    if (this.listError !== undefined) throw this.listError
+    return this.ids.map(id => ({ header: { id } }))
+  }
+
+  /** Persistence-service-shaped value for `ctx.provide`. */
+  asService(): object {
+    return this as unknown as object
   }
 }
 
@@ -633,6 +796,96 @@ export function appendAssistantMessage(session: Session, turn: number, text: str
   }, { surfaceOp: 'append' })
 }
 
+/** One persisted Session log built through a throwaway real Session store. */
+export interface PersistedLog {
+  /** Real Session header captured from the throwaway store. */
+  readonly header: SessionHeader
+  /** Complete raw committed events, in log order. */
+  readonly events: readonly SessionEvent[]
+}
+
+/**
+ * Build one real persisted Session log through a throwaway Context + Session
+ * store, so a fake query engine serves the exact events and header a real
+ * persistence backend would return after a restart.
+ * @param sessionId - persisted Session identity.
+ * @param build - seeds the throwaway Session log.
+ * @param options - optional recorded working directory.
+ * @returns the captured header and complete event log.
+ */
+export async function buildPersistedLog(
+  sessionId: string,
+  build: (session: Session) => void,
+  options: { readonly cwd?: string } = {},
+): Promise<PersistedLog> {
+  const ctx = new Context()
+  await ctx.plugin(SessionStore)
+  try {
+    const session = options.cwd === undefined
+      ? ctx.sessions.create(SessionId(sessionId))
+      : ctx.sessions.create(SessionId(sessionId), { meta: { cwd: options.cwd } })
+    build(session)
+    return { header: session.header, events: session.snapshotEvents() }
+  } finally {
+    await ctx.fiber.dispose()
+  }
+}
+
+/** One persisted lead Session to seed into a {@link FakeSessionQuery}. */
+export interface PersistedLeadSeed {
+  /** Lead Session identity. */
+  readonly sessionId: string
+  /** Seed a durable enabled mode record; defaults to true. */
+  readonly enabled?: boolean
+  /** Seed this complete durable watch set, when given. */
+  readonly watched?: readonly string[]
+  /** Recorded working directory. */
+  readonly cwd?: string
+  /** Extra seeding on the throwaway Session before its log is captured. */
+  readonly seed?: (session: Session) => void
+}
+
+/**
+ * Build one persisted cold lead Session and seed it into a fake query engine.
+ * @param query - fake query engine receiving the row.
+ * @param seed - persisted lead description.
+ * @returns the captured real header.
+ */
+export async function seedPersistedLead(query: FakeSessionQuery, seed: PersistedLeadSeed): Promise<SessionHeader> {
+  const log = await buildPersistedLog(seed.sessionId, (session) => {
+    if (seed.enabled !== false) appendPluginRecord(session, DEVLEAD_MODE_RECORD_TYPE, modeRecord(true, T0))
+    if (seed.watched !== undefined) {
+      appendPluginRecord(session, DEVLEAD_WATCH_RECORD_TYPE, watchRecord(seed.watched, T0))
+    }
+    seed.seed?.(session)
+  }, seed.cwd === undefined ? {} : { cwd: seed.cwd })
+  query.seedRecord(log.header, log.events)
+  return log.header
+}
+
+/**
+ * Materialize one cold lead Session as a live Session + fake Agent, the way a
+ * real resume or a human opening the Session leaves it: the durable records are
+ * replayed into the newly attached log and the Agent is announced live.
+ * @param ctx - booted harness context providing the real Session store.
+ * @param agents - fake Agent registry of the same harness.
+ * @param seed - durable lead description replayed into the attached log.
+ * @returns the live fake Agent.
+ */
+export function attachPersistedLead(
+  ctx: Context,
+  agents: FakeAgentRegistry,
+  seed: PersistedLeadSeed & { readonly watched: readonly string[] },
+): FakeAgent {
+  const session = ctx.sessions.create(SessionId(seed.sessionId))
+  if (seed.enabled !== false) appendPluginRecord(session, DEVLEAD_MODE_RECORD_TYPE, modeRecord(true, T0))
+  appendPluginRecord(session, DEVLEAD_WATCH_RECORD_TYPE, watchRecord(seed.watched, T0))
+  seed.seed?.(session)
+  const agent = new FakeAgent(session)
+  agents.add(agent)
+  return agent
+}
+
 /** Options accepted by {@link bootService}. */
 export interface BootServiceOptions {
   /** Lead Session identity; minted when omitted. */
@@ -647,6 +900,8 @@ export interface BootServiceOptions {
   readonly watched?: readonly string[]
   /** Extra lead-log seeding before the service loads. */
   readonly seedLead?: (session: Session) => void
+  /** Extra seeding on the created `sessionIds` Sessions before the service loads. */
+  readonly seedSessions?: (sessions: Readonly<Record<string, Session>>) => void
   /** Whether the lead Agent is registered live before the service loads. */
   readonly registerLeadAgent?: boolean
   /** Fake Workspace registry to provide. */
@@ -655,6 +910,16 @@ export interface BootServiceOptions {
   readonly sessionController?: FakeSessionController
   /** Fake Session query engine to provide (cold logs and titles). */
   readonly sessionQuery?: FakeSessionQuery
+  /** Fake Session projection cache to provide (cold lead pre-filter). */
+  readonly projectionCache?: FakeProjectionCache
+  /**
+   * Optional Session persistence service to provide before the service loads,
+   * usually a {@link FakeSessionPersistence} (scripted stored ids) or `{}` to
+   * model a composed-but-unverifiable backend. Cold rehydration needs both
+   * `sessionQuery` and this service, and compares the query corpus against its
+   * stored listing as a boot-time readiness barrier.
+   */
+  readonly sessionPersistence?: object
   /** Fake optional Git worktree capability to provide; omitted models a Host without it. */
   readonly worktrees?: FakeWorktreesCapability
   /** Whether a durability participant is registered; false models an unpersisted Host. */
@@ -679,7 +944,10 @@ export interface ServiceHarness {
   readonly workspaceRegistry: FakeWorkspaceRegistry | undefined
   readonly sessionController: FakeSessionController | undefined
   readonly sessionQuery: FakeSessionQuery | undefined
+  readonly projectionCache: FakeProjectionCache | undefined
   readonly worktrees: FakeWorktreesCapability | undefined
+  /** Session ids whose `session/flush` checkpoint ran, in call order. */
+  readonly flushCalls: string[]
   /** Dispose this harness's context and stop tracking it. */
   dispose(): Promise<void>
 }
@@ -698,8 +966,10 @@ export async function bootService(options: BootServiceOptions = {}): Promise<Ser
   // A no-op durability participant, so `sessions.flush()` reports true the way
   // a profile with a persistence plugin does and production code paths avoid
   // their "not flushed" warning branch.
+  const flushCalls: string[] = []
   if (options.persistence !== false) {
-    ctx.on('session/flush', () => {
+    ctx.on('session/flush', (session) => {
+      flushCalls.push(String(session.id))
       if (options.flushFailure !== undefined) throw options.flushFailure
     })
   }
@@ -709,6 +979,7 @@ export async function bootService(options: BootServiceOptions = {}): Promise<Ser
     : ctx.sessions.create(SessionId(leadId), { meta: { cwd: options.leadCwd } })
   const sessions: Record<string, Session> = { [leadId]: leadSession }
   for (const id of options.sessionIds ?? []) sessions[id] = ctx.sessions.create(SessionId(id))
+  options.seedSessions?.(sessions)
   if (options.enabled !== undefined) appendPluginRecord(leadSession, DEVLEAD_MODE_RECORD_TYPE, modeRecord(options.enabled, T0))
   if (options.watched !== undefined) appendPluginRecord(leadSession, DEVLEAD_WATCH_RECORD_TYPE, watchRecord(options.watched, T0))
   options.seedLead?.(leadSession)
@@ -722,6 +993,8 @@ export async function bootService(options: BootServiceOptions = {}): Promise<Ser
   if (options.workspaceRegistry !== undefined) ctx.provide('workspaceRegistry', options.workspaceRegistry.asRegistry())
   if (options.sessionController !== undefined) ctx.provide('sessionController', options.sessionController.asService())
   if (options.sessionQuery !== undefined) ctx.provide('sessionQuery', options.sessionQuery.asService())
+  if (options.projectionCache !== undefined) ctx.provide('sessionProjectionCache', options.projectionCache.asService())
+  if (options.sessionPersistence !== undefined) ctx.provide('sessionPersistence', options.sessionPersistence)
   // Provided only when asked for: every other spec deliberately models a Host
   // that composes no experimental Git worktree service.
   if (options.worktrees !== undefined) ctx.provide('worktrees', options.worktrees)
@@ -738,7 +1011,9 @@ export async function bootService(options: BootServiceOptions = {}): Promise<Ser
     workspaceRegistry: options.workspaceRegistry,
     sessionController: options.sessionController,
     sessionQuery: options.sessionQuery,
+    projectionCache: options.projectionCache,
     worktrees: options.worktrees,
+    flushCalls,
     dispose: () => disposeContext(ctx),
   }
 }
@@ -751,6 +1026,11 @@ export interface HubLeadSeed {
   readonly watched?: readonly string[]
   /** Whether the lead Agent is registered live; defaults to true. */
   readonly register?: boolean
+  /**
+   * Append one corrupt owned record after the seeded mode/watch records, so the
+   * lead's exact fold is frozen from the start. Defaults to false.
+   */
+  readonly corrupt?: boolean
 }
 
 /** Options accepted by {@link bootHub}. */
@@ -790,6 +1070,8 @@ export interface HubHarness {
   readonly leads: readonly HubLead[]
   readonly sessionTitle: FakeSessionTitle
   readonly sessionController: FakeSessionController | undefined
+  /** Session ids whose `session/flush` checkpoint ran, in call order. */
+  readonly flushCalls: string[]
   /** Dispose this harness's context and stop tracking it. */
   dispose(): Promise<void>
 }
@@ -805,8 +1087,10 @@ export async function bootHub(options: BootHubOptions = {}): Promise<HubHarness>
   const bootId = bootCounter
   const ctx = new Context()
   await ctx.plugin(SessionStore)
+  const flushCalls: string[] = []
   if (options.persistence !== false) {
-    ctx.on('session/flush', () => {
+    ctx.on('session/flush', (session) => {
+      flushCalls.push(String(session.id))
       if (options.flushFailure !== undefined) throw options.flushFailure
     })
   }
@@ -820,6 +1104,9 @@ export async function bootHub(options: BootHubOptions = {}): Promise<HubHarness>
     if (seed.enabled !== false) appendPluginRecord(session, DEVLEAD_MODE_RECORD_TYPE, modeRecord(true, T0))
     const watchedIds = seed.watched ?? [String(watched.id)]
     appendPluginRecord(session, DEVLEAD_WATCH_RECORD_TYPE, watchRecord(watchedIds, T0))
+    if (seed.corrupt === true) {
+      appendPluginRecord(session, DEVLEAD_MODE_RECORD_TYPE, { kind: 'devlead/mode', version: 1, enabled: 'yes', at: T0 } as never)
+    }
     const agent = new FakeAgent(session)
     if (seed.register !== false) agents.add(agent)
     leads.push({ session, agent })
@@ -836,7 +1123,7 @@ export async function bootHub(options: BootHubOptions = {}): Promise<HubHarness>
     apply(inner: Context): void {
       hub = new DevLeadNotificationHub(inner, projectionStateOf, {
         batchMs: options.batchMs ?? 400,
-        wakeColdSession: options.wakeColdSession ?? false,
+        wakeColdSession: options.wakeColdSession ?? true,
       })
       if (options.start !== false) hub.start()
     },
@@ -851,6 +1138,7 @@ export async function bootHub(options: BootHubOptions = {}): Promise<HubHarness>
     leads,
     sessionTitle,
     sessionController: options.sessionController,
+    flushCalls,
     dispose: () => disposeContext(ctx),
   }
 }

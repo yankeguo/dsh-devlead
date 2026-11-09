@@ -19,12 +19,15 @@ kind: "package-bundle"
   开关是**人类专属操作**（`/devlead on|off` 或界面开关），模型无法自行打开。
 - **产出物是标准 DSH 实体**：Workspace 真实注册进 `ctx.workspaceRegistry`，子会话是真实普通
   Session（侧边栏可见、可被人类打开接管），**不是 subagent**。
-- **监督与唤醒**：被 watch 的会话每个 `turn/end` 都写入 DevLead 会话的持久通知记录（lead 仍被
-  索引时），Agent 存活时经合并窗口唤醒它决定下一步。
+- **监督与唤醒**：被 watch 的会话每个 `turn/end` 都写入 DevLead 会话的持久通知记录；Agent
+  存活时经合并窗口唤醒它决定下一步。watch 索引在 Host 重启 / 插件重载后从持久记录重建
+  （cold lead rehydration），已 dispose 的 lead 继续观察；冷 lead 默认 resume 投递
+  （`wakeColdSession: true`）。
 - **事件溯源**：模式 / watch 集合 / 通知以可忽略的 `plugin:devlead/*` 记录持久化，可跨重启 /
   恢复 / fork；`devLead` Session projection 把状态同步到浏览器，summary 级 `devLeadMode`
   随每个会话列表行下发，供侧边栏标记使用。
-- **人类命令**：`/devlead`、`/devlead on|off`、`/devlead watch|unwatch <session>`。
+- **人类命令**：`/devlead`、`/devlead on|off`、`/devlead reset`（损坏状态恢复）、
+  `/devlead watch|unwatch <session>`。
 - **两态 UI**：未开启时 composer 工具条里只有一个 ghost 图标（点击 `/devlead on`）；开启后
   composer 上方出现 DevLeadBar，显示开关、监督会话数 / 运行中数与最近通知；侧边栏会话行
   同时带 DevLead 标记。
@@ -55,7 +58,7 @@ dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 勾选一次即可），刷新 Web 页面。升级 / 卸载：
 
 ```sh
-dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.1.1   # 升级到指定版本
+'dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.2.0   # 升级到指定版本
 dsh plugin --profile desktop remove @yankeguo/dsh-devlead-bundle     # 卸载
 ```
 
@@ -102,6 +105,10 @@ profile，且 `desktop` profile 已启用本 bundle（重复插入相同 row id 
 本地一键校验：`pnpm verify`（typecheck + 单元测试 + 构建）；`pnpm e2e` 默认走
 `--flow patch`，`pnpm e2e --flow installed` 走 `install-profile`，两者都用隔离的
 `os.tmpdir()` DSH_HOME 验收本地加载路径（需要本机已安装 DSH，因此不在 CI 中运行）。
+0.2.0 起 E2E 分多阶段：阶段 1 保持默认组合断言（含 `Worktree isolation: unavailable`），
+阶段 1b 用同一加载流/scratch home 重启验证冷 lead 索引重建，阶段 2 在同一 scratch profile 里
+追加官方实验 forge bundle 并验证 worktree happy path；两条加载流各 **61/61**（阶段 1 27 +
+阶段 1b 12 + 阶段 2 22），`--no-worktree` 跳过阶段 2（**39/39**，阶段 1 + 1b）。
 
 ### 前置条件
 
@@ -113,7 +120,8 @@ profile，且 `desktop` profile 已启用本 bundle（重复插入相同 row id 
 ```
 /devlead                        # 状态：开关、监督会话、最近通知、帮助
 /devlead on                     # 打开当前会话的 DevLead 模式（人类专属）
-/devlead off                    # 关闭
+/devlead off                    # 关闭（fold 冻结时同时完成隐式 reset 恢复）
+/devlead reset                  # 人类专属恢复：丢弃本会话的 DevLead 状态（模式/watch/digest）
 /devlead watch <session>        # 监督某个会话（完整 id 或唯一前缀）
 /devlead unwatch <session>      # 取消监督
 ```
@@ -143,7 +151,7 @@ bundle 的 patch 行没有显式写配置，核心服务使用 DESIGN 默认值�
     notificationBatchMs: 400     # 通知合并窗口（0–2147483647 毫秒）
     maxWatchedSessions: 64       # 每个 lead 最多监督的会话数
     maxListedSessions: 200       # 会话列表最大行数
-    wakeColdSession: false       # 为已入队 digest resume 冷 DevLead 会话
+    wakeColdSession: true        # resume 冷 DevLead 会话以投递其排队的通知（默认）
     defaultAgentPreset: ''       # 创建会话的默认 Agent preset
 ```
 
@@ -151,9 +159,14 @@ bundle 的 patch 行没有显式写配置，核心服务使用 DESIGN 默认值�
 
 - 模式是**每个 Session 的持久状态**：打开后 DSH 重启 / 会话恢复仍然打开，需要人类关闭。
 - 通知保留最近 64 条（projection 常量截断）；更早的记录仍在 Session 日志里。
-- 冷 DevLead 会话默认只留持久通知记录，不自动 resume（`wakeColdSession: false`）；该开关只
-  投递已入队 digest，lead dispose / Host 重启期间结束的 turn 不会被记录，重新打开会话后重建
-  watch 索引。
+- watch 索引在 Host 重启 / 插件重载后从持久记录重建（projection cache 预筛 + 精确折叠，
+  无法分类的候选全量读取上限 64）；`agent/disposed` 不再丢索引，已 dispose 的 lead 继续观察。
+- 冷 lead 有排队通知时默认 resume 投递（`wakeColdSession: true`）；设为 `false` 只把队列留在
+  内存，等人类打开 lead Session 时补写并投递。插件卸载期间结束的 turn 无法补发。
+- 损坏的 `plugin:devlead/*` 记录会让 fold 冻结（`DEVLEAD_PROJECTION_INVALID`），人类可用
+  `/devlead reset`（或冻结时 `/devlead off`）追加 reset 记录恢复；旧版本无法执行该恢复。
+- Workspace 注册（`devlead_use_workspace` / core `useWorkspace`）默认**不创建**缺失目录：
+  `create` 默认 `false`，只有人类明确要求建目录时才传 `true`。
 - watch 上限默认 64；命令的候选列表默认截断在 200 行，列表外的会话会回退到 core 的
   `getSession` 解析；前缀引用在变更前还会用 core 的穷尽 resolver 确认唯一性。
 - 不做 git 克隆 / 通用 worktree 管理；不跨进程编排；不替人类做权限决策。实验性 DSH worktree
@@ -166,7 +179,7 @@ bundle 的 patch 行没有显式写配置，核心服务使用 DESIGN 默认值�
 - 仓库 [README.zh.md](https://github.com/yankeguo/dsh-devlead/blob/main/README.zh.md)：功能、安装、使用、通知机制、配置与故障排查（英文版见 [README.md](https://github.com/yankeguo/dsh-devlead/blob/main/README.md)）
 - [DESIGN](https://github.com/yankeguo/dsh-devlead/blob/main/docs/DESIGN.md)：领域模型、持久记录、核心服务 API、通知泵与权限模型
 - [PUBLISHING](https://github.com/yankeguo/dsh-devlead/blob/main/docs/PUBLISHING.md)：npm trusted publishing 发布流程
-- [v0.1.1 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.1.1.md)
+- [v0.2.0 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.2.0.md)
 - 包 README：[protocol](https://github.com/yankeguo/dsh-devlead/blob/main/packages/protocol/README.md) · [devlead](https://github.com/yankeguo/dsh-devlead/blob/main/packages/devlead/README.md) ·
   [tool](https://github.com/yankeguo/dsh-devlead/blob/main/packages/tool/README.md) · [command](https://github.com/yankeguo/dsh-devlead/blob/main/packages/command/README.md) ·
   [client-ui](https://github.com/yankeguo/dsh-devlead/blob/main/packages/client-ui/README.md)

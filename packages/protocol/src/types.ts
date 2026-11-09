@@ -25,6 +25,18 @@ export const DEVLEAD_WATCH_RECORD_TYPE = 'plugin:devlead/watch'
 /** Persistent `plugin:` record carrying one watched-session notification. */
 export const DEVLEAD_NOTIFICATION_RECORD_TYPE = 'plugin:devlead/notification'
 
+/**
+ * Persistent `plugin:` record that discards every earlier DevLead record of the
+ * Session and resets the projections to their empty state.
+ *
+ * It exists so one corrupt DevLead record cannot lock a Session out forever:
+ * replay folds this marker even when an earlier owned record froze the fold,
+ * and both the digest and the mode projection restart from `init`. The reset is
+ * human-only (`/devlead reset`, or `/devlead off` on a frozen folder); the model
+ * tools never write it.
+ */
+export const DEVLEAD_RESET_RECORD_TYPE = 'plugin:devlead/reset'
+
 /** Version stamped on every durable DevLead record. */
 export const DEVLEAD_RECORD_VERSION = 1
 
@@ -135,8 +147,29 @@ export interface DevLeadNotificationRecord {
   readonly notification: DevLeadNotification
 }
 
+/**
+ * Durable record payload resetting a Session's DevLead state.
+ *
+ * Replay applies it before the freeze check, so a Session whose earlier owned
+ * record is corrupt becomes usable again. The reset itself carries no state:
+ * both projections restart from their empty initial state (mode off, empty
+ * watch set, empty digest, no recorded failure).
+ */
+export interface DevLeadResetRecord {
+  /** Record discriminator. */
+  readonly kind: 'devlead/reset'
+  /** Durable payload version; the fold rejects any other value. */
+  readonly version: typeof DEVLEAD_RECORD_VERSION
+  /** Epoch milliseconds of the recorded reset. */
+  readonly at: number
+}
+
 /** Union of every durable payload written under `plugin:devlead/*` records. */
-export type DevLeadRecord = DevLeadModeRecord | DevLeadWatchRecord | DevLeadNotificationRecord
+export type DevLeadRecord =
+  | DevLeadModeRecord
+  | DevLeadWatchRecord
+  | DevLeadNotificationRecord
+  | DevLeadResetRecord
 
 /** Strict Host fold state of one Session's DevLead records. */
 export interface DevLeadProjectionState {
@@ -263,6 +296,23 @@ export interface DevLeadIsolation {
   readonly baseCommit?: string
   /** Diagnostic for an `unavailable` or `failed` outcome. */
   readonly reason?: string
+}
+
+/** Request shape of one Workspace registration through the core service. */
+export interface DevLeadUseWorkspaceRequest {
+  /** Fully qualified directory path to register. */
+  readonly path: string
+  /**
+   * Optional display title for a newly registered Workspace. An
+   * already-registered canonical path keeps its recorded title.
+   */
+  readonly title?: string
+  /**
+   * Whether a missing directory may be created (`mkdir -p`) before the retry.
+   * Defaults to `false`: registering a path never creates directories unless
+   * the caller explicitly asks for it.
+   */
+  readonly create?: boolean
 }
 
 /** Request shape of one token-less Session creation inside a Workspace. */

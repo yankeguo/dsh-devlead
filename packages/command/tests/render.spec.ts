@@ -36,6 +36,12 @@ describe('modeLabel', () => {
   })
 })
 
+describe('HELP_LINE', () => {
+  it('advertises the human-only reset recovery command', () => {
+    expect(HELP_LINE).toContain('/devlead reset')
+  })
+})
+
 describe('sessionLabel', () => {
   it('names a Session by title and id when a title is folded', () => {
     expect(sessionLabel(sessionView('session-alpha', { title: 'webapp' }))).toBe('webapp (session-alpha)')

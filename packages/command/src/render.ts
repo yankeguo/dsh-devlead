@@ -23,7 +23,7 @@ export const RECENT_NOTIFICATION_LIMIT = 5
 
 /** One-line command reminder shown at the bottom of every status view. */
 export const HELP_LINE =
-  'Help: /devlead (status) | /devlead on | /devlead off | /devlead watch <session> | /devlead unwatch <session>'
+  'Help: /devlead (status) | /devlead on | /devlead off | /devlead reset | /devlead watch <session> | /devlead unwatch <session>'
 
 /** Everything the status view renders. */
 export interface DevLeadStatusSnapshot {

@@ -22,6 +22,7 @@ import {
   DEVLEAD_MODE_RECORD_TYPE,
   DEVLEAD_NOTIFICATION_RECORD_TYPE,
   DEVLEAD_PROJECTION_KEY,
+  DEVLEAD_RESET_RECORD_TYPE,
   DEVLEAD_TRANSITIONS,
   DEVLEAD_WATCH_RECORD_TYPE,
   notificationId,
@@ -33,7 +34,7 @@ import type {
   DevLeadProjectionState,
   DevLeadTransition,
 } from '@yankeguo/dsh-devlead-protocol'
-import { decodeModeRecord, decodeNotificationRecord, decodeWatchRecord } from './domain.ts'
+import { decodeModeRecord, decodeNotificationRecord, decodeResetRecord, decodeWatchRecord } from './domain.ts'
 
 /** Empty projection state: disabled, watching nothing, no notifications. */
 export function emptyDevLeadProjectionState(): DevLeadProjectionState {
@@ -158,6 +159,14 @@ export function devLeadProjectionView(state: DevLeadProjectionState): DevLeadPro
  * Unrelated events return the same state reference. An invalid owned record
  * freezes the fold at the last valid state and records the failure once; the
  * frozen state reuses the previous wire view because `failure` is host-only.
+ *
+ * A valid `plugin:devlead/reset` record is the one owned record applied BEFORE
+ * the freeze check: it discards every earlier DevLead record of the Session and
+ * restarts the fold from `init`. That is the human recovery path for a
+ * hand-edited or migrated log, so it must be foldable even when an earlier
+ * record already froze the state. A malformed reset cannot unfreeze anything
+ * (it would otherwise let a corrupt marker discard a damaged but recoverable
+ * state) and leaves a frozen state frozen.
  * @param state - the projection covering all prior events.
  * @param event - the next committed Session event.
  * @returns the next projection state.
@@ -166,9 +175,18 @@ export function applyDevLeadProjection(
   state: DevLeadProjectionState,
   event: SessionEvent,
 ): DevLeadProjectionState {
-  if (state.failure !== null) return state
   const record = pluginRecordOf(event)
   if (record === undefined) return state
+  if (record.type === DEVLEAD_RESET_RECORD_TYPE) {
+    try {
+      decodeResetRecord(record.data)
+      return emptyDevLeadProjectionState()
+    } catch (error: unknown) {
+      if (state.failure !== null) return state
+      return freezeProjection(state, event, record.type, error)
+    }
+  }
+  if (state.failure !== null) return state
   try {
     switch (record.type) {
       case DEVLEAD_MODE_RECORD_TYPE: {
@@ -190,14 +208,34 @@ export function applyDevLeadProjection(
         return state
     }
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error)
-    const failure = {
-      ...state,
-      failure: `devlead replay failed at session event ${event.seq} (${record.type}): ${message}`,
-    }
-    wireViews.set(failure, devLeadProjectionView(state))
-    return failure
+    return freezeProjection(state, event, record.type, error)
   }
+}
+
+/**
+ * Freeze a projection state on its first invalid owned record, retaining the
+ * replay position and message that make the failure actionable.
+ * @param state - last valid projection state.
+ * @param event - event that failed to decode.
+ * @param type - owned record type that failed.
+ * @param error - thrown decoder failure.
+ * @returns the frozen state.
+ */
+function freezeProjection(
+  state: DevLeadProjectionState,
+  event: SessionEvent,
+  type: string,
+  error: unknown,
+): DevLeadProjectionState {
+  const message = error instanceof Error ? error.message : String(error)
+  const failure = {
+    ...state,
+    failure: `devlead replay failed at session event ${event.seq} (${type}): ${message}`,
+  }
+  // Host-only failure change: reuse the previous wire view so the registry's
+  // Object.is comparison does not publish an unchanged client value.
+  wireViews.set(failure, devLeadProjectionView(state))
+  return failure
 }
 
 /** Registered projection unit serving `devLead` from the Session log. */
@@ -272,7 +310,9 @@ export function devLeadModeProjectionView(state: DevLeadModeProjectionState): De
  *
  * The fold follows the digest unit's failure policy: every owned record type is
  * decoded strictly (so the two units freeze on the same corrupt log), and the
- * first invalid one freezes the last valid selection.
+ * first invalid one freezes the last valid selection. A valid reset record is
+ * applied before that check and restarts the unit from its empty state, exactly
+ * like the digest unit, so a recovered Session loses its damaged mark too.
  * @param state - the projection covering all prior events.
  * @param event - the next committed Session event.
  * @returns the next mode projection state.
@@ -281,9 +321,22 @@ export function applyDevLeadModeProjection(
   state: DevLeadModeProjectionState,
   event: SessionEvent,
 ): DevLeadModeProjectionState {
-  if (state.failure !== null) return state
   const record = pluginRecordOf(event)
   if (record === undefined) return state
+  if (record.type === DEVLEAD_RESET_RECORD_TYPE) {
+    try {
+      decodeResetRecord(record.data)
+      return emptyDevLeadModeProjectionState()
+    } catch (error: unknown) {
+      if (state.failure !== null) return state
+      const message = error instanceof Error ? error.message : String(error)
+      return {
+        ...state,
+        failure: `devlead mode replay failed at session event ${event.seq} (${record.type}): ${message}`,
+      }
+    }
+  }
+  if (state.failure !== null) return state
   try {
     switch (record.type) {
       case DEVLEAD_MODE_RECORD_TYPE: {

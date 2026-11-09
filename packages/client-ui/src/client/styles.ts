@@ -270,28 +270,92 @@ export const styles = `
 `
 
 /**
- * Inject the plugin stylesheet once, unless an instance already exists.
+ * Realm-wide key of the stylesheet injection refcount.
  *
- * When an existing tag is reused its text is refreshed, so a client-plugin hot
- * update that changed the stylesheet does not leave the previous CSS in the
- * page. The returned disposer removes only a tag this call created; a call that
- * reused an existing tag returns a no-op disposer. Overlapping plugin instances
- * are therefore not reference-counted (HMR normally disposes the old plugin
- * before re-applying); no tag is removed by the reuse path.
- * @returns idempotent disposer removing the style tag, if it was created here.
+ * `Symbol.for` is deliberate: a client-plugin hot update re-evaluates this
+ * module, so the page can hold two module instances at once and both must count
+ * the same tag. A module-local `Symbol()` would give each instance its own
+ * counter, and the old instance's disposer would delete the tag the new one is
+ * still using. The state hangs off `globalThis` for the same reason: module
+ * bindings die with re-evaluation, the realm's global object does not.
+ */
+const STYLE_TAG_STATE = Symbol.for('@yankeguo/dsh-client-ui-devlead.style-tag')
+
+/** Realm-wide refcount of the injected stylesheet. */
+interface DevLeadStyleTagState {
+  /** Live `ensureStyleTag()` calls that have not disposed yet. */
+  refs: number
+  /** Tag this refcount installed or adopted, while one is known. */
+  element: HTMLStyleElement | undefined
+}
+
+/** Shape of the `globalThis` record holding {@link DevLeadStyleTagState}. */
+type DevLeadStyleTagStore = Record<symbol, DevLeadStyleTagState | undefined>
+
+/**
+ * The realm-wide refcount, created on first use.
+ * @returns the shared injection state.
+ */
+function styleTagState(): DevLeadStyleTagState {
+  const store = globalThis as unknown as DevLeadStyleTagStore
+  const existing = store[STYLE_TAG_STATE]
+  if (existing !== undefined) return existing
+  const created: DevLeadStyleTagState = { refs: 0, element: undefined }
+  store[STYLE_TAG_STATE] = created
+  return created
+}
+
+/**
+ * Resolve the tag the refcount owns: the known connected tag when possible,
+ * otherwise a matching tag already in the document (one an older module
+ * instance installed), otherwise a fresh one.
+ * @param state - shared injection state.
+ * @returns the tag to write the current stylesheet into.
+ */
+function resolveStyleTag(state: DevLeadStyleTagState): HTMLStyleElement {
+  const known = state.element
+  if (known !== undefined && known.isConnected) return known
+  const adopted = document.head.querySelector<HTMLStyleElement>(
+    `style[${STYLE_ATTRIBUTE}="${STYLE_KEY}"]`,
+  )
+  if (adopted !== null) return adopted
+  const created = document.createElement('style')
+  created.setAttribute(STYLE_ATTRIBUTE, STYLE_KEY)
+  document.head.appendChild(created)
+  return created
+}
+
+/**
+ * Reference-count the plugin stylesheet injection.
+ *
+ * The first live call installs `<style data-plugin-css="devlead">`; later calls
+ * reuse (and, after a hot update changed the stylesheet, refresh) that tag and
+ * add one reference. Every disposer releases exactly one reference — even when
+ * called more than once — and the tag is removed only when the last live
+ * reference goes away, so an old module instance's teardown can never delete a
+ * tag a newer instance is still using. A matching tag found in the document
+ * without shared state tracking (written by an older module version) is adopted
+ * and reused instead of duplicated.
+ * @returns idempotent disposer releasing one reference to the injected tag.
  */
 export function ensureStyleTag(): () => void {
   if (typeof document === 'undefined') return () => {}
-  const existing = document.head.querySelector(`style[${STYLE_ATTRIBUTE}="${STYLE_KEY}"]`)
-  if (existing !== null) {
-    if (existing.textContent !== styles) existing.textContent = styles
-    return () => {}
-  }
-  const element = document.createElement('style')
-  element.setAttribute(STYLE_ATTRIBUTE, STYLE_KEY)
-  element.textContent = styles
-  document.head.appendChild(element)
+  const state = styleTagState()
+  const element = resolveStyleTag(state)
+  state.element = element
+  state.refs += 1
+  // A reused or adopted tag may carry text written before a hot update changed
+  // the stylesheet; the live tag must match this module instance's CSS.
+  if (element.textContent !== styles) element.textContent = styles
+  let released = false
   return () => {
+    // React effects, plugin `ctx.effect` teardown, and HMR cleanup can race to
+    // call one disposer; a double release must not steal another reference.
+    if (released) return
+    released = true
+    state.refs = Math.max(0, state.refs - 1)
+    if (state.refs > 0) return
     element.remove()
+    if (state.element === element) state.element = undefined
   }
 }

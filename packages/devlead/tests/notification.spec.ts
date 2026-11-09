@@ -9,7 +9,7 @@
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { appendPluginRecord } from '@deepseek-ai/dsh-session'
+import { SessionId, appendPluginRecord } from '@deepseek-ai/dsh-session'
 import {
   DEVLEAD_DEFAULT_NOTIFICATION_RETENTION,
   DEVLEAD_MODE_RECORD_TYPE,
@@ -17,15 +17,17 @@ import {
   notificationId,
 } from '@yankeguo/dsh-devlead-protocol'
 import type { DevLeadNotification } from '@yankeguo/dsh-devlead-protocol'
-import { modeRecord, watchRecord } from '../src/domain.ts'
-import { renderDevLeadNotice } from '../src/notification.ts'
+import { DEVLEAD_RESET_RECORD_TYPE, modeRecord, resetRecord, watchRecord } from '../src/domain.ts'
+import { DEVLEAD_MAX_WARNED_FAILURES, renderDevLeadNotice } from '../src/notification.ts'
 import type { HubHarness, HubLead } from './harness.ts'
 import {
+  FakeAgent,
   FakeSessionController,
   FakeWorkspaceRegistry,
   T0,
   appendAssistantMessage,
   appendTurnEnd,
+  attachPersistedLead,
   bootHub,
   disposeHarnesses,
   flushMicrotasks,
@@ -281,7 +283,7 @@ describe('DevLeadNotificationHub wake coalescing', () => {
     expect(lead.agent.followups).toHaveLength(1)
   })
 
-  it('suppresses a second wake while an undelivered notice is already queued', async () => {
+  it('keeps a second batch pending behind an undelivered notice and delivers it after the drain', async () => {
     installFakeTimers()
     const harness = await bootHub({ batchMs: 400 })
     const lead = onlyLead(harness)
@@ -291,15 +293,103 @@ describe('DevLeadNotificationHub wake coalescing', () => {
     appendTurnEnd(harness.watched, 2)
     await vi.advanceTimersByTimeAsync(400)
     // The queued notice already points the model at the digest tool, so the
-    // second batch does not double the wake; both rows stay durable.
+    // second batch is NOT delivered yet. It is kept pending (not dropped): a
+    // bounded recheck timer is armed instead.
     expect(lead.agent.followups).toHaveLength(1)
     expect(notificationRecords(lead.session)).toHaveLength(2)
-    // Once the loop drains the inbox, the next batch wakes again.
+    expect(vi.getTimerCount()).toBeGreaterThan(0)
+    // The loop consumes the notice; the next recheck delivers the retained batch
+    // exactly once.
     lead.agent.drainInbox()
-    appendTurnEnd(harness.watched, 3)
-    await vi.advanceTimersByTimeAsync(400)
+    await vi.advanceTimersByTimeAsync(1_000)
+    await flushMicrotasks()
     expect(lead.agent.followups).toHaveLength(2)
-    expect(followupText(lead, 1)).toContain('— turn 3 completed')
+    expect(followupText(lead, 1)).toContain('— turn 2 completed')
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(lead.agent.followups).toHaveLength(2)
+  })
+
+  it('delivers a retained batch as soon as the queued notice is cancelled', async () => {
+    installFakeTimers()
+    const harness = await bootHub({ batchMs: 400 })
+    const lead = onlyLead(harness)
+    appendTurnEnd(harness.watched, 1)
+    await vi.advanceTimersByTimeAsync(400)
+    expect(lead.agent.followups).toHaveLength(1)
+    appendTurnEnd(harness.watched, 2)
+    await vi.advanceTimersByTimeAsync(400)
+    expect(lead.agent.followups).toHaveLength(1)
+    // The queued notice is withdrawn without being consumed: the retained batch
+    // must still be delivered (previously it was dropped forever).
+    lead.agent.cancelInbox()
+    await vi.advanceTimersByTimeAsync(1_000)
+    await flushMicrotasks()
+    expect(lead.agent.followups).toHaveLength(2)
+    expect(followupText(lead, 1)).toContain('— turn 2 completed')
+    expect(notificationRecords(lead.session)).toHaveLength(2)
+  })
+
+  it('delivers a retained batch immediately when the lead becomes idle', async () => {
+    installFakeTimers()
+    const harness = await bootHub({ batchMs: 400 })
+    const lead = onlyLead(harness)
+    appendTurnEnd(harness.watched, 1)
+    await vi.advanceTimersByTimeAsync(400)
+    appendTurnEnd(harness.watched, 2)
+    await vi.advanceTimersByTimeAsync(400)
+    expect(lead.agent.followups).toHaveLength(1)
+    lead.agent.drainInbox()
+    harness.ctx.emit('agent/status', { agent: lead.agent.agent, status: 'idle' })
+    await flushMicrotasks()
+    expect(lead.agent.followups).toHaveLength(2)
+    expect(followupText(lead, 1)).toContain('— turn 2 completed')
+  })
+
+  it('clears the retained-batch recheck timer when the watch is dropped', async () => {
+    installFakeTimers()
+    const harness = await bootHub({ batchMs: 400 })
+    const lead = onlyLead(harness)
+    appendTurnEnd(harness.watched, 1)
+    await vi.advanceTimersByTimeAsync(400)
+    appendTurnEnd(harness.watched, 2)
+    await vi.advanceTimersByTimeAsync(400)
+    expect(vi.getTimerCount()).toBeGreaterThan(0)
+    appendPluginRecord(lead.session, DEVLEAD_WATCH_RECORD_TYPE, watchRecord([], T0 + 2))
+    // The latest durable watch set is authoritative: the retained batch is
+    // filtered out and its recheck timer is cleared.
+    expect(vi.getTimerCount()).toBe(0)
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(lead.agent.followups).toHaveLength(1)
+  })
+
+  it('clears the retained-batch recheck timer on hub disposal', async () => {
+    installFakeTimers()
+    const harness = await bootHub({ batchMs: 400 })
+    const lead = onlyLead(harness)
+    appendTurnEnd(harness.watched, 1)
+    await vi.advanceTimersByTimeAsync(400)
+    appendTurnEnd(harness.watched, 2)
+    await vi.advanceTimersByTimeAsync(400)
+    expect(vi.getTimerCount()).toBeGreaterThan(0)
+    await harness.dispose()
+    // The hub's effect disposer clears every pending recheck timer and index.
+    expect(vi.getTimerCount()).toBe(0)
+    expect(lead.agent.followups).toHaveLength(1)
+  })
+
+  it('clears the retained-batch recheck timer when the mode is disabled', async () => {
+    installFakeTimers()
+    const harness = await bootHub({ batchMs: 400 })
+    const lead = onlyLead(harness)
+    appendTurnEnd(harness.watched, 1)
+    await vi.advanceTimersByTimeAsync(400)
+    appendTurnEnd(harness.watched, 2)
+    await vi.advanceTimersByTimeAsync(400)
+    expect(vi.getTimerCount()).toBeGreaterThan(0)
+    appendPluginRecord(lead.session, DEVLEAD_MODE_RECORD_TYPE, modeRecord(false, T0 + 2))
+    expect(vi.getTimerCount()).toBe(0)
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(lead.agent.followups).toHaveLength(1)
   })
 
   it('delivers immediately through deliverNow', async () => {
@@ -345,7 +435,7 @@ describe('DevLeadNotificationHub wake coalescing', () => {
     await vi.advanceTimersByTimeAsync(400)
     expect(lead.agent.followups).toHaveLength(1)
     expect(followupText(lead, 0).split('\n').filter(line => line.startsWith('- '))).toHaveLength(1)
-    // Both durable audit rows still exist; replay folds them idempotently.
+    // Both durable audit rows still exist; only the queued wake dedupes.
     expect(notificationRecords(lead.session)).toHaveLength(2)
   })
 
@@ -421,33 +511,106 @@ describe('DevLeadNotificationHub lifecycle', () => {
     expect(lead.agent.followups).toHaveLength(0)
   })
 
-  it('re-indexes a lead whose Agent is recreated for the same Session', async () => {
+  it('never resumes or wakes a cold archived lead even when wakeColdSession is enabled', async () => {
     installFakeTimers()
-    const harness = await bootHub({ batchMs: 400 })
-    const lead = onlyLead(harness)
-    harness.ctx.emit('agent/disposed', { agent: lead.agent.agent })
+    const controller = new FakeSessionController()
+    const registry = new FakeWorkspaceRegistry()
+    const harness = await bootHub({
+      batchMs: 400,
+      leads: [],
+      wakeColdSession: true,
+      sessionController: controller,
+      workspaceRegistry: registry,
+    })
+    const coldLeadId = 'archived-cold-lead'
+    const watchedId = String(harness.watched.id)
+    harness.hub.rehydrate([{ sessionId: coldLeadId, watched: [watchedId] }])
+    registry.archived = [coldLeadId]
     appendTurnEnd(harness.watched, 1)
     await vi.advanceTimersByTimeAsync(400)
-    expect(notificationRecords(lead.session)).toEqual([])
-    // A resume re-announces the Agent: the durable watch set rebuilds the index.
-    harness.agents.add(lead.agent)
-    harness.ctx.emit('agent/created', { agent: lead.agent.agent, source: 'resume' })
-    appendTurnEnd(harness.watched, 2)
+    // Archived wins over the cold-wake policy: the lead is paused, not resumed.
+    expect(controller.resolveCalls).toEqual([])
+    // Unarchiving and opening the Session writes the retained observation and
+    // delivers its digest.
+    registry.archived = []
+    const agent = attachPersistedLead(harness.ctx, harness.agents, {
+      sessionId: coldLeadId,
+      watched: [watchedId],
+    })
+    harness.ctx.emit('agent/created', { agent: agent.agent, source: 'resume' })
     await vi.advanceTimersByTimeAsync(400)
-    expect(lead.agent.followups).toHaveLength(1)
-    expect(followupText(lead, 0)).toContain('— turn 2 completed')
+    await flushMicrotasks()
+    expect(agent.followups).toHaveLength(1)
+    expect(messageText(agent.followups[0]!)).toContain('— turn 1 completed')
+    expect(notificationRecords(agent.session)).toHaveLength(1)
   })
 
-  it('drops one disposed lead runtime without throwing', async () => {
+  it('persists a cold observation when an archived lead Session becomes attached without waking', async () => {
+    installFakeTimers()
+    const registry = new FakeWorkspaceRegistry()
+    const harness = await bootHub({ batchMs: 400, leads: [], workspaceRegistry: registry })
+    const coldLeadId = 'archived-attached-lead'
+    const watchedId = String(harness.watched.id)
+    harness.hub.rehydrate([{ sessionId: coldLeadId, watched: [watchedId] }])
+    registry.archived = [coldLeadId]
+    appendTurnEnd(harness.watched, 1)
+    await vi.advanceTimersByTimeAsync(400)
+    // The observation of a cold archived lead is kept in memory...
+    const agent = attachPersistedLead(harness.ctx, harness.agents, {
+      sessionId: coldLeadId,
+      watched: [watchedId],
+    })
+    harness.ctx.emit('agent/created', { agent: agent.agent, source: 'resume' })
+    await vi.advanceTimersByTimeAsync(400)
+    await flushMicrotasks()
+    // ...and the attached-but-archived Session can still append it; the wake is
+    // dropped (durable digest stays visible after restoring the Session).
+    expect(notificationRecords(agent.session)).toHaveLength(1)
+    expect(agent.followups).toHaveLength(0)
+  })
+
+  it('keeps observing a watched Session after its lead Agent is disposed', async () => {
     installFakeTimers()
     const harness = await bootHub({ batchMs: 400 })
     const lead = onlyLead(harness)
+    harness.agents.remove(String(lead.agent.id))
     harness.ctx.emit('agent/disposed', { agent: lead.agent.agent })
     appendTurnEnd(harness.watched, 1)
     await vi.advanceTimersByTimeAsync(400)
+    // The watch set is durable: a disposed (cold) lead keeps producing durable
+    // notification records. The digest cannot be delivered while the Agent is
+    // gone, so it stays queued instead.
+    expect(notificationRecords(lead.session)).toHaveLength(1)
     expect(lead.agent.followups).toHaveLength(0)
-    expect(notificationRecords(lead.session)).toEqual([])
-    await expect(harness.hub.deliverNow(String(lead.agent.id))).resolves.toBeUndefined()
+    // Opening/recreating the Agent re-indexes it and drains the queued digest.
+    harness.agents.add(lead.agent)
+    harness.ctx.emit('agent/created', { agent: lead.agent.agent, source: 'resume' })
+    await vi.advanceTimersByTimeAsync(400)
+    await flushMicrotasks()
+    expect(lead.agent.followups).toHaveLength(1)
+    expect(followupText(lead, 0)).toContain('— turn 1 completed')
+  })
+
+  it('resumes a disposed lead Agent by default to deliver its queued digest', async () => {
+    installFakeTimers()
+    const controller = new FakeSessionController()
+    const harness = await bootHub({ batchMs: 400, sessionController: controller })
+    const lead = onlyLead(harness)
+    controller.resolveHandler = () => {
+      // A real resume re-announces the same Session's Agent.
+      harness.agents.add(lead.agent)
+      return { agent: lead.agent.agent }
+    }
+    harness.agents.remove(String(lead.agent.id))
+    harness.ctx.emit('agent/disposed', { agent: lead.agent.agent })
+    appendTurnEnd(harness.watched, 1)
+    await vi.advanceTimersByTimeAsync(400)
+    expect(controller.resolveCalls.map(String)).toEqual([String(lead.agent.id)])
+    // The resumed Agent is re-synced and the queued digest flushes.
+    await vi.advanceTimersByTimeAsync(400)
+    await flushMicrotasks()
+    expect(lead.agent.followups).toHaveLength(1)
+    expect(notificationRecords(lead.session)).toHaveLength(1)
   })
 
   it('disposes cleanly with a queued digest still inside its window', async () => {
@@ -485,8 +648,11 @@ describe('notification identities and retention', () => {
     appendTurnEnd(harness.watched, 1)
     appendTurnEnd(harness.watched, 1)
     await vi.advanceTimersByTimeAsync(400)
+    // The audit log keeps both durable rows, while the folded digest and the
+    // wake queue carry the deterministic identity once.
     expect(notificationRecords(lead.session)).toHaveLength(2)
     expect(projectionStateOf(lead.session).notifications).toHaveLength(1)
+    expect(lead.agent.followups).toHaveLength(1)
   })
 
   it('keeps the hub queue bounded by the durable retention cap', async () => {
@@ -576,6 +742,255 @@ describe('cold lead delivery', () => {
     await vi.advanceTimersByTimeAsync(400)
     expect(lead.agent.followups).toHaveLength(0)
     expect(notificationRecords(lead.session)).toHaveLength(1)
+  })
+})
+
+describe('cold rehydration', () => {
+  it('indexes a rehydrated cold lead and keeps its digest until the Session is opened', async () => {
+    installFakeTimers()
+    const harness = await bootHub({ batchMs: 400, leads: [] })
+    const coldLeadId = 'cold-lead-open'
+    const watchedId = String(harness.watched.id)
+    harness.hub.rehydrate([{ sessionId: coldLeadId, watched: [watchedId] }])
+    appendTurnEnd(harness.watched, 1)
+    // Cold lead, no Session controller: the wake is kept queued (and no durable
+    // record can be appended yet).
+    await vi.advanceTimersByTimeAsync(400)
+    // A human opens the Session: its log is attached, the Agent is announced,
+    // and the queued observation is written and delivered.
+    const agent = attachPersistedLead(harness.ctx, harness.agents, {
+      sessionId: coldLeadId,
+      watched: [watchedId],
+    })
+    harness.ctx.emit('agent/created', { agent: agent.agent, source: 'resume' })
+    await vi.advanceTimersByTimeAsync(400)
+    await flushMicrotasks()
+    expect(agent.followups).toHaveLength(1)
+    expect(messageText(agent.followups[0]!)).toContain('— turn 1 completed')
+    expect(notificationRecords(agent.session)).toHaveLength(1)
+  })
+
+  it('resumes a rehydrated cold lead by default and writes the queued record first', async () => {
+    installFakeTimers()
+    const controller = new FakeSessionController()
+    const harness = await bootHub({ batchMs: 400, leads: [], sessionController: controller })
+    const coldLeadId = 'cold-lead-resume'
+    const watchedId = String(harness.watched.id)
+    harness.hub.rehydrate([{ sessionId: coldLeadId, watched: [watchedId] }])
+    let live: FakeAgent | undefined
+    controller.resolveHandler = () => {
+      live = attachPersistedLead(harness.ctx, harness.agents, {
+        sessionId: coldLeadId,
+        watched: [watchedId],
+      })
+      return { agent: live.agent }
+    }
+    appendTurnEnd(harness.watched, 1)
+    await vi.advanceTimersByTimeAsync(400)
+    // Cold wake is the DEFAULT (wakeColdSession: true) now.
+    expect(controller.resolveCalls.map(String)).toEqual([coldLeadId])
+    await vi.advanceTimersByTimeAsync(400)
+    await flushMicrotasks()
+    expect(live?.followups).toHaveLength(1)
+    expect(notificationRecords(live!.session)).toHaveLength(1)
+  })
+
+  it('keeps a rehydrated cold lead quiet when wakeColdSession is disabled', async () => {
+    installFakeTimers()
+    const controller = new FakeSessionController()
+    const harness = await bootHub({ batchMs: 400, leads: [], wakeColdSession: false, sessionController: controller })
+    const coldLeadId = 'cold-lead-wait'
+    const watchedId = String(harness.watched.id)
+    harness.hub.rehydrate([{ sessionId: coldLeadId, watched: [watchedId] }])
+    appendTurnEnd(harness.watched, 1)
+    await vi.advanceTimersByTimeAsync(400)
+    expect(controller.resolveCalls).toEqual([])
+    // A human opening the Session persists the waiting record and delivers it.
+    const agent = attachPersistedLead(harness.ctx, harness.agents, {
+      sessionId: coldLeadId,
+      watched: [watchedId],
+    })
+    harness.ctx.emit('agent/created', { agent: agent.agent, source: 'resume' })
+    await vi.advanceTimersByTimeAsync(400)
+    await flushMicrotasks()
+    expect(agent.followups).toHaveLength(1)
+    expect(notificationRecords(agent.session)).toHaveLength(1)
+  })
+
+  it('is idempotent across repeated rehydrate calls', async () => {
+    installFakeTimers()
+    const harness = await bootHub({ batchMs: 400, leads: [] })
+    const watchedId = String(harness.watched.id)
+    const record = { sessionId: 'cold-lead-idempotent', watched: [watchedId] } as const
+    harness.hub.rehydrate([record])
+    harness.hub.rehydrate([record])
+    const agent = attachPersistedLead(harness.ctx, harness.agents, {
+      sessionId: record.sessionId,
+      watched: [watchedId],
+    })
+    harness.ctx.emit('agent/created', { agent: agent.agent, source: 'resume' })
+    appendTurnEnd(harness.watched, 1)
+    await vi.advanceTimersByTimeAsync(400)
+    await flushMicrotasks()
+    expect(agent.followups).toHaveLength(1)
+    expect(notificationRecords(agent.session)).toHaveLength(1)
+  })
+
+  it('drops a notification of a Session that a later rehydrate says is no longer watched', async () => {
+    installFakeTimers()
+    const harness = await bootHub({ batchMs: 400, leads: [] })
+    const coldLeadId = 'cold-lead-unwatch'
+    const watchedId = String(harness.watched.id)
+    harness.hub.rehydrate([{ sessionId: coldLeadId, watched: [watchedId] }])
+    appendTurnEnd(harness.watched, 1)
+    await vi.advanceTimersByTimeAsync(400)
+    // The latest durable watch set is authoritative: the retained (unsaved)
+    // observation is filtered out.
+    harness.hub.rehydrate([{ sessionId: coldLeadId, watched: [] }])
+    const agent = attachPersistedLead(harness.ctx, harness.agents, { sessionId: coldLeadId, watched: [] })
+    harness.ctx.emit('agent/created', { agent: agent.agent, source: 'resume' })
+    await vi.advanceTimersByTimeAsync(400)
+    await flushMicrotasks()
+    expect(agent.followups).toHaveLength(0)
+    expect(notificationRecords(agent.session)).toEqual([])
+  })
+
+  it('filters a persisted self-watch during rehydrate with one warning', async () => {
+    installFakeTimers()
+    const harness = await bootHub({ batchMs: 400, leads: [] })
+    const warn = vi.spyOn(harness.ctx.logger, 'warn')
+    const coldLeadId = 'cold-lead-self'
+    const watchedId = String(harness.watched.id)
+    harness.hub.rehydrate([{ sessionId: coldLeadId, watched: [coldLeadId, watchedId] }])
+    const agent = attachPersistedLead(harness.ctx, harness.agents, {
+      sessionId: coldLeadId,
+      watched: [coldLeadId, watchedId],
+    })
+    harness.ctx.emit('agent/created', { agent: agent.agent, source: 'resume' })
+    appendTurnEnd(agent.session, 1)
+    appendTurnEnd(harness.watched, 2)
+    await vi.advanceTimersByTimeAsync(400)
+    await flushMicrotasks()
+    expect(warn.mock.calls.some(call => String(call[0]).includes('lists itself'))).toBe(true)
+    // The self entry was ignored: only the watched Session's turn notified.
+    expect(notificationRecords(agent.session)).toHaveLength(1)
+    expect(notificationRecords(agent.session)[0]?.sessionId).toBe(watchedId)
+    warn.mockRestore()
+  })
+
+  it('is safe to call before start', async () => {
+    installFakeTimers()
+    const harness = await bootHub({ batchMs: 400, leads: [], start: false })
+    const watchedId = String(harness.watched.id)
+    harness.hub.rehydrate([{ sessionId: 'cold-lead-early', watched: [watchedId] }])
+    const agent = attachPersistedLead(harness.ctx, harness.agents, {
+      sessionId: 'cold-lead-early',
+      watched: [watchedId],
+    })
+    harness.hub.start()
+    appendTurnEnd(harness.watched, 1)
+    await vi.advanceTimersByTimeAsync(400)
+    await flushMicrotasks()
+    expect(agent.followups).toHaveLength(1)
+    expect(notificationRecords(agent.session)).toHaveLength(1)
+  })
+})
+
+describe('reset record resync', () => {
+  it('drops the lead index when a reset record disables its durable state', async () => {
+    installFakeTimers()
+    const harness = await bootHub({ batchMs: 400 })
+    const lead = onlyLead(harness)
+    appendPluginRecord(lead.session, DEVLEAD_RESET_RECORD_TYPE, resetRecord(T0 + 1))
+    appendTurnEnd(harness.watched, 1)
+    await vi.advanceTimersByTimeAsync(400)
+    expect(lead.agent.followups).toHaveLength(0)
+    expect(notificationRecords(lead.session)).toEqual([])
+    // A clean re-enable rebuilds the index from the durable state.
+    appendPluginRecord(lead.session, DEVLEAD_MODE_RECORD_TYPE, modeRecord(true, T0 + 2))
+    appendPluginRecord(lead.session, DEVLEAD_WATCH_RECORD_TYPE, watchRecord([String(harness.watched.id)], T0 + 2))
+    appendTurnEnd(harness.watched, 2)
+    await vi.advanceTimersByTimeAsync(400)
+    expect(lead.agent.followups).toHaveLength(1)
+    expect(messageText(lead.agent.followups[0]!)).toContain('— turn 2 completed')
+    expect(notificationRecords(lead.session)).toHaveLength(1)
+  })
+})
+
+describe('notification durability checkpoint', () => {
+  it('flushes the lead Session after appending a notification record', async () => {
+    const harness = await bootHub({ batchMs: 60_000 })
+    const lead = onlyLead(harness)
+    appendTurnEnd(harness.watched, 1)
+    await flushMicrotasks()
+    // The digest is still inside its coalescing window; the record append alone
+    // must already have triggered a fire-and-forget durability checkpoint.
+    expect(lead.agent.followups).toHaveLength(0)
+    expect(harness.flushCalls).toContain(String(lead.agent.id))
+  })
+
+  it('warns but still queues the wake when the record checkpoint fails', async () => {
+    installFakeTimers()
+    const harness = await bootHub({ batchMs: 400, flushFailure: new Error('disk offline') })
+    const lead = onlyLead(harness)
+    const warn = vi.spyOn(harness.ctx.logger, 'warn')
+    appendTurnEnd(harness.watched, 1)
+    await flushMicrotasks()
+    expect(warn.mock.calls.some(call => String(call[0]).includes('could not be flushed to persistence'))).toBe(true)
+    await vi.advanceTimersByTimeAsync(400)
+    expect(lead.agent.followups).toHaveLength(1)
+    expect(notificationRecords(lead.session)).toHaveLength(1)
+    warn.mockRestore()
+  })
+})
+
+describe('corrupt replay warnings', () => {
+  it('warns once across a dispose/reopen and again only after a valid state', async () => {
+    installFakeTimers()
+    const harness = await bootHub({ batchMs: 400 })
+    const lead = onlyLead(harness)
+    const warn = vi.spyOn(harness.ctx.logger, 'warn')
+    const corrupt = { kind: 'devlead/watch', version: 1, sessions: 'no', at: T0 } as never
+    const replayWarnings = () => warn.mock.calls.filter(call => String(call[0]).includes('replay failed'))
+    appendPluginRecord(lead.session, DEVLEAD_WATCH_RECORD_TYPE, corrupt)
+    await flushMicrotasks()
+    expect(replayWarnings()).toHaveLength(1)
+    // Disposal no longer drops the runtime; even if it did, the remembered
+    // failure must survive it: the same damaged Session warns once per Host.
+    harness.ctx.emit('agent/disposed', { agent: lead.agent.agent })
+    harness.agents.add(lead.agent)
+    harness.ctx.emit('agent/created', { agent: lead.agent.agent, source: 'resume' })
+    await flushMicrotasks()
+    expect(replayWarnings()).toHaveLength(1)
+    // A valid state (the reset record unfreezes the fold) clears the marker, so
+    // a later corruption warns again.
+    appendPluginRecord(lead.session, DEVLEAD_RESET_RECORD_TYPE, resetRecord(T0 + 1))
+    await flushMicrotasks()
+    expect(projectionStateOf(lead.session).failure).toBeNull()
+    appendPluginRecord(lead.session, DEVLEAD_WATCH_RECORD_TYPE, corrupt)
+    await flushMicrotasks()
+    expect(replayWarnings()).toHaveLength(2)
+    warn.mockRestore()
+  })
+
+  it('bounds the remembered failure ids with FIFO eviction', async () => {
+    const harness = await bootHub({ batchMs: 400, leads: [] })
+    const warn = vi.spyOn(harness.ctx.logger, 'warn').mockImplementation(() => undefined)
+    const corrupt = { kind: 'devlead/watch', version: 1, sessions: 'no', at: T0 } as never
+    const ids: string[] = []
+    for (let index = 0; index < DEVLEAD_MAX_WARNED_FAILURES + 4; index += 1) {
+      const id = `corrupt-lead-${String(index)}`
+      ids.push(id)
+      const session = harness.ctx.sessions.create(SessionId(id))
+      harness.agents.add(new FakeAgent(session))
+      appendPluginRecord(session, DEVLEAD_WATCH_RECORD_TYPE, corrupt)
+    }
+    await flushMicrotasks()
+    const warned = (harness.hub as unknown as { warnedFailures: Set<string> }).warnedFailures
+    expect(warned.size).toBe(DEVLEAD_MAX_WARNED_FAILURES)
+    expect(warned.has(ids[0]!)).toBe(false)
+    expect(warned.has(ids.at(-1)!)).toBe(true)
+    warn.mockRestore()
   })
 })
 

@@ -87,6 +87,7 @@ describe('devlead command registration', () => {
     expect(captured?.definitionId).toBe('@yankeguo/dsh-command-devlead')
     expect(captured?.description).toContain('DevLead mode')
     expect(captured?.input?.hint).toContain('watch <session>')
+    expect(captured?.input?.hint).toContain('reset')
     // Attachments are rejected by the CommandRuntime before the handler runs
     // unless a definition advertises them; /devlead must never advertise them.
     expect(captured?.input?.attachments).toBeUndefined()
@@ -174,6 +175,8 @@ describe('devlead command status', () => {
     expect(result.kind).toBe('error')
     expect(text(result)).toContain('records are damaged')
     expect(text(result)).toContain('record 4 is not valid JSON')
+    expect(text(result)).toContain('/devlead reset')
+    expect(text(result)).toContain('discards the watched-Session set and the notification digest')
   })
 
   it('renders a dead receiving Agent as a friendly error instead of throwing', async () => {
@@ -234,6 +237,62 @@ describe('devlead command status', () => {
   })
 })
 
+describe('devlead command reset', () => {
+  it('discards the watch set and digest and renders the default disabled state', async () => {
+    const { handler, service } = boot()
+    service.enabled = true
+    service.watching = ['session-alpha']
+    service.feed = [notification({ sessionId: 'session-alpha', title: 'webapp' })]
+    const result = await run(handler, 'reset')
+    expect(result.kind).toBe('success')
+    expect(text(result)).toContain('DevLead state reset.')
+    expect(text(result)).toContain('DevLead mode: off')
+    expect(text(result)).toContain('Watched sessions: none')
+    expect(text(result)).toContain('Recent notifications: none')
+    expect(service.calls).toContain('reset')
+    expect(service.enabled).toBe(false)
+    expect(service.watching).toEqual([])
+    expect(service.feed).toEqual([])
+  })
+
+  it('works whatever the current mode is and forwards the invocation signal', async () => {
+    const { handler, service } = boot()
+    const controller = new AbortController()
+    const signals: (AbortSignal | undefined)[] = []
+    service.reset = async (_agent, signal) => {
+      signals.push(signal)
+    }
+    const result = await run(handler, 'reset', fakeAgent(), controller.signal)
+    expect(result.kind).toBe('success')
+    expect(text(result)).toContain('DevLead state reset.')
+    expect(signals).toEqual([controller.signal])
+  })
+
+  it('recovers a frozen fold and renders the reset state', async () => {
+    const { handler, service } = boot()
+    service.enabled = true
+    service.watching = ['session-alpha']
+    service.frozenReason = 'record 4 is not valid JSON'
+    const result = await run(handler, 'reset')
+    expect(result.kind).toBe('success')
+    expect(text(result)).toContain('DevLead state reset.')
+    expect(text(result)).toContain('DevLead mode: off')
+    expect(text(result)).toContain('Watched sessions: none')
+    expect(service.frozenReason).toBeNull()
+    expect(service.watching).toEqual([])
+  })
+
+  it('reports a dead receiving Agent as a friendly error instead of throwing', async () => {
+    const { handler, service } = boot()
+    service.reset = async () => {
+      throw new FakeDevLeadError('DEVLEAD_AGENT_NOT_LIVE', 'agent is not live')
+    }
+    const result = await run(handler, 'reset')
+    expect(result.kind).toBe('error')
+    expect(text(result)).toContain('no longer live')
+  })
+})
+
 describe('devlead command mode switch', () => {
   it('turns the mode on and renders the new status', async () => {
     const { handler, service } = boot()
@@ -275,6 +334,83 @@ describe('devlead command mode switch', () => {
     const result = await run(handler, 'on')
     expect(result.kind).toBe('error')
     expect(text(result)).toContain('no longer live')
+  })
+
+  it('turns the mode off on a frozen fold by resetting the damaged records', async () => {
+    const { handler, service } = boot()
+    service.enabled = true
+    service.watching = ['session-alpha']
+    service.frozenReason = 'record 4 is not valid JSON'
+    const result = await run(handler, 'off')
+    expect(result.kind).toBe('success')
+    expect(text(result)).toContain('DevLead mode disabled; the damaged DevLead records were reset.')
+    expect(text(result)).toContain('DevLead mode: off')
+    expect(service.calls).toContain('setEnabled:false')
+    expect(service.frozenReason).toBeNull()
+    expect(service.watching).toEqual([])
+  })
+
+  it('refuses to turn the mode on from a frozen fold and names the reset command', async () => {
+    const { handler, service } = boot()
+    service.frozenReason = 'record 4 is not valid JSON'
+    const result = await run(handler, 'on')
+    expect(result.kind).toBe('error')
+    expect(text(result)).toContain('records are damaged')
+    expect(text(result)).toContain('/devlead reset')
+    expect(text(result)).toContain('record 4 is not valid JSON')
+    expect(service.calls).not.toContain('setEnabled:true')
+    // The refusal must not recover behind the human's back.
+    expect(service.frozenReason).toBe('record 4 is not valid JSON')
+  })
+
+  it('renders the state the post-mutation snapshot shows when another command flips the mode', async () => {
+    const { handler, service } = boot()
+    const setEnabled = service.setEnabled.bind(service)
+    service.setEnabled = async (agent, enabled, signal) => {
+      await setEnabled(agent, enabled, signal)
+      // A concurrent command or UI toggle wins right after this mutation commits.
+      service.enabled = !enabled
+    }
+    const result = await run(handler, 'on')
+    expect(result.kind).toBe('success')
+    expect(text(result)).toContain('DevLead mode is off (another command changed it).')
+    expect(text(result)).toContain('DevLead mode: off')
+    expect(text(result)).not.toContain('DevLead mode enabled.')
+  })
+
+  it('renders the state the post-mutation snapshot shows when another command flips the mode back on', async () => {
+    const { handler, service } = boot()
+    service.enabled = true
+    const setEnabled = service.setEnabled.bind(service)
+    service.setEnabled = async (agent, enabled, signal) => {
+      await setEnabled(agent, enabled, signal)
+      // A concurrent command turns the mode back on right after this mutation.
+      service.enabled = !enabled
+    }
+    const result = await run(handler, 'off')
+    expect(result.kind).toBe('success')
+    expect(text(result)).toContain('DevLead mode is on (another command changed it).')
+    expect(text(result)).toContain('DevLead mode: on')
+    expect(text(result)).not.toContain('DevLead mode disabled.')
+  })
+
+  it('withdraws an already-on title the post snapshot no longer supports', async () => {
+    const { handler, service } = boot()
+    service.enabled = true
+    const view = service.view.bind(service)
+    let reads = 0
+    service.view = (agent) => {
+      reads += 1
+      // The second read is the post-mutation snapshot: another command turned
+      // the mode off between the decision read and the render.
+      if (reads === 2) service.enabled = false
+      return view(agent)
+    }
+    const result = await run(handler, 'on')
+    expect(result.kind).toBe('success')
+    expect(text(result)).toContain('DevLead mode is off (another command changed it).')
+    expect(text(result)).toContain('DevLead mode: off')
+    expect(text(result)).not.toContain('DevLead mode is already on.')
   })
 })
 
@@ -490,6 +626,39 @@ describe('devlead command watch set', () => {
     const result = await run(handler, 'watch session-alpha')
     expect(result.kind).toBe('error')
     expect(text(result)).toContain('archived')
+  })
+
+  it('renders the watch set the post-mutation snapshot shows when another command unwatches', async () => {
+    const { handler, service } = seeded()
+    const watchSession = service.watchSession.bind(service)
+    service.watchSession = async (agent, sessionId, watching) => {
+      const mutation = await watchSession(agent, sessionId, watching)
+      // A concurrent command removes the watch right after this mutation.
+      service.watching = service.watching.filter(id => id !== sessionId)
+      return mutation
+    }
+    const result = await run(handler, 'watch session-alpha')
+    expect(result.kind).toBe('success')
+    expect(text(result)).toContain('Not watching webapp (session-alpha) (another command changed it).')
+    expect(text(result)).toContain('Watched sessions: none')
+    expect(text(result)).not.toContain('Now watching webapp (session-alpha).')
+  })
+
+  it('retracts a stopped-watching title the post snapshot no longer supports', async () => {
+    const { handler, service } = seeded()
+    service.watching = ['session-alpha']
+    const watchSession = service.watchSession.bind(service)
+    service.watchSession = async (agent, sessionId, watching) => {
+      const mutation = await watchSession(agent, sessionId, watching)
+      // A concurrent command re-adds the watch right after this mutation.
+      service.watching = [...service.watching, sessionId]
+      return mutation
+    }
+    const result = await run(handler, 'unwatch session-alpha')
+    expect(result.kind).toBe('success')
+    expect(text(result)).toContain('Still watching webapp (session-alpha) (another command changed it).')
+    expect(text(result)).toContain('Watched sessions: 1')
+    expect(text(result)).not.toContain('Stopped watching webapp (session-alpha).')
   })
 })
 

@@ -3,10 +3,12 @@
  *
  * The module only touches `document.head`, `document.createElement`, and the
  * created `<style>` element, so a tiny fake DOM is enough to test injection,
- * reuse, content refresh, and disposal without adding a jsdom dependency.
+ * reuse, content refresh, disposal, and the realm-wide reference count across
+ * module instances (a hot update or `vi.resetModules()`) without adding a jsdom
+ * dependency.
  */
 
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ensureStyleTag, styles } from '../src/client/styles.ts'
 
 /** Attribute key/value the injected tag must carry. */
@@ -82,8 +84,18 @@ function installDocument(document: FakeDocument): void {
   Object.defineProperty(globalThis, 'document', { value: document, configurable: true, writable: true })
 }
 
+/**
+ * `Symbol.for` key under which `styles.ts` keeps its realm-wide refcount.
+ *
+ * Each case starts from a clean counter (a tag left installed by one case must
+ * not leak a reference into the next one), so this must stay equal to the
+ * literal in the module under test.
+ */
+const STYLE_TAG_STATE_KEY = Symbol.for('@yankeguo/dsh-client-ui-devlead.style-tag')
+
 afterEach(() => {
   Reflect.deleteProperty(globalThis, 'document')
+  Reflect.deleteProperty(globalThis, STYLE_TAG_STATE_KEY)
 })
 
 describe('ensureStyleTag', () => {
@@ -92,38 +104,97 @@ describe('ensureStyleTag', () => {
     expect(typeof dispose).toBe('function')
     expect(() => {
       dispose()
+      dispose()
     }).not.toThrow()
+    // The no-DOM path must not even arm the shared refcount.
+    expect((globalThis as unknown as Record<symbol, unknown>)[STYLE_TAG_STATE_KEY]).toBeUndefined()
   })
 
-  it('injects the stylesheet once with the plugin-owned attribute', () => {
+  it('injects the stylesheet once with the plugin-owned attribute and reuses the tag', () => {
     const document = createFakeDocument()
     installDocument(document)
 
-    const dispose = ensureStyleTag()
+    const first = ensureStyleTag()
+    const second = ensureStyleTag()
     expect(document.head.children).toHaveLength(1)
     const tag = document.head.children[0]
     expect(tag?.attributes.get(STYLE_ATTRIBUTE)).toBe(STYLE_KEY)
     expect(tag?.textContent).toBe(styles)
 
-    // A second instance (or a hot reload) reuses the tag instead of stacking one.
-    ensureStyleTag()
+    first()
+    // The second reference still holds the tag: only the last dispose removes it.
+    expect(document.head.children).toHaveLength(1)
+    second()
+    expect(document.head.children).toHaveLength(0)
+  })
+
+  it('is idempotent: a disposer released twice counts once', () => {
+    const document = createFakeDocument()
+    installDocument(document)
+
+    const first = ensureStyleTag()
+    const second = ensureStyleTag()
+    first()
+    first()
     expect(document.head.children).toHaveLength(1)
 
-    dispose()
+    second()
     expect(document.head.children).toHaveLength(0)
+    // A late second call after the tag is gone is harmless too.
+    expect(() => {
+      second()
+    }).not.toThrow()
   })
 
   it('refreshes the text of a reused tag after a stylesheet change', () => {
     const document = createFakeDocument()
     installDocument(document)
 
-    const dispose = ensureStyleTag()
+    const first = ensureStyleTag()
     expect(document.head.children[0]?.textContent).toBe(styles)
     document.head.children[0]!.textContent = '/* stale */'
 
-    ensureStyleTag()
+    const second = ensureStyleTag()
     expect(document.head.children[0]?.textContent).toBe(styles)
+    first()
+    second()
+  })
+
+  it('adopts a matching tag already in the document instead of stacking a second one', () => {
+    // Written by an older module instance that predates the shared refcount.
+    const document = createFakeDocument()
+    installDocument(document)
+    const orphan = document.createElement('style')
+    orphan.setAttribute(STYLE_ATTRIBUTE, STYLE_KEY)
+    orphan.textContent = '/* older sheet */'
+    document.head.appendChild(orphan)
+
+    const dispose = ensureStyleTag()
+    expect(document.head.children).toHaveLength(1)
+    expect(document.head.children[0]).toBe(orphan)
+    expect(orphan.textContent).toBe(styles)
+
     dispose()
+    expect(document.head.children).toHaveLength(0)
+  })
+
+  it('replaces a known tag that was detached from the document', () => {
+    const document = createFakeDocument()
+    installDocument(document)
+
+    const first = ensureStyleTag()
+    const detached = document.head.children[0]!
+    detached.remove()
+    expect(document.head.children).toHaveLength(0)
+
+    const second = ensureStyleTag()
+    expect(document.head.children).toHaveLength(1)
+    expect(document.head.children[0]).not.toBe(detached)
+
+    first()
+    expect(document.head.children).toHaveLength(1)
+    second()
+    expect(document.head.children).toHaveLength(0)
   })
 
   it('re-injects after the tag was removed and disposes the new tag', () => {
@@ -137,6 +208,58 @@ describe('ensureStyleTag', () => {
     const second = ensureStyleTag()
     expect(document.head.children).toHaveLength(1)
     second()
+    expect(document.head.children).toHaveLength(0)
+  })
+
+  it('shares the refcount across module instances so an old dispose cannot remove a live tag', async () => {
+    const document = createFakeDocument()
+    installDocument(document)
+
+    const disposeOld = ensureStyleTag()
+    const tag = document.head.children[0]
+    // A hot update changed the stylesheet while the old tag was installed.
+    tag!.textContent = '/* stale from the replaced instance */'
+
+    // A second module instance, as a client-plugin hot update (or a reloaded
+    // test module) would evaluate.
+    vi.resetModules()
+    const fresh = await import('../src/client/styles.ts')
+    // Guard the premise: the reload really evaluated a second module instance.
+    expect(fresh.ensureStyleTag).not.toBe(ensureStyleTag)
+    const disposeFresh = fresh.ensureStyleTag()
+
+    // The new instance adopted the existing tag and refreshed its text.
+    expect(document.head.children).toHaveLength(1)
+    expect(document.head.children[0]).toBe(tag)
+    expect(tag?.textContent).toBe(styles)
+
+    // Disposing the old instance must release only its own reference: the tag
+    // is still in use by the new instance.
+    disposeOld()
+    expect(tag?.isConnected).toBe(true)
+    expect(document.head.children).toHaveLength(1)
+
+    // The last reference removes it.
+    disposeFresh()
+    expect(document.head.children).toHaveLength(0)
+  })
+
+  it('re-creates the tag after every module instance released it', async () => {
+    const document = createFakeDocument()
+    installDocument(document)
+
+    const disposeOld = ensureStyleTag()
+    vi.resetModules()
+    const fresh = await import('../src/client/styles.ts')
+    const disposeFresh = fresh.ensureStyleTag()
+    disposeOld()
+    disposeFresh()
+    expect(document.head.children).toHaveLength(0)
+
+    // A fresh reference after the refcount hit zero installs a new tag.
+    const disposeAgain = fresh.ensureStyleTag()
+    expect(document.head.children).toHaveLength(1)
+    disposeAgain()
     expect(document.head.children).toHaveLength(0)
   })
 })

@@ -12,7 +12,7 @@
 | 6 | `@yankeguo/dsh-devlead-bundle` | 安装入口 bundle（`cordis.patch.yml` 装齐整套） |
 
 `pnpm publish -r` 会按依赖拓扑自动排序，**功能包先发、bundle 最后发布**；
-bundle 的 `workspace:*` 依赖在打包时会被改写为当前精确版本（`0.1.1` 等）。
+bundle 的 `workspace:*` 依赖在打包时会被改写为当前精确版本（`0.2.0` 等）。
 
 ## 两种发布方式
 
@@ -154,7 +154,10 @@ pnpm build                         # 生成 packages/*/lib（lib 被 gitignore�
 pnpm check:packages                # 包不变式：版本/engines/peer 规则/DSH 依赖/实验包/模块表/client inject/别名/lockfile/CI pin
 pnpm release:dry                   # 递归 dry-run：打印 6 个包的发布计划，不上传
 
-# 可选（本机，需要已安装的 DSH 桌面端）：真实 DSH 端到端冒烟，两条加载流各 33 项检查
+# 可选（本机，需要已安装的 DSH 桌面端）：真实 DSH 端到端冒烟。
+# 0.2.0 起每条加载流跑多阶段（默认组合 + 重启验证冷 lead 索引重建 + 叠加实验 forge
+# bundle 的 worktree happy path），全过时报 61/61（阶段 1 27 + 1b 12 + 2 22）；
+# 只想跳过实验组合这个阶段时加 --no-worktree（此时报 39/39，阶段 1 + 1b）
 pnpm e2e && pnpm e2e --flow installed
 ```
 
@@ -257,9 +260,12 @@ dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.2.0
 - `engines.dsh` 当前为 `>=0.2.2-rc.1 <0.3.0`，**所有插件 / bundle 包都声明**；
   DSH 升级到 0.3 时需更新该范围并回归。
 - 破坏性变更：遵循 semver；预发布版本请使用 `-rc.N` / `-alpha.N` 后缀。
-- 当前工作树新增了必填的 `DevLeadCreatedSession.isolation` 字段与 `devLeadMode` projection，
-  下一次发布应为 **minor（0.2.0）**；发布前同步 README / release notes，并复核旧 core 与新
-  tool 混装时的 `isolation` 降级（tool 已对缺失字段回退 `none`）。
+- 当前工作树即 **0.2.0** 发版内容（minor，含 breaking）：`isolation` 必填字段正式声明、
+  `useWorkspace(agent, request)` + `create` 默认 `false`、`wakeColdSession` 默认 `true`、
+  `promptSession` 的 watch 补偿、`hasQueuedNotice` 保留 batch、`/devlead reset` + 冻结恢复、
+  以及 nits（React 渲染测试、样式 refcount 等）。发布前同步 README / README.zh /
+  `docs/releases/v0.2.0.md`，并复核旧 core + 新 tool 混装时 `isolation` 的防御性降级
+  （tool 对缺失字段回退 `{requested:'none',status:'none'}`）。
 
 ## 常见问题
 

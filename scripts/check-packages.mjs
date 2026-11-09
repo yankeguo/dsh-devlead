@@ -28,6 +28,7 @@ const DEV_INFRA = {
   typescript: 'the typecheck script',
   '@types/node': 'tsconfig.base.json "types"',
   '@types/react': 'JSX attributes for the client sources',
+  '@types/react-test-renderer': 'types for the client component/hook render tests',
 }
 
 /** Expected pinned toolchain used by every workflow. */

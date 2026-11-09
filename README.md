@@ -28,13 +28,14 @@ interface that the human can see and interact with.
   every child visible and able to be taken over by the human.
 - **Notification loop.** A DevLead watches child sessions. Whenever a watched session's turn
   settles (completed / failed / blocked / cancelled / …), the Host writes a notification into
-  the DevLead session's durable log and, while the DevLead agent is indexed and alive, wakes it
-  with a `devlead`-sourced message so it can decide what to do next (follow up, dispatch new
-  work, or report to the human). See [Known limitations](#known-limitations) for the disposed /
-  closed-lead case.
+  the DevLead session's durable log and wakes it with a `devlead`-sourced message so it can
+  decide what to do next (follow up, dispatch new work, or report to the human). The watch index
+  survives a Host restart / plugin reload (rebuilt from the durable records) and a disposed lead
+  keeps observing, so a queued wake is not silently lost. See [Notification loop](#notification-loop)
+  for the cold-lead policy and [Known limitations](#known-limitations) for the residual cases.
 
 Documentation: [Design notes (中文)](docs/DESIGN.md) · [Publishing guide (中文)](docs/PUBLISHING.md) ·
-[Audit record (中文)](docs/AUDIT.md) · [v0.1.1 release notes (中文)](docs/releases/v0.1.1.md) ·
+[Audit record (中文)](docs/AUDIT.md) · [v0.2.0 release notes (中文)](docs/releases/v0.2.0.md) ·
 [Bundle package (中文)](packages/bundle/README.md) · Package READMEs:
 [protocol](packages/protocol/README.md) · [devlead](packages/devlead/README.md) ·
 [tool](packages/tool/README.md) · [command](packages/command/README.md) ·
@@ -49,9 +50,10 @@ Documentation: [Design notes (中文)](docs/DESIGN.md) · [Publishing guide (中
 | Standard DSH entities | Child sessions are ordinary Sessions (visible in the sidebar; humans can open and take them over); Workspaces go through `workspaceRegistry`, not subagents |
 | Optional worktree isolation | When the Host composes DSH's experimental Git worktree service (`ctx.worktrees`), `devlead_create_session` can request `isolation: "worktree"` so a writing Session gets its own branch and checkout instead of sharing the Workspace checkout; detection is optional and a missing capability degrades to the shared checkout with a reported status, never an error (see [Optional worktree isolation](#optional-worktree-isolation)) |
 | 8 model tools | Register/list Workspaces, create/read/continue/watch Sessions, read the notification digest (see [Model tools](#model-tools)) |
-| Human commands | `/devlead` (status), `/devlead on\|off`, `/devlead watch\|unwatch <session>`; sessions are addressable by full id or unique prefix |
-| Notification loop | A watched session's `turn/end` writes a durable notification and wakes an indexed DevLead through a coalescing window (configurable window and cold-session policy); a disposed lead stops observing until reopened (see [Known limitations](#known-limitations)) |
-| Event sourcing | Mode / watch set / notifications are ignorable `plugin:devlead/*` records with strict replay validation; survive restart / resume / fork |
+| Human commands | `/devlead` (status), `/devlead on\|off`, `/devlead reset` (damaged-state recovery), `/devlead watch\|unwatch <session>`; sessions are addressable by full id or unique prefix |
+| Notification loop | A watched session's `turn/end` writes a durable notification and wakes an indexed DevLead through a coalescing window (configurable window; cold leads are resumed by default); the watch index is rebuilt from durable records after a Host restart, and a disposed lead keeps observing (see [Notification loop](#notification-loop)) |
+| Event sourcing | Mode / watch set / notifications / reset are ignorable `plugin:devlead/*` records with strict replay validation; survive restart / resume / fork |
+| Damaged-state recovery | A corrupt `plugin:devlead/*` record freezes the fold, but the human-only `/devlead reset` (or `/devlead off` on a frozen fold) appends a `plugin:devlead/reset` record that restarts both projections from the default disabled state (see [Notification loop](#notification-loop)) |
 | Session projection | The `devLead` projection (`{ enabled, sessions, notifications }`) syncs state to the browser without a custom Remote API; its summary-sized companion `devLeadMode` (`{ enabled }`) rides every Session-list summary so sidebar rows can render the mark |
 | UI | Off: only a small composer-toolbar icon (unobtrusive, no permanent strip). On: a DevLeadBar above the composer with the switch, watched/running counts, and the latest notification; the UI only sends `/devlead on\|off` commands. Enabled Sessions are also marked in the sidebar session list |
 | Permission model | The mode switch can only be triggered by human commands/UI; notifications are runtime notices, not human instructions (see [Permission model](#permission-model)) |
@@ -234,7 +236,7 @@ be used for a real boot. To undo the link, delete
 
 ```sh
 # upgrade to a specific version (once published to npm)
-dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.1.1
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.2.0
 
 # uninstall (DSH cleans up the removed bundle selection the next time it loads the profile)
 dsh plugin --profile desktop remove @yankeguo/dsh-devlead-bundle
@@ -257,6 +259,7 @@ the DevLead icon in the composer toolbar while off, the strip switch while on.
 ```
 /devlead on        # enable DevLead mode for the current session (requires a live Agent)
 /devlead off       # disable; stops notification delivery immediately, retained records stay in the Session log
+/devlead reset     # human-only recovery: discard this session's DevLead state (also recovers a frozen fold)
 /devlead           # show status: switch, watched sessions (title/state), latest notifications, help
 /devlead status    # explicit alias of the above
 ```
@@ -268,7 +271,8 @@ the DevLead icon in the composer toolbar while off, the strip switch while on.
 | `/devlead` | status: mode, whether optional worktree isolation is available, watched sessions (title / live / running / latest turn), latest notifications, help line |
 | `/devlead status` | alias of `/devlead` |
 | `/devlead on` | enable DevLead mode for the current session |
-| `/devlead off` | disable DevLead mode for the current session |
+| `/devlead off` | disable DevLead mode for the current session; on a frozen (damaged) fold this also performs the implicit reset and recovers the session |
+| `/devlead reset` | human-only recovery: append a `plugin:devlead/reset` record, discarding this session's mode / watch set / notification digest / frozen failure and returning to the default disabled state |
 | `/devlead watch <session>` | watch a session (full id or unique prefix) |
 | `/devlead unwatch <session>` | stop watching it |
 
@@ -291,9 +295,11 @@ the DevLead icon in the composer toolbar while off, the strip switch while on.
    not as the implementation site.
 2. Decide ownership and register workspaces: decide which Workspace owns the request, then use
    `devlead_list_workspaces` to see what is registered. `devlead_use_workspace` takes the
-   repository's **absolute path**; `create` defaults to `true`, a missing directory is
-   `mkdir -p`-created, and re-registering is idempotent. If no repository matches, or more than
-   one could own it, ask and stop instead of guessing or inspecting another repository first.
+   repository's **absolute path**; re-registering is idempotent, and `create` defaults to
+   `false`: a missing directory is reported as `DEVLEAD_DIRECTORY_MISSING` instead of being
+   created. Set `create: true` only when the human explicitly asked to create that directory
+   (the tool description says the same). If no repository matches, or more than one could own
+   it, ask and stop instead of guessing or inspecting another repository first.
 3. Let the model dispatch work: `devlead_create_session` (optional `workspace` / `title` /
    `preset`) with a **self-contained prompt** — background, scope, decisions already made,
    deliverables, how to verify them, and what not to touch; pass the **owning Workspace** and
@@ -335,7 +341,7 @@ DevLead session:
 | Tool | Arguments | Returns (canonical JSON) |
 | --- | --- | --- |
 | `devlead_list_workspaces` | `{}` | `{ workspaces }` |
-| `devlead_use_workspace` | `path` (required, absolute), `title?`, `create?` (default true) | `{ workspace }` |
+| `devlead_use_workspace` | `path` (required, absolute), `title?`, `create?` (default false: a missing directory is an error; `true` creates it with `mkdir -p` after the human asked) | `{ workspace }` |
 | `devlead_list_sessions` | `workspace?`, `watched_only?`, `limit?` | `{ sessions, watched }` |
 | `devlead_create_session` | `workspace?`, `prompt?`, `title?`, `watch?` (default true), `preset?`, `isolation?` (default `none`; `worktree` = best-effort isolated checkout) | creation result (including the `isolation` outcome) |
 | `devlead_get_session` | `session` (required) | `{ session }` |
@@ -395,34 +401,52 @@ composed — the plugin never depends on it.
 - **The watch set is durable state:** a `plugin:devlead/watch` record replaces the whole watch
   set; only watched sessions produce notifications.
 - **Trigger:** every `turn/end` of a watched session (completed / failed / blocked / cancelled /
-  max-tokens / …) appends a `plugin:devlead/notification` record to the DevLead session's log
-  while the lead is indexed (a disposed lead stops observing until reopened; see
-  [Known limitations](#known-limitations)),
+  max-tokens / …) appends a `plugin:devlead/notification` record to the DevLead session's log,
   containing a deterministic id, the session title, the turn number, the transition kind, and
   either a failure excerpt or the last assistant-text excerpt before the turn settled (single
-  line, max 240 characters, stored in the notification's `summary` field).
+  line, max 240 characters, stored in the notification's `summary` field). If the lead Session
+  log is attached, the record is appended immediately and its durability checkpoint is requested
+  right away; if the lead is cold, the notification waits in an in-memory queue and is written
+  the moment the lead becomes live.
 - **Retention:** the projection keeps the latest 64 entries by constant; older records remain in
   the Session log, and `/devlead` / the strip show the most recent few.
 - **Coalescing window:** notifications are queued and merged for `notificationBatchMs` (default
   400 ms); when the window ends and the DevLead agent is still alive, it is woken with a message
   sourced `devlead` (`form: 'notice'`). If the agent is running, the followup queues for the next
   turn; an `agent/status` transition to idle also flushes the queue once.
-- **Cold DevLead sessions:** if the hub still holds a runtime for the lead while its Agent is not
-  live (for example a digest was queued just before the Agent went away), that digest stays
-  pending; by default only durable records are kept and no automatic resume happens
-  (`wakeColdSession: false`); when set to `true`, the Host first calls
-  `sessionController.resolveAgent(leadId)` and then delivers. Note: `agent/disposed` removes the
-  in-memory watch index, so turns that settle until the Session is opened again are not observed
-  (see [Known limitations](#known-limitations)); reopening the Session rebuilds the index from
-  the durable watch set.
+- **Cold and disposed DevLead sessions:** the hub keeps an indexed lead even after its Agent is
+  disposed, so a watched session's `turn/end` is still observed and recorded. At plugin load
+  (Host restart / plugin reload) the watch index is rebuilt from durable state. The Host cannot
+  report application-ready before that rebuild: `[Service.init]` waits for the durable corpus to
+  become readable (bounded at 2 s; a fresh Host with no stored Sessions proceeds immediately, a
+  steady Host pays one corpus comparison), then runs exactly one authoritative cold scan —
+  persisted Sessions are listed, the projection cache pre-filters them without log I/O,
+  candidates are exactly folded from their `plugin:devlead/*` records (unclassified rows are
+  capped at 64 full-log reads), and a corpus with no projection cache degrades to live Sessions
+  only. By
+  default (`wakeColdSession: true`) a queued notification first resumes the cold lead
+  (`sessionController.resolveAgent(leadId)`) and then delivers; set it to `false` to keep the
+  queues in memory and wait until a human opens the lead Session (which writes the pending
+  records and delivers). Turns that settle while the plugin is unloaded are lost; the next load
+  rebuilds the index from durable records.
 - **Dedupe and retry:** the same deterministic id appears only once per digest (a replayed
   `turn/end` cannot wake twice); a failed delivery is retried on a bounded 1 s timer instead of
-  being dropped; with `notificationBatchMs: 0`, a mode-off or a disposed agent can no longer
-  wake the lead.
-- **Archived lead session:** delivery pauses and the in-memory queue is dropped; durable records
-  are kept and become visible again once the session is restored.
+  being dropped. If the lead's inbox already holds an undelivered `devlead` notice, a new batch
+  is **kept pending** instead of being dropped: it is retried on the same 1 s timer (or as soon
+  as the idle-status hook fires), so a second wake is never lost. With `notificationBatchMs: 0`,
+  a mode-off or a disposed agent can no longer wake the lead.
+- **Archived lead session:** delivery pauses; notifications observed while the lead is cold are
+  persisted first (an archived Session can still append), then the in-memory queues are dropped.
+  Durable records are kept and become visible again once the session is restored.
 - **Mode off:** `/devlead off` stops delivery and wake-ups immediately; notifications already in
   flight stay in the log and are visible again after `/devlead on`.
+- **Damaged records:** a corrupt `plugin:devlead/*` record freezes replay, and reads/writes report
+  `DEVLEAD_PROJECTION_INVALID`. Recovery is human-only: `/devlead reset` appends a
+  `plugin:devlead/reset` record that discards the session's mode / watch set / digest / frozen
+  failure and returns to the default disabled state (`/devlead off` performs that reset
+  implicitly when the fold is frozen; `/devlead on` refuses and tells you to run `/devlead
+  reset` first). Older plugin versions treat the reset record as an unknown, ignorable record —
+  no crash, but no recovery either.
 - A wake-up message looks like this (English, model-facing):
 
 ```
@@ -450,7 +474,7 @@ the profile's `cordis.patch.yml` — DSH replaces a row's whole config):
     notificationBatchMs: 400     # coalescing window (ms, integer in [0, 2147483647])
     maxWatchedSessions: 64       # max watched sessions per lead (positive integer)
     maxListedSessions: 200       # max rows per session listing (positive integer)
-    wakeColdSession: false       # resume a cold DevLead Session for an already-queued digest
+    wakeColdSession: true        # resume a cold DevLead Session to deliver its queued notifications (default)
     defaultAgentPreset: ''       # default Agent preset for created sessions (empty = DSH default)
 ```
 
@@ -459,7 +483,7 @@ the profile's `cordis.patch.yml` — DSH replaces a row's whole config):
 | `notificationBatchMs` | `400` | integer in `[0, 2147483647]` (Node's timer ceiling); notifications in the window are merged into one wake-up message |
 | `maxWatchedSessions` | `64` | positive integer; a watch operation over the cap reports `DEVLEAD_WATCH_LIMIT` |
 | `maxListedSessions` | `200` | positive integer; row cap for listing calls (`devlead_list_sessions` / `/devlead` status). Identity resolution is not limited by it, and a watched-only listing never truncates below the watch set |
-| `wakeColdSession` | `false` | when `true`, a cold lead Session is resumed to deliver a digest that is already queued; it does not observe turns that settle while the lead is disposed (see [Known limitations](#known-limitations)) |
+| `wakeColdSession` | `true` | when `true`, a cold lead Session with queued notifications is resumed (`sessionController.resolveAgent`) to deliver them; set `false` to keep the queues in memory and wait for a human to open the lead Session. Observation is not affected by this flag |
 | `defaultAgentPreset` | `''` | default value used when a created session names no `preset`; an empty string means no preset |
 
 `tool` / `command` / `client-ui` have no deployment configuration; all domain limits (watch cap,
@@ -481,8 +505,10 @@ without it keeps the default single-checkout behavior and reports `unavailable`.
   only visible while the mode is enabled; `createSession`, `promptSession`, and `watchSession`
   revalidate live + mode in the core (`DEVLEAD_NOT_ENABLED` / `DEVLEAD_AGENT_NOT_LIVE`), and the
   command side only mutates the watch set within the human-authorized scope. Workspace
-  registration is a Host-level operation: the `devlead_use_workspace` tool requires a live caller,
-  while the core `useWorkspace` method itself is caller-free (documented API exception).
+  registration is a Host-level operation too, but it is no longer caller-free: since 0.2.0 the
+  core `useWorkspace(agent, { path, title?, create? }, signal?)` requires the same live lead
+  Agent and an enabled mode (`DEVLEAD_NOT_ENABLED` / `DEVLEAD_AGENT_NOT_LIVE`), and it never
+  creates a missing directory unless the caller explicitly passes `create: true`.
 - **Notifications are not instructions:** both wake-up messages and child output can embed text;
   the DevLead system prompt requires treating notifications as runtime notices and never
   performing unauthorized work or making permission decisions from them.
@@ -497,12 +523,15 @@ without it keeps the default single-checkout behavior and reports `unavailable`.
 
 - **One durable mode per Session:** once enabled it stays enabled across DSH restarts and session
   resumes; a human must run `/devlead off`.
-- **Cold DevLead sessions are not resumed automatically by default:** notifications only stay in
-  the durable log; set `wakeColdSession: true` if needed.
-- **A disposed lead stops observing until reopened:** `agent/disposed` (and a Host restart) drops
-  the lead's in-memory watch index. Watched turns that settle while the Session is closed are not
-  recorded as notifications; opening the Session again rebuilds the index from the durable watch
-  set, and `wakeColdSession` only applies to a digest that was already recorded/queued.
+- **Cold leads are resumed by default:** after a Host restart / plugin reload the watch index is
+  rebuilt from durable records, and a queued notification resumes the cold lead Session unless
+  `wakeColdSession` is explicitly set to `false` (then the queues wait in memory for a human to
+  open the lead). Resume requires the Host to compose a Session activator; without it the records
+  stay durable and are delivered when the Session is opened.
+- **The watch index is process-local transport:** a disposed lead keeps observing and keeps
+  recording notifications, and the index is rebuilt after a restart/reload; only while the plugin
+  itself is unloaded are settled turns unobserved (the events are not replayed per watcher), so a
+  turn that ends during an unload is not notified.
 - **64 retained notifications:** the projection truncates at that constant; older records remain
   in the Session log.
 - **Default caps of 64 watched / 200 listed:** configurable; the command's candidate list is
@@ -534,9 +563,14 @@ without it keeps the default single-checkout behavior and reports `unavailable`.
   first turn.
 - **Child sessions are ordinary sessions:** they appear in the sidebar and consume model quota
   normally — they are not hidden subagents.
-- **Damaged DevLead records fail closed:** replay freezes at the first corrupt
-  `plugin:devlead/*` record; tool/status reads and writes report `DEVLEAD_PROJECTION_INVALID`, and
-  `/devlead off` cannot rewrite the frozen fold. Repair the offending record in the Session log.
+- **Damaged DevLead records fail closed but are recoverable:** replay freezes at the first
+  corrupt `plugin:devlead/*` record and tool/status reads and writes report
+  `DEVLEAD_PROJECTION_INVALID`. The human-only `/devlead reset` (or `/devlead off` on a frozen
+  fold) appends a `plugin:devlead/reset` record that discards the session's DevLead state (mode,
+  watch set, digest, frozen failure) and returns to the default disabled state; the old records
+  stay in the log but are no longer folded. `/devlead on` refuses while frozen and asks for the
+  reset. Older plugin versions ignore the reset record as an unknown record (no crash, no
+  recovery).
 
 ## Troubleshooting
 
@@ -548,7 +582,7 @@ without it keeps the default single-checkout behavior and reports `unavailable`.
 | `/devlead on` says "no longer live" | the Agent is no longer the live instance in the registry; reopen the session from the sidebar and retry |
 | `/devlead watch` reports ambiguity | the prefix matches several sessions; use a longer prefix or the full id from the candidates in the error |
 | `/devlead watch` reports the mode is off | run `/devlead on` first; watch-set changes require the mode |
-| A child's turn settled but the DevLead was not woken | the mode is off, the session is not watched, the DevLead agent is not alive (a disposed lead stops observing until reopened; a queued digest may still be waiting), or the notification is still inside the coalescing window |
+| A child's turn settled but the DevLead was not woken | the mode is off, the session is not watched, the lead is cold and `wakeColdSession: false` (queues wait for the Session to be opened), the Host composes no Session activator to resume it, the notification is still inside the coalescing window, or the wake is waiting for an undelivered notice to leave the inbox (retried within 1 s) |
 | The DevLead switch seems to do nothing | the command may still be running (the switch is disabled); when enabling fails, the error shows inline in the strip or in the icon tooltip |
 | The strip's counts disagree with the sidebar | the strip computes from the projection's watch set and the standard Session list; a just-changed value can lag briefly — reload the page to re-read |
 | Cannot find the switch while off | it is the user icon in the composer toolbar (next to the permission dropdown); hover shows "Turn on DevLead mode"; `/devlead on` also works |
@@ -556,6 +590,9 @@ without it keeps the default single-checkout behavior and reports `unavailable`.
 | Under a dev overlay, `/devlead on` throws `gateway/internal: Receiver must be an instance of class Session` | the overlay has no linked root (stale generated overlay, hand-written patch, or the profile was swapped). Re-run `pnpm dev:patch --profile <dev>` and confirm `<profile>/node_modules/devlead-repo` exists, then restart; or use `pnpm e2e` to run the correct flow |
 | `pnpm dev:patch` reports profile not found / already enables bundle | a dedicated dev profile is required: `dsh devlead --from-default-profile web --dump-config`; a profile that enables this bundle cannot take a second loader row with the same id |
 | Passing `title` to an already-registered Workspace has no effect | expected: `title` only applies when registering a new Workspace record; an existing record keeps its title |
+| `/devlead` / tools report `DEVLEAD_PROJECTION_INVALID` | a `plugin:devlead/*` record in this Session's log is corrupt and replay froze. Run `/devlead reset` (human-only; discards the mode, watch set, and notification digest) — `/devlead off` does that implicitly, `/devlead on` refuses until the reset. Old plugin versions cannot recover. |
+| `devlead_use_workspace` reports `DEVLEAD_DIRECTORY_MISSING` | the directory does not exist and creation is not allowed by default. Create it first, or retry with `create: true` once the human explicitly asked for that directory |
+| A cold lead was resumed unexpectedly after a restart | expected default: `wakeColdSession` is `true` since 0.2.0; set it to `false` to keep queued notifications in memory until a human opens the lead Session |
 | `devlead_create_session` reports `isolation.status: "unavailable"` | the profile does not compose DSH's experimental worktree service (the default Web profile never does); either enable the experimental worktree bundle or dispatch writing Sessions serially — the Session was still created and works in the shared checkout |
 | `devlead_create_session` reports `isolation.status: "failed"` | the worktree service is present but creation failed (restrictive sandbox, existing branch name, non-Git checkout, existing checkout path); the `reason` carries the Git/service error, and the Session continues in the shared checkout |
 
@@ -565,8 +602,9 @@ DevLead is built for the **default DSH Web composition** (`dsh-base` + `dsh-web-
 experimental bundle and no third-party plugin. Every non-default capability is read through
 optional service lookups (`ctx.get(...)`) and degrades to a documented behavior instead of
 failing: the Workspace registry, Session controller, Session title service, and Session query
-service are optional peers, and the experimental Git worktree service is only borrowed for opt-in
-isolation. The full package-by-package judgment table, including the client-side
+service are optional peers; the Session projection cache and persistence services are probed to
+rebuild the watch index after a restart (missing ones degrade cold rehydration to live Sessions
+only); and the experimental Git worktree service is only borrowed for opt-in isolation. The full package-by-package judgment table, including the client-side
 `dsh.client.inject` ids, is in [`docs/OPTIONAL-DEPENDENCIES.md`](docs/OPTIONAL-DEPENDENCIES.md).
 
 ## Development and verification
@@ -584,31 +622,51 @@ pnpm dev:patch      # generate the overlay and register the linked root (see "In
 `pnpm e2e` defaults to the `patch` loading flow (equivalent to the dev overlay above);
 `pnpm e2e --flow installed` uses the `install-profile` package-link flow. It runs locally only
 (needs an installed DSH runtime) and CI does not include it. Both flows drive the real browser
-HTTP API and assert `/devlead on`, the projection flip, watching a real child session, the
-watched child's `turn/end` → durable notification → visible projection, and `/devlead off`.
-The throwaway profile uses the shipped default Web composition, so the run also proves the
-no-experimental-plugin posture: `/devlead status` must report `Worktree isolation: unavailable`
-and the rest of the product must keep working.
+HTTP API. **Since 0.2.0 the smoke test runs multiple phases on the same scratch root/profile:**
+phase 1 is the default-composition run (`/devlead on`, projection flip, watching a real child
+session, the watched child's `turn/end` → durable notification → visible projection, and
+`Worktree isolation: unavailable` proving the no-experimental-plugin posture); phase 1b restarts
+the same flow against the same throwaway `DSH_HOME` and verifies **cold lead rehydration** (the
+cold lead's projection still folds from the durable log, the cold child Session is resumed, its
+next `turn/end` produces a new notification, and `/devlead status` + `/devlead off` work after
+the lead is resumed); phase 2 adds `@deepseek-ai/dsh-experimental-forge-bundle` to the throwaway
+profile's `dsh.profile.bundles`, restarts with a probe command, and asserts the worktree happy
+path end to end (`Worktree isolation: available`; creation result `status: 'worktree'` with
+non-empty `path`/`branch`/`baseCommit`; `git worktree list` and the branch exist; `baseCommit`
+equals the checkout `HEAD`; the child's effective cwd is the worktree path while its header cwd
+still points at the Workspace; the Session still belongs to that Workspace). Per-phase and total
+check counts are **61/61 per flow** (phase 1 = 27, phase 1b = 12, phase 2 = 22);
+`--no-worktree` skips only the experimental phase, reporting **39/39** (phases 1 + 1b) for
+debugging. The phase-2 probe is a private
+test-only package under `scripts/e2e-probe/`, not a published or workspace package. The profile
+mutations happen only in the throwaway profile under `os.tmpdir()`; no pnpm install, network, or
+lockfile change is involved.
 
 Test layout (details in [`docs/DESIGN.md`](docs/DESIGN.md) §9, Chinese):
 
 - `protocol`: formatting / transition detection / shared types and other pure functions;
-- `devlead`: strict fold (mode / watch / notifications / corrupt records / truncation), strict
-  decoders (field sets / time ranges), notification pump (coalescing / dedupe / retry / dispose /
-  cold sessions), Workspace and Session orchestration (fake services), listing order and
-  truncation, identity resolution (addressable beyond the listing window);
+- `devlead`: strict fold (mode / watch / notifications / corrupt records / truncation / reset
+  recovery), strict decoders (field sets / time ranges), notification pump (coalescing / dedupe /
+  retry / queued-notice retention / cold sessions / dispose), cold lead rehydration (fake Session
+  query + projection cache), promptSession auto-watch compensation, Workspace and Session
+  orchestration (fake services), listing order and truncation, identity resolution (addressable
+  beyond the listing window);
 - `tool`: `when` gating, argument validation, value rendering, error translation, execute
   forwarding and cancellation-signal forwarding for every tool, and the policy text contract
-  (dispatch-first role, write boundary, ownership resolution);
-- `command`: `/devlead` grammar parsing, session prefix resolution (unique / ambiguous / missing),
-  status rendering, every error path;
+  (dispatch-first role, write boundary, ownership resolution, opt-in directory creation);
+- `command`: `/devlead` grammar parsing (including `reset`), session prefix resolution (unique /
+  ambiguous / missing), status rendering, frozen-fold recovery, concurrent title/body consistency,
+  every error path;
 - `client-ui`: formatting / command-result extraction / admission state machine / style-injection
-  contract and other pure functions.
+  contract and other pure functions, plus React render tests (`react-test-renderer`) for the two
+  entry points and the admission hook, and the cross-instance style-tag refcount.
 
-Local end-to-end acceptance: `pnpm verify && pnpm e2e`. The E2E boots an isolated DSH and walks
-`/devlead on` → watch a real child session → the child's turn settles → the notification reaches
-the lead projection → `/devlead off`; `--flow patch` and `--flow installed` cover both loading
-paths.
+Local end-to-end acceptance: `pnpm verify && pnpm e2e`. The phased E2E boots an isolated DSH:
+phase 1 walks `/devlead on` → watch a real child session → the child's turn settles → the
+notification reaches the lead projection; phase 1b restarts it and verifies cold lead rehydration
+(cold child resumed, new notification after the restart); phase 2 re-composes the experimental
+forge bundle and verifies the worktree happy path end to end. `--flow patch` and `--flow installed`
+cover both loading paths.
 
 ## Publishing
 

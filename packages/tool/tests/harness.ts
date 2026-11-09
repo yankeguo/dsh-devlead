@@ -25,6 +25,7 @@ import type {
   DevLeadPromptedSession,
   DevLeadProjection,
   DevLeadSessionView,
+  DevLeadUseWorkspaceRequest,
   DevLeadWatchMutation,
   DevLeadWorkspaceView,
 } from '@yankeguo/dsh-devlead-protocol'
@@ -171,10 +172,11 @@ export class FakeDevLead {
   }
 
   async useWorkspace(
-    path: string,
-    options?: { title?: string; create?: boolean; signal?: AbortSignal },
+    agent: Agent,
+    request: DevLeadUseWorkspaceRequest,
+    signal?: AbortSignal,
   ): Promise<DevLeadWorkspaceView> {
-    this.enter('useWorkspace', path, options)
+    this.enter('useWorkspace', agent, request, signal)
     return this.workspaces[0] ?? WORKSPACE
   }
 

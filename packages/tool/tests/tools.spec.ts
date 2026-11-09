@@ -207,6 +207,8 @@ describe('policy', () => {
     expect(text).toContain('decide the owning Workspace from devlead_list_workspaces metadata')
     expect(text).toContain('If none matches, or more than one could own it, ask and stop')
     expect(text).toContain("Never use this session's directory as a fallback")
+    expect(text).toContain('A missing directory is never created by default')
+    expect(text).toContain('set create true only when the human explicitly asked to create that directory')
     expect(text).toContain('Once the brief is writable, stop reading and dispatch')
     expect(text).toContain('deeper investigation belongs to the dispatched Session')
     expect(text).toContain('continue that Session with devlead_prompt_session instead of opening a duplicate')
@@ -357,21 +359,34 @@ describe('devlead_list_workspaces', () => {
 })
 
 describe('devlead_use_workspace', () => {
-  it('defaults to creating a missing directory and omits an absent title', async () => {
+  it('requires a live caller, defaults create to false, and omits an absent title', async () => {
     const harness = boot()
     const value = await harness.call('devlead_use_workspace', { path: '/tmp/webapp' })
-    const [path, options] = harness.devLead.callsOf('useWorkspace')[0] ?? []
-    expect(path).toBe('/tmp/webapp')
-    expect(options).toEqual({ create: true, signal: harness.exec.signal })
+    const [agent, request, signal] = harness.devLead.callsOf('useWorkspace')[0] ?? []
+    expect(agent).toBe(harness.agent)
+    expect(request).toEqual({ path: '/tmp/webapp', create: false })
+    expect(signal).toBe(harness.exec.signal)
     expect(value).toEqual({ workspace: WORKSPACE })
   })
 
-  it('trims the path and title and forwards an explicit create flag', async () => {
+  it('trims the path and title and forwards the explicit create opt-in', async () => {
     const harness = boot()
-    await harness.call('devlead_use_workspace', { path: '  /tmp/webapp  ', title: '  webapp  ', create: false })
-    const [path, options] = harness.devLead.callsOf('useWorkspace')[0] ?? []
-    expect(path).toBe('/tmp/webapp')
-    expect(options).toEqual({ create: false, title: 'webapp', signal: harness.exec.signal })
+    await harness.call('devlead_use_workspace', { path: '  /tmp/webapp  ', title: '  webapp  ', create: true })
+    const [agent, request, signal] = harness.devLead.callsOf('useWorkspace')[0] ?? []
+    expect(agent).toBe(harness.agent)
+    expect(request).toEqual({ path: '/tmp/webapp', title: 'webapp', create: true })
+    expect(signal).toBe(harness.exec.signal)
+  })
+
+  it('advertises the non-creating default and the explicit human opt-in', () => {
+    const harness = boot()
+    const definition = harness.tool('devlead_use_workspace').definition
+    expect(definition.description).toContain('only when the human explicitly asked to create that directory')
+    const parameters = definition.parameters as {
+      properties: { create: { type: string; description: string } }
+    }
+    expect(parameters.properties.create.description)
+      .toBe('Defaults to false. Set true only when the human asked to create the directory.')
   })
 
   it('rejects a relative path before calling the core service', async () => {

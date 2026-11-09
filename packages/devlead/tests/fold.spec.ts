@@ -15,12 +15,17 @@ import {
   DEVLEAD_MODE_RECORD_TYPE,
   DEVLEAD_NOTIFICATION_RECORD_TYPE,
   DEVLEAD_PROJECTION_KEY,
+  DEVLEAD_RESET_RECORD_TYPE,
   DEVLEAD_WATCH_RECORD_TYPE,
 } from '@yankeguo/dsh-devlead-protocol'
 import type { DevLeadNotification, DevLeadProjection, DevLeadProjectionState } from '@yankeguo/dsh-devlead-protocol'
+import { resetRecord } from '../src/domain.ts'
 import {
+  applyDevLeadModeProjection,
   applyDevLeadProjection,
+  devLeadModeProjectionDefinition,
   devLeadProjectionDefinition,
+  emptyDevLeadModeProjectionState,
   devLeadProjectionSchema,
   devLeadProjectionStateSchema,
   devLeadProjectionView,
@@ -502,6 +507,83 @@ describe('wire view and schemas', () => {
         notifications: [{ ...notification(), summary: '' }],
       }).success,
     ).toBe(false)
+  })
+})
+
+describe('reset records', () => {
+  it('discards an earlier mode, watch set, and digest when the fold is healthy', () => {
+    const state = fold([
+      modeEvent(0, true),
+      watchEvent(1, ['session-alpha']),
+      notificationEvent(2, notification({ sessionId: 'session-alpha', turn: 1 })),
+      pluginRecordEvent(3, DEVLEAD_RESET_RECORD_TYPE, resetRecord(T0)),
+      modeEvent(4, true),
+    ])
+    expect(state.failure).toBeNull()
+    // The reset restarts the fold: earlier records contribute nothing, and the
+    // records after it fold normally (the trailing mode record turns it on).
+    expect(state).toEqual({ ...emptyDevLeadProjectionState(), enabled: true })
+  })
+
+  it('unfreezes a frozen fold and lets later records fold again', () => {
+    const frozen = fold([
+      modeEvent(0, true),
+      watchEvent(1, ['session-alpha']),
+      corruptModeRecord({ kind: 'devlead/mode', version: 9, enabled: false, at: T0 }),
+    ])
+    expect(frozen.failure).not.toBeNull()
+    const recovered = apply(frozen, pluginRecordEvent(2, DEVLEAD_RESET_RECORD_TYPE, resetRecord(T0)))
+    expect(recovered).toEqual(emptyDevLeadProjectionState())
+    const after = apply(apply(recovered, watchEvent(3, ['session-beta'])), modeEvent(4, true))
+    expect(after.failure).toBeNull()
+    expect(after.sessions).toEqual(['session-beta'])
+    expect(after.enabled).toBe(true)
+  })
+
+  it('does not unfreeze on a malformed reset payload', () => {
+    const frozen = fold([corruptModeRecord({ kind: 'devlead/mode', version: 2, enabled: true, at: T0 })])
+    const firstFailure = frozen.failure
+    const stillFrozen = apply(
+      frozen,
+      pluginRecordEvent(1, DEVLEAD_RESET_RECORD_TYPE, { kind: 'devlead/reset', version: 1 }),
+    )
+    // A corrupt marker must not be able to discard the evidence of a corrupt
+    // log; only a structurally valid human-written reset recovers.
+    expect(stillFrozen).toBe(frozen)
+    expect(stillFrozen.failure).toBe(firstFailure)
+  })
+
+  it('freezes on a malformed reset record when the state was still valid', () => {
+    const failed = fold([pluginRecordEvent(0, DEVLEAD_RESET_RECORD_TYPE, { kind: 'devlead/reset', version: 1, at: -1 })])
+    expect(failed.failure).toContain(`(${DEVLEAD_RESET_RECORD_TYPE})`)
+    expect(failed.failure).toContain('reset record at')
+  })
+
+  it('resets the summary-sized mode projection too', () => {
+    const enabled = applyDevLeadModeProjection(
+      emptyDevLeadModeProjectionState(),
+      pluginRecordEvent(0, DEVLEAD_MODE_RECORD_TYPE, { kind: 'devlead/mode', version: 1, enabled: true, at: T0 }),
+    )
+    expect(enabled).toEqual({ enabled: true, failure: null })
+    const reset = applyDevLeadModeProjection(
+      enabled,
+      pluginRecordEvent(1, DEVLEAD_RESET_RECORD_TYPE, resetRecord(T0)),
+    )
+    expect(reset).toEqual(emptyDevLeadModeProjectionState())
+    // The definition is the registered unit contract: its init matches the
+    // recovered state, so a cached checkpoint of either is interchangeable.
+    expect(devLeadModeProjectionDefinition.init()).toEqual(emptyDevLeadModeProjectionState())
+  })
+
+  it('keeps the reset record inside the strict model-facing vocabulary', () => {
+    // The protocol unit vocabulary must name the record type, or a writer could
+    // stamp a type the projection registry never folds.
+    expect(DEVLEAD_RESET_RECORD_TYPE.startsWith('plugin:')).toBe(true)
+    const bad = apply(
+      emptyDevLeadProjectionState(),
+      pluginRecordEvent(0, DEVLEAD_RESET_RECORD_TYPE, { ...resetRecord(T0), extra: true }),
+    )
+    expect(bad.failure).toContain('unexpected field "extra"')
   })
 })
 

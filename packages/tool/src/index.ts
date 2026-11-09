@@ -70,9 +70,9 @@ const LIST_WORKSPACES_DESCRIPTION =
   + 'Workspace or dispatching a Session.'
 
 const USE_WORKSPACE_DESCRIPTION =
-  'Register a repository directory as a DSH Workspace so Sessions can be created in it. The path must be absolute; an '
-  + 'already-registered path is reused with its existing title, and when the directory is missing it is created first '
-  + 'unless create is false.'
+  'Register a repository directory as a DSH Workspace so Sessions can be created in it. The path must be absolute, and '
+  + 'an already-registered path is reused with its existing title. A missing directory is an error by default: set '
+  + 'create to true only when the human explicitly asked to create that directory.'
 
 const LIST_SESSIONS_DESCRIPTION =
   'List DSH Sessions this DevLead Session can address: whether each is live, running, watched, or archived, plus '
@@ -151,21 +151,25 @@ export function apply(ctx: Context): void {
       },
       create: {
         type: 'boolean',
-        description: 'Create the directory when it is missing. Defaults to true.',
+        description: 'Defaults to false. Set true only when the human asked to create the directory.',
       },
     },
     output: USE_WORKSPACE_OUTPUT,
     presentCall: presentUseWorkspaceCall,
     execute(args, exec) {
       return runTool(async () => {
-        requireAgent(exec.agent, 'devlead_use_workspace')
+        const agent = requireAgent(exec.agent, 'devlead_use_workspace')
         const path = requireAbsolutePath(args.path)
         const title = optionalText(args.title)
-        const workspace = await ctx.devLead.useWorkspace(path, {
-          create: args.create ?? true,
-          signal: exec.signal,
-          ...title === undefined ? {} : { title },
-        })
+        const workspace = await ctx.devLead.useWorkspace(
+          agent,
+          {
+            path,
+            ...title === undefined ? {} : { title },
+            create: args.create ?? false,
+          },
+          exec.signal,
+        )
         return { workspace: workspaceValue(workspace) }
       })
     },

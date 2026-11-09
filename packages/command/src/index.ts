@@ -1,8 +1,8 @@
 /**
  * Human-facing `/devlead` command over the DevLead core service: flip the
- * human-only mode switch for the receiving Session, watch or unwatch another
- * Session (exact id or unique id prefix), and inspect the current mode, watch
- * set, and recent notification digest.
+ * human-only mode switch for the receiving Session, reset a damaged durable
+ * state, watch or unwatch another Session (exact id or unique id prefix), and
+ * inspect the current mode, watch set, and recent notification digest.
  *
  * The command is the only human entry point the DevLead UI uses (`/devlead on`
  * and `/devlead off` via the remote command executor), so it owns every
@@ -34,7 +34,7 @@ export const name = 'command-devlead'
 export const inject = ['commands', 'devLead']
 
 const DESCRIPTION =
-  'Turn DevLead mode on or off for this Session, watch or unwatch another Session, '
+  'Turn DevLead mode on or off for this Session, reset damaged DevLead state, watch or unwatch another Session, '
   + 'and inspect the DevLead mode, watch set, and recent notification digest.'
 
 /** Shown whenever a write needs DevLead mode and the receiving Session is not a lead. */
@@ -187,19 +187,89 @@ async function resolveWatchTarget(
   return { kind: 'failure', result: missingSessionResult(reference) }
 }
 
+/**
+ * Whether one status snapshot lists a Session as watched. The snapshot splits
+ * watched Sessions into the rows the host could describe and the ids it could
+ * not, so a membership check must consider both halves.
+ * @param snapshot - status snapshot taken from one projection read.
+ * @param sessionId - exact Session identity to look up.
+ * @returns true when the snapshot's watch set contains the Session.
+ */
+function snapshotWatches(snapshot: DevLeadStatusSnapshot, sessionId: string): boolean {
+  return snapshot.watched.some(view => view.sessionId === sessionId)
+    || snapshot.missingWatched.includes(sessionId)
+}
+
+/**
+ * Derive a `/devlead on|off` outcome title from the mode the post-mutation
+ * snapshot actually shows, so the title can never claim a state the body does
+ * not render. A concurrent command or UI toggle can flip the switch between the
+ * decision read and the render; the title then names what the human is looking
+ * at instead of what this invocation asked for.
+ * @param requested - mode the invocation asked for.
+ * @param previous - mode the decision read observed before any mutation.
+ * @param actual - mode the post-mutation snapshot shows.
+ * @returns the one-line outcome title.
+ */
+function modeTitle(requested: boolean, previous: boolean, actual: boolean): string {
+  if (actual !== requested) {
+    return `DevLead mode is ${actual ? 'on' : 'off'} (another command changed it).`
+  }
+  if (previous !== requested) return requested ? 'DevLead mode enabled.' : 'DevLead mode disabled.'
+  return requested ? 'DevLead mode is already on.' : 'DevLead mode is already off.'
+}
+
+/**
+ * Derive a `/devlead watch|unwatch` outcome title from the watch set the
+ * post-mutation snapshot actually shows, so the title and the rendered watch
+ * list cannot disagree when another command changes the set concurrently.
+ * @param command - direction the invocation asked for.
+ * @param label - human-readable Session reference already rendered for the title.
+ * @param previous - whether the decision read observed the Session as watched.
+ * @param actual - whether the post-mutation snapshot lists the Session as watched.
+ * @returns the one-line outcome title.
+ */
+function watchTitle(command: 'watch' | 'unwatch', label: string, previous: boolean, actual: boolean): string {
+  const requested = command === 'watch'
+  if (actual !== requested) {
+    return requested
+      ? `Not watching ${label} (another command changed it).`
+      : `Still watching ${label} (another command changed it).`
+  }
+  if (requested) return previous ? `Already watching ${label}.` : `Now watching ${label}.`
+  return previous ? `Stopped watching ${label}.` : `Not watching ${label}.`
+}
+
 /** Execute `/devlead on` or `/devlead off`. */
 async function executeMode(
   ctx: Context,
   invocation: CommandInvocation,
   enabled: boolean,
 ): Promise<CommandResult> {
-  if (ctx.devLead.view(invocation.agent).enabled === enabled) {
-    const title = enabled ? 'DevLead mode is already on.' : 'DevLead mode is already off.'
-    return renderStatus(await collectStatus(ctx, invocation), title)
+  let previous: boolean
+  try {
+    previous = ctx.devLead.view(invocation.agent).enabled
+  } catch (error: unknown) {
+    if (!isDevLeadError(error) || error.code !== 'DEVLEAD_PROJECTION_INVALID') throw error
+    // A frozen fold cannot be read at all, so `/devlead off` is the one
+    // direction the command can always honor: the core recovers by appending a
+    // reset record (which discards the damaged watch set and digest) and the
+    // fresh snapshot renders the disabled default. Turning the mode on must not
+    // silently discard records the human may still want to inspect, so it stays
+    // a friendly error naming /devlead reset.
+    if (enabled) throw error
+    await ctx.devLead.setEnabled(invocation.agent, false, invocation.signal)
+    const snapshot = await collectStatus(ctx, invocation)
+    const title = snapshot.enabled
+      ? 'DevLead mode is on (another command changed it).'
+      : 'DevLead mode disabled; the damaged DevLead records were reset.'
+    return renderStatus(snapshot, title)
   }
-  await ctx.devLead.setEnabled(invocation.agent, enabled, invocation.signal)
-  const title = enabled ? 'DevLead mode enabled.' : 'DevLead mode disabled.'
-  return renderStatus(await collectStatus(ctx, invocation), title)
+  if (previous !== enabled) {
+    await ctx.devLead.setEnabled(invocation.agent, enabled, invocation.signal)
+  }
+  const snapshot = await collectStatus(ctx, invocation)
+  return renderStatus(snapshot, modeTitle(enabled, previous, snapshot.enabled))
 }
 
 /** Execute `/devlead watch <session>` or `/devlead unwatch <session>`. */
@@ -216,13 +286,36 @@ async function executeWatch(
   const label = sessionRefLabel(sessionId, target.title)
   const watching = view.sessions.includes(sessionId)
   if (command.kind === 'watch') {
-    const title = watching ? `Already watching ${label}.` : `Now watching ${label}.`
     if (!watching) await ctx.devLead.watchSession(invocation.agent, sessionId, true, invocation.signal)
-    return renderStatus(await collectStatus(ctx, invocation), title)
+  } else if (watching) {
+    await ctx.devLead.watchSession(invocation.agent, sessionId, false, invocation.signal)
   }
-  const title = watching ? `Stopped watching ${label}.` : `Not watching ${label}.`
-  if (watching) await ctx.devLead.watchSession(invocation.agent, sessionId, false, invocation.signal)
-  return renderStatus(await collectStatus(ctx, invocation), title)
+  // One post-mutation snapshot supplies both the body and the title: a
+  // concurrent set change must never leave the outcome line describing a watch
+  // set the body does not show.
+  const snapshot = await collectStatus(ctx, invocation)
+  return renderStatus(
+    snapshot,
+    watchTitle(command.kind, label, watching, snapshotWatches(snapshot, sessionId)),
+  )
+}
+
+/**
+ * Execute `/devlead reset`: discard this Session's durable DevLead state and
+ * restart from the default disabled projection.
+ *
+ * The core appends one reset record, which both projections apply before the
+ * corruption-freeze check; that makes this the recovery path for a Session
+ * whose earlier record cannot be folded. It is available whatever the current
+ * mode is, and it deliberately does not require DevLead mode.
+ * @param ctx - host context carrying `ctx.devLead`.
+ * @param invocation - command invocation supplying the agent and signal.
+ * @returns the fresh disabled status view, never a thrown domain failure.
+ */
+async function executeReset(ctx: Context, invocation: CommandInvocation): Promise<CommandResult> {
+  await ctx.devLead.reset(invocation.agent, invocation.signal)
+  const snapshot = await collectStatus(ctx, invocation)
+  return renderStatus(snapshot, 'DevLead state reset.')
 }
 
 /** Render one core domain failure as a friendly command error instead of a throw. */
@@ -247,7 +340,9 @@ function friendlyDevLeadError(error: DevLeadError): string {
     case 'DEVLEAD_SELF_WATCH':
       return 'A DevLead Session cannot watch itself.'
     case 'DEVLEAD_PROJECTION_INVALID':
-      return `This Session's DevLead records are damaged: ${error.message}. `
+      return `This Session's DevLead records are damaged, so its DevLead state cannot be read: ${error.message}. `
+        + 'Run /devlead reset to discard the damaged state and start over '
+        + '(that also discards the watched-Session set and the notification digest). '
         + 'Inspect the Session log for the offending plugin:devlead record.'
     case 'DEVLEAD_WORKSPACE_NOT_FOUND':
       return `The Workspace could not be resolved: ${error.message}`
@@ -274,6 +369,8 @@ async function executeDevLeadCommand(ctx: Context, invocation: CommandInvocation
       case 'on':
       case 'off':
         return await executeMode(ctx, invocation, command.kind === 'on')
+      case 'reset':
+        return await executeReset(ctx, invocation)
       case 'watch':
       case 'unwatch':
         return await executeWatch(ctx, invocation, command)

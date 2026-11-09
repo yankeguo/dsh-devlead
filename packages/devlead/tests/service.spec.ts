@@ -20,6 +20,7 @@ import {
   DEVLEAD_ERROR_EXCERPT_MAX,
   DEVLEAD_MODE_RECORD_TYPE,
   DEVLEAD_NOTIFICATION_RECORD_TYPE,
+  DEVLEAD_RESET_RECORD_TYPE,
   DEVLEAD_WATCH_RECORD_TYPE,
   notificationId,
 } from '@yankeguo/dsh-devlead-protocol'
@@ -30,26 +31,32 @@ import {
   DevLeadService,
   devLeadNotification,
   isDevLeadError,
+  modeRecord,
   notificationRecord,
   watchRecord,
 } from '../src/index.ts'
 import type { Config as DevLeadConfig, DevLeadErrorCode } from '../src/index.ts'
 import {
   FakeAgent,
+  FakeProjectionCache,
   FakeSessionController,
+  FakeSessionPersistence,
   FakeSessionQuery,
   FakeWorkspaceRegistry,
   T0,
   appendAssistantMessage,
   appendTurnEnd,
   appendTurnStart,
+  attachPersistedLead,
   bootService,
   disposeHarnesses,
   flushMicrotasks,
   humanMessage,
   messageText,
+  nextTask,
   notificationRecords,
   projectionStateOf,
+  seedPersistedLead,
 } from './harness.ts'
 import type { ServiceHarness } from './harness.ts'
 import { sessionEvent } from './fixtures.ts'
@@ -145,7 +152,8 @@ describe('configuration', () => {
     expect(harness.service.settings.notificationBatchMs).toBe(400)
     expect(harness.service.settings.maxWatchedSessions).toBe(DEVLEAD_DEFAULT_MAX_WATCHED)
     expect(harness.service.settings.maxListedSessions).toBe(200)
-    expect(harness.service.settings.wakeColdSession).toBe(false)
+    // 0.2.0: a cold lead is resumed to deliver by default.
+    expect(harness.service.settings.wakeColdSession).toBe(true)
     expect(harness.service.settings.defaultAgentPreset).toBeUndefined()
   })
 
@@ -174,7 +182,7 @@ describe('configuration', () => {
       notificationBatchMs: 400,
       maxWatchedSessions: DEVLEAD_DEFAULT_MAX_WATCHED,
       maxListedSessions: 200,
-      wakeColdSession: false,
+      wakeColdSession: true,
       defaultAgentPreset: '',
     })
     expect(() => Config({ notificationBatchMs: -1 })).toThrow()
@@ -405,7 +413,8 @@ describe('notification digest', () => {
 })
 
 describe('projection failure handling', () => {
-  it('rejects reads while the first corrupt record freezes the fold', async () => {
+  /** Boot one enabled harness whose lead log is frozen by a corrupt owned record. */
+  async function bootFrozen(): Promise<ServiceHarness> {
     const harness = await bootService({ enabled: true })
     appendPluginRecord(harness.leadSession, DEVLEAD_MODE_RECORD_TYPE, {
       kind: 'devlead/mode',
@@ -413,19 +422,76 @@ describe('projection failure handling', () => {
       enabled: 'yes',
       at: T0,
     } as never)
+    return harness
+  }
+
+  it('rejects reads while the first corrupt record freezes the fold', async () => {
+    const harness = await bootFrozen()
     expect(projectionStateOf(harness.leadSession).failure).toContain(DEVLEAD_MODE_RECORD_TYPE)
     expect(harness.service.isEnabled(harness.lead.agent)).toBe(false)
     const invalid = expectCode(() => harness.service.view(harness.lead.agent), 'DEVLEAD_PROJECTION_INVALID')
     expect(invalid.message).toContain(DEVLEAD_MODE_RECORD_TYPE)
     expectCode(() => harness.service.notifications(harness.lead.agent), 'DEVLEAD_PROJECTION_INVALID')
-    await expectCodeAsync(() => harness.service.setEnabled(harness.lead.agent, false), 'DEVLEAD_PROJECTION_INVALID')
     await expectCodeAsync(() => harness.service.listSessions(harness.lead.agent), 'DEVLEAD_PROJECTION_INVALID')
-    // assertReady currently reports the disabled mode before the corrupt state;
-    // the tool surface therefore cannot mutate a corrupt lead either way.
+    // assertReady reports the disabled mode (a frozen fold is not "enabled")
+    // before the corrupt state; the tool surface cannot mutate a corrupt lead.
     await expectCodeAsync(
       () => harness.service.watchSession(harness.lead.agent, String(harness.lead.id), true),
       'DEVLEAD_NOT_ENABLED',
     )
+  })
+
+  it('refuses to enable a frozen fold and points at /devlead reset', async () => {
+    const harness = await bootFrozen()
+    const error = await expectCodeAsync(
+      () => harness.service.setEnabled(harness.lead.agent, true),
+      'DEVLEAD_PROJECTION_INVALID',
+    )
+    expect(error.message).toContain('/devlead reset')
+    // Nothing was written: the fold is still frozen and still enabled-never.
+    expect(projectionStateOf(harness.leadSession).failure).not.toBeNull()
+  })
+
+  it('recovers a frozen fold by turning the mode off', async () => {
+    const harness = await bootFrozen()
+    await expect(harness.service.setEnabled(harness.lead.agent, false)).resolves.toBeUndefined()
+    // The reset marker clears the frozen state: the Session is cleanly disabled.
+    expect(projectionStateOf(harness.leadSession)).toEqual({
+      enabled: false,
+      sessions: [],
+      notifications: [],
+      failure: null,
+    })
+    expect(harness.service.view(harness.lead.agent)).toEqual({ enabled: false, sessions: [], notifications: [] })
+    // Idempotent: off on an already-off Session writes no extra record.
+    const records = durableResetRecords(harness)
+    await harness.service.setEnabled(harness.lead.agent, false)
+    expect(durableResetRecords(harness)).toEqual(records)
+  })
+
+  it('resets damaged state explicitly and can be called repeatedly', async () => {
+    const harness = await bootFrozen()
+    await expect(harness.service.reset(harness.lead.agent)).resolves.toBeUndefined()
+    expect(harness.service.view(harness.lead.agent)).toEqual({ enabled: false, sessions: [], notifications: [] })
+    await expect(harness.service.reset(harness.lead.agent)).resolves.toBeUndefined()
+    expect(durableResetRecords(harness)).toHaveLength(2)
+    // After the reset the Session is a clean disabled state: it can be enabled
+    // again and the old corrupt records no longer fold.
+    await harness.service.setEnabled(harness.lead.agent, true)
+    expect(harness.service.isEnabled(harness.lead.agent)).toBe(true)
+  })
+
+  it('resets the watch index and the retained digest as well', async () => {
+    const harness = await bootService({ enabled: true, sessionIds: ['child-alpha'], watched: ['child-alpha'] })
+    appendNotification(harness.leadSession, 'child-alpha', 1)
+    await harness.service.reset(harness.lead.agent)
+    expect(harness.service.view(harness.lead.agent)).toEqual({ enabled: false, sessions: [], notifications: [] })
+  })
+
+  it('requires a live Agent for reset', async () => {
+    const harness = await bootService()
+    const stale = new FakeAgent(harness.leadSession)
+    await expectCodeAsync(() => harness.service.reset(stale.agent), 'DEVLEAD_AGENT_NOT_LIVE')
   })
 })
 
@@ -461,10 +527,29 @@ describe('workspace orchestration', () => {
     ])
   })
 
+  it('requires a live lead with the mode enabled', async () => {
+    const registry = new FakeWorkspaceRegistry()
+    const dir = await tempDir()
+    const disabled = await bootService({ workspaceRegistry: registry })
+    await expectCodeAsync(
+      () => disabled.service.useWorkspace(disabled.lead.agent, { path: dir }),
+      'DEVLEAD_NOT_ENABLED',
+    )
+    const enabled = await bootService({ enabled: true, workspaceRegistry: registry })
+    const stale = new FakeAgent(enabled.leadSession)
+    await expectCodeAsync(
+      () => enabled.service.useWorkspace(stale.agent, { path: dir }),
+      'DEVLEAD_AGENT_NOT_LIVE',
+    )
+  })
+
   it('validates and resolves the directory argument', async () => {
     const registry = new FakeWorkspaceRegistry()
-    const harness = await bootService({ workspaceRegistry: registry })
-    await expectCodeAsync(() => harness.service.useWorkspace('   '), 'DEVLEAD_INVALID_INPUT')
+    const harness = await bootService({ enabled: true, workspaceRegistry: registry })
+    await expectCodeAsync(
+      () => harness.service.useWorkspace(harness.lead.agent, { path: '   ' }),
+      'DEVLEAD_INVALID_INPUT',
+    )
 
     // The registry (not this service) rejects a relative spelling; the service
     // maps that rejection to the stable input vocabulary.
@@ -473,37 +558,52 @@ describe('workspace orchestration', () => {
       new TypeError("Workspace path is not fully qualified: 'relative/repo'"),
     )
     const relative = await expectCodeAsync(
-      () => harness.service.useWorkspace('relative/repo'),
+      () => harness.service.useWorkspace(harness.lead.agent, { path: 'relative/repo' }),
       'DEVLEAD_INVALID_INPUT',
     )
     expect(relative.message).toContain('fully qualified')
 
     const missing = join(await tempDir(), 'missing')
     registry.createErrors.set(missing, Object.assign(new Error('missing directory'), { code: 'ENOENT' }))
+    // `create` defaults to false: a missing directory is never created.
     const missingError = await expectCodeAsync(
-      () => harness.service.useWorkspace(missing, { create: false }),
+      () => harness.service.useWorkspace(harness.lead.agent, { path: missing }),
       'DEVLEAD_DIRECTORY_MISSING',
     )
-    expect(missingError.message).toContain('create')
-    // No directory was created when creation was disabled.
+    expect(missingError.message).toContain('create: true')
     await expect(stat(missing).then(() => true, () => false)).resolves.toBe(false)
 
     registry.createErrors.set(missing, Object.assign(new Error('missing directory'), { code: 'ENOENT' }))
     const controller = new AbortController()
     controller.abort()
-    await expect(harness.service.useWorkspace(missing, { create: true, signal: controller.signal })).rejects.toMatchObject({
-      name: 'AbortError',
-    })
+    await expect(
+      harness.service.useWorkspace(harness.lead.agent, { path: missing, create: true }, controller.signal),
+    ).rejects.toMatchObject({ name: 'AbortError' })
+    await expect(stat(missing).then(() => true, () => false)).resolves.toBe(false)
+  })
+
+  it('never creates a missing directory when create is false or omitted', async () => {
+    const registry = new FakeWorkspaceRegistry()
+    const harness = await bootService({ enabled: true, workspaceRegistry: registry })
+    const missing = join(await tempDir(), 'explicit-false')
+    registry.createErrors.set(missing, Object.assign(new Error('missing directory'), { code: 'ENOENT' }))
+    await expectCodeAsync(
+      () => harness.service.useWorkspace(harness.lead.agent, { path: missing, create: false }),
+      'DEVLEAD_DIRECTORY_MISSING',
+    )
+    await expect(stat(missing).then(() => true, () => false)).resolves.toBe(false)
+    // No mkdir retry happened: only the first registry attempt reached the fake.
+    expect(registry.createCalls).toEqual([{ path: missing }])
   })
 
   it('maps a non-directory path and other registration failures to invalid input', async () => {
     const registry = new FakeWorkspaceRegistry()
-    const harness = await bootService({ workspaceRegistry: registry })
+    const harness = await bootService({ enabled: true, workspaceRegistry: registry })
     const file = join(await tempDir(), 'plain-file')
     await writeFile(file, 'not a directory')
     registry.createErrors.set(file, new Error(`cannot create a workspace at '${file}': path is not a directory`))
     const notDirectory = await expectCodeAsync(
-      () => harness.service.useWorkspace(file),
+      () => harness.service.useWorkspace(harness.lead.agent, { path: file }),
       'DEVLEAD_INVALID_INPUT',
     )
     expect(notDirectory.message).toContain('not a directory')
@@ -512,15 +612,22 @@ describe('workspace orchestration', () => {
     // classified instead of surfacing a raw `fs` rejection.
     const nested = join(file, 'child')
     registry.createErrors.set(nested, Object.assign(new Error('missing directory'), { code: 'ENOENT' }))
-    await expectCodeAsync(() => harness.service.useWorkspace(nested), 'DEVLEAD_INVALID_INPUT')
+    await expectCodeAsync(
+      () => harness.service.useWorkspace(harness.lead.agent, { path: nested, create: true }),
+      'DEVLEAD_INVALID_INPUT',
+    )
   })
 
-  it('creates a missing directory and registers it as a Workspace', async () => {
+  it('creates a missing directory only when create is explicitly true', async () => {
     const registry = new FakeWorkspaceRegistry()
-    const harness = await bootService({ workspaceRegistry: registry })
+    const harness = await bootService({ enabled: true, workspaceRegistry: registry })
     const missing = join(await tempDir(), 'nested', 'repo')
     registry.createErrors.set(missing, Object.assign(new Error('missing directory'), { code: 'ENOENT' }))
-    const view = await harness.service.useWorkspace(missing, { title: '  Nested Repo  ' })
+    const view = await harness.service.useWorkspace(harness.lead.agent, {
+      path: missing,
+      title: '  Nested Repo  ',
+      create: true,
+    })
     await expect(stat(missing).then(result => result.isDirectory())).resolves.toBe(true)
     // One rejected attempt, then the registration after creating the directory;
     // the title is trimmed because the registry uses it verbatim.
@@ -536,32 +643,33 @@ describe('workspace orchestration', () => {
     })
   })
 
-  it('reuses an existing registry entry for a known directory', async () => {
+  it('reuses an existing registry entry and keeps its registered title', async () => {
     const dir = await tempDir()
     const registry = new FakeWorkspaceRegistry()
     const existing = registry.add({ path: dir, title: 'Known' })
-    const harness = await bootService({ workspaceRegistry: registry })
-    const view = await harness.service.useWorkspace(dir)
+    const harness = await bootService({ enabled: true, workspaceRegistry: registry })
+    const view = await harness.service.useWorkspace(harness.lead.agent, { path: dir, title: '  Renamed  ' })
     expect(view.workspaceId).toBe(existing.id)
-    expect(registry.createCalls).toEqual([{ path: dir }])
+    expect(view.title).toBe('Known')
+    expect(registry.createCalls).toEqual([{ path: dir, title: 'Renamed' }])
   })
 
   it('fails when no Workspace registry is composed or registration fails', async () => {
-    const withoutRegistry = await bootService()
+    const withoutRegistry = await bootService({ enabled: true })
     const missingDir = await tempDir()
     await expectCodeAsync(
-      () => withoutRegistry.service.useWorkspace(missingDir),
+      () => withoutRegistry.service.useWorkspace(withoutRegistry.lead.agent, { path: missingDir }),
       'DEVLEAD_WORKSPACE_NOT_FOUND',
     )
 
     const registry = new FakeWorkspaceRegistry()
     registry.createError = new Error('registry is read-only')
-    const harness = await bootService({ workspaceRegistry: registry })
+    const harness = await bootService({ enabled: true, workspaceRegistry: registry })
     const failedDir = await tempDir()
     // A registration failure is not a missing directory: the path exists, so the
     // caller must not be told to create it.
     const error = await expectCodeAsync(
-      () => harness.service.useWorkspace(failedDir),
+      () => harness.service.useWorkspace(harness.lead.agent, { path: failedDir }),
       'DEVLEAD_INVALID_INPUT',
     )
     expect(error.message).toContain('registry is read-only')
@@ -796,7 +904,7 @@ describe('session listings', () => {
     expect(controller.resolveCalls).toEqual([])
   })
 
-  it('stops a cancellation that arrives during prompt resolution', async () => {
+  it('compensates the automatic watch when cancellation arrives during prompt resolution', async () => {
     const controller = new FakeSessionController()
     const harness = await bootService({ enabled: true, sessionIds: ['child-alpha'], sessionController: controller })
     const aborter = new AbortController()
@@ -810,7 +918,65 @@ describe('session listings', () => {
     await expect(
       harness.service.promptSession(harness.lead.agent, 'child-alpha', 'continue', { signal: aborter.signal }),
     ).rejects.toMatchObject({ name: 'AbortError' })
-    expect(harness.service.view(harness.lead.agent).sessions).toEqual(['child-alpha'])
+    // Admission never happened, so the watch this call added is compensated: the
+    // failure leaves no newly-added watch behind.
+    expect(harness.service.view(harness.lead.agent).sessions).toEqual([])
+    expect(durableWatchRecords(harness)).toHaveLength(2)
+    expect(durableWatchRecords(harness).at(-1)).toMatchObject({ sessions: [] })
+  })
+
+  it('compensates the automatic watch when admitting the prompt fails', async () => {
+    const harness = await bootService({ enabled: true, sessionIds: ['target'] })
+    const target = new FakeAgent(requireSession(harness, 'target'))
+    target.failFollowups = 1
+    harness.agents.add(target)
+    await expectCodeAsync(
+      () => harness.service.promptSession(harness.lead.agent, 'target', 'work'),
+      'DEVLEAD_SESSION_UNAVAILABLE',
+    )
+    expect(harness.service.view(harness.lead.agent).sessions).toEqual([])
+    expect(target.followups).toHaveLength(0)
+  })
+
+  it('compensates the automatic watch when resuming the target Session fails', async () => {
+    const controller = new FakeSessionController()
+    const harness = await bootService({ enabled: true, sessionIds: ['target'], sessionController: controller })
+    controller.resolveHandler = () => ({ error: { message: 'busy', code: 'session/agent-busy' } })
+    await expectCodeAsync(
+      () => harness.service.promptSession(harness.lead.agent, 'target', 'continue'),
+      'DEVLEAD_SESSION_UNAVAILABLE',
+    )
+    expect(harness.service.view(harness.lead.agent).sessions).toEqual([])
+  })
+
+  it('preserves a pre-existing explicit watch when admission fails', async () => {
+    const harness = await bootService({ enabled: true, sessionIds: ['target'], watched: ['target'] })
+    const target = new FakeAgent(requireSession(harness, 'target'))
+    target.failFollowups = 1
+    harness.agents.add(target)
+    const before = durableWatchRecords(harness)
+    await expectCodeAsync(
+      () => harness.service.promptSession(harness.lead.agent, 'target', 'work'),
+      'DEVLEAD_SESSION_UNAVAILABLE',
+    )
+    // The failure must not undo a watch the caller already had: only a watch
+    // this very call added is compensated.
+    expect(harness.service.view(harness.lead.agent).sessions).toEqual(['target'])
+    expect(durableWatchRecords(harness)).toEqual(before)
+  })
+
+  it('does not touch the watch set when watch is false and admission fails', async () => {
+    const harness = await bootService({ enabled: true, sessionIds: ['target'] })
+    const target = new FakeAgent(requireSession(harness, 'target'))
+    target.failFollowups = 1
+    harness.agents.add(target)
+    const before = durableWatchRecords(harness)
+    await expectCodeAsync(
+      () => harness.service.promptSession(harness.lead.agent, 'target', 'work', { watch: false }),
+      'DEVLEAD_SESSION_UNAVAILABLE',
+    )
+    expect(durableWatchRecords(harness)).toEqual(before)
+    expect(harness.service.view(harness.lead.agent).sessions).toEqual([])
   })
 
   it('builds views only for the retained rows and scans the registry once', async () => {
@@ -1370,6 +1536,383 @@ describe('notification delivery through the real service', () => {
   })
 })
 
+describe('cold lead rehydration', () => {
+  it('rehydrates a persisted lead the projection cache pre-filters as enabled and resumes it', async () => {
+    const controller = new FakeSessionController()
+    const query = new FakeSessionQuery()
+    const cache = new FakeProjectionCache()
+    const watchedId = 'cold-watched-child'
+    await seedPersistedLead(query, { sessionId: 'cold-lead-enabled', watched: [watchedId] })
+    cache.setDevLead('cold-lead-enabled', { enabled: true, sessions: [watchedId] })
+    const persistence = new FakeSessionPersistence()
+    persistence.ids = ['cold-lead-enabled']
+    const harness = await bootService({
+      enabled: true,
+      sessionIds: [watchedId],
+      sessionQuery: query,
+      projectionCache: cache,
+      sessionPersistence: persistence,
+      sessionController: controller,
+      config: { notificationBatchMs: 0 },
+    })
+    expect(cache.lookupCalls).toBe(1)
+    expect(query.readSessionCalls).toBe(1)
+    controller.resolveHandler = () => {
+      const agent = attachPersistedLead(harness.ctx, harness.agents, {
+        sessionId: 'cold-lead-enabled',
+        watched: [watchedId],
+      })
+      return { agent: agent.agent }
+    }
+    appendTurnEnd(requireSession(harness, watchedId), 1)
+    await flushMicrotasks(512)
+    // wakeColdSession defaults to true: the cold lead is resumed so the durable
+    // record is written and the coalesced digest delivered.
+    expect(controller.resolveCalls.map(String)).toEqual(['cold-lead-enabled'])
+    const resumed = harness.agents.resolve('cold-lead-enabled')
+    expect(resumed).toBeDefined()
+    expect(resumed?.followups).toHaveLength(1)
+    expect(notificationRecords(resumed!.session)).toHaveLength(1)
+    expect(messageText(resumed!.followups[0]!)).toContain('— turn 1 completed')
+  })
+
+  it('skips a persisted Session the projection cache pre-filters as disabled', async () => {
+    const controller = new FakeSessionController()
+    const query = new FakeSessionQuery()
+    const cache = new FakeProjectionCache()
+    await seedPersistedLead(query, { sessionId: 'disabled-lead', watched: ['cold-watched-child'] })
+    cache.setDevLead('disabled-lead', { enabled: false, sessions: ['cold-watched-child'] })
+    const persistence = new FakeSessionPersistence()
+    persistence.ids = ['disabled-lead']
+    const harness = await bootService({
+      enabled: true,
+      sessionIds: ['cold-watched-child'],
+      sessionQuery: query,
+      projectionCache: cache,
+      sessionPersistence: persistence,
+      sessionController: controller,
+      config: { notificationBatchMs: 0 },
+    })
+    // The fast path never reads the complete log of a row that positively says
+    // "disabled".
+    expect(query.readSessionCalls).toBe(0)
+    appendTurnEnd(requireSession(harness, 'cold-watched-child'), 1)
+    await flushMicrotasks(512)
+    expect(controller.resolveCalls).toEqual([])
+    expect(harness.lead.followups).toHaveLength(0)
+  })
+
+  it('needs an exact fold for an enabled cache row whose log carries no enabled record', async () => {
+    const query = new FakeSessionQuery()
+    const cache = new FakeProjectionCache()
+    // The cache row is stale/wrong: the exact fold is authoritative.
+    await seedPersistedLead(query, { sessionId: 'stale-cache-lead', enabled: false, watched: ['cold-watched-child'] })
+    cache.setDevLead('stale-cache-lead', { enabled: true, sessions: ['cold-watched-child'] })
+    const controller = new FakeSessionController()
+    const persistence = new FakeSessionPersistence()
+    persistence.ids = ['stale-cache-lead']
+    const harness = await bootService({
+      enabled: true,
+      sessionIds: ['cold-watched-child'],
+      sessionQuery: query,
+      projectionCache: cache,
+      sessionPersistence: persistence,
+      sessionController: controller,
+      config: { notificationBatchMs: 0 },
+    })
+    expect(query.readSessionCalls).toBe(1)
+    appendTurnEnd(requireSession(harness, 'cold-watched-child'), 1)
+    await flushMicrotasks(512)
+    expect(controller.resolveCalls).toEqual([])
+  })
+
+  it('adopts a live Session without an Agent as a lead', async () => {
+    const harness = await bootService({
+      sessionIds: ['attach-only-lead', 'attach-only-child'],
+      seedSessions: (sessions) => {
+        appendPluginRecord(sessions['attach-only-lead']!, DEVLEAD_MODE_RECORD_TYPE, modeRecord(true, T0))
+        appendPluginRecord(sessions['attach-only-lead']!, DEVLEAD_WATCH_RECORD_TYPE, watchRecord(['attach-only-child'], T0))
+      },
+      config: { notificationBatchMs: 0 },
+    })
+    appendTurnEnd(requireSession(harness, 'attach-only-child'), 1)
+    await flushMicrotasks(512)
+    // The attach-only lead Session can append its durable record even though it
+    // has no Agent; the digest waits for the Agent to appear.
+    const leadSession = requireSession(harness, 'attach-only-lead')
+    expect(notificationRecords(leadSession)).toHaveLength(1)
+    const agent = new FakeAgent(leadSession)
+    harness.agents.add(agent)
+    harness.ctx.emit('agent/created', { agent: agent.agent, source: 'resume' })
+    await flushMicrotasks(512)
+    expect(agent.followups).toHaveLength(1)
+  })
+
+  it('waits for the optional persistence binding before adopting cold leads', async () => {
+    const controller = new FakeSessionController()
+    const query = new FakeSessionQuery()
+    const cache = new FakeProjectionCache()
+    const watchedId = 'late-persist-child'
+    await seedPersistedLead(query, { sessionId: 'late-persist-lead', watched: [watchedId] })
+    cache.setDevLead('late-persist-lead', { enabled: true, sessions: [watchedId] })
+    // The real query engine is composed, but its optional persistence binding is
+    // not installed yet: listing the persisted corpus would silently see nothing.
+    const harness = await bootService({
+      enabled: true,
+      sessionIds: [watchedId],
+      sessionQuery: query,
+      projectionCache: cache,
+      sessionController: controller,
+      config: { notificationBatchMs: 0 },
+    })
+    expect(query.listSessionsCalls).toBe(0)
+    expect(query.readSessionCalls).toBe(0)
+    appendTurnEnd(requireSession(harness, watchedId), 1)
+    await flushMicrotasks(512)
+    // Without the cold index the turn is not observed, and the lead is not resumed.
+    expect(controller.resolveCalls).toEqual([])
+    const persistence = new FakeSessionPersistence()
+    persistence.ids = ['late-persist-lead']
+    harness.ctx.provide('sessionPersistence', persistence)
+    await nextTask()
+    // The readiness barrier confirms the corpus, then the authoritative scan
+    // rebuilds the index.
+    expect(query.listSessionsCalls).toBe(2)
+    expect(query.readSessionCalls).toBe(1)
+    appendTurnEnd(requireSession(harness, watchedId), 2)
+    await flushMicrotasks(512)
+    expect(controller.resolveCalls.map(String)).toEqual(['late-persist-lead'])
+    expect(notificationRecords(requireSession(harness, watchedId))).toEqual([])
+  })
+
+  it('waits out a stale corpus listing before the authoritative scan', async () => {
+    const controller = new FakeSessionController()
+    const query = new FakeSessionQuery()
+    const cache = new FakeProjectionCache()
+    const watchedId = 'warmup-child'
+    await seedPersistedLead(query, { sessionId: 'warmup-lead', watched: [watchedId] })
+    cache.setDevLead('warmup-lead', { enabled: true, sessions: [watchedId] })
+    const persistence = new FakeSessionPersistence()
+    persistence.ids = ['warmup-lead']
+    // The persistence service reports the stored lead, but the query corpus is
+    // still live-only on its first listing: the readiness barrier must wait for
+    // consistency instead of scanning (and finalizing) too early.
+    query.emptyListings = 1
+    const harness = await bootService({
+      enabled: true,
+      sessionIds: [watchedId],
+      sessionQuery: query,
+      projectionCache: cache,
+      sessionPersistence: persistence,
+      sessionController: controller,
+      config: { notificationBatchMs: 0 },
+    })
+    // [Service.init] only resolved after the corpus became consistent: one stale
+    // readiness listing, one consistent readiness listing, then the scan.
+    expect(persistence.listCalls).toBe(1)
+    expect(query.listSessionsCalls).toBe(3)
+    expect(query.readSessionCalls).toBe(1)
+    // The index is rebuilt: the next watched turn/end resumes the cold lead.
+    appendTurnEnd(requireSession(harness, watchedId), 1)
+    await flushMicrotasks(512)
+    expect(controller.resolveCalls.map(String)).toEqual(['warmup-lead'])
+    // Rehydration is final: no further corpus rescans on later traffic.
+    appendTurnEnd(requireSession(harness, watchedId), 2)
+    harness.ctx.emit('agent/created', { agent: harness.lead.agent, source: 'resume' })
+    await nextTask()
+    expect(query.listSessionsCalls).toBe(3)
+  })
+
+  it('loads and serves live leads when the corpus never becomes consistent', async () => {
+    const query = new FakeSessionQuery()
+    const cache = new FakeProjectionCache()
+    const persistence = new FakeSessionPersistence()
+    // The persistence service reports a stored Session the corpus never lists:
+    // the barrier must give up after its bound instead of hanging plugin load.
+    persistence.ids = ['ghost-session']
+    const started = Date.now()
+    const harness = await bootService({
+      enabled: true,
+      sessionIds: ['unrelated-child'],
+      sessionQuery: query,
+      projectionCache: cache,
+      sessionPersistence: persistence,
+      config: { notificationBatchMs: 0 },
+    })
+    const elapsed = Date.now() - started
+    expect(elapsed).toBeGreaterThanOrEqual(1_900)
+    expect(elapsed).toBeLessThan(5_000)
+    // The plugin still loaded and serves the enabled live lead.
+    expect(harness.service.isEnabled(harness.lead.agent)).toBe(true)
+    expect(harness.service.view(harness.lead.agent).enabled).toBe(true)
+    // The barrier polls the corpus, then the authoritative scan still runs.
+    expect(query.listSessionsCalls).toBeGreaterThan(1)
+  })
+
+  it('does not scan the persisted corpus on events while persistence is absent', async () => {
+    const query = new FakeSessionQuery()
+    const cache = new FakeProjectionCache()
+    await seedPersistedLead(query, { sessionId: 'no-persist-lead', watched: ['no-persist-child'] })
+    cache.setDevLead('no-persist-lead', { enabled: true, sessions: ['no-persist-child'] })
+    const harness = await bootService({
+      enabled: true,
+      sessionIds: ['no-persist-child'],
+      sessionQuery: query,
+      projectionCache: cache,
+      config: { notificationBatchMs: 0 },
+    })
+    appendTurnEnd(requireSession(harness, 'no-persist-child'), 1)
+    harness.ctx.emit('agent/created', { agent: harness.lead.agent, source: 'resume' })
+    await nextTask()
+    // A Host without persistence can never list a persisted corpus: no event
+    // may trigger a pointless scan.
+    expect(query.listSessionsCalls).toBe(0)
+    expect(query.readSessionCalls).toBe(0)
+  })
+
+  it('runs the readiness scan once and stops retrying after it', async () => {
+    const harness = await bootService({ enabled: true, sessionIds: ['once-child'], config: { notificationBatchMs: 0 } })
+    const query = new FakeSessionQuery()
+    const cache = new FakeProjectionCache()
+    await seedPersistedLead(query, { sessionId: 'once-lead', watched: ['once-child'] })
+    cache.setDevLead('once-lead', { enabled: true, sessions: ['once-child'] })
+    const persistence = new FakeSessionPersistence()
+    persistence.ids = ['once-lead']
+    harness.ctx.provide('sessionQuery', query.asService())
+    harness.ctx.provide('sessionProjectionCache', cache.asService())
+    harness.ctx.provide('sessionPersistence', persistence)
+    await nextTask()
+    // One readiness listing (consistency check) + one authoritative scan, then final.
+    expect(query.listSessionsCalls).toBe(2)
+    // Later lifecycle traffic must not rescan the corpus.
+    appendTurnEnd(requireSession(harness, 'once-child'), 1)
+    harness.ctx.emit('agent/created', { agent: harness.lead.agent, source: 'resume' })
+    harness.ctx.emit('agent/status', { agent: harness.lead.agent, status: 'idle' })
+    await nextTask()
+    expect(query.listSessionsCalls).toBe(2)
+  })
+
+  it('retries a deferred cold scan when the query engine appears, warns on corrupt candidates, and caps unknown reads', async () => {
+    const query = new FakeSessionQuery()
+    const cache = new FakeProjectionCache()
+    // One candidate the cache calls a lead but whose exact fold is corrupt.
+    await seedPersistedLead(query, {
+      sessionId: 'corrupt-cold-lead',
+      watched: ['cold-watched-child'],
+      seed: (session) => {
+        appendPluginRecord(session, DEVLEAD_MODE_RECORD_TYPE, {
+          kind: 'devlead/mode',
+          version: 1,
+          enabled: 'yes',
+          at: T0,
+        } as never)
+      },
+    })
+    cache.setDevLead('corrupt-cold-lead', { enabled: true, sessions: ['cold-watched-child'] })
+    // 70 rows the cache cannot classify: only a bounded number may be read.
+    for (let index = 0; index < 70; index += 1) query.seed(`unknown-cold-${String(index)}`, [])
+    const harness = await bootService({ enabled: true, sessionIds: ['cold-watched-child'] })
+    const warn = vi.spyOn(harness.ctx.logger, 'warn')
+    // Late composition of all three services: the readiness retry fires on the
+    // next Session lifecycle event.
+    const persistence = new FakeSessionPersistence()
+    persistence.ids = ['corrupt-cold-lead']
+    harness.ctx.provide('sessionQuery', query.asService())
+    harness.ctx.provide('sessionProjectionCache', cache.asService())
+    harness.ctx.provide('sessionPersistence', persistence)
+    appendTurnEnd(requireSession(harness, 'cold-watched-child'), 1)
+    await nextTask()
+    // 1 known-enabled candidate + at most 64 unclassified logs.
+    expect(query.readSessionCalls).toBe(65)
+    expect(warn.mock.calls.some(call => String(call[0]).includes('corrupt DevLead replay'))).toBe(true)
+    expect(warn.mock.calls.some(call => String(call[0]).includes('stopped reading unclassified'))).toBe(true)
+    warn.mockRestore()
+  })
+
+  it('keeps the one-shot rehydration retry armed until the query engine exists', async () => {
+    const harness = await bootService({ enabled: true })
+    // An event arrives while the query engine is still missing: the retry
+    // listeners must not be consumed by it.
+    appendTurnEnd(harness.leadSession, 1)
+    const query = new FakeSessionQuery()
+    const cache = new FakeProjectionCache()
+    await seedPersistedLead(query, { sessionId: 'late-lead', watched: ['late-child'] })
+    cache.setDevLead('late-lead', { enabled: true, sessions: ['late-child'] })
+    const persistence = new FakeSessionPersistence()
+    persistence.ids = ['late-lead']
+    harness.ctx.provide('sessionQuery', query.asService())
+    harness.ctx.provide('sessionProjectionCache', cache.asService())
+    harness.ctx.provide('sessionPersistence', persistence)
+    appendTurnEnd(harness.leadSession, 2)
+    await nextTask()
+    expect(query.readSessionCalls).toBe(1)
+  })
+
+  it('rehydrates only live leads when no projection cache is composed', async () => {
+    const query = new FakeSessionQuery()
+    await seedPersistedLead(query, { sessionId: 'persisted-lead', watched: ['cold-watched-child'] })
+    const harness = await bootService({ enabled: true })
+    const warn = vi.spyOn(harness.ctx.logger, 'warn')
+    const persistence = new FakeSessionPersistence()
+    persistence.ids = ['persisted-lead']
+    harness.ctx.provide('sessionQuery', query.asService())
+    harness.ctx.provide('sessionPersistence', persistence)
+    appendTurnEnd(harness.leadSession, 1)
+    await nextTask()
+    expect(query.readSessionCalls).toBe(0)
+    expect(warn.mock.calls.some(call => String(call[0]).includes('no Session projection cache'))).toBe(true)
+    warn.mockRestore()
+  })
+
+  it('never fails the plugin load when the persisted scan rejects', async () => {
+    const query = new FakeSessionQuery()
+    query.listError = new Error('index unavailable')
+    const cache = new FakeProjectionCache()
+    const harness = await bootService({ enabled: true })
+    const warn = vi.spyOn(harness.ctx.logger, 'warn')
+    // A deferred scan that fails only warns; the service stays usable and the
+    // live lead index bootstrapped at load is untouched.
+    const persistence = new FakeSessionPersistence()
+    harness.ctx.provide('sessionQuery', query.asService())
+    harness.ctx.provide('sessionProjectionCache', cache.asService())
+    harness.ctx.provide('sessionPersistence', persistence)
+    appendTurnEnd(harness.leadSession, 1)
+    await nextTask()
+    expect(harness.service.view(harness.lead.agent).enabled).toBe(true)
+    expect(warn.mock.calls.some(call => String(call[0]).includes('could not list persisted Sessions'))).toBe(true)
+    warn.mockRestore()
+  })
+})
+
+describe('reset recovery through the notification hub', () => {
+  it('drops a lead watch index when the hostile fold is reset', async () => {
+    const harness = await bootService({ enabled: true, sessionIds: ['child-alpha'], watched: ['child-alpha'], config: { notificationBatchMs: 0 } })
+    expect(projectionStateOf(harness.leadSession).sessions).toEqual(['child-alpha'])
+    await harness.service.reset(harness.lead.agent)
+    appendTurnEnd(requireSession(harness, 'child-alpha'), 1)
+    await flushMicrotasks(512)
+    // The reset disabled the Session, so its stale index no longer observes.
+    expect(notificationRecords(harness.leadSession)).toEqual([])
+    expect(harness.lead.followups).toHaveLength(0)
+  })
+
+  it('recovers a frozen lead fold through setEnabled(false) and clears the index', async () => {
+    const harness = await bootService({ enabled: true, sessionIds: ['child-alpha'], watched: ['child-alpha'], config: { notificationBatchMs: 0 } })
+    appendPluginRecord(harness.leadSession, DEVLEAD_MODE_RECORD_TYPE, {
+      kind: 'devlead/mode',
+      version: 1,
+      enabled: 'yes',
+      at: T0,
+    } as never)
+    expect(projectionStateOf(harness.leadSession).failure).not.toBeNull()
+    await expect(harness.service.setEnabled(harness.lead.agent, false)).resolves.toBeUndefined()
+    appendTurnEnd(requireSession(harness, 'child-alpha'), 1)
+    await flushMicrotasks(512)
+    expect(notificationRecords(harness.leadSession)).toEqual([])
+    expect(harness.lead.followups).toHaveLength(0)
+  })
+})
+
 describe('domain error surface', () => {
   it('recognizes structural DevLead failures across module instances', () => {
     const domain = new DevLeadError('watch limit reached', 'DEVLEAD_WATCH_LIMIT')
@@ -1396,5 +1939,13 @@ function durableWatchRecords(harness: ServiceHarness): Array<Record<string, unkn
   return harness.leadSession.snapshotEvents().flatMap((event) => {
     const record = pluginRecordOf(event)
     return record?.type === DEVLEAD_WATCH_RECORD_TYPE ? [record.data as Record<string, unknown>] : []
+  })
+}
+
+/** Durable reset record payloads of the lead Session, in log order. */
+function durableResetRecords(harness: ServiceHarness): Array<Record<string, unknown>> {
+  return harness.leadSession.snapshotEvents().flatMap((event) => {
+    const record = pluginRecordOf(event)
+    return record?.type === DEVLEAD_RESET_RECORD_TYPE ? [record.data as Record<string, unknown>] : []
   })
 }
