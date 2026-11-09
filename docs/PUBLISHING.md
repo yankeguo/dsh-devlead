@@ -281,7 +281,7 @@ dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 # 或在 Web：Plugins → Add plugin → 输入 @yankeguo/dsh-devlead-bundle
 ```
 
-本地 checkout 开发仍可用 `pnpm install:profile`（见主 [README](../README.md)）。
+本地 checkout 开发仍可用 `pnpm install:profile`（见主 [README.zh.md](../README.zh.md)）。
 
 ## 参考
 

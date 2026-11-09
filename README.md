@@ -1,300 +1,336 @@
 # dsh-devlead
 
-一套面向 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DSH）的插件：
-把**一个普通会话**升级成 **DevLead 会话**，让它能直接操纵 DSH 的 **Workspace**（工作区）与
-**Session**（会话），创建/续写其他会话、读取会话状态、在会话状态变化时被唤醒，从而在一个
-人类可见、可参与的标准界面里统管多个仓库。
+A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH) plugin suite that
+upgrades **one ordinary session** into a **DevLead session**: it can operate DSH **Workspaces**
+and **Sessions** directly, create and continue other Sessions, read their state, and be woken
+when their state changes — so one agent can orchestrate multiple repositories inside a standard
+interface that the human can see and interact with.
 
-- **DevLead 会话 = 普通会话 + 一个持久开关**：打开后该会话额外获得 8 个 `devlead_*` 工具、
-  一段 DevLead 系统提示，composer 上方出现状态条 UI；开关本身是**人类专属操作**，模型不能
-  自行打开。未开启时界面里只有 composer 工具条上的一个小图标，不会在每个会话上显示常驻状态条。
-- **产出物必须是标准 DSH 实体**：Workspace 真实注册进 `ctx.workspaceRegistry`，会话是真实的
-  普通 Session（出现在侧边栏、可被人类打开、继续对话、归档），**不是 subagent**。这样人类
-  始终能看见、介入、接管 Agent 的工作。
-- **通知回路**：DevLead 监督若干子会话；子会话的 turn 结束（完成/失败/阻塞/取消等）时，Host
-  把通知写入 DevLead 会话的持久日志；DevLead Agent 存活时以一条 `devlead` 来源的消息唤醒
-  它，让它决定下一步（继续追问、派发新任务、向人类汇报）。
+**English** · [简体中文](README.zh.md)
 
-文档导航：[设计说明](docs/DESIGN.md) · [发布指南](docs/PUBLISHING.md) ·
-[审计记录](docs/AUDIT.md) · [v0.1.1 release notes](docs/releases/v0.1.1.md) ·
-[Bundle 说明](packages/bundle/README.md)
+- **A DevLead session = an ordinary session + one durable switch.** Once enabled, that session
+  gains 8 `devlead_*` tools, a DevLead system prompt, and a status strip above the composer.
+  The switch itself is a **human-only action**; no tool can enable it. While the mode is off,
+  the UI only shows a small composer-toolbar icon — no permanent bar on every conversation.
+- **Outputs must be standard DSH entities.** Workspaces are genuinely registered through
+  `ctx.workspaceRegistry`, and child sessions are real ordinary Sessions (they appear in the
+  sidebar, can be opened, continued, and archived by a human), **not subagents**. This keeps
+  every child visible and able to be taken over by the human.
+- **Notification loop.** A DevLead watches child sessions. Whenever a watched session's turn
+  settles (completed / failed / blocked / cancelled / …), the Host writes a notification into
+  the DevLead session's durable log and, while the DevLead agent is alive, wakes it with a
+  `devlead`-sourced message so it can decide what to do next (follow up, dispatch new work, or
+  report to the human).
 
-## 特性
+Documentation: [Design notes (中文)](docs/DESIGN.md) · [Publishing guide (中文)](docs/PUBLISHING.md) ·
+[Audit record (中文)](docs/AUDIT.md) · [v0.1.1 release notes (中文)](docs/releases/v0.1.1.md) ·
+[Bundle package (中文)](packages/bundle/README.md)
 
-| 能力 | 说明 |
+## Features
+
+| Capability | Description |
 | --- | --- |
-| DevLead 模式 | 每个会话一个持久开关；开启后多出 `devlead_*` 工具、DevLead 系统提示与状态条 |
-| 标准 DSH 实体 | 子会话是普通 Session（侧边栏可见、人类可打开接管），Workspace 走 `workspaceRegistry`，不是 subagent |
-| 8 个模型工具 | 注册/列出 Workspace，创建/读取/续写/监督 Session，读取通知摘要（见[模型工具](#模型工具)） |
-| 人类命令 | `/devlead`（状态）、`/devlead on|off`、`/devlead watch|unwatch <session>`；会话支持完整 id 或唯一前缀 |
-| 通知回路 | 被监督会话的 `turn/end` 写入持久通知记录，按合并窗口唤醒 DevLead（可配置窗口与冷会话策略） |
-| 事件溯源 | 模式/watch 集合/通知全部是可忽略的 `plugin:devlead/*` 记录，严格回放校验，可跨重启 / 恢复 / fork |
-| Session projection | `devLead` projection（`{ enabled, sessions, notifications }`）把状态同步到浏览器，无需自定义 Remote API |
-| 界面 | 未开启时只有 composer 工具条里的一个小图标（不显眼、无常驻条）；开启后 composer 上方出现 DevLeadBar：开关、监督会话数/运行中数、最近一条通知；界面只发 `/devlead on|off` 命令 |
-| 权限模型 | 模式开关只能由人类命令/UI 触发；通知是运行时提示而非人类指令（见[权限模型](#权限模型)） |
-| 一键安装 | bundle 的 `cordis.patch.yml` 插入全部 4 个运行时插件行，也可单独安装某个包 |
+| DevLead mode | One durable switch per session; enabling it adds the `devlead_*` tools, the DevLead system prompt, and the status strip |
+| Standard DSH entities | Child sessions are ordinary Sessions (visible in the sidebar; humans can open and take them over); Workspaces go through `workspaceRegistry`, not subagents |
+| 8 model tools | Register/list Workspaces, create/read/continue/watch Sessions, read the notification digest (see [Model tools](#model-tools)) |
+| Human commands | `/devlead` (status), `/devlead on\|off`, `/devlead watch\|unwatch <session>`; sessions are addressable by full id or unique prefix |
+| Notification loop | A watched session's `turn/end` writes a durable notification and wakes the DevLead through a coalescing window (configurable window and cold-session policy) |
+| Event sourcing | Mode / watch set / notifications are ignorable `plugin:devlead/*` records with strict replay validation; survive restart / resume / fork |
+| Session projection | The `devLead` projection (`{ enabled, sessions, notifications }`) syncs state to the browser without a custom Remote API |
+| UI | Off: only a small composer-toolbar icon (unobtrusive, no permanent strip). On: a DevLeadBar above the composer with the switch, watched/running counts, and the latest notification; the UI only sends `/devlead on\|off` commands |
+| Permission model | The mode switch can only be triggered by human commands/UI; notifications are runtime notices, not human instructions (see [Permission model](#permission-model)) |
+| One-command install | The bundle's `cordis.patch.yml` inserts all 4 runtime plugin rows; individual packages can also be installed separately |
 
-## 界面
+## UI
 
-UI 分两态，插件**不会**在每个会话上摆一条明显的常驻条：
+The UI has two states. The plugin deliberately **never** puts an attention-grabbing permanent
+bar on every conversation:
 
-- **未开启**：composer 工具条里（权限下拉旁，槽位 `conversation.input.left`）只有一个很小的
-  用户图标按钮，悬停显示「开启 DevLead 模式」；点击即发送 `/devlead on`。会话里没有状态条。
-  也可以用 `/devlead on` 命令打开。
-- **已开启**：图标隐藏，composer 上方出现完整的 DevLeadBar（槽位
-  `conversation.input.dock`）：模式开关（点击即 `/devlead off`）、监督会话数、运行中数、
-  最近一条通知；没有通知时显示帮助提示。
+- **Off:** the composer toolbar (`conversation.input.left`, next to the permission dropdown)
+  shows only a small user-icon button; hovering it shows "Turn on DevLead mode", and clicking
+  it sends `/devlead on`. There is no status strip in the conversation. `/devlead on` works too.
+- **On:** the icon disappears and the full DevLeadBar (`conversation.input.dock`) appears above
+  the composer: the mode switch (click sends `/devlead off`), the number of watched sessions,
+  the number running, and the latest notification — or a help hint when there is none.
 
-未开启（只有工具条里的小图标）：
+Off (only the small toolbar icon):
 
-![未开启：composer 工具条里的 DevLead 图标](docs/screenshots/devlead-toggle-off.png)
+![Off: the DevLead icon in the composer toolbar](docs/screenshots/devlead-toggle-off.png)
 
-已开启（完整状态条）：
+On (the full status strip):
 
-![已开启：composer 上方的 DevLead 状态条](docs/screenshots/devlead-bar.png)
+![On: the DevLead status strip above the composer](docs/screenshots/devlead-bar.png)
 
-一次真实的多会话编排（DevLead 会话创建 `summary test` 子会话 → 子会话结束 → 通知带回
-最后一条 assistant 摘要 → DevLead 继续汇报）：
+A real multi-session orchestration (the DevLead session creates a `summary test` child, the
+child settles, the notification carries its last assistant excerpt back, and the DevLead
+reports):
 
-![DevLead 会话示例](docs/screenshots/devlead-conversation.jpg)
+![DevLead conversation example](docs/screenshots/devlead-conversation.jpg)
 
-| 状态 | 界面 | 交互 |
+| State | UI | Interaction |
 | --- | --- | --- |
-| `devLead` projection 尚未加载 | 什么都不渲染 | — |
-| 模式关闭 | composer 工具条里的小图标按钮 | 点击发送 `/devlead on`，随后从 projection 重渲染 |
-| 模式开启，无监督会话 | DevLeadBar：开关 + 监督 0 个会话 + 帮助提示 | 拨动开关发送 `/devlead off` |
-| 模式开启 | DevLeadBar：开关 + 监督 N 个会话 / 运行中 M，另附最近一条通知摘要 | 同上；命令执行中开关禁用 |
-| 命令返回逻辑错误 | 开启时：状态条内联错误行；未开启时：图标 tooltip 显示错误文本 | 修正后重试 |
+| `devLead` projection not loaded yet | nothing renders | — |
+| Mode off | the small toolbar icon button | click sends `/devlead on`; the surface re-renders from the projection |
+| Mode on, no watched sessions | DevLeadBar: switch + watched 0 + help hint | flipping the switch sends `/devlead off` |
+| Mode on | DevLeadBar: switch + watched N / running M + latest notification excerpt | same; the switch is disabled while a command is in flight |
+| A command settles with a logical error | on: an inline error row in the strip; off: the error text in the icon tooltip | fix and retry |
 
-- 状态条与图标只读 `useProjection('devLead')` 与标准 Session 列表，**不新增 Remote API**；
-  两者都调用注入的 `executeCommand('/devlead on'|'/devlead off')`，不会乐观翻转，一律以
-  projection 为准。
-- 浏览器侧只在 Web 端渲染；i18n namespace 为 `devlead`，提供 `zh` / `en` 词典。
+- The strip and the icon only read `useProjection('devLead')` and the standard Session list —
+  **no custom Remote API**. Both call the injected `executeCommand('/devlead on'|'/devlead off')`,
+  never flip optimistically, and always follow the projection.
+- The browser half only renders on the Web platform; the i18n namespace is `devlead` with `zh`
+  and `en` dictionaries.
 
-## 与 subagent / agent-team 的区别
+## How it differs from subagent / agent-team
 
-| 维度 | subagent / agent-team | 本插件（DevLead） |
+| Dimension | subagent / agent-team | This plugin (DevLead) |
 | --- | --- | --- |
-| 产物身份 | 派发方内部的子 Agent，通常不作为一个可独立打开的普通会话存在 | 真实注册的 Workspace + 普通 Session，出现在侧边栏，人类可打开、继续对话、归档 |
-| 人机可见性 | 人类通常只看到最终汇总 | 人类全程可见，并可随时接管任意子会话 |
-| 交互方式 | 模型在单个 turn 内调用工具派发、等待结果 | DevLead 会话本身是普通会话；模型用 `devlead_*` 跨 turn 编排，人类可以在同一界面介入 |
-| 生命周期 | 随父 turn / 父 Agent 结束 | 子会话独立存在，可续写；`turn/end` 持久通知，可跨重启 |
-| 唤醒机制 | 父 Agent 阻塞等待或 team 消息 | 被 watch 会话的 `turn/end` → 持久通知 → 合并窗口唤醒 DevLead（Agent 存活时） |
-| 开关 | 无 | **人类专属** `/devlead on|off` 或界面开关（composer 工具条图标 / 状态条 Switch）；模型无工具可开启 |
-| 适用场景 | 一次性并行子任务 | 跨仓库、长周期、需要人类持续参与和审查的統管工作 |
+| Identity of the work product | internal child agents of the dispatching side, usually not independently openable ordinary sessions | genuinely registered Workspaces + ordinary Sessions, visible in the sidebar, openable/continuable/archivable by humans |
+| Human visibility | the human usually only sees the final summary | the human sees everything and can take over any child session at any time |
+| Interaction model | the model dispatches and waits inside a single turn | the DevLead session is itself an ordinary session; the model orchestrates across turns with `devlead_*` while the human can join in the same UI |
+| Lifecycle | ends with the parent turn / parent agent | child sessions exist independently and can be continued; `turn/end` notifications are durable and survive restarts |
+| Wake-up mechanism | parent agent blocks, or team messages | watched session `turn/end` → durable notification → coalesced wake of the DevLead (while its agent is alive) |
+| Switch | none | **human-only** `/devlead on\|off` or the UI switch (toolbar icon / strip switch); no model tool can enable it |
+| Best for | one-off parallel subtasks | cross-repository, long-running orchestration that needs continuous human participation and review |
 
-选择建议：只需要并行跑一次性子任务时用 subagent / agent-team；要让 Agent 长期负责多个仓库、
-且人类希望随时看到并接管每一个子会话时，用 DevLead。
+Rule of thumb: use subagent / agent-team for one-off parallel subtasks; use DevLead when an
+agent should own several repositories over time and the human wants to see and take over every
+child session.
 
-## 包结构
+## Package layout
 
-pnpm workspace，`packages/*`：
+A pnpm workspace under `packages/*`:
 
 ```
 packages/
-  protocol/    @yankeguo/dsh-devlead-protocol     纯类型 + 常量 + 格式化（host 与浏览器共用），devLead projection 类型
-  devlead/     @yankeguo/dsh-devlead              核心服务：模式、Workspace/Session 编排、监督索引、通知投递、严格 fold
-  tool/        @yankeguo/dsh-tool-devlead         8 个模型工具 + 条件 system prompt
-  command/     @yankeguo/dsh-command-devlead      /devlead 人类命令
-  client-ui/   @yankeguo/dsh-client-ui-devlead    浏览器 UI：工具条开关 + 开启后的 DevLeadBar 状态条
-  bundle/      @yankeguo/dsh-devlead-bundle       bundle：cordis.patch.yml + 依赖
+  protocol/    @yankeguo/dsh-devlead-protocol     pure types + constants + formatting (shared by host and browser), devLead projection types
+  devlead/     @yankeguo/dsh-devlead              core service: mode, Workspace/Session orchestration, watch index, notification delivery, strict fold
+  tool/        @yankeguo/dsh-tool-devlead         8 model tools + conditional system prompt
+  command/     @yankeguo/dsh-command-devlead      the /devlead human command
+  client-ui/   @yankeguo/dsh-client-ui-devlead    browser UI: toolbar switch + DevLeadBar strip while enabled
+  bundle/      @yankeguo/dsh-devlead-bundle       bundle: cordis.patch.yml + dependencies
 ```
 
-依赖方向：`protocol ← devlead ← {tool, command}`；`client-ui` 只依赖 `protocol`（浏览器侧）。
-`pnpm build` 产出 7 个 `lib/*.js`：protocol 的 `index`/`client`、core、tool、command、
-client-ui 的 `index`/`client`；`bundle` 只有 patch 文件与 icon，不产出 JS。构建用 esbuild：
-host 入口把 `@deepseek-ai/*`、`@yankeguo/*` 与 `node:*` 保持为外部依赖——工作区包互相外置，
-确保整个进程共享同一份 protocol/core 实例。浏览器入口的 platform singletons 单一来源于
-`scripts/client-externals.mjs`（必须与 DSH shell 的模块表一致，构建期有守卫）。
+Dependency direction: `protocol ← devlead ← {tool, command}`; `client-ui` only depends on
+`protocol` (browser side). `pnpm build` produces 7 `lib/*.js` files: protocol's `index`/`client`,
+core, tool, command, and client-ui's `index`/`client`; `bundle` ships only the patch file and
+icon, no JS. Builds use esbuild: host entries keep `@deepseek-ai/*`, `@yankeguo/*`, and `node:*`
+external, so workspace packages stay out of the bundle and the whole process shares one
+protocol/core instance. The browser entry's platform singletons come from a single source,
+`scripts/client-externals.mjs` (it must match the DSH shell's module table; the build enforces
+this).
 
-`scripts/` 提供构建（`build.mjs`）、包不变式检查（`check-packages.mjs`）、profile 安装
-（`install-profile.mjs`）、开发 overlay（`dev-patch.mjs`）与本地 E2E（`e2e-smoke.mjs`）。
+`scripts/` provides the build (`build.mjs`), package invariants (`check-packages.mjs`), profile
+install (`install-profile.mjs`), dev overlay (`dev-patch.mjs`), and local E2E (`e2e-smoke.mjs`).
 
-## 快速开始
+## Getting started
 
-### 前置条件
+### Requirements
 
-| 项 | 要求 |
+| Item | Requirement |
 | --- | --- |
-| DSH | `0.2.2-rc.1`（插件 / bundle 包声明 `engines.dsh: >=0.2.2-rc.1 <0.3.0`） |
-| Node.js | ≥ 24.9（仅本地构建 / 发布需要；从 npm 安装插件不需要本机 Node） |
-| pnpm | 12.x（CI 固定 `pnpm@12.16.1`） |
-| Web UI | DSH 桌面端或 `dsh web`；DevLead 界面只在 Web 端渲染 |
-| 本地 E2E | 已安装的 DSH 桌面端运行时（`dsh` 在 PATH，或设置 `DSH_BIN`）；`pnpm e2e` 用它启动隔离实例 |
+| DSH | `0.2.2-rc.1` (plugin / bundle packages declare `engines.dsh: >=0.2.2-rc.1 <0.3.0`) |
+| Node.js | ≥ 24.9 (local build / publish only; installing from npm needs no local Node) |
+| pnpm | 12.x (CI pins `pnpm@12.16.1`) |
+| Web UI | the DSH desktop app or `dsh web`; DevLead UI renders on the Web platform only |
+| Local E2E | an installed DSH desktop runtime (`dsh` on PATH, or `DSH_BIN`); `pnpm e2e` boots an isolated instance with it |
 
-### 安装：从 npm（发布后，推荐）
+### Install from npm (recommended once published)
 
 ```sh
-# 主 bundle：核心服务 + 模型工具 + 命令 + 状态条
+# Main bundle: core service + model tools + command + status strip
 dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 ```
 
-也可以在 Web 的 **Plugins → Add plugin** 中输入 `@yankeguo/dsh-devlead-bundle` 安装。
-安装后在 **Plugins** 页面确认 bundle 已启用（新安装的 bundle 通常默认启用；若显示为未启用，
-勾选即可），然后刷新 Web 页面。进阶用法也可以单独安装某个包，并在 profile 的
-`cordis.patch.yml` 里自行插入对应的 loader row；日常使用推荐直接装主 bundle。
+You can also install it from the Web UI via **Plugins → Add plugin** and the name
+`@yankeguo/dsh-devlead-bundle`. Afterwards, confirm the bundle is enabled on the **Plugins**
+page (freshly installed bundles are usually enabled by default; tick it if not) and reload the
+Web page. Advanced users can install individual packages and insert the corresponding loader
+rows into the profile's `cordis.patch.yml` themselves; the main bundle is the recommended path.
 
-### 安装：本地 checkout（开发 / 验收）
+### Install from a local checkout (development / acceptance)
 
 ```sh
 pnpm install
 pnpm build
-pnpm install:profile                  # 默认 --profile desktop
-# 或指定 profile / DSH home
+pnpm install:profile                  # defaults to --profile desktop
+# or point at a specific profile / DSH home
 node scripts/install-profile.mjs --profile desktop --dsh-home ~/.dsh
 ```
 
-脚本做四件事（`--dry-run` 只打印计划）：
+The script does four things (`--dry-run` only prints the plan):
 
-1. 把全部 6 个 workspace 包符号链接到 `$DSH_HOME/profiles/<profile>/node_modules/@yankeguo/`；
-2. 把 `@yankeguo/dsh-devlead-bundle` 追加进 profile 的 `dsh.profile.bundles`；
-3. 写入前备份 profile 的 `package.json`（内容有变化时；重复执行是幂等的）；
-4. 写入前先校验每个包的 `exports`/`main` 产物与 bundle 的 patch/icon，失败时不做任何改动；
+1. symlinks all 6 workspace packages into `$DSH_HOME/profiles/<profile>/node_modules/@yankeguo/`;
+2. appends `@yankeguo/dsh-devlead-bundle` to the profile's `dsh.profile.bundles`;
+3. backs up the profile's `package.json` before writing (only when the content changes; repeated
+   runs are idempotent);
+4. validates every package's `exports`/`main` artifact plus the bundle's patch/icon before
+   writing, and makes no changes when validation fails.
 
-这些符号链接同时让 DSH 把本仓库当作 **linked root**：插件导入的 `@deepseek-ai/*` 会按
-`peerDependencies` 解析到安装实例，避免进程里出现第二份 DSH 运行时（见下文的开发 overlay）。
-DSH 的 profile HMR 会实时加载 Host 插件；浏览器侧刷新页面后出现 DevLead 界面。
-卸载：`pnpm uninstall:profile`。
+These symlinks also make DSH treat this checkout as a **linked root**: the plugin's
+`@deepseek-ai/*` imports resolve to the installation's instances through `peerDependencies`,
+avoiding a second DSH runtime in the process (see the development overlay below). DSH profile
+HMR loads the host plugins live; reload the Web page for the browser half.
+Uninstall with `pnpm uninstall:profile`.
 
-不写 profile 依赖安装的调试路径（开发 / E2E）：绝对路径 overlay 需要一个**专用 dev profile**
-作为 linked root 的落点（默认 `web` profile 通常不存在；已启用本 bundle 的 profile 会因
-loader row id 重复而被拒绝）：
+The dependency-install-free debug path (development / E2E): an absolute-path overlay needs a
+**dedicated dev profile** to hold the linked root (the default `web` profile usually does not
+exist, and a profile that already enables this bundle is rejected because the loader row ids
+would be duplicated):
 
 ```sh
 pnpm build
 
-# 1. 一次性创建专用 dev profile（从随安装包提供的 web 模板复制）
+# 1. create a dedicated dev profile once (copied from the shipped web template)
 dsh devlead --from-default-profile web --dump-config
 
-# 2. 生成 overlay，并把本仓库注册为该 profile 的 linked root
-pnpm dev:patch --profile devlead        # 可选 --dsh-home / --no-link
+# 2. generate the overlay and register this checkout as that profile's linked root
+pnpm dev:patch --profile devlead        # optional --dsh-home / --no-link
 
-# 3. 用脚本打印的命令启动
+# 3. boot the command printed by the script
 dsh --profile devlead --patch .tmp/cordis.patch.yml --no-open --port 34000
 ```
 
-为什么需要 linked root：绝对路径插入的插件如果没有 linked root，会从本仓库的 pnpm
-`node_modules` 解析 `@deepseek-ai/*`，进程里出现第二份 DSH 运行时；第一次跨副本的私有类
-检查（例如写 Session 插件记录）会以
-`gateway/internal: Receiver must be an instance of class Session` 这样的错误炸出来。
-linked root 让 DSH 把这些 `peerDependencies` 解析到安装实例（官方 `app-boot` 的 profile
-resolution 机制）。`--no-link` 只生成 overlay 供检查，不能用于真实启动。撤销链接：删除
-`<profile>/node_modules/devlead-repo`。
+Why the linked root matters: an absolute-path plugin without one resolves `@deepseek-ai/*` from
+this repository's pnpm `node_modules`, producing a second DSH runtime inside the process; the
+first cross-copy private-class check (for example writing a Session plugin record) then throws
+`gateway/internal: Receiver must be an instance of class Session`. The linked root makes DSH
+resolve those `peerDependencies` to the installation's instances (the official `app-boot`
+profile-resolution mechanism). `--no-link` only generates the overlay for inspection and cannot
+be used for a real boot. To undo the link, delete
+`<profile>/node_modules/devlead-repo`.
 
-### 升级 / 卸载
+### Upgrade / uninstall
 
 ```sh
-# 升级到指定版本（发布到 npm 后）
+# upgrade to a specific version (once published to npm)
 dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.1.1
 
-# 卸载（DSH 下次加载 profile 时会清理已移除 bundle 的选择）
+# uninstall (DSH cleans up the removed bundle selection the next time it loads the profile)
 dsh plugin --profile desktop remove @yankeguo/dsh-devlead-bundle
 
-# 本地 checkout
-pnpm install:profile                  # 先 pnpm build，再重新链接即生效
-pnpm uninstall:profile                # 移除链接与 bundle 选择
+# local checkout
+pnpm install:profile                  # run pnpm build first, then re-link
+pnpm uninstall:profile                # remove links and the bundle selection
 ```
 
-升级 DSH 大版本（0.3）前需要更新插件 / bundle 的 `engines.dsh` 并回归；不兼容的 bundle 会被
-DSH 跳过。
+Before upgrading to a new DSH major (0.3), update the plugins' / bundle's `engines.dsh` and
+regress; incompatible bundles are skipped by DSH.
 
-## 使用
+## Usage
 
-### 打开 / 关闭模式
+### Toggle the mode
 
-模式开关是**人类专属**的：在任意会话里执行命令，或点击界面上的开关——未开启时是 composer
-工具条里的 DevLead 图标，已开启时是状态条上的 Switch。
+The mode switch is **human-only**: run the command in any session, or click the UI switch —
+the DevLead icon in the composer toolbar while off, the strip switch while on.
 
 ```
-/devlead on        # 打开当前会话的 DevLead 模式（需要 Agent live）
-/devlead off       # 关闭；立即停止通知投递，已保留的通知记录仍在 Session 日志里
-/devlead           # 查看状态：开关、监督会话（标题/状态）、最近通知、帮助
-/devlead status    # 上一条的显式别名
+/devlead on        # enable DevLead mode for the current session (requires a live Agent)
+/devlead off       # disable; stops notification delivery immediately, retained records stay in the Session log
+/devlead           # show status: switch, watched sessions (title/state), latest notifications, help
+/devlead status    # explicit alias of the above
 ```
 
-### 命令
+### Commands
 
-| 命令 | 作用 |
+| Command | Purpose |
 | --- | --- |
-| `/devlead` | 状态：模式、监督会话（标题 / live / running / 最近 turn）、最近通知、帮助行 |
-| `/devlead status` | 同 `/devlead` |
-| `/devlead on` | 打开当前会话的 DevLead 模式 |
-| `/devlead off` | 关闭当前会话的 DevLead 模式 |
-| `/devlead watch <session>` | 监督某个会话（完整 id 或唯一前缀） |
-| `/devlead unwatch <session>` | 取消监督 |
+| `/devlead` | status: mode, watched sessions (title / live / running / latest turn), latest notifications, help line |
+| `/devlead status` | alias of `/devlead` |
+| `/devlead on` | enable DevLead mode for the current session |
+| `/devlead off` | disable DevLead mode for the current session |
+| `/devlead watch <session>` | watch a session (full id or unique prefix) |
+| `/devlead unwatch <session>` | stop watching it |
 
-- 会话寻址支持**完整 id 或唯一 id 前缀**；前缀命中多个时返回友好错误并列出候选（带标题），
-  请改用更长的前缀或完整 id。引用中不能有空格，成对引号会被剥掉一层。
-- `watch` / `unwatch` 需要当前会话已开启 DevLead 模式；不能 watch 自己；监督集合有上限
-  （默认 64，见[配置](#配置)）。
-- 命令不接受 composer 附件；所有领域错误（`DEVLEAD_*` 稳定错误码）都会渲染成友好文本而不是
-  抛异常。命令优先在会话列表（默认最多 200 行）与当前 watch 集合内寻址并列出候选；列表之外的
-  会话会回退到 core 的 `getSession` 解析（完整 id 或唯一前缀均可）。
+- Session addressing supports a **full id or a unique id prefix**; when a prefix matches several
+  sessions the command returns a friendly error with the candidates (titles included) — use a
+  longer prefix or the full id. References cannot contain spaces; one matching pair of
+  surrounding quotes is stripped.
+- `watch` / `unwatch` require the current session to have DevLead mode enabled; you cannot watch
+  yourself; the watch set is capped (default 64, see [Configuration](#configuration)).
+- The command does not accept composer attachments; every domain failure (stable `DEVLEAD_*`
+  error code) is rendered as friendly text instead of being thrown. The command addresses and
+  lists candidates from the session listing (default up to 200 rows) and the current watch set
+  first; sessions beyond that listing fall back to the core `getSession` resolver (full id or
+  unique prefix both work).
 
-### 推荐工作流
+### Recommended workflow
 
-1. 在准备統管多个仓库的那个会话里执行 `/devlead on`（或点 composer 工具条里的 DevLead 图标）。
-2. 让模型注册工作区：`devlead_use_workspace` 传入仓库的**绝对路径**；`create` 默认 `true`，
-   目录不存在时会 `mkdir -p`，重复注册是幂等的。
-3. 让模型派发任务：`devlead_create_session`（可选 `workspace` / `title` / `preset`），并给一个
-   **自包含的 prompt**——子会话看不到当前对话，所有必要事实都要在 prompt 里重述。新会话默认
-   被 watch 并立即开始第一个 turn（空白 Session 在第一个 turn 前不会出现在侧边栏，所以
-   "创建 + prompt"是常规用法）。
-4. 子会话独立运行；人类可以随时在侧边栏打开它、继续对话或接管。
-5. 子会话的 turn 结束（完成/失败/阻塞/取消等）后，DevLead 会话收到通知摘要并被唤醒；模型用
-   `devlead_list_sessions` / `devlead_get_session` 查看状态，用 `devlead_prompt_session`
-   继续追问或派发新任务，用 `devlead_notifications` 读取通知摘要。
-6. 模型在结束 turn 前向人类汇报：创建/改动了哪些 Workspace 与 Session、每个子会话被要求做
-   什么、最近一轮如何结束、有什么需要人类决策。
+1. Run `/devlead on` in the session that should orchestrate several repositories (or click the
+   DevLead icon in the composer toolbar).
+2. Let the model register workspaces: `devlead_use_workspace` takes the repository's **absolute
+   path**; `create` defaults to `true`, a missing directory is `mkdir -p`-created, and
+   re-registering is idempotent.
+3. Let the model dispatch work: `devlead_create_session` (optional `workspace` / `title` /
+   `preset`) with a **self-contained prompt** — the child cannot see this conversation, so
+   restate every necessary fact in the prompt. New sessions are watched by default and start
+   their first turn immediately (a blank Session does not appear in the sidebar before its first
+   turn, so "create + prompt" is the normal usage).
+4. The child runs independently; the human can open it from the sidebar, continue the
+   conversation, or take over at any time.
+5. When a child's turn settles (completed / failed / blocked / cancelled / …), the DevLead
+   session receives a notification excerpt and is woken; the model uses `devlead_list_sessions`
+   / `devlead_get_session` to inspect state, `devlead_prompt_session` to follow up or dispatch
+   new work, and `devlead_notifications` to read the digest.
+6. Before finishing a turn, the model reports to the human: which Workspaces and Sessions it
+   created or changed, what each child was asked to do, how the latest turn ended, and anything
+   that needs a human decision.
 
-一个可直接使用的请求示例（人类对 DevLead 会话说）：
+A request you can paste at the DevLead session:
 
 ```
-打开 DevLead 模式后：把 /Users/me/Workspace/src/api 和 /Users/me/Workspace/src/webapp
-注册成工作区，各开一个子会话分别修 CI 失败和补 README；子会话结束后汇总结果，
-失败的要继续追问，不要自己臆造成功。
+After turning DevLead mode on: register /Users/me/Workspace/src/api and
+/Users/me/Workspace/src/webapp as workspaces, then open one child session in each — fix the
+CI failure in the first and add the missing README in the second. Summarize when both finish;
+follow up on failures instead of claiming success.
 ```
 
-### 模型工具
+### Model tools
 
-全部工具都带 `when: ({ agent }) => ctx.devLead.isEnabled(agent)`，只在 DevLead 会话中可见：
+All tools carry `when: ({ agent }) => ctx.devLead.isEnabled(agent)` and are only visible in a
+DevLead session:
 
-| 工具 | 参数 | 返回（canonical JSON） |
+| Tool | Arguments | Returns (canonical JSON) |
 | --- | --- | --- |
 | `devlead_list_workspaces` | `{}` | `{ workspaces }` |
-| `devlead_use_workspace` | `path`（必填，绝对路径）、`title?`、`create?`（默认 true） | `{ workspace }` |
-| `devlead_list_sessions` | `workspace?`、`watched_only?`、`limit?` | `{ sessions, watched }` |
-| `devlead_create_session` | `workspace?`、`prompt?`、`title?`、`watch?`（默认 true）、`preset?` | 创建结果 |
-| `devlead_get_session` | `session`（必填） | `{ session }` |
-| `devlead_prompt_session` | `session`、`prompt`（必填）、`watch?`（默认 true） | 续写结果 |
-| `devlead_watch_session` | `session`、`watching`（必填 bool） | watch 变更结果 |
-| `devlead_notifications` | `limit?`（默认 20） | `{ notifications, watched }` |
+| `devlead_use_workspace` | `path` (required, absolute), `title?`, `create?` (default true) | `{ workspace }` |
+| `devlead_list_sessions` | `workspace?`, `watched_only?`, `limit?` | `{ sessions, watched }` |
+| `devlead_create_session` | `workspace?`, `prompt?`, `title?`, `watch?` (default true), `preset?` | creation result |
+| `devlead_get_session` | `session` (required) | `{ session }` |
+| `devlead_prompt_session` | `session`, `prompt` (required), `watch?` (default true) | prompt result |
+| `devlead_watch_session` | `session`, `watching` (required bool) | watch mutation result |
+| `devlead_notifications` | `limit?` (default 20) | `{ notifications, watched }` |
 
-工具把 core 的 `DevLeadError` 翻译成带稳定 code 的 `HarnessError`；阅读状态时请以
-`lastTurn` / `lastTransition` / `lastError` / `lastAssistant` 等字段为准，不要靠猜。
+Tools translate the core's `DevLeadError` into a `HarnessError` with a stable code. When reading
+state, trust `lastTurn` / `lastTransition` / `lastError` / `lastAssistant` instead of guessing.
 
-## 通知机制
+## Notification loop
 
-- **监督集合是持久状态**：`plugin:devlead/watch` 记录整值替换 watch 集合；只有被 watch 的
-  会话才会产生通知。
-- **通知的触发**：被监督会话每次 `turn/end`（完成 / 失败 / 阻塞 / 取消 / 超 token 等）都会
-  在 DevLead 会话日志里追加一条 `plugin:devlead/notification` 记录，包含确定性 id、会话
-  标题、turn 序号、转场类型，以及失败摘要或 turn 结束前最后一条 assistant 文本摘要
-  （单行、最长 240 字符，写入通知的 `summary` 字段）。
-- **保留条数**：projection 内按常量保留最近 64 条；更早的记录仍在 Session 日志里，
-  `/devlead` 与状态条展示的是最近的若干条。
-- **合并窗口**：通知入队后按 `notificationBatchMs`（默认 400ms）合并；窗口结束时若 DevLead
-  Agent 仍存活，以一条 `devlead` 来源（`form: 'notice'`）的消息唤醒它；Agent 正在运行时
-  followup 排队到下一 turn；`agent/status` 变 idle 时也会尝试冲一次队列。
-- **冷 DevLead 会话**：Agent 不存活时默认只留持久记录，不自动 resume（`wakeColdSession:
-  false`）；配置为 `true` 时先 `sessionController.resolveAgent(leadId)` 再投递。
-- **去重与重试**：同一确定性 id 的通知在一次 digest 中只出现一次（重放的 `turn/end` 不会
-  重复唤醒）；唤醒投递失败时按上限 1s 重试而不是丢弃；`notificationBatchMs: 0` 下模式关闭或
-  Agent 已 dispose 时不会再唤醒。
-- **归档的 lead 会话**：暂停投递并丢弃内存队列，持久记录保留；恢复会话后状态视图仍能看到。
-- **关闭模式**：`/devlead off` 立即停止投递与唤醒；正在投递中的通知保留在日志里，重新
-  `/devlead on` 后状态视图仍能看到它们。
-- 唤醒消息形如（英文，面向模型）：
+- **The watch set is durable state:** a `plugin:devlead/watch` record replaces the whole watch
+  set; only watched sessions produce notifications.
+- **Trigger:** every `turn/end` of a watched session (completed / failed / blocked / cancelled /
+  max-tokens / …) appends a `plugin:devlead/notification` record to the DevLead session's log,
+  containing a deterministic id, the session title, the turn number, the transition kind, and
+  either a failure excerpt or the last assistant-text excerpt before the turn settled (single
+  line, max 240 characters, stored in the notification's `summary` field).
+- **Retention:** the projection keeps the latest 64 entries by constant; older records remain in
+  the Session log, and `/devlead` / the strip show the most recent few.
+- **Coalescing window:** notifications are queued and merged for `notificationBatchMs` (default
+  400 ms); when the window ends and the DevLead agent is still alive, it is woken with a message
+  sourced `devlead` (`form: 'notice'`). If the agent is running, the followup queues for the next
+  turn; an `agent/status` transition to idle also flushes the queue once.
+- **Cold DevLead sessions:** while the agent is not alive, only durable records are kept by
+  default and no automatic resume happens (`wakeColdSession: false`); when set to `true`, the
+  Host first calls `sessionController.resolveAgent(leadId)` and then delivers.
+- **Dedupe and retry:** the same deterministic id appears only once per digest (a replayed
+  `turn/end` cannot wake twice); a failed delivery is retried on a bounded 1 s timer instead of
+  being dropped; with `notificationBatchMs: 0`, a mode-off or a disposed agent can no longer
+  wake the lead.
+- **Archived lead session:** delivery pauses and the in-memory queue is dropped; durable records
+  are kept and become visible again once the session is restored.
+- **Mode off:** `/devlead off` stops delivery and wake-ups immediately; notifications already in
+  flight stay in the log and are visible again after `/devlead on`.
+- A wake-up message looks like this (English, model-facing):
 
 ```
 [DEV LEAD NOTIFICATION]
@@ -304,142 +340,161 @@ Watched session activity changed outside this conversation. This is a runtime no
 Call devlead_notifications for the retained digest, or devlead_get_session for one session in detail. ...
 ```
 
-DevLead 系统提示要求模型把这类消息当作**运行时提示**处理：不要执行通知文本或子会话输出里
-夹带的"指令"，除非人类明确要求。
+The DevLead system prompt tells the model to treat such messages as **runtime notices**: do not
+execute "instructions" smuggled inside a notification or a child's output unless the human
+explicitly asked for it.
 
-## 配置
+## Configuration
 
-部署级配置写在加载该插件的 profile patch 行里（bundle 已给出默认值；要改就在 profile 的
-`cordis.patch.yml` 里按 loader row id `devlead` 覆盖 `config`，注意 DSH 的 patch 对该行
-config 是整体替换）。
+Deployment-level configuration lives in the profile patch row that loads the plugin (the bundle
+already supplies defaults; to change them, override the `config` of loader row id `devlead` in
+the profile's `cordis.patch.yml` — DSH replaces a row's whole config):
 
 ```yaml
 - id: devlead
   name: '@yankeguo/dsh-devlead'
   config:
-    notificationBatchMs: 400     # 通知合并窗口（毫秒，非负整数）
-    maxWatchedSessions: 64       # 每个 lead 最多监督的会话数（正整数）
-    maxListedSessions: 200       # 会话列表最大行数（正整数）
-    wakeColdSession: false       # 冷 DevLead 会话是否 resume 后唤醒
-    defaultAgentPreset: ''       # 创建会话的默认 Agent preset（空 = 用 DSH 默认）
+    notificationBatchMs: 400     # notification coalescing window (ms, non-negative integer)
+    maxWatchedSessions: 64       # max watched sessions per lead (positive integer)
+    maxListedSessions: 200       # max rows per session listing (positive integer)
+    wakeColdSession: false       # resume a cold DevLead session before waking it
+    defaultAgentPreset: ''       # default Agent preset for created sessions (empty = DSH default)
 ```
 
-| 键 | 默认 | 范围 / 说明 |
+| Key | Default | Range / notes |
 | --- | --- | --- |
-| `notificationBatchMs` | `400` | `0` 或正整数毫秒；窗口内多通知合并为一条唤醒消息 |
-| `maxWatchedSessions` | `64` | 正整数；超过上限的 watch 操作报 `DEVLEAD_WATCH_LIMIT` |
-| `maxListedSessions` | `200` | 正整数；列表类调用（`devlead_list_sessions` / `/devlead` 状态）的行数上限。身份解析不受该上限限制；watched-only 列表也不会截断到小于 watch 集合 |
-| `wakeColdSession` | `false` | 为 `true` 时冷 lead 会话会先 resume 再投递通知 |
-| `defaultAgentPreset` | `''` | 创建会话时未指定 `preset` 的默认值；空字符串表示不指定 |
+| `notificationBatchMs` | `400` | `0` or a positive integer of milliseconds; notifications in the window are merged into one wake-up message |
+| `maxWatchedSessions` | `64` | positive integer; a watch operation over the cap reports `DEVLEAD_WATCH_LIMIT` |
+| `maxListedSessions` | `200` | positive integer; row cap for listing calls (`devlead_list_sessions` / `/devlead` status). Identity resolution is not limited by it, and a watched-only listing never truncates below the watch set |
+| `wakeColdSession` | `false` | when `true`, a cold lead session is resumed before the notification is delivered |
+| `defaultAgentPreset` | `''` | default value used when a created session names no `preset`; an empty string means no preset |
 
-`tool` / `command` / `client-ui` 没有部署配置；所有领域限制（watch 上限、通知保留条数等）
-由核心服务与 protocol 常量决定。
+`tool` / `command` / `client-ui` have no deployment configuration; all domain limits (watch cap,
+notification retention, etc.) are owned by the core service and protocol constants.
 
-## 权限模型
+## Permission model
 
-- **模式开关只能由人类触发**：`/devlead on|off` 命令或界面开关（composer 工具条图标 /
-  状态条 Switch，二者也只是发送同名命令）。模型工具中**没有任何可以打开模式的能力**；`devlead_*` 全部带 `when` 门控，普通
-  会话里根本看不到它们。这与"不替人类做权限决策"的设计一致。
-- **写入需要模式开启**：即使工具可见，core 的所有写方法都会先校验 Agent live 与模式已开启
-  （`DEVLEAD_NOT_ENABLED` / `DEVLEAD_AGENT_NOT_LIVE`）；命令侧同样只做人类授权范围内的
-  watch 集合变更。
-- **通知不是指令**：唤醒消息与子会话输出都可能夹带文本；DevLead 系统提示明确要求把通知当作
-  运行时提示，不得据此执行未授权操作，也不得替人类做权限决定。
-- **普通会话权限不变**：子会话是普通 Session，沿用 DSH 的沙箱 / 权限模式；本套件不提供任何
-  提权入口，也不改变 DSH 的安全边界。
-- **安装即信任**：插件运行在 Host 进程内；安装第三方插件等同于信任其代码。模式开关只控制
-  "是否启用 DevLead 能力"，不是安全沙箱开关。
+- **Only humans can flip the mode:** `/devlead on|off`, or the UI switch (composer-toolbar icon /
+  strip switch — both merely send the same command). **No model tool can enable it**; every
+  `devlead_*` tool is gated by `when`, so an ordinary session never sees them. This matches the
+  design principle of never making permission decisions on the human's behalf.
+- **Writes require the mode:** even when the tools are visible, every core write method first
+  checks that the Agent is live and the mode is enabled (`DEVLEAD_NOT_ENABLED` /
+  `DEVLEAD_AGENT_NOT_LIVE`); the command side likewise only mutates the watch set within the
+  human-authorized scope.
+- **Notifications are not instructions:** both wake-up messages and child output can embed text;
+  the DevLead system prompt requires treating notifications as runtime notices and never
+  performing unauthorized work or making permission decisions from them.
+- **Ordinary session permissions are unchanged:** child sessions are ordinary Sessions following
+  DSH's sandbox / permission mode; this suite offers no privilege-escalation path and does not
+  change DSH's security boundary.
+- **Installing is trusting:** plugins run in the Host process; installing a third-party plugin is
+  equivalent to trusting its code. The mode switch only controls whether DevLead capability is
+  enabled — it is not a security sandbox switch.
 
-## 已知限制
+## Known limitations
 
-- **每个 Session 一个持久模式**：打开后 DSH 重启 / 会话恢复仍然打开，需要人类手动
-  `/devlead off`。
-- **冷 DevLead 会话默认不自动 resume**：通知只留在持久日志；需要时配置
-  `wakeColdSession: true`。
-- **通知保留 64 条**：projection 内按常量截断；更早记录仍在 Session 日志中。
-- **监督上限默认 64、列表默认 200**：可通过配置调整；命令的候选列表按该上限截断，列表之外
-  的会话仍可用完整 id 或唯一前缀寻址（core 的身份解析是穷尽的，不受列表上限限制），只是命令
-  的歧义提示只基于列表 + watch 集合。
-- **不做 git 仓库创建 / clone / worktree 管理**：用 shell 工具完成，然后注册 Workspace。
-- **不跨进程 / 跨 DSH 实例编排**；不新增 Remote API；UI 只读 projection + 走命令。
-- **未开启时入口较小**：为了不在每个会话上显示常驻状态条，未开启时只有一个 composer 工具条
-  图标；不习惯的话记 `/devlead on` 命令即可。
-- **子会话是普通会话**：会出现在侧边栏并正常消耗模型额度，不是隐藏 subagent。
+- **One durable mode per Session:** once enabled it stays enabled across DSH restarts and session
+  resumes; a human must run `/devlead off`.
+- **Cold DevLead sessions are not resumed automatically by default:** notifications only stay in
+  the durable log; set `wakeColdSession: true` if needed.
+- **64 retained notifications:** the projection truncates at that constant; older records remain
+  in the Session log.
+- **Default caps of 64 watched / 200 listed:** configurable; the command's candidate list is
+  capped by that limit. Sessions beyond the listing are still addressable by full id or unique
+  prefix (core identity resolution is exhaustive and not capped by the listing limit); only the
+  command's ambiguity hints are based on the listing + watch set.
+- **No git repository creation / clone / worktree management:** use shell tools, then register
+  the Workspace.
+- **No cross-process / cross-DSH-instance orchestration;** no custom Remote API; the UI only reads
+  the projection and goes through commands.
+- **Small off-state entry point:** to avoid a permanent strip on every conversation, the off
+  state is only a composer-toolbar icon; remember the `/devlead on` command if that is not
+  obvious enough.
+- **Child sessions are ordinary sessions:** they appear in the sidebar and consume model quota
+  normally — they are not hidden subagents.
 
-## 故障排查
+## Troubleshooting
 
-| 现象 | 可能原因 / 处理 |
+| Symptom | Likely cause / fix |
 | --- | --- |
-| 安装后看不到 DevLead 图标 / 状态条 | bundle 未启用（Plugins 页面勾选）、页面未刷新、或 DSH 未重启使 preset 变更生效 |
-| 没有 `/devlead` 命令或 `devlead_*` 工具 | bundle 未启用 / 被 DSH 跳过（检查 DSH 版本与 `engines.dsh`）；本地 checkout 需先 `pnpm build` |
-| 本地安装脚本报 `run "pnpm build" first` | 先执行 `pnpm build` 再 `pnpm install:profile` |
-| `/devlead on` 报 "no longer live" | 当前 Agent 已不是注册表中的 live 实例；从侧边栏重新打开会话后重试 |
-| `/devlead watch` 报歧义 | 前缀命中多个会话；按错误里的候选改用更长前缀或完整 id |
-| `/devlead watch` 报模式未开启 | 先 `/devlead on`；watch 集合变更需要模式开启 |
-| 子会话 turn 结束但没有唤醒 DevLead | 模式已关闭、该会话未被 watch、DevLead Agent 不存活（冷会话默认只留记录），或通知还在合并窗口内 |
-| DevLead 开关点了没反应 | 命令可能仍在执行（开关禁用）；开启失败时错误会显示在状态条内联行或图标 tooltip 里 |
-| 状态条显示的数量与侧边栏不一致 | 状态条按 projection 的 watch 集合与标准 Session 列表计算；刚变更时可能有短暂延迟，刷新页面可重读 |
-| 未开启时找不到开关 | 开关是 composer 工具条里的用户图标（权限下拉旁），悬停有「开启 DevLead 模式」提示；也可直接 `/devlead on` |
-| 重启后 DevLead 状态仍在 | 预期行为：模式 / watch 集合 / 通知都是持久记录；不需要时 `/devlead off` |
-| 开发 overlay 下 `/devlead on` 报 `gateway/internal: Receiver must be an instance of class Session` | overlay 缺少 linked root（旧版生成物、手写 patch，或 profile 被换过）。重新执行 `pnpm dev:patch --profile <dev>`，确认 `<profile>/node_modules/devlead-repo` 存在后重启；或用 `pnpm e2e` 复现正确流程 |
-| `pnpm dev:patch` 报 profile not found / already enables bundle | 需要专用 dev profile：`dsh devlead --from-default-profile web --dump-config`；已启用本 bundle 的 profile 不能再插入同 id 的 loader row |
-| 对已注册 Workspace 再传 `title` 不生效 | 预期行为：`title` 只用于新注册的 Workspace 记录；已存在的记录保留原标题 |
+| No DevLead icon / strip after installing | bundle not enabled (tick it on the Plugins page), page not reloaded, or DSH not restarted so preset changes take effect |
+| No `/devlead` command or `devlead_*` tools | bundle not enabled / skipped by DSH (check the DSH version and `engines.dsh`); a local checkout needs `pnpm build` first |
+| The local install script says `run "pnpm build" first` | run `pnpm build`, then `pnpm install:profile` |
+| `/devlead on` says "no longer live" | the Agent is no longer the live instance in the registry; reopen the session from the sidebar and retry |
+| `/devlead watch` reports ambiguity | the prefix matches several sessions; use a longer prefix or the full id from the candidates in the error |
+| `/devlead watch` reports the mode is off | run `/devlead on` first; watch-set changes require the mode |
+| A child's turn settled but the DevLead was not woken | the mode is off, the session is not watched, the DevLead agent is not alive (cold sessions keep records only), or the notification is still inside the coalescing window |
+| The DevLead switch seems to do nothing | the command may still be running (the switch is disabled); when enabling fails, the error shows inline in the strip or in the icon tooltip |
+| The strip's counts disagree with the sidebar | the strip computes from the projection's watch set and the standard Session list; a just-changed value can lag briefly — reload the page to re-read |
+| Cannot find the switch while off | it is the user icon in the composer toolbar (next to the permission dropdown); hover shows "Turn on DevLead mode"; `/devlead on` also works |
+| DevLead state survives a restart | expected: mode / watch set / notifications are durable records; run `/devlead off` when no longer needed |
+| Under a dev overlay, `/devlead on` throws `gateway/internal: Receiver must be an instance of class Session` | the overlay has no linked root (stale generated overlay, hand-written patch, or the profile was swapped). Re-run `pnpm dev:patch --profile <dev>` and confirm `<profile>/node_modules/devlead-repo` exists, then restart; or use `pnpm e2e` to run the correct flow |
+| `pnpm dev:patch` reports profile not found / already enables bundle | a dedicated dev profile is required: `dsh devlead --from-default-profile web --dump-config`; a profile that enables this bundle cannot take a second loader row with the same id |
+| Passing `title` to an already-registered Workspace has no effect | expected: `title` only applies when registering a new Workspace record; an existing record keeps its title |
 
-## 开发与验证
+## Development and verification
 
 ```sh
-pnpm typecheck      # 全仓 TS 检查（strict + exactOptionalPropertyTypes + noUnused*）
-pnpm test           # 单元测试（vitest）
-pnpm build          # esbuild 产物（7 个 lib/*.js）
-pnpm check:packages # 包不变式：版本 / engines.dsh / peer 规则 / 模块表 / 路径别名 / lockfile / CI pin
+pnpm typecheck      # whole-repo TS check (strict + exactOptionalPropertyTypes + noUnused*)
+pnpm test           # unit tests (vitest)
+pnpm build          # esbuild artifacts (7 lib/*.js)
+pnpm check:packages # package invariants: versions / engines.dsh / peer rules / module table / path aliases / lockfile / CI pins
 pnpm verify         # typecheck + test + build
-pnpm e2e            # 本地 E2E：隔离 DSH_HOME + 真实 DSH Web + /devlead on/watch/通知/off
-pnpm dev:patch      # 生成 overlay 并注册 linked root（见「安装：本地 checkout」）
+pnpm e2e            # local E2E: isolated DSH_HOME + real DSH Web + /devlead on/watch/notification/off
+pnpm dev:patch      # generate the overlay and register the linked root (see "Install from a local checkout")
 ```
 
-`pnpm e2e` 默认走 `patch` 加载流（等价于上面的 dev overlay）；`pnpm e2e --flow installed`
-走 `install-profile` 的包链接流。它只在本地运行（需要已安装的 DSH 运行时），CI 不包含；
-两种加载流都用真实浏览器 HTTP API 驱动，并断言 `/devlead on`、投影翻转、真实子会话 watch、
-被 watch 会话的 `turn/end` → 持久通知 → 投影可见、`/devlead off`。
+`pnpm e2e` defaults to the `patch` loading flow (equivalent to the dev overlay above);
+`pnpm e2e --flow installed` uses the `install-profile` package-link flow. It runs locally only
+(needs an installed DSH runtime) and CI does not include it. Both flows drive the real browser
+HTTP API and assert `/devlead on`, the projection flip, watching a real child session, the
+watched child's `turn/end` → durable notification → visible projection, and `/devlead off`.
 
-测试布局（详见 [`docs/DESIGN.md`](docs/DESIGN.md) §9）：
+Test layout (details in [`docs/DESIGN.md`](docs/DESIGN.md) §9, Chinese):
 
-- `protocol`：格式化 / 转场判定 / 共享类型等纯函数；
-- `devlead`：严格 fold（模式 / watch / 通知 / 损坏记录 / 截断）、严格解码器（字段集 / 时间
-  范围）、通知泵（合并窗口 / 去重 / 重试 / dispose / 冷会话）、Workspace 与 Session 编排
-  （fake 服务）、列表排序与截断、身份解析（列表窗口外仍可寻址）；
-- `tool`：`when` 门控、参数校验、值渲染、错误翻译、每个工具的 execute 转发与取消信号转发；
-- `command`：`/devlead` 语法解析、会话前缀寻址（唯一 / 歧义 / 缺失）、状态渲染、全部错误路径；
-- `client-ui`：格式化 / 命令结果提取 / 准入状态机 / 样式注入契约等纯函数。
+- `protocol`: formatting / transition detection / shared types and other pure functions;
+- `devlead`: strict fold (mode / watch / notifications / corrupt records / truncation), strict
+  decoders (field sets / time ranges), notification pump (coalescing / dedupe / retry / dispose /
+  cold sessions), Workspace and Session orchestration (fake services), listing order and
+  truncation, identity resolution (addressable beyond the listing window);
+- `tool`: `when` gating, argument validation, value rendering, error translation, execute
+  forwarding and cancellation-signal forwarding for every tool;
+- `command`: `/devlead` grammar parsing, session prefix resolution (unique / ambiguous / missing),
+  status rendering, every error path;
+- `client-ui`: formatting / command-result extraction / admission state machine / style-injection
+  contract and other pure functions.
 
-本地端到端验收：`pnpm verify && pnpm e2e`。E2E 会启动一个隔离 DSH，走完
-`/devlead on` → 真实子会话 watch → 子会话 turn 结束 → 通知进入 lead 投影 → `/devlead off`；
-`--flow patch` 与 `--flow installed` 分别覆盖两条加载路径。
+Local end-to-end acceptance: `pnpm verify && pnpm e2e`. The E2E boots an isolated DSH and walks
+`/devlead on` → watch a real child session → the child's turn settles → the notification reaches
+the lead projection → `/devlead off`; `--flow patch` and `--flow installed` cover both loading
+paths.
 
-## 发布
+## Publishing
 
-包已推送到 npm 时可一条命令安装：
+Once the packages are on npm, a single command installs everything:
 
 ```sh
 dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 ```
 
-PR / push 到 main 由 [`verify.yml`](.github/workflows/verify.yml) 跑
-`pnpm install --frozen-lockfile` → typecheck → test → build → `check:packages`。
+PRs and pushes to main run [`verify.yml`](.github/workflows/verify.yml):
+`pnpm install --frozen-lockfile` → typecheck → test → build → `check:packages`.
 
-CI 发布采用 **npm Trusted Publishing（Keyless OIDC）**：推 `v*` tag 触发
-[`.github/workflows/publish.yml`](.github/workflows/publish.yml)，由 GitHub Actions 的
-`id-token: write` 换取 npm 短时 token，**不需要 `NPM_TOKEN` secret**，公开仓库下自动附带
-provenance。CI 还会先校验 `v*` tag 与全部 6 个可发布包与根 `package.json` 的 `version`
-完全一致，不一致直接失败，避免 tag 与 npm 版本错位。每个包需一次性配置 trusted publisher：
+CI publishing uses **npm Trusted Publishing (keyless OIDC)**: pushing a `v*` tag triggers
+[`.github/workflows/publish.yml`](.github/workflows/publish.yml), exchanges the GitHub Actions
+`id-token: write` for a short-lived npm token, and needs **no `NPM_TOKEN` secret**; provenance
+is attached automatically on a public repository. CI first validates that the `v*` tag matches
+the `version` of all 6 publishable packages and the root `package.json`, failing fast to avoid
+tag / npm version drift. Each package needs a one-time trusted-publisher configuration:
 
 ```sh
 npm login
-scripts/trusted-publishers.sh          # 批量配置全部 6 个包（--dry-run / --list 可选）
+scripts/trusted-publishers.sh          # configures all 6 packages (--dry-run / --list available)
 ```
 
-完整发版流程（版本升级、dry-run、本地/CI 发布、GitHub Release、故障处理）见
-[`docs/PUBLISHING.md`](docs/PUBLISHING.md)。
+The full release flow (version bump, dry-run, local/CI publish, GitHub Release, troubleshooting)
+is documented in [`docs/PUBLISHING.md`](docs/PUBLISHING.md) (Chinese).
 
 ## License
 
