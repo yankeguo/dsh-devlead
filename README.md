@@ -12,6 +12,16 @@ interface that the human can see and interact with.
   gains 8 `devlead_*` tools, a DevLead system prompt, and a status strip above the composer.
   The switch itself is a **human-only action**; no tool can enable it. While the mode is off,
   the UI only shows a small composer-toolbar icon — no permanent bar on every conversation.
+- **Dispatcher by default, not implementer.** The DevLead session decides which Workspace owns
+  each request (from registered Workspace metadata, not by reading another repository's code),
+  dispatches a self-contained brief to a Session there, watches it, reviews the delivery, and
+  reports. Read-only inspection is allowed for writing the brief and reviewing a delivery; deeper
+  investigation belongs to the dispatched Session. **Writes** (file edits, builds, commits,
+  pushes, deploys) belong to a Session in the owning Workspace — even when the target is the
+  lead's own workspace — unless the human explicitly authorizes the lead to do it directly in
+  this conversation; direct upkeep of the lead's own record files may follow that repository's
+  instructions. Subagents and Agent Teams are not a substitute for dispatching the work to an
+  openable ordinary Session.
 - **Outputs must be standard DSH entities.** Workspaces are genuinely registered through
   `ctx.workspaceRegistry`, and child sessions are real ordinary Sessions (they appear in the
   sidebar, can be opened, continued, and archived by a human), **not subagents**. This keeps
@@ -31,6 +41,7 @@ Documentation: [Design notes (中文)](docs/DESIGN.md) · [Publishing guide (中
 | Capability | Description |
 | --- | --- |
 | DevLead mode | One durable switch per session; enabling it adds the `devlead_*` tools, the DevLead system prompt, and the status strip |
+| Role model | Dispatch-first: determine the owning Workspace from registered metadata, send a self-contained brief to a Session there, watch it, review the delivery, report; read-only inspection is bounded to the brief and the review, writes stay in the owning Workspace's Session (including the lead's own workspace; direct work only when the human explicitly authorizes it in this conversation; record-file upkeep may follow the lead's repository instructions) |
 | Standard DSH entities | Child sessions are ordinary Sessions (visible in the sidebar; humans can open and take them over); Workspaces go through `workspaceRegistry`, not subagents |
 | 8 model tools | Register/list Workspaces, create/read/continue/watch Sessions, read the notification digest (see [Model tools](#model-tools)) |
 | Human commands | `/devlead` (status), `/devlead on\|off`, `/devlead watch\|unwatch <session>`; sessions are addressable by full id or unique prefix |
@@ -257,15 +268,22 @@ the DevLead icon in the composer toolbar while off, the strip switch while on.
 ### Recommended workflow
 
 1. Run `/devlead on` in the session that should orchestrate several repositories (or click the
-   DevLead icon in the composer toolbar).
-2. Let the model register workspaces: `devlead_use_workspace` takes the repository's **absolute
-   path**; `create` defaults to `true`, a missing directory is `mkdir -p`-created, and
-   re-registering is idempotent.
+   DevLead icon in the composer toolbar). The model then treats that session as the dispatcher,
+   not as the implementation site.
+2. Decide ownership and register workspaces: decide which Workspace owns the request, then use
+   `devlead_list_workspaces` to see what is registered. `devlead_use_workspace` takes the
+   repository's **absolute path**; `create` defaults to `true`, a missing directory is
+   `mkdir -p`-created, and re-registering is idempotent. If no repository matches, or more than
+   one could own it, ask and stop instead of guessing or inspecting another repository first.
 3. Let the model dispatch work: `devlead_create_session` (optional `workspace` / `title` /
-   `preset`) with a **self-contained prompt** — the child cannot see this conversation, so
-   restate every necessary fact in the prompt. New sessions are watched by default and start
-   their first turn immediately (a blank Session does not appear in the sidebar before its first
-   turn, so "create + prompt" is the normal usage).
+   `preset`) with a **self-contained prompt** — background, scope, decisions already made,
+   deliverables, how to verify them, and what not to touch; pass the **owning Workspace** and
+   omit `workspace` only when the work truly belongs to the lead's own directory (the new Session
+   then lives there). The child cannot see this conversation, so restate every necessary fact in
+   the prompt. New sessions are watched by default and start their first turn immediately (a
+   blank Session does not appear in the sidebar before its first turn, so "create + prompt" is the
+   normal usage). If the owning Workspace already has a live Session working on the request,
+   continue it with `devlead_prompt_session` instead of opening a duplicate.
 4. The child runs independently; the human can open it from the sidebar, continue the
    conversation, or take over at any time.
 5. When a child's turn settles (completed / failed / blocked / cancelled / …), the DevLead
@@ -273,8 +291,9 @@ the DevLead icon in the composer toolbar while off, the strip switch while on.
    / `devlead_get_session` to inspect state, `devlead_prompt_session` to follow up or dispatch
    new work, and `devlead_notifications` to read the digest.
 6. Before finishing a turn, the model reports to the human: which Workspaces and Sessions it
-   created or changed, what each child was asked to do, how the latest turn ended, and anything
-   that needs a human decision.
+   created or changed, what each child was asked to do, how the latest turn ended, whether any
+   implementation work was (exceptionally) done directly in the lead session, and anything that
+   needs a human decision.
 
 A request you can paste at the DevLead session:
 
@@ -459,7 +478,8 @@ Test layout (details in [`docs/DESIGN.md`](docs/DESIGN.md) §9, Chinese):
   cold sessions), Workspace and Session orchestration (fake services), listing order and
   truncation, identity resolution (addressable beyond the listing window);
 - `tool`: `when` gating, argument validation, value rendering, error translation, execute
-  forwarding and cancellation-signal forwarding for every tool;
+  forwarding and cancellation-signal forwarding for every tool, and the policy text contract
+  (dispatch-first role, write boundary, ownership resolution);
 - `command`: `/devlead` grammar parsing, session prefix resolution (unique / ambiguous / missing),
   status rendering, every error path;
 - `client-ui`: formatting / command-result extraction / admission state machine / style-injection

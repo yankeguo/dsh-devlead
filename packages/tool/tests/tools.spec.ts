@@ -160,6 +160,55 @@ describe('registration', () => {
   })
 })
 
+describe('policy', () => {
+  /** Boot one harness whose default Agent has DevLead mode enabled. */
+  function bootEnabled(): Harness {
+    const harness = boot()
+    harness.devLead.enabled.add(harness.agent.id)
+    return harness
+  }
+
+  it('states the dispatch-first role and the write boundary', () => {
+    const harness = bootEnabled()
+    const text = harness.sectionText()
+    expect(text).toContain('your job is to orchestrate, not to implement')
+    expect(text).toContain('first decide which Workspace owns it')
+    expect(text).toContain('dispatch file edits, builds, commits, pushes, and deploys to that Session')
+    expect(text).toContain('unless the human explicitly authorizes direct work in this conversation')
+    expect(text).toContain("This default includes implementation work in this session's own workspace")
+    expect(text).toContain('Subagents, Agent Teams, and background helpers are not a substitute for dispatching')
+    // Narrow record-file upkeep is allowed, but it never authorizes implementation.
+    expect(text).toContain("Direct upkeep of this repository's own record files")
+    expect(text).toContain('that is not implementation work, and it never authorizes implementation')
+    const createSession = harness.tool('devlead_create_session').definition
+    expect(createSession.description)
+      .toContain('dispatch the owning Workspace\'s work to that Session instead of doing the work yourself')
+    const parameters = createSession.parameters as {
+      properties: { workspace: { description: string } }
+    }
+    expect(parameters.properties.workspace.description)
+      .toContain("omit only when the work truly belongs to this lead's directory")
+  })
+
+  it('bounds reconnaissance, ownership, and session discipline', () => {
+    const harness = bootEnabled()
+    const text = harness.sectionText()
+    expect(text).toContain('long-running goal or autonomous plan to carry out the request')
+    expect(text).toContain('that work belongs to the owning Session')
+    expect(text).toContain('decide the owning Workspace from devlead_list_workspaces metadata')
+    expect(text).toContain('If none matches, or more than one could own it, ask and stop')
+    expect(text).toContain("Never use this session's directory as a fallback")
+    expect(text).toContain('Once the brief is writable, stop reading and dispatch')
+    expect(text).toContain('deeper investigation belongs to the dispatched Session')
+    expect(text).toContain('continue that Session with devlead_prompt_session instead of opening a duplicate')
+    expect(text).toContain('batch small related changes into one')
+    expect(text).toContain('sustained investigation is dispatched too')
+    expect(text).toContain('Never create a blank Session without a concrete, self-contained brief')
+    expect(text).toContain('reading the actual diff or commits and the verification output')
+    expect(text).toContain('ask the Session to run it and report the output')
+  })
+})
+
 describe('caller invariant', () => {
   it('rejects every caller-dependent tool with one structured agent-not-live error', async () => {
     const harness = boot()

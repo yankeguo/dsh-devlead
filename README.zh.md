@@ -10,6 +10,13 @@
 - **DevLead 会话 = 普通会话 + 一个持久开关**：打开后该会话额外获得 8 个 `devlead_*` 工具、
   一段 DevLead 系统提示，composer 上方出现状态条 UI；开关本身是**人类专属操作**，模型不能
   自行打开。未开启时界面里只有 composer 工具条上的一个小图标，不会在每个会话上显示常驻状态条。
+- **默认调度、不亲自实现**：DevLead 会话先判定请求归属哪个 Workspace（依据已注册 Workspace
+  的元数据与人类给出的目录，而不是去翻别的仓库代码），把自包含简报派发给该 Workspace 的
+  Session，然后监督、审阅交付并汇报。只读检查（代码 / 文档 / diff）仅用于写简报与审阅交付，
+  更深的调查属于被派发的 Session；**写入**（改文件、构建、提交、推送、部署）归该 Workspace
+  的 Session——即使目标就是 lead 自己所在的 Workspace 也一样——除非人类在本对话中明确授权
+  lead 直接做；lead 自己仓库的记录类文件可依该仓库说明直接维护。subagent / Agent Team 不能
+  替代把工作交给一个可被人类打开接管的普通 Session。
 - **产出物必须是标准 DSH 实体**：Workspace 真实注册进 `ctx.workspaceRegistry`，会话是真实的
   普通 Session（出现在侧边栏、可被人类打开、继续对话、归档），**不是 subagent**。这样人类
   始终能看见、介入、接管 Agent 的工作。
@@ -26,6 +33,7 @@
 | 能力 | 说明 |
 | --- | --- |
 | DevLead 模式 | 每个会话一个持久开关；开启后多出 `devlead_*` 工具、DevLead 系统提示与状态条 |
+| 角色模型 | 默认调度：依据已注册元数据判定归属 Workspace → 向对应 Session 发自包含简报 → watch → 审阅交付 → 汇报；只读检查以简报与审阅为界，写入留在归属 Workspace 的 Session（含 lead 自己的 Workspace；仅当人类在本对话中明确授权时由 lead 直接做；记录类文件可依 lead 仓库说明维护） |
 | 标准 DSH 实体 | 子会话是普通 Session（侧边栏可见、人类可打开接管），Workspace 走 `workspaceRegistry`，不是 subagent |
 | 8 个模型工具 | 注册/列出 Workspace，创建/读取/续写/监督 Session，读取通知摘要（见[模型工具](#模型工具)） |
 | 人类命令 | `/devlead`（状态）、`/devlead on|off`、`/devlead watch|unwatch <session>`；会话支持完整 id 或唯一前缀 |
@@ -235,19 +243,25 @@ DSH 跳过。
 
 ### 推荐工作流
 
-1. 在准备統管多个仓库的那个会话里执行 `/devlead on`（或点 composer 工具条里的 DevLead 图标）。
-2. 让模型注册工作区：`devlead_use_workspace` 传入仓库的**绝对路径**；`create` 默认 `true`，
-   目录不存在时会 `mkdir -p`，重复注册是幂等的。
-3. 让模型派发任务：`devlead_create_session`（可选 `workspace` / `title` / `preset`），并给一个
-   **自包含的 prompt**——子会话看不到当前对话，所有必要事实都要在 prompt 里重述。新会话默认
-   被 watch 并立即开始第一个 turn（空白 Session 在第一个 turn 前不会出现在侧边栏，所以
-   "创建 + prompt"是常规用法）。
+1. 在准备統管多个仓库的那个会话里执行 `/devlead on`（或点 composer 工具条里的 DevLead 图标）；
+   此后模型把该会话当作调度者，而不是实现现场。
+2. 判定归属并注册工作区：先判断请求归属哪个 Workspace，用 `devlead_list_workspaces` 查看已注册
+   项；`devlead_use_workspace` 传入仓库的**绝对路径**，`create` 默认 `true`，目录不存在会
+   `mkdir -p`，重复注册幂等。没有任何仓库匹配、或有多个仓库都可能归属时，先问并停下，不要猜、
+   也不要先去翻别的仓库。
+3. 让模型派发任务：`devlead_create_session`（可选 `workspace` / `title` / `preset`），给一个
+   **自包含的 prompt**——背景、范围、已定决策、交付物、如何验证、禁止事项；传**归属
+   Workspace**，只有确实属于 lead 自己目录的工作才省略 `workspace`（此时新 Session 就建在该
+   目录）。子会话看不到当前对话，所有必要事实都要在 prompt 里重述。新会话默认被 watch 并立即
+   开始第一个 turn（空白 Session 在第一个 turn 前不会出现在侧边栏，所以 "创建 + prompt" 是
+   常规用法）。若归属 Workspace 里已有处理该请求的 live Session，用 `devlead_prompt_session`
+   续写它，而不是重复创建。
 4. 子会话独立运行；人类可以随时在侧边栏打开它、继续对话或接管。
 5. 子会话的 turn 结束（完成/失败/阻塞/取消等）后，DevLead 会话收到通知摘要并被唤醒；模型用
    `devlead_list_sessions` / `devlead_get_session` 查看状态，用 `devlead_prompt_session`
    继续追问或派发新任务，用 `devlead_notifications` 读取通知摘要。
 6. 模型在结束 turn 前向人类汇报：创建/改动了哪些 Workspace 与 Session、每个子会话被要求做
-   什么、最近一轮如何结束、有什么需要人类决策。
+   什么、最近一轮如何结束、是否（例外地）在 lead 会话里直接做了实现、有什么需要人类决策。
 
 一个可直接使用的请求示例（人类对 DevLead 会话说）：
 
@@ -410,7 +424,8 @@ pnpm dev:patch      # 生成 overlay 并注册 linked root（见「安装：本�
 - `devlead`：严格 fold（模式 / watch / 通知 / 损坏记录 / 截断）、严格解码器（字段集 / 时间
   范围）、通知泵（合并窗口 / 去重 / 重试 / dispose / 冷会话）、Workspace 与 Session 编排
   （fake 服务）、列表排序与截断、身份解析（列表窗口外仍可寻址）；
-- `tool`：`when` 门控、参数校验、值渲染、错误翻译、每个工具的 execute 转发与取消信号转发；
+- `tool`：`when` 门控、参数校验、值渲染、错误翻译、每个工具的 execute 转发与取消信号转发，
+  以及 policy 文案契约（默认调度角色、写入边界、归属解析）；
 - `command`：`/devlead` 语法解析、会话前缀寻址（唯一 / 歧义 / 缺失）、状态渲染、全部错误路径；
 - `client-ui`：格式化 / 命令结果提取 / 准入状态机 / 样式注入契约等纯函数。
 

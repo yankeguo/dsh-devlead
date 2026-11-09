@@ -66,7 +66,8 @@ const DEFAULT_NOTIFICATIONS_LIMIT = 20
 
 const LIST_WORKSPACES_DESCRIPTION =
   'List every registered DSH Workspace: its title, canonical directory path, live directory status, and the Sessions '
-  + 'the registry accounts to it. Use it before registering a new Workspace or dispatching a Session.'
+  + 'the registry accounts to it. Use it first to decide which Workspace owns a request, before registering a new '
+  + 'Workspace or dispatching a Session.'
 
 const USE_WORKSPACE_DESCRIPTION =
   'Register a repository directory as a DSH Workspace so Sessions can be created in it. The path must be absolute; an '
@@ -82,7 +83,8 @@ const LIST_SESSIONS_DESCRIPTION =
 const CREATE_SESSION_DESCRIPTION =
   'Create an ordinary DSH Session in a Workspace and optionally start it with a prompt. The Session is a real Session '
   + 'the human can open and take over, not a subagent. It is watched by default, so this lead is notified when its '
-  + 'turns settle.'
+  + 'turns settle. Use it to dispatch the owning Workspace\'s work to that Session instead of doing the work yourself '
+  + 'from this lead session.'
 
 const GET_SESSION_DESCRIPTION =
   'Read one Session in detail: whether it is live and running, whether it is archived, and, when the Host can read '
@@ -210,7 +212,8 @@ export function apply(ctx: Context): void {
     parameters: {
       workspace: {
         type: 'string',
-        description: 'Workspace id or registered path to create the Session in; omit to use this lead\'s directory.',
+        description: 'Workspace id or registered path of the owning Workspace; omit only when the work truly belongs '
+          + 'to this lead\'s directory.',
       },
       prompt: {
         type: 'string',

@@ -15,6 +15,13 @@
 - **DevLead 会话 = 普通会话 + 一个持久开关**。打开开关后，该会话额外获得一组
   `devlead_*` 工具和一段系统提示，composer 上方出现 DevLead 状态条；未打开时界面里只有
   composer 工具条上的一个小图标，不显示常驻状态条。
+- **默认调度而非实现**：DevLead 会话先判定请求归属的 Workspace（依据已注册 Workspace 元数据
+  与人类给出的目录，不靠翻别的仓库代码），把自包含简报派发给对应 Session，自己只做有边界的
+  只读检查（写简报、审阅交付），更深的调查属于被派发的 Session；即使目标是自己所在的
+  Workspace 也默认派发，除非人类在本对话中明确授权直接做（并在汇报中说明）。写入（改文件、
+  构建、提交、推送、部署）属于对应 Workspace 的 Session；lead 自己仓库的记录类文件可依该仓库
+  说明直接维护，但不构成实现授权。subagent / Agent Team 不能替代人类可打开接管的普通
+  Session，本会话也不为别人的请求拉起长周期目标或自治计划。
 - **产出物必须是标准 DSH 实体**：Workspace 是真实注册进 `ctx.workspaceRegistry` 的工作区，
   会话是真实的普通 Session（出现在侧边栏、可被人类打开、继续对话、归档），**不是 subagent**。
   这样人类始终能看见、介入、接管 Agent 的工作。
@@ -245,8 +252,13 @@ DevLead 无需额外工具调用即可判断是否要介入。
   也走结构化错误 `DEVLEAD_AGENT_NOT_LIVE`，基础设施错误原样重抛。所有异步写调用转发
   `exec.signal`（`create_session` / `prompt_session` / `watch_session`），读调用同样转发。
 - `systemPrompt.section({ name: 'devlead:policy', order: TOOL_SUBAGENT, text: ({ agent }) =>
-  ctx.devLead.isEnabled(agent) ? POLICY : '' })` 提供 DevLead 行为指导（工作流、通知处理、
-  汇报格式）；每次组装按当前 Agent 重新求值，关闭模式后下一步即消失。
+  ctx.devLead.isEnabled(agent) ? POLICY : '' })` 提供 DevLead 行为指导：依据注册元数据判定
+  归属、默认调度而非亲自实现（写入归归属 Workspace 的 Session，本 Workspace 也默认派发；
+  lead 自己仓库的记录类文件可依仓库说明直接维护）、只读检查以简报与审阅为界、已有同请求
+  live Session 时续写而不是重复创建、未注册归属先问或注册、无空会话，以及工作流、通知处理、
+  汇报格式；每次组装按当前 Agent 重新求值，关闭模式后下一步即消失。`devlead_create_session`
+  的工具描述与 `workspace` 参数说明同步强调「把工作派发到归属 Workspace 的 Session」，避免
+  模型把「创建 + prompt」当成本会话的直接实现入口。
 
 ## 6. 人类命令（`@yankeguo/dsh-command-devlead`）
 
@@ -339,7 +351,8 @@ UI 分两态，避免在每个会话上显示常驻条：
   列表窗口外的身份解析、写路径的取消语义。
 - `tool`：用 fake `ctx.devLead` + fake `ctx.tools`/`ctx.systemPrompt` 捕获工具定义，验证
   `when` gating、参数校验、值渲染、编译期 schema↔protocol 一致性、运行时 output schema
-  校验、错误翻译、每个工具的 execute 转发与取消信号转发、presentCall replay 纯净性。
+  校验、错误翻译、每个工具的 execute 转发与取消信号转发、presentCall replay 纯净性，以及
+  policy 文案的角色边界契约（默认调度、写入归属、归属未明时先问或注册、无空会话）。
 - `command`：解析（rawInput 契约 / 引号 / 空白 / 未知子命令）、前缀寻址（唯一 / 歧义 / 缺失
   / 列表窗口外回退）、渲染、穷尽错误码映射、单次 projection 快照。
 - `client-ui`：纯函数（format / 准入状态机 gate+reducer / results 分类 / 样式 token 契约 /
