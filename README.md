@@ -28,13 +28,17 @@ interface that the human can see and interact with.
   every child visible and able to be taken over by the human.
 - **Notification loop.** A DevLead watches child sessions. Whenever a watched session's turn
   settles (completed / failed / blocked / cancelled / …), the Host writes a notification into
-  the DevLead session's durable log and, while the DevLead agent is alive, wakes it with a
-  `devlead`-sourced message so it can decide what to do next (follow up, dispatch new work, or
-  report to the human).
+  the DevLead session's durable log and, while the DevLead agent is indexed and alive, wakes it
+  with a `devlead`-sourced message so it can decide what to do next (follow up, dispatch new
+  work, or report to the human). See [Known limitations](#known-limitations) for the disposed /
+  closed-lead case.
 
 Documentation: [Design notes (中文)](docs/DESIGN.md) · [Publishing guide (中文)](docs/PUBLISHING.md) ·
 [Audit record (中文)](docs/AUDIT.md) · [v0.1.1 release notes (中文)](docs/releases/v0.1.1.md) ·
-[Bundle package (中文)](packages/bundle/README.md)
+[Bundle package (中文)](packages/bundle/README.md) · Package READMEs:
+[protocol](packages/protocol/README.md) · [devlead](packages/devlead/README.md) ·
+[tool](packages/tool/README.md) · [command](packages/command/README.md) ·
+[client-ui](packages/client-ui/README.md)
 
 ## Features
 
@@ -46,7 +50,7 @@ Documentation: [Design notes (中文)](docs/DESIGN.md) · [Publishing guide (中
 | Optional worktree isolation | When the Host composes DSH's experimental Git worktree service (`ctx.worktrees`), `devlead_create_session` can request `isolation: "worktree"` so a writing Session gets its own branch and checkout instead of sharing the Workspace checkout; detection is optional and a missing capability degrades to the shared checkout with a reported status, never an error (see [Optional worktree isolation](#optional-worktree-isolation)) |
 | 8 model tools | Register/list Workspaces, create/read/continue/watch Sessions, read the notification digest (see [Model tools](#model-tools)) |
 | Human commands | `/devlead` (status), `/devlead on\|off`, `/devlead watch\|unwatch <session>`; sessions are addressable by full id or unique prefix |
-| Notification loop | A watched session's `turn/end` writes a durable notification and wakes the DevLead through a coalescing window (configurable window and cold-session policy) |
+| Notification loop | A watched session's `turn/end` writes a durable notification and wakes an indexed DevLead through a coalescing window (configurable window and cold-session policy); a disposed lead stops observing until reopened (see [Known limitations](#known-limitations)) |
 | Event sourcing | Mode / watch set / notifications are ignorable `plugin:devlead/*` records with strict replay validation; survive restart / resume / fork |
 | Session projection | The `devLead` projection (`{ enabled, sessions, notifications }`) syncs state to the browser without a custom Remote API; its summary-sized companion `devLeadMode` (`{ enabled }`) rides every Session-list summary so sidebar rows can render the mark |
 | UI | Off: only a small composer-toolbar icon (unobtrusive, no permanent strip). On: a DevLeadBar above the composer with the switch, watched/running counts, and the latest notification; the UI only sends `/devlead on\|off` commands. Enabled Sessions are also marked in the sidebar session list |
@@ -64,12 +68,14 @@ bar on every conversation:
 - **On:** the icon disappears and the full DevLeadBar (`conversation.input.dock`) appears above
   the composer: the mode switch (click sends `/devlead off`), the number of watched sessions,
   the number running, and the latest notification — or a help hint when there is none.
-- **Marked while enabled:** every DevLead-enabled Session carries a small DevLead mark in the
-  sidebar session list, after its time label (`sidebar.session.row.trailing`), so the mode is
-  recognizable after the conversation is closed. The mark reads the summary-sized `devLeadMode`
-  projection, so it renders for cold Sessions too without an extra Host read per row. On
-  hover-capable devices the shell hides the row's resting marks while the row is hovered; the
-  row's hover card then restates "DevLead mode is on" (`sidebar.session.row.hover`).
+- **Marked while enabled:** every listed DevLead-enabled Session carries a small DevLead mark
+  in the sidebar session list, after its time label (`sidebar.session.row.trailing`), so the mode
+  is recognizable after the conversation is closed. The mark reads the summary-sized
+  `devLeadMode` projection, so it renders for cold Sessions too without an extra Host read per
+  row. DSH 0.2.2-rc.1 omits the trailing seat for a *blank* Session (no turn yet), so enabling
+  the mode on a brand-new Session shows no mark until its first turn; the row's hover card
+  restates "DevLead mode is on" (`sidebar.session.row.hover`). On hover-capable devices the
+  shell hides the row's resting marks while the row is hovered.
 
 Off (only the small toolbar icon):
 
@@ -122,11 +128,11 @@ A pnpm workspace under `packages/*`:
 
 ```
 packages/
-  protocol/    @yankeguo/dsh-devlead-protocol     pure types + constants + formatting (shared by host and browser), devLead projection types
+  protocol/    @yankeguo/dsh-devlead-protocol     pure types + constants + formatting (shared by host and browser), devLead/devLeadMode projection types
   devlead/     @yankeguo/dsh-devlead              core service: mode, Workspace/Session orchestration, watch index, notification delivery, strict fold
   tool/        @yankeguo/dsh-tool-devlead         8 model tools + conditional system prompt
   command/     @yankeguo/dsh-command-devlead      the /devlead human command
-  client-ui/   @yankeguo/dsh-client-ui-devlead    browser UI: toolbar switch + DevLeadBar strip while enabled
+  client-ui/   @yankeguo/dsh-client-ui-devlead    browser UI: toolbar switch + DevLeadBar strip + sidebar row mark
   bundle/      @yankeguo/dsh-devlead-bundle       bundle: cordis.patch.yml + dependencies
 ```
 
@@ -136,8 +142,13 @@ core, tool, command, and client-ui's `index`/`client`; `bundle` ships only the p
 icon, no JS. Builds use esbuild: host entries keep `@deepseek-ai/*`, `@yankeguo/*`, and `node:*`
 external, so workspace packages stay out of the bundle and the whole process shares one
 protocol/core instance. The browser entry's platform singletons come from a single source,
-`scripts/client-externals.mjs` (it must match the DSH shell's module table; the build enforces
-this).
+`scripts/client-externals.mjs` (it must match the DSH shell's module table; the build rejects any
+`@deepseek-ai/*` browser import outside it, while pure third-party code may be inlined).
+
+Each package has its own short README: [protocol](packages/protocol/README.md) ·
+[devlead](packages/devlead/README.md) · [tool](packages/tool/README.md) ·
+[command](packages/command/README.md) · [client-ui](packages/client-ui/README.md) ·
+[bundle](packages/bundle/README.md).
 
 `scripts/` provides the build (`build.mjs`), package invariants (`check-packages.mjs`), profile
 install (`install-profile.mjs`), dev overlay (`dev-patch.mjs`), and local E2E (`e2e-smoke.mjs`).
@@ -268,10 +279,10 @@ the DevLead icon in the composer toolbar while off, the strip switch while on.
 - `watch` / `unwatch` require the current session to have DevLead mode enabled; you cannot watch
   yourself; the watch set is capped (default 64, see [Configuration](#configuration)).
 - The command does not accept composer attachments; every domain failure (stable `DEVLEAD_*`
-  error code) is rendered as friendly text instead of being thrown. The command addresses and
-  lists candidates from the session listing (default up to 200 rows) and the current watch set
-  first; sessions beyond that listing fall back to the core `getSession` resolver (full id or
-  unique prefix both work).
+  error code) is rendered as friendly text instead of being thrown. The command lists candidates
+  from the session listing (default up to 200 rows) and the current watch set first, then confirms
+  a prefix with the core's exhaustive resolver before mutating, so a match outside the listing
+  window cannot be silently shadowed (full ids and unique prefixes both work).
 
 ### Recommended workflow
 
@@ -384,7 +395,9 @@ composed — the plugin never depends on it.
 - **The watch set is durable state:** a `plugin:devlead/watch` record replaces the whole watch
   set; only watched sessions produce notifications.
 - **Trigger:** every `turn/end` of a watched session (completed / failed / blocked / cancelled /
-  max-tokens / …) appends a `plugin:devlead/notification` record to the DevLead session's log,
+  max-tokens / …) appends a `plugin:devlead/notification` record to the DevLead session's log
+  while the lead is indexed (a disposed lead stops observing until reopened; see
+  [Known limitations](#known-limitations)),
   containing a deterministic id, the session title, the turn number, the transition kind, and
   either a failure excerpt or the last assistant-text excerpt before the turn settled (single
   line, max 240 characters, stored in the notification's `summary` field).
@@ -394,9 +407,14 @@ composed — the plugin never depends on it.
   400 ms); when the window ends and the DevLead agent is still alive, it is woken with a message
   sourced `devlead` (`form: 'notice'`). If the agent is running, the followup queues for the next
   turn; an `agent/status` transition to idle also flushes the queue once.
-- **Cold DevLead sessions:** while the agent is not alive, only durable records are kept by
-  default and no automatic resume happens (`wakeColdSession: false`); when set to `true`, the
-  Host first calls `sessionController.resolveAgent(leadId)` and then delivers.
+- **Cold DevLead sessions:** if the hub still holds a runtime for the lead while its Agent is not
+  live (for example a digest was queued just before the Agent went away), that digest stays
+  pending; by default only durable records are kept and no automatic resume happens
+  (`wakeColdSession: false`); when set to `true`, the Host first calls
+  `sessionController.resolveAgent(leadId)` and then delivers. Note: `agent/disposed` removes the
+  in-memory watch index, so turns that settle until the Session is opened again are not observed
+  (see [Known limitations](#known-limitations)); reopening the Session rebuilds the index from
+  the durable watch set.
 - **Dedupe and retry:** the same deterministic id appears only once per digest (a replayed
   `turn/end` cannot wake twice); a failed delivery is retried on a bounded 1 s timer instead of
   being dropped; with `notificationBatchMs: 0`, a mode-off or a disposed agent can no longer
@@ -429,19 +447,19 @@ the profile's `cordis.patch.yml` — DSH replaces a row's whole config):
 - id: devlead
   name: '@yankeguo/dsh-devlead'
   config:
-    notificationBatchMs: 400     # notification coalescing window (ms, non-negative integer)
+    notificationBatchMs: 400     # coalescing window (ms, integer in [0, 2147483647])
     maxWatchedSessions: 64       # max watched sessions per lead (positive integer)
     maxListedSessions: 200       # max rows per session listing (positive integer)
-    wakeColdSession: false       # resume a cold DevLead session before waking it
+    wakeColdSession: false       # resume a cold DevLead Session for an already-queued digest
     defaultAgentPreset: ''       # default Agent preset for created sessions (empty = DSH default)
 ```
 
 | Key | Default | Range / notes |
 | --- | --- | --- |
-| `notificationBatchMs` | `400` | `0` or a positive integer of milliseconds; notifications in the window are merged into one wake-up message |
+| `notificationBatchMs` | `400` | integer in `[0, 2147483647]` (Node's timer ceiling); notifications in the window are merged into one wake-up message |
 | `maxWatchedSessions` | `64` | positive integer; a watch operation over the cap reports `DEVLEAD_WATCH_LIMIT` |
 | `maxListedSessions` | `200` | positive integer; row cap for listing calls (`devlead_list_sessions` / `/devlead` status). Identity resolution is not limited by it, and a watched-only listing never truncates below the watch set |
-| `wakeColdSession` | `false` | when `true`, a cold lead session is resumed before the notification is delivered |
+| `wakeColdSession` | `false` | when `true`, a cold lead Session is resumed to deliver a digest that is already queued; it does not observe turns that settle while the lead is disposed (see [Known limitations](#known-limitations)) |
 | `defaultAgentPreset` | `''` | default value used when a created session names no `preset`; an empty string means no preset |
 
 `tool` / `command` / `client-ui` have no deployment configuration; all domain limits (watch cap,
@@ -459,10 +477,12 @@ without it keeps the default single-checkout behavior and reports `unavailable`.
   strip switch — both merely send the same command). **No model tool can enable it**; every
   `devlead_*` tool is gated by `when`, so an ordinary session never sees them. This matches the
   design principle of never making permission decisions on the human's behalf.
-- **Writes require the mode:** even when the tools are visible, every core write method first
-  checks that the Agent is live and the mode is enabled (`DEVLEAD_NOT_ENABLED` /
-  `DEVLEAD_AGENT_NOT_LIVE`); the command side likewise only mutates the watch set within the
-  human-authorized scope.
+- **Writes require the mode:** every `devlead_*` write tool requires a live calling Agent and is
+  only visible while the mode is enabled; `createSession`, `promptSession`, and `watchSession`
+  revalidate live + mode in the core (`DEVLEAD_NOT_ENABLED` / `DEVLEAD_AGENT_NOT_LIVE`), and the
+  command side only mutates the watch set within the human-authorized scope. Workspace
+  registration is a Host-level operation: the `devlead_use_workspace` tool requires a live caller,
+  while the core `useWorkspace` method itself is caller-free (documented API exception).
 - **Notifications are not instructions:** both wake-up messages and child output can embed text;
   the DevLead system prompt requires treating notifications as runtime notices and never
   performing unauthorized work or making permission decisions from them.
@@ -479,12 +499,17 @@ without it keeps the default single-checkout behavior and reports `unavailable`.
   resumes; a human must run `/devlead off`.
 - **Cold DevLead sessions are not resumed automatically by default:** notifications only stay in
   the durable log; set `wakeColdSession: true` if needed.
+- **A disposed lead stops observing until reopened:** `agent/disposed` (and a Host restart) drops
+  the lead's in-memory watch index. Watched turns that settle while the Session is closed are not
+  recorded as notifications; opening the Session again rebuilds the index from the durable watch
+  set, and `wakeColdSession` only applies to a digest that was already recorded/queued.
 - **64 retained notifications:** the projection truncates at that constant; older records remain
   in the Session log.
 - **Default caps of 64 watched / 200 listed:** configurable; the command's candidate list is
   capped by that limit. Sessions beyond the listing are still addressable by full id or unique
-  prefix (core identity resolution is exhaustive and not capped by the listing limit); only the
-  command's ambiguity hints are based on the listing + watch set.
+  prefix (core identity resolution is exhaustive and not capped by the listing limit). The
+  command lists candidates and ambiguity hints from the bounded listing + watch set, then confirms
+  any prefix with the core resolver before a watch mutation.
 - **No Git repository creation / clone / general worktree management:** use shell tools, then
   register the Workspace. The optional per-Session isolation described above only borrows an
   already-composed experimental DSH worktree service; the plugin itself performs no Git
@@ -501,12 +526,17 @@ without it keeps the default single-checkout behavior and reports `unavailable`.
 - **Small off-state entry point:** to avoid a permanent strip on every conversation, the off
   state is only a composer-toolbar icon; remember the `/devlead on` command if that is not
   obvious enough.
-- **Sidebar mark backfill:** the mark renders from the summary-sized `devLeadMode` projection.
-  A Session enabled before this feature shipped shows the mark only once its projection cache
-  carries the key (open that Session once, or toggle the mode again); v1 does not backfill on
-  Host startup.
+- **Sidebar mark backfill and blank rows:** the mark renders from the summary-sized
+  `devLeadMode` projection. A Session enabled before this feature shipped shows the mark only
+  once its projection cache carries the key (open that Session once, or toggle the mode again);
+  v1 does not backfill on Host startup. DSH rc.1 does not render the trailing seat on a blank
+  (no-turn-yet) Session row, so a freshly enabled blank Session shows the mark only after its
+  first turn.
 - **Child sessions are ordinary sessions:** they appear in the sidebar and consume model quota
   normally — they are not hidden subagents.
+- **Damaged DevLead records fail closed:** replay freezes at the first corrupt
+  `plugin:devlead/*` record; tool/status reads and writes report `DEVLEAD_PROJECTION_INVALID`, and
+  `/devlead off` cannot rewrite the frozen fold. Repair the offending record in the Session log.
 
 ## Troubleshooting
 
@@ -518,7 +548,7 @@ without it keeps the default single-checkout behavior and reports `unavailable`.
 | `/devlead on` says "no longer live" | the Agent is no longer the live instance in the registry; reopen the session from the sidebar and retry |
 | `/devlead watch` reports ambiguity | the prefix matches several sessions; use a longer prefix or the full id from the candidates in the error |
 | `/devlead watch` reports the mode is off | run `/devlead on` first; watch-set changes require the mode |
-| A child's turn settled but the DevLead was not woken | the mode is off, the session is not watched, the DevLead agent is not alive (cold sessions keep records only), or the notification is still inside the coalescing window |
+| A child's turn settled but the DevLead was not woken | the mode is off, the session is not watched, the DevLead agent is not alive (a disposed lead stops observing until reopened; a queued digest may still be waiting), or the notification is still inside the coalescing window |
 | The DevLead switch seems to do nothing | the command may still be running (the switch is disabled); when enabling fails, the error shows inline in the strip or in the icon tooltip |
 | The strip's counts disagree with the sidebar | the strip computes from the projection's watch set and the standard Session list; a just-changed value can lag briefly — reload the page to re-read |
 | Cannot find the switch while off | it is the user icon in the composer toolbar (next to the permission dropdown); hover shows "Turn on DevLead mode"; `/devlead on` also works |

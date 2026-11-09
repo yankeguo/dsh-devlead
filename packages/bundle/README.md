@@ -14,12 +14,13 @@ kind: "package-bundle"
 
 - **DevLead 模式**：每个会话一个持久开关；打开后获得 8 个 `devlead_*` 工具、DevLead 系统
   提示，以及两态 UI：未开启时只有 composer 工具条小图标，开启后才是 composer 上方的完整状态条。
-  已开启的会话还会在侧边栏会话行显示 DevLead 标记，关掉会话后仍可辨识。
+  已开启的会话还会在侧边栏会话行显示 DevLead 标记，关掉会话后仍可辨识（DSH rc.1 对
+  blank / 尚无 turn 的新会话行不渲染该 seat，首次 turn 后才显示）。
   开关是**人类专属操作**（`/devlead on|off` 或界面开关），模型无法自行打开。
 - **产出物是标准 DSH 实体**：Workspace 真实注册进 `ctx.workspaceRegistry`，子会话是真实普通
   Session（侧边栏可见、可被人类打开接管），**不是 subagent**。
-- **监督与唤醒**：被 watch 的会话每个 `turn/end` 都写入 DevLead 会话的持久通知记录，Agent
-  存活时经合并窗口唤醒它决定下一步。
+- **监督与唤醒**：被 watch 的会话每个 `turn/end` 都写入 DevLead 会话的持久通知记录（lead 仍被
+  索引时），Agent 存活时经合并窗口唤醒它决定下一步。
 - **事件溯源**：模式 / watch 集合 / 通知以可忽略的 `plugin:devlead/*` 记录持久化，可跨重启 /
   恢复 / fork；`devLead` Session projection 把状态同步到浏览器，summary 级 `devLeadMode`
   随每个会话列表行下发，供侧边栏标记使用。
@@ -98,9 +99,9 @@ profile，且 `desktop` profile 已启用本 bundle（重复插入相同 row id 
 - 撤销：删除 profile 的 `node_modules/devlead-repo`；`pnpm uninstall:profile` 负责撤销
   `install:profile` 创建的包链接与 bundle 选择。
 
-本地一键校验：`pnpm verify`（typecheck + 单元测试 + 构建）；`pnpm e2e` 用隔离的
-`/tmp` DSH_HOME 分别验收 `dev:patch` 与 `install:profile` 两条本地加载路径（需要本机
-已安装 DSH，因此不在 CI 中运行）。
+本地一键校验：`pnpm verify`（typecheck + 单元测试 + 构建）；`pnpm e2e` 默认走
+`--flow patch`，`pnpm e2e --flow installed` 走 `install-profile`，两者都用隔离的
+`os.tmpdir()` DSH_HOME 验收本地加载路径（需要本机已安装 DSH，因此不在 CI 中运行）。
 
 ### 前置条件
 
@@ -117,6 +118,9 @@ profile，且 `desktop` profile 已启用本 bundle（重复插入相同 row id 
 /devlead unwatch <session>      # 取消监督
 ```
 
+`/devlead status` 还会打印 `Worktree isolation: available|unavailable`，让人类直接判断当前
+profile 是否组合了可选的实验性 worktree 隔离能力。
+
 打开模式后，让模型为它配置工作区并派发任务：
 
 ```
@@ -124,8 +128,8 @@ profile，且 `desktop` profile 已启用本 bundle（重复插入相同 row id 
 再用 devlead_create_session 在这个工作区创建一个子会话，下发下面的任务：……
 ```
 
-子会话跑完后 DevLead 会话会收到通知摘要并被唤醒。详见仓库 README 的「使用」与
-「通知机制」。
+子会话跑完后（lead 仍被索引时）DevLead 会话会收到通知摘要并被唤醒。详见仓库 README 的
+「使用」与「通知机制」。
 
 ## 配置
 
@@ -136,10 +140,10 @@ bundle 的 patch 行没有显式写配置，核心服务使用 DESIGN 默认值�
 ```yaml
 - id: devlead
   config:
-    notificationBatchMs: 400     # 通知合并窗口（毫秒）
+    notificationBatchMs: 400     # 通知合并窗口（0–2147483647 毫秒）
     maxWatchedSessions: 64       # 每个 lead 最多监督的会话数
     maxListedSessions: 200       # 会话列表最大行数
-    wakeColdSession: false       # 冷 DevLead 会话是否 resume 后唤醒
+    wakeColdSession: false       # 为已入队 digest resume 冷 DevLead 会话
     defaultAgentPreset: ''       # 创建会话的默认 Agent preset
 ```
 
@@ -147,9 +151,11 @@ bundle 的 patch 行没有显式写配置，核心服务使用 DESIGN 默认值�
 
 - 模式是**每个 Session 的持久状态**：打开后 DSH 重启 / 会话恢复仍然打开，需要人类关闭。
 - 通知保留最近 64 条（projection 常量截断）；更早的记录仍在 Session 日志里。
-- 冷 DevLead 会话默认只留持久通知记录，不自动 resume（`wakeColdSession: false`）。
+- 冷 DevLead 会话默认只留持久通知记录，不自动 resume（`wakeColdSession: false`）；该开关只
+  投递已入队 digest，lead dispose / Host 重启期间结束的 turn 不会被记录，重新打开会话后重建
+  watch 索引。
 - watch 上限默认 64；命令的候选列表默认截断在 200 行，列表外的会话会回退到 core 的
-  `getSession` 解析。
+  `getSession` 解析；前缀引用在变更前还会用 core 的穷尽 resolver 确认唯一性。
 - 不做 git 克隆 / 通用 worktree 管理；不跨进程编排；不替人类做权限决策。实验性 DSH worktree
   服务被组合时，`devlead_create_session` 可传 `isolation: "worktree"` 为新会话尽力提供隔离检出；
   缺少该服务时退化为共享 checkout 并如实上报，绝不失败（默认 Web 组合即无此能力）。
@@ -157,7 +163,19 @@ bundle 的 patch 行没有显式写配置，核心服务使用 DESIGN 默认值�
 
 ## 文档
 
-- 仓库 [README.zh.md](../../README.zh.md)：功能、安装、使用、通知机制、配置与故障排查（英文版见 [README.md](../../README.md)）
-- [DESIGN](../../docs/DESIGN.md)：领域模型、持久记录、核心服务 API、通知泵与权限模型
-- [PUBLISHING](../../docs/PUBLISHING.md)：npm trusted publishing 发布流程
-- [v0.1.1 release notes](../../docs/releases/v0.1.1.md)
+- 仓库 [README.zh.md](https://github.com/yankeguo/dsh-devlead/blob/main/README.zh.md)：功能、安装、使用、通知机制、配置与故障排查（英文版见 [README.md](https://github.com/yankeguo/dsh-devlead/blob/main/README.md)）
+- [DESIGN](https://github.com/yankeguo/dsh-devlead/blob/main/docs/DESIGN.md)：领域模型、持久记录、核心服务 API、通知泵与权限模型
+- [PUBLISHING](https://github.com/yankeguo/dsh-devlead/blob/main/docs/PUBLISHING.md)：npm trusted publishing 发布流程
+- [v0.1.1 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.1.1.md)
+- 包 README：[protocol](https://github.com/yankeguo/dsh-devlead/blob/main/packages/protocol/README.md) · [devlead](https://github.com/yankeguo/dsh-devlead/blob/main/packages/devlead/README.md) ·
+  [tool](https://github.com/yankeguo/dsh-devlead/blob/main/packages/tool/README.md) · [command](https://github.com/yankeguo/dsh-devlead/blob/main/packages/command/README.md) ·
+  [client-ui](https://github.com/yankeguo/dsh-devlead/blob/main/packages/client-ui/README.md)
+
+## English summary
+
+`@yankeguo/dsh-devlead-bundle` installs the whole DevLead suite - the core `ctx.devLead` service,
+eight `devlead_*` tools, the `/devlead` human command, and the Web UI (composer switch/status
+strip plus sidebar marks). The suite targets the default DSH Web composition
+(`dsh-base` + `dsh-web-app`) and has no hard dependency on experimental plugins. Full docs:
+[README.md](https://github.com/yankeguo/dsh-devlead/blob/main/README.md) (English), [README.zh.md](https://github.com/yankeguo/dsh-devlead/blob/main/README.zh.md) (中文), and
+[DESIGN.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/DESIGN.md).

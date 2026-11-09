@@ -8,7 +8,7 @@
 | 2 | `@yankeguo/dsh-devlead` | 核心 Service `ctx.devLead`：模式、Workspace/Session 编排、监督索引、通知投递、projection fold |
 | 3 | `@yankeguo/dsh-tool-devlead` | 模型工具 `devlead_*` + 条件系统提示 |
 | 4 | `@yankeguo/dsh-command-devlead` | `/devlead` 人类命令 |
-| 5 | `@yankeguo/dsh-client-ui-devlead` | 浏览器 DevLead 状态条 |
+| 5 | `@yankeguo/dsh-client-ui-devlead` | 浏览器两态 UI：工具条开关、DevLeadBar、侧边栏会话行标记 |
 | 6 | `@yankeguo/dsh-devlead-bundle` | 安装入口 bundle（`cordis.patch.yml` 装齐整套） |
 
 `pnpm publish -r` 会按依赖拓扑自动排序，**功能包先发、bundle 最后发布**；
@@ -22,7 +22,7 @@ bundle 的 `workspace:*` 依赖在打包时会被改写为当前精确版本（`
 | 本地手动 | `npm login` 的长期会话凭据 | 首次发布新包、紧急补发、调试 |
 
 CI 方式在仓库里已经配置好（[`.github/workflows/publish.yml`](../.github/workflows/publish.yml)）：
-推 tag → install / typecheck / test / build / `pnpm publish -r` → GitHub Release。
+推 tag → install / typecheck / test / build / `check-packages` / `pnpm publish -r` → GitHub Release。
 工作流里 **没有 `NODE_AUTH_TOKEN`、也没有 `NPM_TOKEN`**，只依赖 `id-token: write` 权限。
 
 PR / push 到 main 另有 [`verify.yml`](../.github/workflows/verify.yml) 跑同样的
@@ -122,9 +122,11 @@ git status                 # 必须干净
 export VERSION=0.2.0
 node -e '
   const fs = require("node:fs")
-  const dirs = ["protocol","devlead","tool","command","client-ui","bundle"]
-  for (const dir of dirs) {
-    const file = `packages/${dir}/package.json`
+  const files = ["package.json"]
+  for (const dir of ["protocol","devlead","tool","command","client-ui","bundle"]) {
+    files.push(`packages/${dir}/package.json`)
+  }
+  for (const file of files) {
     const manifest = JSON.parse(fs.readFileSync(file, "utf8"))
     manifest.version = process.env.VERSION
     fs.writeFileSync(file, JSON.stringify(manifest, null, 2) + "\n")
@@ -149,10 +151,10 @@ pnpm install --frozen-lockfile     # 锁文件一致
 pnpm typecheck                     # TS 检查（含 noUnusedLocals/Parameters）
 pnpm test                          # 单元测试（vitest）
 pnpm build                         # 生成 packages/*/lib（lib 被 gitignore，必须现构建；共 7 个 lib/*.js）
-pnpm check:packages                # 包不变式：版本/engines/peer 规则/模块表/别名/lockfile/CI pin
+pnpm check:packages                # 包不变式：版本/engines/peer 规则/DSH 依赖/实验包/模块表/client inject/别名/lockfile/CI pin
 pnpm release:dry                   # 递归 dry-run：打印 6 个包的发布计划，不上传
 
-# 可选（本机，需要已安装的 DSH 桌面端）：真实 DSH 端到端冒烟，两条加载流各 25 项检查
+# 可选（本机，需要已安装的 DSH 桌面端）：真实 DSH 端到端冒烟，两条加载流各 33 项检查
 pnpm e2e && pnpm e2e --flow installed
 ```
 
@@ -169,7 +171,7 @@ pnpm --filter @yankeguo/dsh-client-ui-devlead pack --pack-destination /tmp/devle
 BUNDLE=/tmp/devlead-pkgs/*dsh-devlead-bundle-*.tgz
 UI=/tmp/devlead-pkgs/*dsh-client-ui-devlead-*.tgz
 tar -tzf $BUNDLE        # 必须包含 package/cordis.patch.yml、icon.svg、README.md
-tar -tzf $UI            # 必须包含 package/lib/client.js 与 package/locale/*.json
+tar -tzf $UI            # 必须包含 package/lib/client.js、package/locale/*.json 与 package/README.md
 tar -xzOf $BUNDLE package/package.json   # workspace:* 应已改写为精确版本
 ```
 
@@ -223,7 +225,7 @@ npm view @yankeguo/dsh-command-devlead version
 在 DSH 中安装验证：
 
 ```sh
-dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.1.1
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.2.0
 ```
 
 然后刷新 Web 页面，开一个会话执行 `/devlead on`，再让模型
@@ -255,6 +257,9 @@ dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.1.1
 - `engines.dsh` 当前为 `>=0.2.2-rc.1 <0.3.0`，**所有插件 / bundle 包都声明**；
   DSH 升级到 0.3 时需更新该范围并回归。
 - 破坏性变更：遵循 semver；预发布版本请使用 `-rc.N` / `-alpha.N` 后缀。
+- 当前工作树新增了必填的 `DevLeadCreatedSession.isolation` 字段与 `devLeadMode` projection，
+  下一次发布应为 **minor（0.2.0）**；发布前同步 README / release notes，并复核旧 core 与新
+  tool 混装时的 `isolation` 降级（tool 已对缺失字段回退 `none`）。
 
 ## 常见问题
 

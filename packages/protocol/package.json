@@ -12,7 +12,8 @@
     "./package.json": "./package.json"
   },
   "files": [
-    "lib"
+    "lib",
+    "README.md"
   ],
   "engines": {
     "dsh": ">=0.2.2-rc.1 <0.3.0"

@@ -13,7 +13,8 @@
   },
   "files": [
     "lib",
-    "locale/*.json"
+    "locale/*.json",
+    "README.md"
   ],
   "dsh": {
     "client": {

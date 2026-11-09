@@ -45,8 +45,9 @@ pnpm workspace，`packages/*`：
 
 依赖方向：`protocol ← devlead ← {tool, command}`；`client-ui` 只依赖 `protocol`（浏览器侧）。
 构建时 host 入口 external `@deepseek-ai/*`、`@yankeguo/*`、`node:*`；浏览器入口只 external
-DSH shell 的 platform singletons（单一来源 `scripts/client-externals.mjs`，构建期守卫失败
-而不是静默内联）。除构建外，`scripts/` 还提供 `check-packages.mjs`（包不变式）、
+DSH shell 的 platform singletons（单一来源 `scripts/client-externals.mjs`）。构建期守卫会
+拒绝任何不在 module table 里的 `@deepseek-ai/*` 浏览器导入（第三方纯库会按需内联，
+platform singleton 不能内联）。除构建外，`scripts/` 还提供 `check-packages.mjs`（包不变式）、
 `install-profile.mjs`（profile 安装）、`dev-patch.mjs`（开发 overlay + linked root）、
 `e2e-smoke.mjs`（本地 E2E）。
 
@@ -79,6 +80,9 @@ DSH 的所有读取路径会保留并重放这些记录，但不会把它们投�
   边界：手工编辑 / 迁移后的日志必须让 replay 失败（`failure`），而不是被静默丢弃或强制转换。
 - 时间戳必须是非负安全整数且落在 `Date` 可表示范围内（≤ 8.64e15），turn 必须是正安全整数；
   否则 `formatInstant` 之类的渲染会在 UI 侧抛 `RangeError`。
+- notification 的 `id` 必须等于 `notificationId(sessionId, turn, transition)`；`sessionTitle` /
+  `error` / `summary` 必须是 ≤240 码点的非空字符串；一条 projection 最多保留 64 条通知。这些
+  不变量同时由 decoder、state schema 与 wire schema 守卫。
 - 每次变更都是**先追加日志，后发通知**。
 - 通知条数在 projection 里按常量 `DEVLEAD_DEFAULT_NOTIFICATION_RETENTION`（64）截断：
   fold 必须是**纯函数**，不能依赖部署 config，否则重放会分叉。
@@ -115,10 +119,10 @@ DSH 的所有读取路径会保留并重放这些记录，但不会把它们投�
 export class DevLeadService extends Service {
   static inject = ['agents', 'sessions', 'sessionProjections']
   static Config = z.object({
-    notificationBatchMs: z.number().step(1).min(0).default(400), // 通知合并窗口
+    notificationBatchMs: z.number().step(1).min(0).max(2_147_483_647).default(400), // 通知合并窗口（Node timer 上限）
     maxWatchedSessions: z.number().step(1).min(1).default(64),
     maxListedSessions: z.number().step(1).min(1).default(200),
-    wakeColdSession: z.boolean().default(false),                 // 冷会话是否 resume 后唤醒
+    wakeColdSession: z.boolean().default(false),                 // 已入队 digest 的冷会话是否 resume 后投递
     defaultAgentPreset: z.string().default(''),                  // 创建会话的默认 preset
   })
 
@@ -148,26 +152,36 @@ export class DevLeadService extends Service {
 
 约束：
 
-- 所有写方法先 `assertLive(agent)`（`ctx.agents.get(agent.id) === agent`），并校验模式已开启
-  （`DEVLEAD_NOT_ENABLED`）；`setEnabled` 是人类开关本身，不要求模式已开启。
+- 所有接收 Agent 的写方法先 `assertLive(agent)`（`ctx.agents.get(agent.id) === agent`），并
+  校验模式已开启（`DEVLEAD_NOT_ENABLED`）；`setEnabled` 是人类开关本身，不要求模式已开启。
+  `useWorkspace` 是唯一例外：Host 级 Workspace 注册不接收 Agent，工具层要求 live 调用者并只
+  在模式开启时暴露，服务层本身不做 live/mode 校验。
 - 所有需要 watch 集合或"当前 lead"的读接口都显式接收 `agent`（工具调用传 `exec.agent`，
   命令调用传 `invocation.agent`）；服务不依赖 initiator 推断调用者。
-- 读接口把 `signal` 一路传给 `sessionQuery` 读取；写接口只在阶段边界做协作式取消检查
+- 读接口把 `signal` 传给支持取消的 `sessionQuery` 读取（列表 / 标题）；`readSession`
+  本身没有 signal 参数，`sessionLogFacts` 在读取前后检查取消；写接口只在阶段边界做协作式
+  取消检查
   （Session 创建 / `resolveAgent` 本身不可中断）。取消按 `AbortSignal` 语义抛出
-  `AbortError`，不伪装成领域错误。
+  `AbortError`，不伪装成领域错误。取消不回滚已经发生的副作用：`createSession` 在创建后、
+  watch 后收到取消会留下该 Session / watch，但不会继续执行 isolation 或投递 prompt；
+  `promptSession` 在自动 watch 后取消同样会保留 watch。
 - `useWorkspace`：绝对路径校验交给 `workspaceRegistry.create`（它做 realpath 规范化、
   相对路径拒绝、目录存在性检查、已注册路径复用）；`create: true` 且目录缺失时先
   `mkdir -p` 再重试一次。错误映射：目录缺失（且未允许创建 / 创建失败）→
   `DEVLEAD_DIRECTORY_MISSING`；相对路径、文件、不可用父目录、registry 写入失败 →
   `DEVLEAD_INVALID_INPUT`。`title` 只作用于**新注册**的 Workspace，已存在的记录保留原标题。
-- `createSession`：先做 watch 容量预检（避免创建成功后才发现超限）→ 解析目标 Workspace
-  （id / path / 缺省用 lead 自己的 cwd 并自动注册）→ `ctx.sessionController.create({ workspaceId })`
-  （该调用会自动 mkdir 并把 Session 挂进 Workspace 的账目）→ 可选
+- `createSession`：先在第一个 await 之前**同步预留** watch 槽位（并发调用不会都通过预检后
+  才在 setWatching 报超限；槽位在 watch 提交后立即释放，`finally` 兜底）→ 解析目标 Workspace
+  （id / path / 缺省用 lead 自己的 cwd 并自动注册）→ 校验 `workspace.status() === 'ok'`
+  （已注册但目录消失时返回 `DEVLEAD_DIRECTORY_MISSING`，不让 controller 的自动 mkdir
+  把空目录"复活"）→ `ctx.sessionController.create({ workspaceId })`（该调用会把 Session
+  挂进 Workspace 的账目）→ 可选
   `ctx.sessionTitle.rename(session, title)` → 可选 watch → **可选 worktree 隔离（见 §4.3）**
   → 可选 prompt。隔离失败不会让创建失败；结果里的 `isolation` 字段如实上报
   `none` / `worktree` / `unavailable` / `failed`。注意：空白 Session 在第一次 turn
   开始前不会出现在侧边栏，因此"创建+prompt"是常规用法。
-- `promptSession`：先校验归档与冷会话激活能力（避免半应用的 watch 副作用）→
+- `promptSession`：先校验归档与冷会话激活能力（避免"缺 controller 时先 watch 再报错"的
+  半应用；resume/admission 失败或取消仍可能留下自动 watch，见本节取消语义）→
   `sessionController.resolveAgent(sessionId)` 拿 live Agent（冷会话会被 resume）→
   `agent.followup(createUserMessage({ content, source: { kind: 'devlead', form: 'relay', senderSessionId: lead.id } }))`
   + `ctx.sessions.flush(agent.session)`。默认自动 watch。
@@ -182,8 +196,11 @@ export class DevLeadService extends Service {
 
 启动后：
 
+0. `bootstrap()` 只扫描**当时 live** 的 Agent：Host 重启后尚未打开的 lead 不会被索引；该
+    Session 第一次打开（`agent/created`）时才由持久 watch 集合重建索引。
 1. `ctx.on('agent/created')`：若新 Agent 的 session projection `enabled` 为真，把它的 watch
-   集合注册进内存索引 `watched → Set<leadSessionId>`。
+   集合注册进内存索引 `watched → Set<leadSessionId>`。持久 watch 记录若含 lead 自身 id（只可能
+   来自手工编辑），索引时忽略并 warning 一次；写侧仍由 self-watch guard 拒绝。
 2. `ctx.on('session/event', (session, event))`：
    - 若 `session` 是某个 lead 自己的会话：重新同步该 lead 的 watch 集合（watch 记录变化时）；
    - 若 `session.id` 被至少一个 lead 监督，且 `event.type === 'turn/end'`：为每个 lead 生成
@@ -198,11 +215,14 @@ export class DevLeadService extends Service {
    - 投递失败（`followup` 抛错）时把该批重新入队，并按上限 1s 重试，而不是丢弃或按合并窗口
      空转；`notificationBatchMs: 0` 下模式关闭 / Agent dispose 后不会再唤醒（微任务 flush 有
      代际守卫）。
-   - lead Agent 不存活时：默认只留持久记录（`wakeColdSession: false`）；为 true 时先
+   - lead Agent 暂时不在注册表、但 hub 仍保留该 lead 的 runtime（例如 digest 已入队）时：默认
+     只留持久记录（`wakeColdSession: false`）；为 true 时先
      `sessionController.resolveAgent(leadId)` 再投递。
    - lead 会话处于归档状态时暂停投递并丢弃内存队列，持久记录保留；恢复会话后状态视图仍能看到。
    - `agent/status` 变为 idle 时也尝试冲一次队列（例如窗口结束前 Agent 刚好在忙）。
-   - `agent/disposed` 时丢弃该 lead 的内存队列与 timer（记录已持久化）。
+   - `agent/disposed` 时丢弃该 lead 的 runtime / 反向索引 / timer（已写入的记录保留）。此后
+     直到该 Session 重新打开，被监督会话的 `turn/end` **不再被观察，也不会产生新的通知记录**；
+     重新打开时 `agent/created` 用持久 watch 集合重建索引，错过的 turn 不会补发。
    - 写入侧自检：不可表示的 turn / 时间戳宁可不写记录，也不写一条自己的严格 fold 会拒绝的
      记录；损坏的 lead replay 每个 Session 只 warning 一次。
 4. 会话日志里写入的通知记录会驱动 projection，UI 状态条实时更新。
@@ -226,9 +246,10 @@ DevLead 无需额外工具调用即可判断是否要介入。
 昂贵视图」三步：
 
 - 候选集合（`collectSessionIds`）：live Agents、store 中的 live Sessions、Workspace 账目、
-  lead 的 watch 集合，以及（组合了 `sessionQuery` 时）持久化 Session。列表模式下持久化窗口
-  受 `maxListedSessions` 限制；**身份解析**（`resolveSessionReference`）走穷尽模式，列表窗口
-  从不是"能否寻址"的上限。
+  lead 的 watch 集合，以及（组合了 `sessionQuery` 时）持久化 Session。列表模式下进入候选的
+  持久化 ID 窗口受 `maxListedSessions` 限制；rc.1 的 `sessionQuery.listSessions` 没有 limit
+  参数，底层仍会读取完整持久语料后才截断候选（这是 API 限制，不是逐行日志读取）。
+  **身份解析**（`resolveSessionReference`）走穷尽模式，列表窗口从不是"能否寻址"的上限。
 - 便宜排序事实：watched / `agent.status === 'running'` / header `createdAt`；按
   watched → running → createdAt 降序、id 兜底排序后**先截断**，只有保留下来的行才组装完整
   视图。`limit` 必须是正安全整数，并 cap 在 `maxListedSessions`；`watchedOnly` 列表不会截断
@@ -267,7 +288,8 @@ Session 的工作目录切到独立分支/检出，DevLead 用它**可选地**�
 1. `sessionController.create({ workspaceId })` 创建普通 Session，并挂入 Workspace 账目；
 2. 等创建返回的 Agent 已是 live（`ctx.agents.get(created.sessionId)`；这正是 `admitPrompt`
    已有的前提），取该 **子 Agent** 作为 worktree 服务的调用者；
-3. 调 `worktrees.create(childAgent, {}, signal)`（名字由服务按 Session id 生成、基线 `HEAD`），
+3. 调 `worktrees.create(childAgent, {}, signal)`（名字由服务基于 Session id 生成并带随机
+   后缀、基线 `HEAD`），
    服务内部对该子 Agent 执行 `workingDirectory.set`，把子会话的工作目录切进检出；
 4. 之后才 `admitPrompt` 投递首条 prompt，因此子会话的第一个 turn 从 worktree 开始。
 
@@ -297,6 +319,8 @@ Session 的工作目录切到独立分支/检出，DevLead 用它**可选地**�
 | 服务未组合 / 不兼容 | `{requested:'worktree',status:'unavailable',reason}` | 不抛错；Session 仍创建、仍 prompt，在共享 checkout 工作 |
 | 子 Agent 非 live（防御性） | `{requested:'worktree',status:'unavailable',reason}` | Session 已创建；若同一次调用还要求 prompt，则走既有的 `DEVLEAD_SESSION_UNAVAILABLE`（发行版 controller 返回 live Agent，不会出现该状态） |
 | 服务存在但创建抛错 | `{requested:'worktree',status:'failed',reason}` | 记 warning；Session 仍创建、仍 prompt；可能残留分支/检出（服务语义） |
+| 服务返回畸形 checkout | `{requested:'worktree',status:'failed',reason}` | 记 warning；不把不完整 path/branch 当作成功结果；Session 仍创建、仍 prompt |
+| isolation 期间取消 | 调用以 `AbortError` 拒绝 | Session 已创建且可能已 watch；不投递 prompt（见 §4 取消语义） |
 
 `/devlead status` 始终打印 `Worktree isolation: available|unavailable`，人类与 E2E 都能直接
 判断当前 profile 是否具备该能力。系统提示只在能力存在时教模型使用 `isolation: "worktree"`，
@@ -325,9 +349,11 @@ Session 的工作目录切到独立分支/检出，DevLead 用它**可选地**�
   类型有编译期一致性约束，运行时还会用编译出的 output schema 校验每个投影值（可选字段按
   lossless JSON 规则省略）。
 - 参数里的 `session`/`workspace` 接受完整 id、路径，或（会话）唯一前缀匹配；多个前缀命中时报
-  `DEVLEAD_INVALID_INPUT` 并列出候选。
-- 工具把领域失败翻译成 `HarnessError(message, code)`；`exec.agent` 缺失（条件可见性被绕过）
-  也走结构化错误 `DEVLEAD_AGENT_NOT_LIVE`，基础设施错误原样重抛。所有异步写调用转发
+  `DEVLEAD_INVALID_INPUT` 并列出候选。除 `devlead_list_workspaces` 外的工具都要求 live 调用
+  者（缺失时 `DEVLEAD_AGENT_NOT_LIVE`）；`devlead_use_workspace` 是唯一的写工具，其 core 方法
+  仍是 Host 级 caller-free API（见 §4 约束）。
+- 工具把领域失败翻译成 `HarnessError(message, code)`；需要调用者的工具在 `exec.agent` 缺失
+  （条件可见性被绕过）时也走结构化错误 `DEVLEAD_AGENT_NOT_LIVE`，基础设施错误原样重抛。所有异步写调用转发
   `exec.signal`（`create_session` / `prompt_session` / `watch_session`），读调用同样转发。
 - `systemPrompt.section({ name: 'devlead:policy', order: TOOL_SUBAGENT, text: ({ agent }) =>
   ctx.devLead.isEnabled(agent) ? POLICY : '' })` 提供 DevLead 行为指导：依据注册元数据判定
@@ -366,6 +392,9 @@ Session 的工作目录切到独立分支/检出，DevLead 用它**可选地**�
   watch 行。状态固定包含 `Worktree isolation: available|unavailable`（读
   `ctx.devLead.worktreeIsolationAvailable`），让人类与 E2E 直接看到 Host 是否组合了可选的
   worktree 隔离能力；该行只是能力说明，不改变任何状态。
+- Session 寻址先用有界列表 + watch 集合给出带标题的候选；**前缀引用（非精确 id）** 还会再用
+  core 的穷尽 resolver 确认唯一性，然后才执行 watch/unwatch，避免列表窗口外的同前缀 Session
+  被静默遮蔽（精确 id 直接命中，不走额外读取）。
 - `on` 需要当前 Agent live；`off` 立即生效（正在投递的通知保留在日志里）。
 - 附件由 `CommandRuntime` 在 handler 之前拒绝（定义不声明 `input.attachments`），handler 不
   重复实现该策略。
@@ -400,8 +429,10 @@ UI 分两态，避免在每个会话上显示常驻条：
   - 两态互斥：开启时图标隐藏，关闭时状态条消失，因此同一个开关不会同时出现两份。
 - **侧边栏会话行标记**：开启 DevLead 的会话在 Session 列表行尾部显示一个盾形标记
   （`sidebar.session.row.trailing`；非交互、不绑定/不激活 Session，只按 `sessionId` 读
-  summary 级 `devLeadMode`）。DSH 0.2.2-rc.1 没有“始终可见”的行 seat：`leading` seat 在
-  运行中 / 有未读 / 有待处理交互时会被状态点替换，因此不用它；`trailing` seat 在桌面端
+  summary 级 `devLeadMode`）。rc.1 对 blank（尚无 turn）行不渲染 trailing seat，因此在空白
+  新会话上开启模式后要等第一次 turn 才显示标记；该限制无法在插件侧补 seat。DSH 0.2.2-rc.1
+  没有“始终可见”的行 seat：`leading` seat 在运行中 / 有未读 / 有待处理交互时会被状态点替换，
+  因此不用它；`trailing` seat 在桌面端
   行被悬停 / 聚焦 / 菜单打开时被 shell 隐藏，所以 `sidebar.session.row.hover` 再提供一行
   「DevLead 模式已启用」说明（i18n key `row.mark.aria` / `row.hover.enabled`），标记的
   `aria-label` 让屏幕阅读器同样能听到。图标与说明均不改变行高、不压缩标题截断宽度。
@@ -410,14 +441,15 @@ UI 分两态，避免在每个会话上显示常驻条：
 - 客户端 bundle 构建：esbuild CJS + `window.__ModuleLoader__.load({ id, factory })` 包装；
   external 列表唯一来源是 `scripts/client-externals.mjs`，必须与 DSH shell 的 platform
   seed（`packages/client/web/src/{platform,seed}.ts`）逐项且同序一致；构建期守卫会让任何
-  module-table 之外的浏览器导入直接失败。
+  module-table 之外的 `@deepseek-ai/*` 浏览器导入直接失败。
 - 包 `package.json` 的 `dsh.client.inject` 列出运行期依赖（api-remotes、api-session-controller、
   client-locale、client-ui-conversation、client-ui-primitives、client-ui-renderer、
   client-ui-session、client-ui-workspace），`platform: "web"`。`client-ui-workspace` 只以
   type-only 导入进程序（取 Session 行 seat 的 SlotMap 声明），构建期 module-table 守卫不会
   把它当成浏览器运行期依赖。loader 只对真实 client entry 的 inject 名字做工厂等待，platform
-  module 名字（如 primitives）会被忽略；`check-packages.mjs` 断言浏览器导入全部落在 module
-  table 内。
+  module 名字（如 primitives）会被忽略；`check-packages.mjs` 断言 `@deepseek-ai/*` 浏览器
+  导入全部落在 module table 内，并校验 `dsh.client.inject` 与 root devDeps / module table 的
+  一致性。
 
 ## 8. 稳定错误码
 
@@ -432,7 +464,7 @@ UI 分两态，避免在每个会话上显示常驻条：
 | `DEVLEAD_SESSION_ARCHIVED` | Session 已归档，不能续写 |
 | `DEVLEAD_SESSION_UNAVAILABLE` | 无法 resume / 没有 sessionController / 没有 create 能力 / followup 被拒 |
 | `DEVLEAD_WATCH_LIMIT` | 监督集合超过上限 |
-| `DEVLEAD_SELF_WATCH` | 试图监督或续写自己 |
+| `DEVLEAD_SELF_WATCH` | `watchSession` 试图监督自己（`promptSession` 向自己投递使用 `DEVLEAD_INVALID_INPUT`） |
 | `DEVLEAD_PROJECTION_INVALID` | 持久记录损坏（fold failure） |
 
 取消（`AbortSignal`）不映射到上面任何码：调用按标准 `AbortError` 拒绝。
@@ -441,7 +473,8 @@ UI 分两态，避免在每个会话上显示常驻条：
 
 - `protocol`：格式化 / excerpt 边界（码点预算、代理对、非法预算）/ 转场表 / 持久记录词表 /
   projection map 类型增强与 summary 排除等纯函数与类型契约。
-- `devlead`：真实 `SessionStore` + 真实 `SessionProjectionRegistry`，只把 `agents` /
+- `devlead`：真实 `SessionStore` + 真实 `SessionProjectionRegistry`（service spec；notification
+  hub spec 直接用 fold 读取状态，见 §4.1），只把 `agents` /
   `workspaceRegistry` / `sessionController` / `sessionTitle` / `sessionQuery` 换成内存 fake，
   因此每次持久写、日志事件、projection drive 与监听器派发都按生产方式跑。覆盖严格解码器
   （字段漂移 / 缺失字段 / 时间范围）、fold identity 复用、通知泵（合并窗口 / 去重 / 重试 /
@@ -480,14 +513,15 @@ UI 分两态，避免在每个会话上显示常驻条：
   会在第一次写 Session 插件记录时报
   `gateway/internal: Receiver must be an instance of class Session`。`--no-link` 仅供检查。
 - 自动化验收：`pnpm e2e`（默认 `--flow patch`；`--flow installed` 走 install-profile 流）在
-  `/tmp` 下的隔离 `DSH_HOME` 启动真实 DSH Web，用浏览器同款 HTTP API 断言：client plugin 进入
-  boot graph、`/devlead` 命令注册、`devLead` projection 默认值、`on/off` 翻转、真实子会话
-  watch、被 watch 会话 `turn/end` → 持久通知 → 投影可见、以及自 watch 拒绝。子会话的模型
-  凭据被剥掉，因此 turn 稳定以 provider error 结束（真实 `turn/end`，不花 token）；实例在
-  结束时按 PID 关闭。该命令只在本地跑，CI 不含。E2E 的一次性 profile 是发行版默认 Web 组合
+  `os.tmpdir()` 下的隔离 `DSH_HOME` 启动真实 DSH Web，用浏览器同款 HTTP API 断言：client
+  plugin 进入 boot graph、`/devlead` 命令注册、`devLead` projection 默认值、summary 不携带
+  digest 的 `devLeadMode` 行、`on/off` 翻转、真实子会话 watch、被 watch 会话 `turn/end` →
+  持久通知 → 投影可见、以及自 watch 拒绝。子会话的 provider/infrastructure 凭据按名称模式
+  清除，因此 turn 稳定以 provider error 结束（真实 `turn/end`，不花 token）；实例在结束时
+  按 PID 关闭。该命令只在本地跑，CI 不含。E2E 的一次性 profile 是发行版默认 Web 组合
   （base + web-app，不含任何实验性 bundle），因此额外断言 `/devlead status` 里
   `Worktree isolation: unavailable`：既证明可选能力缺席时插件照常工作，也作为"无实验性插件
-  硬依赖"的真实运行时证据。
+  硬依赖"的真实运行时证据。两条加载流本轮均为 **33/33**。
 - 手动验收路径：开一个会话 → `/devlead on`（或点开关）→ 让模型
   `devlead_use_workspace` 注册一个仓库 → `devlead_create_session` 创建子会话并下发任务 →
   子会话跑完后 DevLead 被唤醒 → 状态条显示监督列表与通知；人类可打开子会话继续参与。
@@ -508,7 +542,8 @@ UI 分两态，避免在每个会话上显示常驻条：
   单 checkout；与旧版相比新增的只是 `isolation` 结果字段、状态行的能力展示与串行派发提示。
 - 不做跨进程/跨 DSH 实例编排。
 - 不新增 Remote API（第三方不可用 Typert 生成管线），UI 只读 projection + 走命令。
-- 不自动 resume 冷 DevLead 会话（可配置 `wakeColdSession`，默认关闭）。
+- 不自动 resume 冷 DevLead 会话（可配置 `wakeColdSession`，默认关闭；仅对已入队 digest
+  生效，且 hub 仍需持有该 lead 的 runtime，见 §4.1）。
 - 不替人类做权限决策：模式开关只由人类命令/UI 改变。
 - 不做跨进程 / 跨 DSH 实例的 Session 发现；身份解析只在本 Host 的 SessionStore /
   SessionQuery 语料内穷尽。
@@ -516,7 +551,7 @@ UI 分两态，避免在每个会话上显示常驻条：
 ## 12. 审计与验证记录
 
 本轮全面审计（对照官方 DSH `0.2.2-rc.1` 源码逐项核验 API 语义）发现并修复的问题、行为变更与
-验证证据记录在 [`AUDIT.md`](AUDIT.md)。
+验证证据记录在 [`AUDIT.md`](AUDIT.md)；其上追加的代码/文档打磨记录见同一文件的 §10。
 
 **可选插件的硬依赖审计**：本套件面向默认 DSH Web 组合（`dsh-base` + `dsh-web-app`）构建，
 不硬依赖任何实验性 bundle 或第三方插件；Workspace registry / Session controller / 标题服务

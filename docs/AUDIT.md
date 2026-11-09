@@ -10,8 +10,8 @@ DSH 端到端验证。
 > **快照说明**：本文件是**上一轮**全量审计的历史记录，其中的测试/ E2E 计数（399 tests、
 > 25/25 checks）记录的是当时的工作树。当前工作树新增了可选 worktree 隔离与依赖姿态审计，
 > 最新验证数字与结论见 [`DESIGN.md`](DESIGN.md) §12 与
-> [`OPTIONAL-DEPENDENCIES.md`](OPTIONAL-DEPENDENCIES.md)（当前：21 文件 / 448 tests、
-> e2e 32/32）。
+> [`OPTIONAL-DEPENDENCIES.md`](OPTIONAL-DEPENDENCIES.md)（当前：21 文件 / 467 tests、
+> e2e patch / installed 各 33/33）。
 
 ## 1. 结论摘要
 
@@ -107,8 +107,8 @@ patch 流检查（`scripts/e2e-smoke.mjs` 会断言 linked root 存在）。
 
 - 浏览器 API 逐项对照 DSH 0.2.2-rc.1：slot 均为 `list`/`session`、标准 props 含
   `useProjection`/`useSessions`/`useSessionStatus`；`ctx.slots.inject` 本身有 fiber 级 effect，
-  直接调用正确；`Switch`/`Button`/`Tooltip`/locale/icon props 与官方一致；浏览器 bundle 只
-  require platform module table 内的模块。
+  直接调用正确；`Switch`/`Button`/`Tooltip`/locale/icon props 与官方一致；浏览器 bundle 对
+  `@deepseek-ai/*` 只 require platform module table 内的模块（第三方纯库可内联）。
 - 两个入口的准入逻辑抽取为纯 gate+reducer + 薄 `useDevLeadAdmission` hook：同渲染周期双击只
   提交一条命令、卸载后不再 setState、模式变化作废旧失败；`ok:true` 但 Host 未解析到命令
   （`value: undefined`）不再被当成功（新增 `unresolved` 失败）。
@@ -125,16 +125,17 @@ patch 流检查（`scripts/e2e-smoke.mjs` 会断言 linked root 存在）。
 
 - `scripts/build.mjs`：删除从早期参考实现复制来的过期文档与未使用的 `assets` 机制；7 个 host
   产物不变；浏览器 external 列表单一来源 `scripts/client-externals.mjs`，与 DSH
-  `platform.ts`/`seed.ts` 逐项同序一致，并加 **onResolve 守卫**（module table 之外的浏览器导入
-  直接构建失败）；bundle target 校验 patch/icon/files；`--only` 规范化；干净树重复构建字节一致。
+  `platform.ts`/`seed.ts` 逐项同序一致，并加 **onResolve 守卫**（module table 之外的
+  `@deepseek-ai/*` 浏览器导入直接构建失败）；bundle target 校验 patch/icon/files；`--only` 规范化；干净树重复构建字节一致。
 - `scripts/install-profile.mjs`：全量预检（不再半链接失败）、校验 exports/main 与 bundle 产物、
   dry-run 计划、卸载真正 no-op、安装副本冲突拒绝；隔离 `/tmp` DSH_HOME 实测安装/卸载/重复执行。
 - `scripts/dev-patch.mjs`：见 §2；新增 `--profile/--dsh-home/--no-link`、profile 校验与可操作
   错误（缺 profile → 创建专用 dev profile 的步骤；已启用 bundle → 拒绝重复 row id）。
 - `scripts/check-packages.mjs`（新）：只读校验版本锁步、`engines.dsh`、repository 字段、
   peer 版本与根 devDeps 一致、**host 运行期 `@deepseek-ai/*` 导入必须是 peer**（linked root
-  规则）、浏览器导入必须在 module table、workspace 依赖与导出子路径、tsconfig/vitest 别名、
-  lockfile importers、CI action pin 一致。
+  规则）、DSH 包不得作为直接/optional 依赖、不得声明实验包、浏览器 `@deepseek-ai/*` 导入
+  必须在 module table、`dsh.client.inject` 与 root devDeps / 平台单例一致、workspace 依赖与
+  导出子路径、tsconfig/vitest 别名、lockfile importers、CI action pin 一致。
 - CI：新增 `.github/workflows/verify.yml`（push/PR：frozen install → typecheck → test → build →
   check-packages）；`publish.yml` 增加发布串行化、tag 一致性门禁沿用、GitHub Release 幂等；
   `trusted-publishers.sh` 改为能力探测（`npm trust --help`）并对私有包/`--list` 失败处理。
@@ -185,9 +186,63 @@ watch → 子会话 `turn/end`（无模型凭据，稳定 provider error）生�
   这是一次批量 observation，不是逐条日志读取。
 - 通知在此前已排队未投递的 notice 存在时不会重复唤醒（持久 digest 是权威，模型可调用
   `devlead_notifications`）；这是刻意设计。
-- `stateSchema` 仍接受手工损坏的 checkpoint 中的重复 watch id（记录解码器已拒绝）；仅影响
-  cache 恢复路径。
+- **`stateSchema` 的边界不变量（本轮修复）**：手工损坏的 checkpoint 中出现重复 watch id、
+  重复 notification id、超出 `Date` 范围的 `at`、超过 64 条的 digest，或 id 与
+  `sessionId/turn/transition` 不一致时，`stateSchema` 现在会校验失败；registry 丢弃该 cache
+  行并重放完整日志，而不是恢复一个损坏或重复计数的状态。
 - `dsh.client.inject` 中的 platform module 名字（如 client-ui-primitives）会被 loader 忽略，
-  保留作为运行期依赖文档；`check-packages.mjs` 保证浏览器导入不越界。
+  保留作为运行期依赖文档；`check-packages.mjs` 保证浏览器 `@deepseek-ai/*` 导入不越界。
 - 发布路径（OIDC / GitHub Actions）无法在本地完整执行：workflow 语法、tag 门禁与打包选择已
   本地验证，真实发布仍需在 GitHub 上回归。
+
+## 10. 后续打磨轮次（2026-11-09，文档与实现同步）
+
+本节记录在上一轮全量审计之后的一轮代码/文档打磨；前面的历史章节保持原样，最新行为以本节、
+[`DESIGN.md`](DESIGN.md) 与 [`OPTIONAL-DEPENDENCIES.md`](OPTIONAL-DEPENDENCIES.md) 为准。
+
+**正确性与边界**
+
+- `createSession` 在第一个 await 前同步预留 watch 槽位，并发/交错调用不再出现"已建 Session
+  但 watch 超限"的 orphan；watch 提交后立即释放预留。
+- 创建前校验目标 Workspace 的 `status() === 'ok'`，阻止 controller 对已消失目录自动 mkdir
+  复活空目录。
+- 持久 watch 记录若包含 lead 自身 id，hub 在索引时忽略并 warning；`record` 也有重入防御。
+- command 的前缀引用在 watch/unwatch 前用 core 穷尽 resolver 复核，避免有界列表外的同前缀
+  Session 被静默遮蔽；`watchedOnly` 显式小 limit 也不会截断 watch 集合。
+- 严格边界：excerpt 长度/码点、`at` 的 Date 上界、digest ≤64、notification id 一致性、
+  重复 watch/notification id 都会让 replay/cache 校验失败；`lastError` 收敛为 bounded excerpt。
+- worktree 服务返回畸形 checkout 时降级为 `failed`；`notificationBatchMs` 拒绝超过 Node timer
+  上限的值。
+
+**安全、工具链与 E2E**
+
+- `e2e-smoke.mjs --root` 使用真实 containment + scratch marker，拒绝删除非本脚本目录；子进程
+  环境按凭据模式清理；readiness 超时先终止子进程。
+- `devlead_use_workspace` 工具要求 live 调用者；core `useWorkspace` 的 caller-free API 例外已
+  在 README/DESIGN 明确。
+- `check-packages.mjs` 支持多行/副作用/动态 import，新增 DSH 直接依赖、实验包、
+  `dsh.client.inject` 与 root devDeps/module table 的校验；publish workflow 在发布前也运行该
+  检查。
+- E2E 新增 `Session-list summary excludes the digest-bearing devLead projection` 断言；
+  patch 与 installed 两条加载流均为 **33/33**。
+
+**文档**
+
+- README / README.zh：更新 worktree 能力条件、cold/disposed lead 语义、配置取值范围、
+  command 前缀校验、blank 行标记限制、`useWorkspace` 权限例外、package README 导航。
+- DESIGN：同步并发预留、Workspace 目录校验、schema 边界、command 前缀复核、E2E 凭据/临时目录
+  语义、worktree 结果校验与错误表。
+- OPTIONAL-DEPENDENCIES：同步 check-packages 新规则、worktree 畸形结果、验证计数与 E2E 两条流。
+- 各包新增简短 README（protocol / devlead / tool / command / client-ui），bundle README 同步
+  cold lead、blank 行与 E2E 运行方式。
+
+**验证（最终工作树）**
+
+- `pnpm verify` exit 0（21 文件 / 467 tests，6 个构建 target）。
+- `node scripts/check-packages.mjs` → `OK (6 packages)`。
+- `node scripts/e2e-smoke.mjs --no-build --flow patch` 与
+  `node scripts/e2e-smoke.mjs --no-build --flow installed` → 各 33/33 通过。
+
+**仍需决策**：`isolation` 必填字段对应的 minor 版本发布；cold lead 的持久化索引重建；
+`useWorkspace` 是否改为 Agent 参数/默认不建目录；`promptSession` resume/admission 失败后的
+半 watch 补偿；`hasQueuedNotice` 丢弃 batch 的语义；真实实验组合下的 worktree happy path 验收。
