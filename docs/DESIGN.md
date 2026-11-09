@@ -517,3 +517,9 @@ UI 分两态，避免在每个会话上显示常驻条：
 
 本轮全面审计（对照官方 DSH `0.2.2-rc.1` 源码逐项核验 API 语义）发现并修复的问题、行为变更与
 验证证据记录在 [`AUDIT.md`](AUDIT.md)。
+
+**可选插件的硬依赖审计**：本套件面向默认 DSH Web 组合（`dsh-base` + `dsh-web-app`）构建，
+不硬依赖任何实验性 bundle 或第三方插件；Workspace registry / Session controller / 标题服务
+走可选 `ctx.get(...)`，实验性 worktree 服务只在显式 `isolation` 请求时借用（§4.3）。逐包判定
+表、`dsh.client.inject` 核验、证据 file:line 与「默认 profile 可安装/构建/运行」的验证方式见
+[`OPTIONAL-DEPENDENCIES.md`](OPTIONAL-DEPENDENCIES.md)。

@@ -7,6 +7,12 @@
 DSH API 语义、错误路径、并发与生命周期、性能、打包与安装路径，并补齐回归测试与本机真实
 DSH 端到端验证。
 
+> **快照说明**：本文件是**上一轮**全量审计的历史记录，其中的测试/ E2E 计数（399 tests、
+> 25/25 checks）记录的是当时的工作树。当前工作树新增了可选 worktree 隔离与依赖姿态审计，
+> 最新验证数字与结论见 [`DESIGN.md`](DESIGN.md) §12 与
+> [`OPTIONAL-DEPENDENCIES.md`](OPTIONAL-DEPENDENCIES.md)（当前：21 文件 / 448 tests、
+> e2e 32/32）。
+
 ## 1. 结论摘要
 
 - **发现并修复 1 个高严重度集成缺陷**：`pnpm dev:patch` + `dsh --patch` 的开发/E2E 路径会

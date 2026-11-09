@@ -529,6 +529,16 @@ without it keeps the default single-checkout behavior and reports `unavailable`.
 | `devlead_create_session` reports `isolation.status: "unavailable"` | the profile does not compose DSH's experimental worktree service (the default Web profile never does); either enable the experimental worktree bundle or dispatch writing Sessions serially — the Session was still created and works in the shared checkout |
 | `devlead_create_session` reports `isolation.status: "failed"` | the worktree service is present but creation failed (restrictive sandbox, existing branch name, non-Git checkout, existing checkout path); the `reason` carries the Git/service error, and the Session continues in the shared checkout |
 
+## Optional plugins and dependencies
+
+DevLead is built for the **default DSH Web composition** (`dsh-base` + `dsh-web-app`) and needs no
+experimental bundle and no third-party plugin. Every non-default capability is read through
+optional service lookups (`ctx.get(...)`) and degrades to a documented behavior instead of
+failing: the Workspace registry, Session controller, Session title service, and Session query
+service are optional peers, and the experimental Git worktree service is only borrowed for opt-in
+isolation. The full package-by-package judgment table, including the client-side
+`dsh.client.inject` ids, is in [`docs/OPTIONAL-DEPENDENCIES.md`](docs/OPTIONAL-DEPENDENCIES.md).
+
 ## Development and verification
 
 ```sh

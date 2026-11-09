@@ -459,6 +459,14 @@ config 是整体替换）。
 | `devlead_create_session` 返回 `isolation.status: "unavailable"` | profile 未组合 DSH 实验性 worktree 服务（默认 Web profile 从不组合）；启用实验性 worktree bundle，或改为串行派发写入型 Session——Session 已创建并仍可在共享 checkout 工作 |
 | `devlead_create_session` 返回 `isolation.status: "failed"` | worktree 服务存在但创建失败（沙箱限制、分支名已存在、非 Git checkout、检出路径已存在等）；`reason` 带 Git/服务错误，Session 仍在共享 checkout 继续 |
 
+## 可选插件与依赖
+
+DevLead 面向**默认 DSH Web 组合**（`dsh-base` + `dsh-web-app`）构建，不需要任何实验性 bundle
+或第三方插件。所有非默认能力都走可选服务查找（`ctx.get(...)`）并退化为有文档的行为，而不是
+失败：Workspace registry / Session controller / 标题服务都是可选 peer，实验性 Git worktree
+服务只在显式请求隔离时被借用。逐包的依赖判定表（含客户端 `dsh.client.inject` 各项）见
+[`docs/OPTIONAL-DEPENDENCIES.md`](docs/OPTIONAL-DEPENDENCIES.md)。
+
 ## 开发与验证
 
 ```sh
