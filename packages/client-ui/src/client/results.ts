@@ -82,6 +82,33 @@ export function unexpectedFailure(error: unknown): DevLeadCommandFailure {
 }
 
 /**
+ * Admit one `/devlead` command and classify its failure without throwing.
+ * @param executeCommand - injected command face bound to the Session.
+ * @param line - full command line, leading slash included.
+ * @returns the classified failure, or undefined when the command succeeded.
+ */
+export async function admitCommand(
+  executeCommand: (line: string) => Promise<DevLeadCommandAdmission>,
+  line: string,
+): Promise<DevLeadCommandFailure | undefined> {
+  try {
+    return commandFailure(await executeCommand(line))
+  } catch (error: unknown) {
+    return unexpectedFailure(error)
+  }
+}
+
+/**
+ * One-line human text of a classified failure, for surfaces that report through
+ * a toast instead of an inline row (the model menu closes on selection).
+ * @param failure - classified command failure.
+ * @returns the Host failure text.
+ */
+export function failureMessage(failure: DevLeadCommandFailure): string {
+  return failure.message
+}
+
+/**
  * Project one failure onto the localized inline error line.
  * @param failure - classified command failure.
  * @returns the dictionary key and template parameters the strip renders.

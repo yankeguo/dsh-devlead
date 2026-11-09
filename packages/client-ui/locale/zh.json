@@ -1,6 +1,6 @@
 {
   "meta": {
-    "title": "DevLead 状态栏",
-    "description": "在输入框上方展示 DevLead 模式开关、监督会话的运行状态与最近一条通知。"
+    "title": "DevLead 模式",
+    "description": "在输入框工具条中开关 DevLead 模式；开启后在输入框上方显示状态条、监督会话状态与最近一条通知。"
   }
 }

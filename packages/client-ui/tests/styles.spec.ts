@@ -143,6 +143,7 @@ describe('ensureStyleTag', () => {
 
 describe('styles', () => {
   it('styles the dock root with theme tokens and neutral fallbacks', () => {
+    expect(styles).toContain('.devlead-toggle {')
     expect(styles).toContain('.devlead-dock {')
     expect(styles).toContain('.devlead-bar {')
     expect(styles).toContain('--dsw-alias-border-l1')

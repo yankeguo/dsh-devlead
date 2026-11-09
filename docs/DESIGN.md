@@ -11,7 +11,8 @@ bundle、安装、发布流程以它为准）。
 ## 1. 产品定位
 
 - **DevLead 会话 = 普通会话 + 一个持久开关**。打开开关后，该会话额外获得一组
-  `devlead_*` 工具和一段系统提示，UI 上出现 DevLead 状态条。
+  `devlead_*` 工具和一段系统提示，composer 上方出现 DevLead 状态条；未打开时界面里只有
+  composer 工具条上的一个小图标，不显示常驻状态条。
 - **产出物必须是标准 DSH 实体**：Workspace 是真实注册进 `ctx.workspaceRegistry` 的工作区，
   会话是真实的普通 Session（出现在侧边栏、可被人类打开、继续对话、归档），**不是 subagent**。
   这样人类始终能看见、介入、接管 Agent 的工作。
@@ -30,7 +31,7 @@ pnpm workspace，`packages/*`：
 | `devlead` | `@yankeguo/dsh-devlead` | 核心 Service `ctx.devLead`：模式状态、Workspace/Session 编排、监督索引、通知投递、projection fold |
 | `tool` | `@yankeguo/dsh-tool-devlead` | 模型工具 `devlead_*` + 条件系统提示 |
 | `command` | `@yankeguo/dsh-command-devlead` | 人类命令 `/devlead` |
-| `client-ui` | `@yankeguo/dsh-client-ui-devlead` | 浏览器 UI：composer 上方的 DevLead 状态条与开关 |
+| `client-ui` | `@yankeguo/dsh-client-ui-devlead` | 浏览器 UI：未开启时的工具条开关 + 开启后的 DevLead 状态条 |
 | `bundle` | `@yankeguo/dsh-devlead-bundle` | bundle：`cordis.patch.yml` 插入全部插件 |
 
 依赖方向：`protocol ← devlead ← {tool, command}`；`client-ui` 只依赖 `protocol`（浏览器侧）。
@@ -211,15 +212,23 @@ DevLead 无需额外工具调用即可判断是否要介入。
 
 ## 7. 浏览器 UI（`@yankeguo/dsh-client-ui-devlead`）
 
-- 槽位：`conversation.input.dock`（composer 上方，infini-goal 同槽位），`order` 取一个稳定值。
-- 组件 `DevLeadBar`：
-  - `useProjection('devLead')`：`undefined`（加载中）→ 不渲染；`enabled=false` → 紧凑一行
-    “DevLead + Switch”；`enabled=true` → 开关 + 监督会话数/运行中数（用标准 props
-    `useSessions` 和 projection 的 `sessions` 计算）+ 最近一条通知摘要 + 帮助提示。
+UI 分两态，避免在每个会话上显示常驻条：
+
+- **未开启**：`conversation.input.left`（composer 工具条，权限下拉旁）里一个 ghost 图标按钮
+  `DevLeadIconToggle`。它只读 projection，`enabled=true` 或 projection 未加载时不渲染。
+  点击发送 `/devlead on`；失败时错误文本进入按钮 tooltip（toolbar 没有内联错误位）。
+- **已开启**：`conversation.input.dock`（composer 上方，infini-goal 同槽位）里的
+  `DevLeadBar`。
+  - `useProjection('devLead')`：`undefined`（加载中）或 `enabled=false` → 不渲染；
+    `enabled=true` → 开关（点击发 `/devlead off`）+ 监督会话数/运行中数（标准 props
+    `useSessions`/`useSessionStatus` 与 projection 的 `sessions` 计算）+ 最近一条通知摘要
+    + 帮助提示。
   - 开关调用注入的 `executeCommand('/devlead on'|'/devlead off')`，pending 时禁用；
     命令逻辑错误（`kind: 'error'`）在内联错误行显示。
-  - `Switch` 组件来自 `@deepseek-ai/dsh-client-ui-primitives`；样式走本插件注入的 `<style>`
-    标签（参考 infini-goal 的 `ensureStyleTag`），颜色用 `--dsw-*` token 并提供中性 fallback。
+  - `Switch`/`Button`/`Tooltip` 组件来自 `@deepseek-ai/dsh-client-ui-primitives`；样式走本插件
+    注入的 `<style>` 标签（参考 infini-goal 的 `ensureStyleTag`），颜色用 `--dsw-*` token
+    并提供中性 fallback。
+  - 两态互斥：开启时图标隐藏，关闭时状态条消失，因此同一个开关不会同时出现两份。
 - i18n：namespace `devlead`，`zh`/`en` 词典；`locale/zh.json`、`locale/en.json` 提供
   `meta.title`/`meta.description`（插件市场展示）。
 - 客户端 bundle 构建：esbuild CJS + `window.__ModuleLoader__.load({ id, factory })` 包装；

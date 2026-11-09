@@ -17,6 +17,21 @@ const STYLE_KEY = 'devlead'
 
 /** Global stylesheet of the DevLeadBar dock. */
 export const styles = `
+.devlead-toggle {
+  flex: none;
+  color: var(--dsw-alias-label-tertiary, GrayText);
+}
+
+@media (hover: hover) {
+  .devlead-toggle:hover:not(:disabled) {
+    color: var(--dsw-alias-label-secondary, GrayText);
+  }
+}
+
+.devlead-toggle[data-devlead-failed="true"] {
+  color: var(--dsw-alias-state-error-primary, #c0392b);
+}
+
 .devlead-dock {
   box-sizing: border-box;
   width: calc(
