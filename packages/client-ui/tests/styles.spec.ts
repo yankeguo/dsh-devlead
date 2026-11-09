@@ -175,6 +175,15 @@ describe('styles', () => {
     expect(styles).toMatch(/\.devlead-toggle \{[^}]*border-radius: 999px;/u)
   })
 
+  it('ships the sidebar Session-row mark and its hover-card explanation', () => {
+    // The mark sits inline in the row's resting seat and must never grow the
+    // row: no padding or fixed height, only the icon's own box.
+    expect(styles).toContain('.devlead-row-mark {')
+    expect(styles).toMatch(/\.devlead-row-mark \{[^}]*flex: none;/u)
+    expect(styles).toContain('.devlead-row-hover {')
+    expect(styles).toMatch(/\.devlead-row-hover \{[^}]*font-size: 12px;/u)
+  })
+
   it('ships the notice live region and the visually-hidden failure seat', () => {
     expect(styles).toContain('.devlead-notice {')
     expect(styles).toContain('.devlead-notification-dot[data-transition="completed"]')

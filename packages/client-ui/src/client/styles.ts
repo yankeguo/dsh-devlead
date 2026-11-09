@@ -240,6 +240,33 @@ export const styles = `
   clip: rect(0 0 0 0);
   white-space: nowrap;
 }
+
+/* Sidebar Session-row mark: a non-interactive glyph after the row's time
+   label. The seat is inline inside the row's 20px line box, so the icon can
+   never change the row height or the title's ellipsis width. */
+.devlead-row-mark {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  color: var(--dsw-alias-label-secondary, GrayText);
+}
+
+/* Hover-card line explaining the mark; mirrors the shell's hover status rows
+   (12px text on a 20px line) so the card keeps one rhythm. */
+.devlead-row-hover {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 20px;
+  color: var(--dsw-alias-label-secondary, GrayText);
+}
+
+.devlead-row-hover-glyph {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+}
 `
 
 /**

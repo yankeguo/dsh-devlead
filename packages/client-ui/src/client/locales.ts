@@ -6,7 +6,7 @@
  */
 export const zh = {
   'meta.title': 'DevLead 模式',
-  'meta.description': '在输入框工具条中开关 DevLead 模式；开启后在输入框上方显示状态条、监督会话状态与最近一条通知。',
+  'meta.description': '在输入框工具条中开关 DevLead 模式；开启后在输入框上方显示状态条，并在侧边栏会话行标记该会话。',
   'bar.aria': 'DevLead 状态栏',
   'label': 'DevLead',
   'switch.aria': 'DevLead 模式',
@@ -16,6 +16,8 @@ export const zh = {
   'count.watched': '监督 {count} 个会话',
   'count.running': '运行中 {count}',
   'count.missing': '{count} 个已不可用',
+  'row.mark.aria': 'DevLead 模式已启用',
+  'row.hover.enabled': 'DevLead 模式已启用：本会话可调度并监督其他会话。',
   'toggle.enable': '开启 DevLead 模式',
   'toggle.failed': '开启 DevLead 模式失败：{message}（悬停查看，可重试）',
   'toggle.failed.status': '开启 DevLead 模式失败：{message}',
@@ -40,7 +42,7 @@ export type DevLeadKey = keyof typeof zh
 /** English dictionary, checked complete against the zh key set. */
 export const en = {
   'meta.title': 'DevLead mode',
-  'meta.description': 'Toggles DevLead mode from the composer toolbar; once enabled, a status strip above the composer shows watched sessions and the latest notification.',
+  'meta.description': 'Toggles DevLead mode from the composer toolbar; once enabled, a status strip appears above the composer and the Session is marked in the sidebar list.',
   'bar.aria': 'DevLead status bar',
   'label': 'DevLead',
   'switch.aria': 'DevLead mode',
@@ -50,6 +52,8 @@ export const en = {
   'count.watched': '{count} watched',
   'count.running': '{count} running',
   'count.missing': '{count} unavailable',
+  'row.mark.aria': 'DevLead mode is on',
+  'row.hover.enabled': 'DevLead mode is on: this session can dispatch and watch other Sessions.',
   'toggle.enable': 'Turn on DevLead mode',
   'toggle.failed': 'Could not turn on DevLead mode: {message} (hover to read, then retry)',
   'toggle.failed.status': 'Could not turn on DevLead mode: {message}',

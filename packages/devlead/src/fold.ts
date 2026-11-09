@@ -16,12 +16,14 @@ import { z as zod } from 'zod'
 import type { ZodType } from 'zod'
 import {
   DEVLEAD_DEFAULT_NOTIFICATION_RETENTION,
+  DEVLEAD_MODE_PROJECTION_KEY,
   DEVLEAD_MODE_RECORD_TYPE,
   DEVLEAD_NOTIFICATION_RECORD_TYPE,
   DEVLEAD_PROJECTION_KEY,
   DEVLEAD_WATCH_RECORD_TYPE,
 } from '@yankeguo/dsh-devlead-protocol'
 import type {
+  DevLeadModeProjection,
   DevLeadNotification,
   DevLeadProjection,
   DevLeadProjectionState,
@@ -191,3 +193,114 @@ export const devLeadProjectionDefinition = {
   // notification records.
   stateVersion: 1,
 } satisfies ProjectionDefinition<'devLead', DevLeadProjectionState>
+
+/**
+ * Host-only fold state of the summary-sized `devLeadMode` projection. The
+ * selection is the only client fact; `failure` mirrors the digest unit's
+ * freezing rule so a corrupt log cannot paint a stale "enabled" mark either.
+ */
+export interface DevLeadModeProjectionState {
+  /** Whether DevLead mode is selected for this Session. */
+  readonly enabled: boolean
+  /** First rejected persisted record, or null while the state is valid. */
+  readonly failure: string | null
+}
+
+/** Empty mode-projection state: disabled, no failure. */
+export function emptyDevLeadModeProjectionState(): DevLeadModeProjectionState {
+  return { enabled: false, failure: null }
+}
+
+/** Persisted mode-projection state schema; seeds a fold and validates cached rows. */
+export const devLeadModeProjectionStateSchema: ZodType<DevLeadModeProjectionState> = zod.object({
+  enabled: zod.boolean(),
+  failure: zod.string().min(1).nullable(),
+}).strict() as ZodType<DevLeadModeProjectionState>
+
+/** Client wire schema of the `devLeadMode` projection value. */
+export const devLeadModeProjectionSchema: ZodType<DevLeadModeProjection> = zod.object({
+  enabled: zod.boolean(),
+}).strict() as ZodType<DevLeadModeProjection>
+
+/**
+ * The two client views are shared constants: the registry suppresses a push
+ * when the previous and current `wire.view` results are `Object.is`-equal, so a
+ * mode-only unit must never mint a fresh object for an unchanged selection.
+ */
+const MODE_ENABLED_VIEW: DevLeadModeProjection = { enabled: true }
+const MODE_DISABLED_VIEW: DevLeadModeProjection = { enabled: false }
+
+/**
+ * Project one client view from mode fold state.
+ * @param state - current mode fold state.
+ * @returns the shared enabled/disabled view.
+ */
+export function devLeadModeProjectionView(state: DevLeadModeProjectionState): DevLeadModeProjection {
+  return state.enabled ? MODE_ENABLED_VIEW : MODE_DISABLED_VIEW
+}
+
+/**
+ * Fold one committed Session event into the summary-sized mode projection.
+ *
+ * The fold follows the digest unit's failure policy: every owned record type is
+ * decoded strictly (so the two units freeze on the same corrupt log), and the
+ * first invalid one freezes the last valid selection.
+ * @param state - the projection covering all prior events.
+ * @param event - the next committed Session event.
+ * @returns the next mode projection state.
+ */
+export function applyDevLeadModeProjection(
+  state: DevLeadModeProjectionState,
+  event: SessionEvent,
+): DevLeadModeProjectionState {
+  if (state.failure !== null) return state
+  const record = pluginRecordOf(event)
+  if (record === undefined) return state
+  try {
+    switch (record.type) {
+      case DEVLEAD_MODE_RECORD_TYPE: {
+        const mode = decodeModeRecord(record.data)
+        return mode.enabled === state.enabled ? state : { enabled: mode.enabled, failure: null }
+      }
+      case DEVLEAD_WATCH_RECORD_TYPE:
+        // Watch and notification records do not contribute to this projection;
+        // they are decoded only to mirror the digest unit's freeze semantics.
+        decodeWatchRecord(record.data)
+        return state
+      case DEVLEAD_NOTIFICATION_RECORD_TYPE:
+        decodeNotificationRecord(record.data)
+        return state
+      default:
+        return state
+    }
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error)
+    return {
+      ...state,
+      failure: `devlead mode replay failed at session event ${event.seq} (${record.type}): ${message}`,
+    }
+  }
+}
+
+/**
+ * Registered projection unit serving the summary-sized `devLeadMode` value.
+ *
+ * This unit exists because the digest unit is excluded from Session summaries
+ * (the sidebar cannot carry up to 64 notifications per row), while the mode
+ * selection itself is exactly the fact a Session-list row renders. The unit
+ * declares no `wire.summary: false`, so every Session summary carries it.
+ */
+export const devLeadModeProjectionDefinition = {
+  key: DEVLEAD_MODE_PROJECTION_KEY,
+  stateSchema: devLeadModeProjectionStateSchema,
+  // The unit owns no Session-metadata-derived state, so it ignores the header
+  // and inherited-prefix arguments the registry passes.
+  init: emptyDevLeadModeProjectionState,
+  apply: applyDevLeadModeProjection,
+  wire: {
+    viewSchema: devLeadModeProjectionSchema,
+    view: devLeadModeProjectionView,
+  },
+  // 1: the initial durable representation of the compact mode selection.
+  stateVersion: 1,
+} satisfies ProjectionDefinition<'devLeadMode', DevLeadModeProjectionState>

@@ -39,8 +39,8 @@
 | 人类命令 | `/devlead`（状态）、`/devlead on|off`、`/devlead watch|unwatch <session>`；会话支持完整 id 或唯一前缀 |
 | 通知回路 | 被监督会话的 `turn/end` 写入持久通知记录，按合并窗口唤醒 DevLead（可配置窗口与冷会话策略） |
 | 事件溯源 | 模式/watch 集合/通知全部是可忽略的 `plugin:devlead/*` 记录，严格回放校验，可跨重启 / 恢复 / fork |
-| Session projection | `devLead` projection（`{ enabled, sessions, notifications }`）把状态同步到浏览器，无需自定义 Remote API |
-| 界面 | 未开启时只有 composer 工具条里的一个小图标（不显眼、无常驻条）；开启后 composer 上方出现 DevLeadBar：开关、监督会话数/运行中数、最近一条通知；界面只发 `/devlead on|off` 命令 |
+| Session projection | `devLead` projection（`{ enabled, sessions, notifications }`）把状态同步到浏览器，无需自定义 Remote API；summary 级的 `devLeadMode`（`{ enabled }`）随每个 Session 列表行下发，供侧边栏渲染标记 |
+| 界面 | 未开启时只有 composer 工具条里的一个小图标（不显眼、无常驻条）；开启后 composer 上方出现 DevLeadBar：开关、监督会话数/运行中数、最近一条通知；界面只发 `/devlead on|off` 命令；已开启的会话在侧边栏会话列表里带标记 |
 | 权限模型 | 模式开关只能由人类命令/UI 触发；通知是运行时提示而非人类指令（见[权限模型](#权限模型)） |
 | 一键安装 | bundle 的 `cordis.patch.yml` 插入全部 4 个运行时插件行，也可单独安装某个包 |
 
@@ -54,6 +54,11 @@ UI 分两态，插件**不会**在每个会话上摆一条明显的常驻条：
 - **已开启**：图标隐藏，composer 上方出现完整的 DevLeadBar（槽位
   `conversation.input.dock`）：模式开关（点击即 `/devlead off`）、监督会话数、运行中数、
   最近一条通知；没有通知时显示帮助提示。
+- **侧边栏标记**：每个开启 DevLead 的会话在侧边栏会话列表里带一个小标记（行尾时间之后，
+  槽位 `sidebar.session.row.trailing`），会话关掉后仍然可辨识。标记读 summary 级
+  `devLeadMode` projection，因此 cold 会话也能渲染，且不产生每行额外 Host 读取。桌面端
+  悬停行时 shell 会隐藏行尾 resting 标记，此时该行 hover card 另行说明「DevLead 模式已
+  启用」（槽位 `sidebar.session.row.hover`）。
 
 未开启（只有工具条里的小图标）：
 
@@ -77,6 +82,7 @@ UI 分两态，插件**不会**在每个会话上摆一条明显的常驻条：
 | 命令返回逻辑错误 | 开启时：状态条内联错误行；未开启时：图标 tooltip 显示错误文本 | 修正后重试 |
 
 - 状态条与图标只读 `useProjection('devLead')` 与标准 Session 列表，**不新增 Remote API**；
+  侧边栏标记与 hover card 说明只读 Session 列表 summary；
   两者都调用注入的 `executeCommand('/devlead on'|'/devlead off')`，不会乐观翻转，一律以
   projection 为准。
 - 浏览器侧只在 Web 端渲染；i18n namespace 为 `devlead`，提供 `zh` / `en` 词典。
@@ -380,6 +386,9 @@ config 是整体替换）。
 - **不跨进程 / 跨 DSH 实例编排**；不新增 Remote API；UI 只读 projection + 走命令。
 - **未开启时入口较小**：为了不在每个会话上显示常驻状态条，未开启时只有一个 composer 工具条
   图标；不习惯的话记 `/devlead on` 命令即可。
+- **侧边栏标记的回填**：标记来自 summary 级 `devLeadMode` projection。本特性发布前就已开启
+  DevLead 的会话，要等它的投影 cache 出现该 key 后才显示标记（打开该会话一次，或再开关一次
+  模式即可回填）；v1 不在 Host 启动时做回填。
 - **子会话是普通会话**：会出现在侧边栏并正常消耗模型额度，不是隐藏 subagent。
 
 ## 故障排查

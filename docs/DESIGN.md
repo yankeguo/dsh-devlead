@@ -36,11 +36,11 @@ pnpm workspace，`packages/*`：
 
 | 目录 | 包名 | 角色 |
 | --- | --- | --- |
-| `protocol` | `@yankeguo/dsh-devlead-protocol` | 纯类型 + 常量 + 格式化（host 与浏览器共用），并声明 `devLead` projection 的类型 |
-| `devlead` | `@yankeguo/dsh-devlead` | 核心 Service `ctx.devLead`：模式状态、Workspace/Session 编排、监督索引、通知投递、projection fold |
+| `protocol` | `@yankeguo/dsh-devlead-protocol` | 纯类型 + 常量 + 格式化（host 与浏览器共用），并声明 `devLead` / `devLeadMode` projection 的类型 |
+| `devlead` | `@yankeguo/dsh-devlead` | 核心 Service `ctx.devLead`：模式状态、Workspace/Session 编排、监督索引、通知投递、`devLead` 与 summary 级 `devLeadMode` 两个 projection fold |
 | `tool` | `@yankeguo/dsh-tool-devlead` | 模型工具 `devlead_*` + 条件系统提示 |
 | `command` | `@yankeguo/dsh-command-devlead` | 人类命令 `/devlead` |
-| `client-ui` | `@yankeguo/dsh-client-ui-devlead` | 浏览器 UI：未开启时的工具条开关 + 开启后的 DevLead 状态条 |
+| `client-ui` | `@yankeguo/dsh-client-ui-devlead` | 浏览器 UI：未开启时的工具条开关 + 开启后的 DevLead 状态条 + 侧边栏会话行标记 |
 | `bundle` | `@yankeguo/dsh-devlead-bundle` | bundle：`cordis.patch.yml` 插入全部插件 |
 
 依赖方向：`protocol ← devlead ← {tool, command}`；`client-ui` 只依赖 `protocol`（浏览器侧）。
@@ -93,6 +93,21 @@ DSH 的所有读取路径会保留并重放这些记录，但不会把它们投�
   保留的通知摘要（≤64 条）只服务打开中的会话，不进入 Session 列表 / summary payload。
 - 浏览器通过 `useProjection('devLead')` 读取；无需自定义 Remote API（第三方插件无法走 Typert
   生成管线）。
+
+### `devLeadMode` Session projection（summary 级）
+
+- key：`devLeadMode`（`DEVLEAD_MODE_PROJECTION_KEY`），wire 值 `DevLeadModeProjection =
+  { enabled: boolean }`，**不**标记 `SessionProjectionSummaryExcluded`、unit 不声明
+  `wire.summary: false`，因此每个 Session summary / 列表行都携带它。
+- 为什么需要第二个 unit：侧边栏每一行都要判断该会话是否开启 DevLead，而 `devLead` 因通知
+  摘要被排除出 summary；把 `enabled` 放进 summary 的唯一干净路径是一个 summary 级小 unit。
+  fold 与 `devLead` 同为严格解码：mode/watch/notification 记录都解码，首条损坏记录冻结
+  （host 侧只留 `{ enabled, failure }`，不保留 watch/通知数据）；wire view 是两个共享常量对象，
+  保证 registry 的 `Object.is` 比较只在 `enabled` 真正变化时推送。
+- 更新路径：live 会话走 control baseline / projection frame；cold 会话走 Session 列表的
+  cached block（`summaryKeys()` 天然包含本 key，由 projection cache 的 checkpoint 行恢复）。
+  页面刷新 / Host 重启后由投影缓存行恢复。升级前已处于开启状态的会话在 cache 出现本 key
+  之前不会显示标记（打开该会话一次，或再做一次开/关即可回填）。
 
 ## 4. 核心 Service `ctx.devLead`
 
@@ -309,6 +324,13 @@ UI 分两态，避免在每个会话上显示常驻条：
   - `roles=status` live region 覆盖状态条提示 / 最新通知 / 图标失败文本，保证屏幕阅读器能听到
     通知与错误；`aria-busy` / label 与 pending 状态一致。
   - 两态互斥：开启时图标隐藏，关闭时状态条消失，因此同一个开关不会同时出现两份。
+- **侧边栏会话行标记**：开启 DevLead 的会话在 Session 列表行尾部显示一个盾形标记
+  （`sidebar.session.row.trailing`；非交互、不绑定/不激活 Session，只按 `sessionId` 读
+  summary 级 `devLeadMode`）。DSH 0.2.2-rc.1 没有“始终可见”的行 seat：`leading` seat 在
+  运行中 / 有未读 / 有待处理交互时会被状态点替换，因此不用它；`trailing` seat 在桌面端
+  行被悬停 / 聚焦 / 菜单打开时被 shell 隐藏，所以 `sidebar.session.row.hover` 再提供一行
+  「DevLead 模式已启用」说明（i18n key `row.mark.aria` / `row.hover.enabled`），标记的
+  `aria-label` 让屏幕阅读器同样能听到。图标与说明均不改变行高、不压缩标题截断宽度。
 - i18n：namespace `devlead`，`zh`/`en` 词典；`locale/zh.json`、`locale/en.json` 提供
   `meta.title`/`meta.description`（插件市场展示）。
 - 客户端 bundle 构建：esbuild CJS + `window.__ModuleLoader__.load({ id, factory })` 包装；
@@ -317,9 +339,11 @@ UI 分两态，避免在每个会话上显示常驻条：
   module-table 之外的浏览器导入直接失败。
 - 包 `package.json` 的 `dsh.client.inject` 列出运行期依赖（api-remotes、api-session-controller、
   client-locale、client-ui-conversation、client-ui-primitives、client-ui-renderer、
-  client-ui-session），`platform: "web"`。loader 只对真实 client entry 的 inject 名字做工厂
-  等待，platform module 名字（如 primitives）会被忽略；`check-packages.mjs` 断言浏览器导入
-  全部落在 module table 内。
+  client-ui-session、client-ui-workspace），`platform: "web"`。`client-ui-workspace` 只以
+  type-only 导入进程序（取 Session 行 seat 的 SlotMap 声明），构建期 module-table 守卫不会
+  把它当成浏览器运行期依赖。loader 只对真实 client entry 的 inject 名字做工厂等待，platform
+  module 名字（如 primitives）会被忽略；`check-packages.mjs` 断言浏览器导入全部落在 module
+  table 内。
 
 ## 8. 稳定错误码
 
@@ -356,7 +380,7 @@ UI 分两态，避免在每个会话上显示常驻条：
 - `command`：解析（rawInput 契约 / 引号 / 空白 / 未知子命令）、前缀寻址（唯一 / 歧义 / 缺失
   / 列表窗口外回退）、渲染、穷尽错误码映射、单次 projection 快照。
 - `client-ui`：纯函数（format / 准入状态机 gate+reducer / results 分类 / 样式 token 契约 /
-  locale 完整性与占位符一致）；组件保持薄，逻辑都下沉到可测纯函数。
+  侧边栏行标记 predicate / locale 完整性与占位符一致）；组件保持薄，逻辑都下沉到可测纯函数。
 - 全仓 `pnpm typecheck && pnpm test && pnpm build` 是 `pnpm verify`；`pnpm check:packages`
   校验包不变式；`pnpm e2e` 是本机真实 DSH 的端到端冒烟（见 §10）。
 

@@ -31,6 +31,14 @@ export const DEVLEAD_RECORD_VERSION = 1
 /** Session projection key serving the DevLead view to the browser. */
 export const DEVLEAD_PROJECTION_KEY = 'devLead'
 
+/**
+ * Session projection key carrying only the mode selection. It is small enough
+ * for every Session summary, so the sidebar's per-row DevLead mark can read it
+ * for cold Sessions too; the retained digest stays behind the excluded
+ * {@link DEVLEAD_PROJECTION_KEY} view.
+ */
+export const DEVLEAD_MODE_PROJECTION_KEY = 'devLeadMode'
+
 /** Human command that toggles and inspects DevLead mode. */
 export const DEVLEAD_COMMAND_NAME = 'devlead'
 
@@ -144,6 +152,15 @@ export interface DevLeadProjection {
   readonly sessions: readonly string[]
   /** Retained notifications, oldest first. */
   readonly notifications: readonly DevLeadNotification[]
+}
+
+/**
+ * Client view published through the summary-sized `devLeadMode` Session
+ * projection: exactly the fact a Session-list row may render.
+ */
+export interface DevLeadModeProjection {
+  /** Whether DevLead mode is selected for this Session. */
+  readonly enabled: boolean
 }
 
 /** One registered DSH Workspace as the model tool reports it. */
@@ -260,5 +277,12 @@ declare module '@deepseek-ai/dsh-session-projection/types' {
      * declares the matching `wire.summary: false`.
      */
     devLead: SessionProjectionSummaryExcluded<DevLeadProjection>
+    /**
+     * The Session's durable DevLead selection alone. Deliberately summary-sized:
+     * the sidebar renders one mark per listed Session row, and a row must not
+     * carry the retained notification digest. The unit declares no
+     * `wire.summary: false`, so every Session summary carries this key.
+     */
+    devLeadMode: DevLeadModeProjection
   }
 }

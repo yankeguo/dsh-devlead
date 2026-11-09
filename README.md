@@ -47,8 +47,8 @@ Documentation: [Design notes (中文)](docs/DESIGN.md) · [Publishing guide (中
 | Human commands | `/devlead` (status), `/devlead on\|off`, `/devlead watch\|unwatch <session>`; sessions are addressable by full id or unique prefix |
 | Notification loop | A watched session's `turn/end` writes a durable notification and wakes the DevLead through a coalescing window (configurable window and cold-session policy) |
 | Event sourcing | Mode / watch set / notifications are ignorable `plugin:devlead/*` records with strict replay validation; survive restart / resume / fork |
-| Session projection | The `devLead` projection (`{ enabled, sessions, notifications }`) syncs state to the browser without a custom Remote API |
-| UI | Off: only a small composer-toolbar icon (unobtrusive, no permanent strip). On: a DevLeadBar above the composer with the switch, watched/running counts, and the latest notification; the UI only sends `/devlead on\|off` commands |
+| Session projection | The `devLead` projection (`{ enabled, sessions, notifications }`) syncs state to the browser without a custom Remote API; its summary-sized companion `devLeadMode` (`{ enabled }`) rides every Session-list summary so sidebar rows can render the mark |
+| UI | Off: only a small composer-toolbar icon (unobtrusive, no permanent strip). On: a DevLeadBar above the composer with the switch, watched/running counts, and the latest notification; the UI only sends `/devlead on\|off` commands. Enabled Sessions are also marked in the sidebar session list |
 | Permission model | The mode switch can only be triggered by human commands/UI; notifications are runtime notices, not human instructions (see [Permission model](#permission-model)) |
 | One-command install | The bundle's `cordis.patch.yml` inserts all 4 runtime plugin rows; individual packages can also be installed separately |
 
@@ -63,6 +63,12 @@ bar on every conversation:
 - **On:** the icon disappears and the full DevLeadBar (`conversation.input.dock`) appears above
   the composer: the mode switch (click sends `/devlead off`), the number of watched sessions,
   the number running, and the latest notification — or a help hint when there is none.
+- **Marked while enabled:** every DevLead-enabled Session carries a small DevLead mark in the
+  sidebar session list, after its time label (`sidebar.session.row.trailing`), so the mode is
+  recognizable after the conversation is closed. The mark reads the summary-sized `devLeadMode`
+  projection, so it renders for cold Sessions too without an extra Host read per row. On
+  hover-capable devices the shell hides the row's resting marks while the row is hovered; the
+  row's hover card then restates "DevLead mode is on" (`sidebar.session.row.hover`).
 
 Off (only the small toolbar icon):
 
@@ -87,7 +93,8 @@ reports):
 | A command settles with a logical error | on: an inline error row in the strip; off: the error text in the icon tooltip | fix and retry |
 
 - The strip and the icon only read `useProjection('devLead')` and the standard Session list —
-  **no custom Remote API**. Both call the injected `executeCommand('/devlead on'|'/devlead off')`,
+  **no custom Remote API**; the sidebar mark and its hover-card line read the Session-list
+  summary only. Both call the injected `executeCommand('/devlead on'|'/devlead off')`,
   never flip optimistically, and always follow the projection.
 - The browser half only renders on the Web platform; the i18n namespace is `devlead` with `zh`
   and `en` dictionaries.
@@ -430,6 +437,10 @@ notification retention, etc.) are owned by the core service and protocol constan
 - **Small off-state entry point:** to avoid a permanent strip on every conversation, the off
   state is only a composer-toolbar icon; remember the `/devlead on` command if that is not
   obvious enough.
+- **Sidebar mark backfill:** the mark renders from the summary-sized `devLeadMode` projection.
+  A Session enabled before this feature shipped shows the mark only once its projection cache
+  carries the key (open that Session once, or toggle the mode again); v1 does not backfill on
+  Host startup.
 - **Child sessions are ordinary sessions:** they appear in the sidebar and consume model quota
   normally — they are not hidden subagents.
 

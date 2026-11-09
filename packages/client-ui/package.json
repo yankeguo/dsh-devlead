@@ -1,7 +1,7 @@
 {
   "name": "@yankeguo/dsh-client-ui-devlead",
   "version": "0.1.1",
-  "description": "DevLead surfaces: a compact composer-toolbar switch while off, and the full status strip above the composer while the mode is on.",
+  "description": "DevLead surfaces: a compact composer-toolbar switch while off, the full status strip above the composer while the mode is on, and a DevLead mark on the Session's sidebar row.",
   "license": "MIT",
   "type": "module",
   "main": "lib/index.js",
@@ -24,7 +24,8 @@
         "@deepseek-ai/dsh-client-ui-conversation",
         "@deepseek-ai/dsh-client-ui-primitives",
         "@deepseek-ai/dsh-client-ui-renderer",
-        "@deepseek-ai/dsh-client-ui-session"
+        "@deepseek-ai/dsh-client-ui-session",
+        "@deepseek-ai/dsh-client-ui-workspace"
       ],
       "platform": "web"
     }

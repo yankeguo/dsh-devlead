@@ -11,6 +11,8 @@
  *   - the browser half is discovered (boot graph client entry + declared injects);
  *   - `/devlead` is a registered human command and the `devLead` projection is
  *     served with its default wire value;
+ *   - the summary-sized `devLeadMode` projection is registered, follows the mode,
+ *     and rides the `session/list` summary rows the sidebar renders;
  *   - `/devlead on` / `/devlead off` flip the durable mode and the projection
  *     follows it;
  *   - `watch` addresses a real child Session and self-watch is rejected;
@@ -460,6 +462,12 @@ class WebClient {
   async projections(sessionId) {
     return await this.rpc('session/projections', { request: { sessionId } })
   }
+
+  /** Read the Session-list summaries (the sidebar's data source). */
+  async list() {
+    // `session/list` names its (empty) request argument `_request`.
+    return await this.rpc('session/list', { _request: {} })
+  }
 }
 
 /** One assertion record. */
@@ -525,11 +533,31 @@ async function runChecks(client, paths) {
     projection0?.enabled === false && Array.isArray(projection0?.sessions) && Array.isArray(projection0?.notifications),
   )
 
+  const mode0 = (await client.projections(leadId))?.values?.devLeadMode
+  checks.expect('summary-sized devLeadMode projection is registered', mode0 !== undefined)
+  checks.expect('devLeadMode projection defaults to disabled', mode0?.enabled === false)
+  const list0 = await client.list()
+  const row0 = (list0?.items ?? []).find(item => item.sessionId === leadId)
+  checks.expect(
+    'Session-list summary row carries devLeadMode',
+    row0?.projections?.values?.devLeadMode?.enabled === false,
+    JSON.stringify(row0?.projections?.values?.devLeadMode),
+  )
+
   const on = await client.command(leadId, '/devlead on')
   checks.expect('/devlead on settles success', on?.result?.kind === 'success', on?.result?.text?.split('\n')[0])
   checks.expect('/devlead on reports the enabled mode', /DevLead mode enabled\./u.test(on?.result?.text ?? ''))
   const projection1 = (await client.projections(leadId))?.values?.devLead
   checks.expect('projection reports enabled after /devlead on', projection1?.enabled === true)
+  const mode1 = (await client.projections(leadId))?.values?.devLeadMode
+  checks.expect('devLeadMode projection reports enabled after /devlead on', mode1?.enabled === true)
+  const list1 = await client.list()
+  const row1 = (list1?.items ?? []).find(item => item.sessionId === leadId)
+  checks.expect(
+    'Session-list summary row follows /devlead on',
+    row1?.projections?.values?.devLeadMode?.enabled === true,
+    JSON.stringify(row1?.projections?.values?.devLeadMode),
+  )
 
   const status = await client.command(leadId, '/devlead status')
   checks.expect('/devlead status prints the enabled mode', /DevLead mode: on/u.test(status?.result?.text ?? ''))
@@ -583,6 +611,8 @@ async function runChecks(client, paths) {
   checks.expect('/devlead off reports the disabled mode', /DevLead mode disabled\./u.test(off?.result?.text ?? ''))
   const projection3 = (await client.projections(leadId))?.values?.devLead
   checks.expect('projection reports disabled after /devlead off', projection3?.enabled === false)
+  const mode3 = (await client.projections(leadId))?.values?.devLeadMode
+  checks.expect('devLeadMode projection reports disabled after /devlead off', mode3?.enabled === false)
 
   checks.summarize()
 }
