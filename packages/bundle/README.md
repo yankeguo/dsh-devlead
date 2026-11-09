@@ -62,13 +62,42 @@ pnpm install && pnpm build
 pnpm install:profile            # 链接到 ~/.dsh/profiles/desktop 并启用 bundle
 ```
 
-或直接 `--patch` 调试（不写 profile，先 `pnpm build`）：
+或直接 `--patch` 调试（不安装 bundle，先 `pnpm build`）：
 
 ```sh
+# 一次性：创建专用 dev profile（不要复用 desktop —— 它已启用本 bundle）
+dsh devlead --from-default-profile web --dump-config
+
 pnpm build
-pnpm dev:patch
-dsh web --patch .tmp/cordis.patch.yml --port 34000 --no-open
+pnpm dev:patch --profile devlead        # 生成 overlay 并注册 linked root
+# 脚本会打印确切的启动命令，例如：
+dsh --profile devlead --patch "$PWD/.tmp/cordis.patch.yml" --no-open
 ```
+
+`dev:patch` 默认目标是 `--profile web` / `--dsh-home ~/.dsh`；普通安装通常没有 `web`
+profile，且 `desktop` profile 已启用本 bundle（重复插入相同 row id 会被脚本拒绝），
+所以要按上面的方式先建一个专用 dev profile。
+
+`dev:patch` 除了生成 `.tmp/cordis.patch.yml`，还会在目标 profile 的 `node_modules/`
+下创建一个指向本仓库的链接根（`devlead-repo`），这是该调试路径能正常工作的前提：
+
+- 绝对路径插入的 Loader row 会从本仓库加载代码；没有链接根时，插件的
+  `@deepseek-ai/*` 依赖会走仓库自己的 pnpm `node_modules`，在 Host 进程里形成**第二份
+  DSH runtime**，第一次跨副本私有检查就会失败
+  （典型报错 `gateway/internal: Receiver must be an instance of class Session`）。
+- 链接根让 DSH 的 linked-root 解析把每个插件包 `peerDependencies` 中声明的
+  `@deepseek-ai/*` 路由到安装自带的单例（官方机制，见 DSH 仓库
+  `packages/boot/app-boot/README.md` 的 “Linked directories” 小节）。
+- 目标 profile 必须已初始化；profile 不存在、或该 profile 已启用本 bundle
+  （会重复插入相同 row id）时，`dev:patch` 会拒绝执行并给出修复提示。
+- 用 `--profile <name>` / `--dsh-home <dir>` 指定目标；`--no-link` 只生成 overlay，
+  只能用于查看内容，不能用于可用的调试启动。
+- 撤销：删除 profile 的 `node_modules/devlead-repo`；`pnpm uninstall:profile` 负责撤销
+  `install:profile` 创建的包链接与 bundle 选择。
+
+本地一键校验：`pnpm verify`（typecheck + 单元测试 + 构建）；`pnpm e2e` 用隔离的
+`/tmp` DSH_HOME 分别验收 `dev:patch` 与 `install:profile` 两条本地加载路径（需要本机
+已安装 DSH，因此不在 CI 中运行）。
 
 ### 前置条件
 

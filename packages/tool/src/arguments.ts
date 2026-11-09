@@ -11,6 +11,7 @@
 
 import { isAbsolute } from 'node:path'
 import type { Agent } from '@deepseek-ai/dsh-agent'
+import { HarnessError } from '@deepseek-ai/dsh-llm'
 import type { DevLeadCreateSessionRequest } from '@yankeguo/dsh-devlead-protocol'
 
 /**
@@ -81,13 +82,18 @@ export interface NotificationsArgs {
 /**
  * Recover the exact caller guaranteed by conditional tool discovery. A
  * registered DevLead tool is only visible to a step whose Agent enabled the
- * mode, so a missing Agent is an invariant violation, not model input.
+ * mode, so a missing Agent is an invariant violation, not model input. It is
+ * still reported through the structured error surface so the executor can
+ * route on a stable code instead of an unstructured crash.
  * @param agent - Agent carried by the run context.
  * @param tool - tool name used in the failure text.
  * @returns the live caller Agent.
+ * @throws {@link HarnessError} `DEVLEAD_AGENT_NOT_LIVE` when the Step carried no Agent.
  */
 export function requireAgent(agent: Agent | undefined, tool: string): Agent {
-  if (agent === undefined) throw new Error(`${tool} requires a calling Agent`)
+  if (agent === undefined) {
+    throw new HarnessError(`${tool} requires a calling Agent`, 'DEVLEAD_AGENT_NOT_LIVE')
+  }
   return agent
 }
 
@@ -105,8 +111,9 @@ export function requireSessionRef(value: string): string {
 }
 
 /**
- * Validate one prompt. The text is passed through unchanged so intentional
- * formatting survives, but a blank prompt is rejected.
+ * Validate one prompt. The text is passed through as supplied so the core
+ * service owns normalization, but a value that is blank after trimming is
+ * rejected before any Session work starts.
  * @param value - model-supplied prompt text.
  * @returns the prompt text.
  * @throws {@link DevLeadToolInputError} when the prompt is blank.

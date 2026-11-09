@@ -5,8 +5,10 @@
 **Session**（会话），创建/续写其他会话、读取会话状态、在会话状态变化时被唤醒，从而在一个
 人类可见、可参与的标准界面里统管多个仓库。
 
-参考实现：[`dsh-infini-goal`](../dsh-infini-goal)（同作者插件，第三方插件的包结构、构建、
-bundle、安装、发布流程以它为准）。
+设计与实现的**唯一强信源**是官方 DeepSeek Harness `0.2.2-rc.1` 源码
+（`/Users/guoyk/Workspace/src/deepseek-harness`，与本套件安装的 `@deepseek-ai/*` 同一版本）。
+任何第三方插件——包括早期参考过的 `dsh-infini-goal`——只算线索，不作为依据；每条 DSH API
+行为都以官方源码或已安装的 `@deepseek-ai/*` 声明为准。
 
 ## 1. 产品定位
 
@@ -35,8 +37,23 @@ pnpm workspace，`packages/*`：
 | `bundle` | `@yankeguo/dsh-devlead-bundle` | bundle：`cordis.patch.yml` 插入全部插件 |
 
 依赖方向：`protocol ← devlead ← {tool, command}`；`client-ui` 只依赖 `protocol`（浏览器侧）。
-构建时 host 入口 external `@deepseek-ai/*`、`@yankeguo/*`、`node:*`，确保同一 profile 内只有
-一份 `protocol`/`devlead` 实例。
+构建时 host 入口 external `@deepseek-ai/*`、`@yankeguo/*`、`node:*`；浏览器入口只 external
+DSH shell 的 platform singletons（单一来源 `scripts/client-externals.mjs`，构建期守卫失败
+而不是静默内联）。除构建外，`scripts/` 还提供 `check-packages.mjs`（包不变式）、
+`install-profile.mjs`（profile 安装）、`dev-patch.mjs`（开发 overlay + linked root）、
+`e2e-smoke.mjs`（本地 E2E）。
+
+**运行时单实例（linked root）**：绝对路径插入的插件若没有 linked root，会从本仓库自己的
+pnpm `node_modules` 解析 `@deepseek-ai/*`，在同一进程里产生第二份 DSH 运行时；跨副本的私有
+类检查（例如写 Session 插件记录）会抛
+`gateway/internal: Receiver must be an instance of class Session`。DSH `app-boot` 的 profile
+resolution 把「profile `node_modules` 下指向 profiles 树之外的符号链接」视为 linked root，
+对链接目标下的导入方按 `peerDependencies` 把每个 `@deepseek-ai/*` 名字解析到安装实例。
+因此：
+
+- `install-profile.mjs` 的包符号链接本身即 linked roots；
+- `dev-patch.mjs` 必须给目标 profile 写 `<profile>/node_modules/devlead-repo -> 本仓库`，
+  否则生成的 overlay 是半坏的（见 §10）。
 
 ## 3. 持久状态（Session log）
 
@@ -50,17 +67,25 @@ DSH 的所有读取路径会保留并重放这些记录，但不会把它们投�
 | `plugin:devlead/watch` | `DevLeadWatchRecord` | **完整**监督集合（`{ sessions: string[] }`，whole-value 替换） |
 | `plugin:devlead/notification` | `DevLeadNotificationRecord` | 追加一条通知（`{ notification }`） |
 
-- 记录 payload 必须 JSON-safe、带 `kind` + `version`；fold 对未知 `kind`/`version` 拒绝。
-- 每次变更都是**先追加日志，后发通知**（与 infini-goal 一致）。
+- 记录 payload 必须 JSON-safe、带 `kind` + `version`；fold 对未知 `kind`/`version` **以及
+  多余/缺失字段**一律拒绝（严格字段集解码，见 `domain.ts`）。持久插件记录是折叠的唯一信任
+  边界：手工编辑 / 迁移后的日志必须让 replay 失败（`failure`），而不是被静默丢弃或强制转换。
+- 时间戳必须是非负安全整数且落在 `Date` 可表示范围内（≤ 8.64e15），turn 必须是正安全整数；
+  否则 `formatInstant` 之类的渲染会在 UI 侧抛 `RangeError`。
+- 每次变更都是**先追加日志，后发通知**。
 - 通知条数在 projection 里按常量 `DEVLEAD_DEFAULT_NOTIFICATION_RETENTION`（64）截断：
   fold 必须是**纯函数**，不能依赖部署 config，否则重放会分叉。
 
 ### `devLead` Session projection
 
-- key：`devLead`，wire 值 `DevLeadProjection = { enabled, sessions, notifications }`。
-- Host 侧 fold state 额外带 `failure: string | null`（首条损坏记录），wire 不带。
+- key：`devLead`（常量 `DEVLEAD_PROJECTION_KEY`），wire 值
+  `DevLeadProjection = { enabled, sessions, notifications }`。
+- Host 侧 fold state 额外带 `failure: string | null`（首条损坏记录），wire 不带；只有
+  `failure` 变化时复用上一次 wire view 对象，让 registry 的 `Object.is` 比较抑制无意义推送。
+- projection 标记为 `SessionProjectionSummaryExcluded` 且 unit 声明 `wire.summary: false`：
+  保留的通知摘要（≤64 条）只服务打开中的会话，不进入 Session 列表 / summary payload。
 - 浏览器通过 `useProjection('devLead')` 读取；无需自定义 Remote API（第三方插件无法走 Typert
-  生成管线，infini-goal 同样如此）。
+  生成管线）。
 
 ## 4. 核心 Service `ctx.devLead`
 
@@ -87,9 +112,9 @@ export class DevLeadService extends Service {
   // Session
   listSessions(agent: Agent, options?: { workspace?: string; watchedOnly?: boolean; limit?: number; signal?: AbortSignal }): Promise<DevLeadSessionView[]>
   getSession(agent: Agent, sessionId: string, signal?: AbortSignal): Promise<DevLeadSessionView>
-  createSession(agent: Agent, request: DevLeadCreateSessionRequest): Promise<DevLeadCreatedSession>
-  promptSession(agent: Agent, sessionId: string, prompt: string, options?: { watch?: boolean }): Promise<DevLeadPromptedSession>
-  watchSession(agent: Agent, sessionId: string, watching: boolean): Promise<DevLeadWatchMutation>
+  createSession(agent: Agent, request: DevLeadCreateSessionRequest, signal?: AbortSignal): Promise<DevLeadCreatedSession>
+  promptSession(agent: Agent, sessionId: string, prompt: string, options?: { watch?: boolean; signal?: AbortSignal }): Promise<DevLeadPromptedSession>
+  watchSession(agent: Agent, sessionId: string, watching: boolean, signal?: AbortSignal): Promise<DevLeadWatchMutation>
 
   // 通知
   notifications(agent: Agent, options?: { limit?: number }): DevLeadNotification[]
@@ -99,21 +124,30 @@ export class DevLeadService extends Service {
 约束：
 
 - 所有写方法先 `assertLive(agent)`（`ctx.agents.get(agent.id) === agent`），并校验模式已开启
-  （`DEVLEAD_NOT_ENABLED`）。
+  （`DEVLEAD_NOT_ENABLED`）；`setEnabled` 是人类开关本身，不要求模式已开启。
 - 所有需要 watch 集合或"当前 lead"的读接口都显式接收 `agent`（工具调用传 `exec.agent`，
   命令调用传 `invocation.agent`）；服务不依赖 initiator 推断调用者。
-- `useWorkspace`：路径必须是绝对路径；`create: true` 时缺失目录用 `mkdir -p` 创建；随后
-  `ctx.workspaceRegistry.create(canonicalPath, title?)`（已存在则复用）。
-- `createSession`：解析目标 Workspace（id / path / 缺省用 lead 自己的 cwd 并自动注册）→
-  `ctx.sessionController.create({ workspaceId })`（该调用会自动 mkdir 并把 Session 挂进
-  Workspace 的账目）→ 可选 `ctx.sessionTitle.rename(session, title)` → 可选 `promptSession`。
-  注意：空白 Session 在第一次 turn 开始前不会出现在侧边栏，因此"创建+prompt"是常规用法。
-- `promptSession`：先 `sessionController.resolveAgent(sessionId)` 拿到 live Agent（冷会话会被
-  resume）；归档会话拒绝（`DEVLEAD_SESSION_ARCHIVED`）；然后
+- 读接口把 `signal` 一路传给 `sessionQuery` 读取；写接口只在阶段边界做协作式取消检查
+  （Session 创建 / `resolveAgent` 本身不可中断）。取消按 `AbortSignal` 语义抛出
+  `AbortError`，不伪装成领域错误。
+- `useWorkspace`：绝对路径校验交给 `workspaceRegistry.create`（它做 realpath 规范化、
+  相对路径拒绝、目录存在性检查、已注册路径复用）；`create: true` 且目录缺失时先
+  `mkdir -p` 再重试一次。错误映射：目录缺失（且未允许创建 / 创建失败）→
+  `DEVLEAD_DIRECTORY_MISSING`；相对路径、文件、不可用父目录、registry 写入失败 →
+  `DEVLEAD_INVALID_INPUT`。`title` 只作用于**新注册**的 Workspace，已存在的记录保留原标题。
+- `createSession`：先做 watch 容量预检（避免创建成功后才发现超限）→ 解析目标 Workspace
+  （id / path / 缺省用 lead 自己的 cwd 并自动注册）→ `ctx.sessionController.create({ workspaceId })`
+  （该调用会自动 mkdir 并把 Session 挂进 Workspace 的账目）→ 可选
+  `ctx.sessionTitle.rename(session, title)` → 可选 prompt。注意：空白 Session 在第一次 turn
+  开始前不会出现在侧边栏，因此"创建+prompt"是常规用法。
+- `promptSession`：先校验归档与冷会话激活能力（避免半应用的 watch 副作用）→
+  `sessionController.resolveAgent(sessionId)` 拿 live Agent（冷会话会被 resume）→
   `agent.followup(createUserMessage({ content, source: { kind: 'devlead', form: 'relay', senderSessionId: lead.id } }))`
   + `ctx.sessions.flush(agent.session)`。默认自动 watch。
 - `watchSession`：追加完整 watch 记录；上限 `maxWatchedSessions`；不能 watch 自己。
-- `notifications`：返回本会话 projection 里保留的通知（最新 limit 条）。
+- `notifications`：返回本会话 projection 里保留的通知（最新 limit 条；非法 limit 退回默认 20）。
+- `ctx.sessions.flush()` 返回 `false` 只表示"没有组合任何持久化参与者"（headless / SDK
+  组合），不是失败；参与者抛出的错误只记 warning，不会让已提交的内存 append 变成抛错。
 
 错误类：`DevLeadError extends Error { code: DevLeadErrorCode }`，稳定 code 见第 8 节。
 
@@ -130,12 +164,20 @@ export class DevLeadService extends Service {
      写入 lead 会话的 notification 记录，并排队唤醒。
 3. 唤醒水泵（每 lead 一个）：
    - 通知入队，`setTimeout(notificationBatchMs)` 合并；窗口结束时若 lead Agent 仍存活：
-     `agent.followup(createUserMessage({ content: 渲染的摘要, source: { kind: 'devlead', form: 'notice', senderSessionId? } }))`
+     `agent.followup(createUserMessage({ content: 渲染的摘要, source: { kind: 'devlead', form: 'notice' } }))`
      + flush。Agent 正在运行也无妨：followup 排队到下一 turn。
+   - 同一确定性 id 的通知在一次 digest 里只出现一次（重放的 `turn/end` 不会重复唤醒；持久
+     记录仍两条都在，audit 完整）。
+   - 投递失败（`followup` 抛错）时把该批重新入队，并按上限 1s 重试，而不是丢弃或按合并窗口
+     空转；`notificationBatchMs: 0` 下模式关闭 / Agent dispose 后不会再唤醒（微任务 flush 有
+     代际守卫）。
    - lead Agent 不存活时：默认只留持久记录（`wakeColdSession: false`）；为 true 时先
      `sessionController.resolveAgent(leadId)` 再投递。
+   - lead 会话处于归档状态时暂停投递并丢弃内存队列，持久记录保留；恢复会话后状态视图仍能看到。
    - `agent/status` 变为 idle 时也尝试冲一次队列（例如窗口结束前 Agent 刚好在忙）。
-   - `agent/disposed` 时丢弃该 lead 的内存队列（记录已持久化）。
+   - `agent/disposed` 时丢弃该 lead 的内存队列与 timer（记录已持久化）。
+   - 写入侧自检：不可表示的 turn / 时间戳宁可不写记录，也不写一条自己的严格 fold 会拒绝的
+     记录；损坏的 lead replay 每个 Session 只 warning 一次。
 4. 会话日志里写入的通知记录会驱动 projection，UI 状态条实时更新。
 
 通知消息形如（英文，面向模型）：
@@ -153,18 +195,27 @@ DevLead 无需额外工具调用即可判断是否要介入。
 
 ### 4.2 状态视图
 
-`DevLeadSessionView` 由 `DevLeadService` 组装：
+`DevLeadSessionView` 由 `DevLeadService` 组装，列表路径刻意分成「便宜事实 → 排序截断 →
+昂贵视图」三步：
 
-- live 信息：`ctx.agents.get(id)` → `running = agent.status === 'running'`，`pendingInputs` 来自
-  `agent.inbox['next-turn'|'next-step']` 长度，`lastTurn` 来自
-  `ctx.agents.turnBoundaryOf(agent.session).lastTurn`。
-- 标题：`ctx.get('sessionTitle')?.get(agent.session)`（live）或
-  `ctx.get('sessionQuery')?.readTitleSnapshots([...])`（cold，批量）。
+- 候选集合（`collectSessionIds`）：live Agents、store 中的 live Sessions、Workspace 账目、
+  lead 的 watch 集合，以及（组合了 `sessionQuery` 时）持久化 Session。列表模式下持久化窗口
+  受 `maxListedSessions` 限制；**身份解析**（`resolveSessionReference`）走穷尽模式，列表窗口
+  从不是"能否寻址"的上限。
+- 便宜排序事实：watched / `agent.status === 'running'` / header `createdAt`；按
+  watched → running → createdAt 降序、id 兜底排序后**先截断**，只有保留下来的行才组装完整
+  视图。`limit` 必须是正安全整数，并 cap 在 `maxListedSessions`；`watchedOnly` 列表不会截断
+  到小于 watch 集合（watch 集合本身已有 `maxWatchedSessions` 上限）。
+- 批量事实（`readSessionFacts`）：标题/header（live 用 `sessionTitle.get`，cold 一次
+  `sessionQuery.readTitleSnapshots` 批量）、Workspace 归属（一次 `workspaceRegistry.list()`
+  建 map，不再按行反查）、归档集合。
+- 精确 id 解析有快路径：watch 集合 → live Session/Agent → 单 id `readTitleSnapshot`；只有
+  前缀匹配才需要列出持久化语料。
 - 日志摘要（仅 `getSession`）：`ctx.get('sessionQuery')?.readSession(id)` → 末条
-  `assistant/message` 文本摘要 + 末条 `turn/end` 的 reason；读不到时省略这些字段。
-- Workspace 归属：`workspaceRegistry.list()` 反查（`workspace.sessionIds`）。
-- 归档：`workspaceRegistry.archivedSessionIds`。
-- 所有可选服务都用 `ctx.get(...)` 判空，缺席时降级而不是报错（headless/SDK 组合可能没有）。
+  `assistant/message` 文本摘要 + 末条 `turn/end` 的 reason；未知的未来 reason kind 归为
+  `interrupted`（与通知一致）。
+- 所有可选服务都用 `ctx.get(...)` 判空，缺席时降级而不是报错（headless/SDK 组合可能没有）；
+  读取被取消时重新抛出 `AbortError`，不把取消降级成"事实未知"。
 
 ## 5. 模型工具（`@yankeguo/dsh-tool-devlead`）
 
@@ -185,14 +236,17 @@ DevLead 无需额外工具调用即可判断是否要介入。
 
 - 输出 schema 用 `defineTool` 的 `ValueSchemaSpec`；`output.render` 把 canonical JSON 以文本
   返回（模型可读），`presentCall` 返回 `{ card: 'generic', title, kind }`（`kind` 取
-  `read`/`search` 类似语义），保持 replay 纯函数。
+  `read`/`search` 类似语义），只依赖已解析参数，保持 replay 纯函数。schema 与 protocol 视图
+  类型有编译期一致性约束，运行时还会用编译出的 output schema 校验每个投影值（可选字段按
+  lossless JSON 规则省略）。
 - 参数里的 `session`/`workspace` 接受完整 id、路径，或（会话）唯一前缀匹配；多个前缀命中时报
   `DEVLEAD_INVALID_INPUT` 并列出候选。
-- 工具必须把领域错误翻译成 `HarnessError(message, code)`（模式同 infini-goal 的
-  `translateToolError`）。
-- `systemPrompt.section({ name: 'devlead:policy', order: ...,
-  text: ({ agent }) => ctx.devLead.isEnabled(agent) ? POLICY : '' })` 提供 DevLead 行为指导
-  （工作流、通知处理、汇报格式）。
+- 工具把领域失败翻译成 `HarnessError(message, code)`；`exec.agent` 缺失（条件可见性被绕过）
+  也走结构化错误 `DEVLEAD_AGENT_NOT_LIVE`，基础设施错误原样重抛。所有异步写调用转发
+  `exec.signal`（`create_session` / `prompt_session` / `watch_session`），读调用同样转发。
+- `systemPrompt.section({ name: 'devlead:policy', order: TOOL_SUBAGENT, text: ({ agent }) =>
+  ctx.devLead.isEnabled(agent) ? POLICY : '' })` 提供 DevLead 行为指导（工作流、通知处理、
+  汇报格式）；每次组装按当前 Agent 重新求值，关闭模式后下一步即消失。
 
 ## 6. 人类命令（`@yankeguo/dsh-command-devlead`）
 
@@ -206,8 +260,15 @@ DevLead 无需额外工具调用即可判断是否要介入。
 /devlead unwatch <session>
 ```
 
-- 状态输出用普通文本行（`CommandResult { kind: 'success', text }`）。
+- 语法解析严格按 DSH 的 `CommandInvocation.rawInput` 契约：值 = 命令名之后的文本（可能带分隔
+  空白），**不接受**完整命令行；多余参数、未知子命令、空参数、成对/不配对引号都有明确错误。
+- 状态输出用普通文本行（`CommandResult { kind: 'success', text }`），且模式 / watch 集合 /
+  通知摘要来自**同一次 projection 读取**，避免列表 await 期间看到更新的 digest 与更旧的
+  watch 行。
 - `on` 需要当前 Agent live；`off` 立即生效（正在投递的通知保留在日志里）。
+- 附件由 `CommandRuntime` 在 handler 之前拒绝（定义不声明 `input.attachments`），handler 不
+  重复实现该策略。
+- 全部领域错误码都映射成可操作的友好文本；`DEVLEAD_*` 新增码会让穷尽 switch 编译失败。
 - UI 开关只调用 `/devlead on|off`（`ctx.remote.commands.execute`），因此命令是唯一的人类入口。
 
 ## 7. 浏览器 UI（`@yankeguo/dsh-client-ui-devlead`）
@@ -217,7 +278,7 @@ UI 分两态，避免在每个会话上显示常驻条：
 - **未开启**：`conversation.input.left`（composer 工具条，权限下拉旁）里一个 ghost 图标按钮
   `DevLeadIconToggle`。它只读 projection，`enabled=true` 或 projection 未加载时不渲染。
   点击发送 `/devlead on`；失败时错误文本进入按钮 tooltip（toolbar 没有内联错误位）。
-- **已开启**：`conversation.input.dock`（composer 上方，infini-goal 同槽位）里的
+- **已开启**：`conversation.input.dock`（composer 上方）里的
   `DevLeadBar`。
   - `useProjection('devLead')`：`undefined`（加载中）或 `enabled=false` → 不渲染；
     `enabled=true` → 开关（点击发 `/devlead off`）+ 监督会话数/运行中数（标准 props
@@ -226,52 +287,89 @@ UI 分两态，避免在每个会话上显示常驻条：
   - 开关调用注入的 `executeCommand('/devlead on'|'/devlead off')`，pending 时禁用；
     命令逻辑错误（`kind: 'error'`）在内联错误行显示。
   - `Switch`/`Button`/`Tooltip` 组件来自 `@deepseek-ai/dsh-client-ui-primitives`；样式走本插件
-    注入的 `<style>` 标签（参考 infini-goal 的 `ensureStyleTag`），颜色用 `--dsw-*` token
-    并提供中性 fallback。
+    注入的 `<style>` 标签（`ensureStyleTag`），颜色只用 DSH theme 中真实存在的 `--dsw-*`
+    token 并提供中性 fallback；状态条采用 shell 的 menu-surface 模式（无重复 hairline、
+    `--dsw-menu-backdrop-filter`），宽度按 composer dock 的 side-clearance / dock-inset 公式。
+  - 两个入口共享一个准入状态机：纯函数 gate + reducer（`results.ts`）+ 薄 React hook
+    （`useDevLeadAdmission.ts`）——同渲染周期双击只会提交一条命令，未挂载后不再 setState，
+    模式变化会作废旧失败提示。准入门面把 `ok:true` 但 `value: undefined`（Host 没有解析到
+    命令）也当作失败（`unresolved`），不会把死入口当成功。
+  - `roles=status` live region 覆盖状态条提示 / 最新通知 / 图标失败文本，保证屏幕阅读器能听到
+    通知与错误；`aria-busy` / label 与 pending 状态一致。
   - 两态互斥：开启时图标隐藏，关闭时状态条消失，因此同一个开关不会同时出现两份。
 - i18n：namespace `devlead`，`zh`/`en` 词典；`locale/zh.json`、`locale/en.json` 提供
   `meta.title`/`meta.description`（插件市场展示）。
 - 客户端 bundle 构建：esbuild CJS + `window.__ModuleLoader__.load({ id, factory })` 包装；
-  external 列表必须与 DSH shell 的 platform seed 完全一致（见参考仓库 `scripts/build.mjs`）。
+  external 列表唯一来源是 `scripts/client-externals.mjs`，必须与 DSH shell 的 platform
+  seed（`packages/client/web/src/{platform,seed}.ts`）逐项且同序一致；构建期守卫会让任何
+  module-table 之外的浏览器导入直接失败。
 - 包 `package.json` 的 `dsh.client.inject` 列出运行期依赖（api-remotes、api-session-controller、
   client-locale、client-ui-conversation、client-ui-primitives、client-ui-renderer、
-  client-ui-session），`platform: "web"`。
+  client-ui-session），`platform: "web"`。loader 只对真实 client entry 的 inject 名字做工厂
+  等待，platform module 名字（如 primitives）会被忽略；`check-packages.mjs` 断言浏览器导入
+  全部落在 module table 内。
 
 ## 8. 稳定错误码
 
 | code | 含义 |
 | --- | --- |
-| `DEVLEAD_INVALID_INPUT` | 参数不可用（空 prompt、坏路径、前缀歧义等） |
+| `DEVLEAD_INVALID_INPUT` | 参数不可用：空 prompt、相对路径、文件路径、空引用、`limit` 非法、前缀歧义、非法 prompt 目标等 |
 | `DEVLEAD_NOT_ENABLED` | 当前会话未开启 DevLead 模式 |
-| `DEVLEAD_AGENT_NOT_LIVE` | 传入的 Agent 不是注册表中的 live 实例 |
-| `DEVLEAD_WORKSPACE_NOT_FOUND` | 指定 Workspace 不存在 / 无法解析 |
-| `DEVLEAD_DIRECTORY_MISSING` | 目录不存在且未允许创建 |
-| `DEVLEAD_SESSION_NOT_FOUND` | 指定 Session 不存在 |
+| `DEVLEAD_AGENT_NOT_LIVE` | 传入的 Agent 不是注册表中的 live 实例（工具侧绕过 `when` 时也走该码） |
+| `DEVLEAD_WORKSPACE_NOT_FOUND` | 指定 Workspace 引用无法解析，或 Host 未组合 Workspace registry |
+| `DEVLEAD_DIRECTORY_MISSING` | 目录不存在且未允许创建，或允许创建但创建失败 |
+| `DEVLEAD_SESSION_NOT_FOUND` | 指定 Session 不存在（含 Host 侧 `session/not-found` 映射） |
 | `DEVLEAD_SESSION_ARCHIVED` | Session 已归档，不能续写 |
-| `DEVLEAD_SESSION_UNAVAILABLE` | 无法 resume / 没有 sessionController / writer 冲突 |
+| `DEVLEAD_SESSION_UNAVAILABLE` | 无法 resume / 没有 sessionController / 没有 create 能力 / followup 被拒 |
 | `DEVLEAD_WATCH_LIMIT` | 监督集合超过上限 |
-| `DEVLEAD_SELF_WATCH` | 试图监督自己 |
+| `DEVLEAD_SELF_WATCH` | 试图监督或续写自己 |
 | `DEVLEAD_PROJECTION_INVALID` | 持久记录损坏（fold failure） |
+
+取消（`AbortSignal`）不映射到上面任何码：调用按标准 `AbortError` 拒绝。
 
 ## 9. 测试策略
 
-- `protocol`：纯函数单测（format/excerpt/transition 判定）。
-- `devlead`：fold 单测（模式/watch/通知/损坏记录/截断）；通知泵单测（fake Agent：状态、
-  followup 内容、合并窗口、dispose）；workspace/session 编排用 fake 服务单测（避免真实
-  `sessionController`）；真实服务集成测试可参照 infini-goal 的 driver harness。
+- `protocol`：格式化 / excerpt 边界（码点预算、代理对、非法预算）/ 转场表 / 持久记录词表 /
+  projection map 类型增强与 summary 排除等纯函数与类型契约。
+- `devlead`：真实 `SessionStore` + 真实 `SessionProjectionRegistry`，只把 `agents` /
+  `workspaceRegistry` / `sessionController` / `sessionTitle` / `sessionQuery` 换成内存 fake，
+  因此每次持久写、日志事件、projection drive 与监听器派发都按生产方式跑。覆盖严格解码器
+  （字段漂移 / 缺失字段 / 时间范围）、fold identity 复用、通知泵（合并窗口 / 去重 / 重试 /
+  冷会话 / 归档 / dispose / 零延迟代际守卫）、Workspace 与 Session 编排、列表排序与截断、
+  列表窗口外的身份解析、写路径的取消语义。
 - `tool`：用 fake `ctx.devLead` + fake `ctx.tools`/`ctx.systemPrompt` 捕获工具定义，验证
-  `when` gating、参数校验、值渲染、错误翻译、每个工具的 execute 转发。
-- `command`：解析/渲染/错误路径单测。
-- `client-ui`：纯函数（format/styles/results）单测；组件逻辑保持薄。
-- 全仓 `pnpm typecheck && pnpm test && pnpm build` 是 `pnpm verify`。
+  `when` gating、参数校验、值渲染、编译期 schema↔protocol 一致性、运行时 output schema
+  校验、错误翻译、每个工具的 execute 转发与取消信号转发、presentCall replay 纯净性。
+- `command`：解析（rawInput 契约 / 引号 / 空白 / 未知子命令）、前缀寻址（唯一 / 歧义 / 缺失
+  / 列表窗口外回退）、渲染、穷尽错误码映射、单次 projection 快照。
+- `client-ui`：纯函数（format / 准入状态机 gate+reducer / results 分类 / 样式 token 契约 /
+  locale 完整性与占位符一致）；组件保持薄，逻辑都下沉到可测纯函数。
+- 全仓 `pnpm typecheck && pnpm test && pnpm build` 是 `pnpm verify`；`pnpm check:packages`
+  校验包不变式；`pnpm e2e` 是本机真实 DSH 的端到端冒烟（见 §10）。
 
 ## 10. 部署与验证
 
-- `pnpm build` → `pnpm install:profile [--profile desktop]` 链接包并选中 bundle；
-  profile HMR 加载 host 插件，刷新 Web 页面加载浏览器插件。
-- 开发/E2E 也可用 `pnpm dev:patch` 生成 overlay：
-  `dsh web --patch .tmp/cordis.patch.yml --port 34000 --no-open`。
-- 验收路径：开一个会话 → `/devlead on`（或点开关）→ 让模型
+- `pnpm build` → `pnpm install:profile [--profile desktop]` 链接包并选中 bundle（包符号链接
+  同时充当 linked roots）；profile HMR 加载 host 插件，刷新 Web 页面加载浏览器插件。
+- 开发 / 手动 E2E 用绝对路径 overlay，必须先准备一个**专用 profile**（默认 `web` 通常不存在；
+  已启用本 bundle 的 profile 会因 loader row id 重复被拒绝）：
+
+  ```sh
+  dsh devlead --from-default-profile web --dump-config   # 一次性创建
+  pnpm dev:patch --profile devlead                       # overlay + linked root
+  dsh --profile devlead --patch .tmp/cordis.patch.yml --no-open --port 34000
+  ```
+
+  `dev-patch.mjs` 写 `<profile>/node_modules/devlead-repo -> 本仓库`（linked root）；缺了它
+  会在第一次写 Session 插件记录时报
+  `gateway/internal: Receiver must be an instance of class Session`。`--no-link` 仅供检查。
+- 自动化验收：`pnpm e2e`（默认 `--flow patch`；`--flow installed` 走 install-profile 流）在
+  `/tmp` 下的隔离 `DSH_HOME` 启动真实 DSH Web，用浏览器同款 HTTP API 断言：client plugin 进入
+  boot graph、`/devlead` 命令注册、`devLead` projection 默认值、`on/off` 翻转、真实子会话
+  watch、被 watch 会话 `turn/end` → 持久通知 → 投影可见、以及自 watch 拒绝。子会话的模型
+  凭据被剥掉，因此 turn 稳定以 provider error 结束（真实 `turn/end`，不花 token）；实例在
+  结束时按 PID 关闭。该命令只在本地跑，CI 不含。
+- 手动验收路径：开一个会话 → `/devlead on`（或点开关）→ 让模型
   `devlead_use_workspace` 注册一个仓库 → `devlead_create_session` 创建子会话并下发任务 →
   子会话跑完后 DevLead 被唤醒 → 状态条显示监督列表与通知；人类可打开子会话继续参与。
 
@@ -282,3 +380,10 @@ UI 分两态，避免在每个会话上显示常驻条：
 - 不新增 Remote API（第三方不可用 Typert 生成管线），UI 只读 projection + 走命令。
 - 不自动 resume 冷 DevLead 会话（可配置 `wakeColdSession`，默认关闭）。
 - 不替人类做权限决策：模式开关只由人类命令/UI 改变。
+- 不做跨进程 / 跨 DSH 实例的 Session 发现；身份解析只在本 Host 的 SessionStore /
+  SessionQuery 语料内穷尽。
+
+## 12. 审计与验证记录
+
+本轮全面审计（对照官方 DSH `0.2.2-rc.1` 源码逐项核验 API 语义）发现并修复的问题、行为变更与
+验证证据记录在 [`AUDIT.md`](AUDIT.md)。

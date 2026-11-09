@@ -10,7 +10,7 @@
  */
 
 import { isDevLeadTransition, notificationLine } from '@yankeguo/dsh-devlead-protocol/client'
-import type { DevLeadNotification } from '@yankeguo/dsh-devlead-protocol/client'
+import type { DevLeadNotification, DevLeadTransition } from '@yankeguo/dsh-devlead-protocol/client'
 
 /**
  * Dictionary keys of the transition chip, one per known transition plus the
@@ -28,29 +28,27 @@ export type DevLeadTransitionKey =
   | 'transition.unknown'
 
 /**
+ * Localized label key per known transition. An exhaustive record — rather than
+ * a switch with a default — makes a transition added to the shared protocol a
+ * compile error here instead of a silent degradation to the neutral label.
+ */
+const TRANSITION_LABEL_KEYS: Record<DevLeadTransition, DevLeadTransitionKey> = {
+  completed: 'transition.completed',
+  error: 'transition.error',
+  blocked: 'transition.blocked',
+  aborted: 'transition.aborted',
+  'max-tokens': 'transition.max-tokens',
+  interrupted: 'transition.interrupted',
+  forked: 'transition.forked',
+}
+
+/**
  * Map one wire transition to its localized label key.
  * @param transition - transition value read from the projection.
  * @returns the label key; unknown values fall back to the neutral label.
  */
 export function transitionLabelKey(transition: string): DevLeadTransitionKey {
-  switch (transition) {
-    case 'completed':
-      return 'transition.completed'
-    case 'error':
-      return 'transition.error'
-    case 'blocked':
-      return 'transition.blocked'
-    case 'aborted':
-      return 'transition.aborted'
-    case 'max-tokens':
-      return 'transition.max-tokens'
-    case 'interrupted':
-      return 'transition.interrupted'
-    case 'forked':
-      return 'transition.forked'
-    default:
-      return 'transition.unknown'
-  }
+  return isDevLeadTransition(transition) ? TRANSITION_LABEL_KEYS[transition] : 'transition.unknown'
 }
 
 /** Rendered fields of the latest-notification chip. */

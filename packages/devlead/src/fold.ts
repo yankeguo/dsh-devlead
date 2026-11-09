@@ -51,7 +51,7 @@ const notificationSchema: ZodType<DevLeadNotification> = zod.object({
   at: zod.number().int().nonnegative(),
   error: zod.string().min(1).optional(),
   summary: zod.string().min(1).optional(),
-}) as ZodType<DevLeadNotification>
+}).strict() as ZodType<DevLeadNotification>
 
 /**
  * Append one notification to a bounded digest, dropping an already-retained
@@ -71,6 +71,16 @@ function retainNotification(
     : next.slice(next.length - DEVLEAD_DEFAULT_NOTIFICATION_RETENTION)
 }
 
+/**
+ * Whether two session-id lists carry the same ids in the same order.
+ * @param left - first list.
+ * @param right - second list.
+ * @returns whether the lists are equal as values.
+ */
+function sameSessionIds(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((id, index) => id === right[index])
+}
+
 /** Persisted projection state schema; seeds a fold and validates cached rows. */
 export const devLeadProjectionStateSchema: ZodType<DevLeadProjectionState> = zod.object({
   enabled: zod.boolean(),
@@ -87,20 +97,39 @@ export const devLeadProjectionSchema: ZodType<DevLeadProjection> = zod.object({
 }).strict() as ZodType<DevLeadProjection>
 
 /**
- * Project one wire view from fold state; reuses the retained arrays so the
- * projection registry's identity comparison suppresses unchanged pushes.
+ * Memoized wire views keyed by their exact immutable fold state. The registry
+ * compares the previous and the current `wire.view` result with `Object.is`, so
+ * a view must be reused across a state change that alters only host-only data
+ * (the `failure` field); otherwise every such change would publish a new,
+ * deep-equal client value and redraw the browser.
+ */
+const wireViews = new WeakMap<DevLeadProjectionState, DevLeadProjection>()
+
+/**
+ * Project one wire view from fold state. The result is memoized per state
+ * object and reuses the retained state arrays, so the projection registry's
+ * identity comparison suppresses unchanged pushes.
  * @param state - current fold state.
  * @returns the client view value.
  */
 export function devLeadProjectionView(state: DevLeadProjectionState): DevLeadProjection {
-  return { enabled: state.enabled, sessions: state.sessions, notifications: state.notifications }
+  const cached = wireViews.get(state)
+  if (cached !== undefined) return cached
+  const view: DevLeadProjection = {
+    enabled: state.enabled,
+    sessions: state.sessions,
+    notifications: state.notifications,
+  }
+  wireViews.set(state, view)
+  return view
 }
 
 /**
  * Fold one committed Session event.
  *
  * Unrelated events return the same state reference. An invalid owned record
- * freezes the fold at the last valid state and records the failure once.
+ * freezes the fold at the last valid state and records the failure once; the
+ * frozen state reuses the previous wire view because `failure` is host-only.
  * @param state - the projection covering all prior events.
  * @param event - the next committed Session event.
  * @returns the next projection state.
@@ -120,7 +149,9 @@ export function applyDevLeadProjection(
       }
       case DEVLEAD_WATCH_RECORD_TYPE: {
         const watch = decodeWatchRecord(record.data)
-        return { ...state, sessions: watch.sessions }
+        // A whole-value record may repeat the current set (a retried write or a
+        // replayed log); keeping the state reference avoids a needless publish.
+        return sameSessionIds(state.sessions, watch.sessions) ? state : { ...state, sessions: watch.sessions }
       }
       case DEVLEAD_NOTIFICATION_RECORD_TYPE: {
         const notification = decodeNotificationRecord(record.data)
@@ -132,10 +163,12 @@ export function applyDevLeadProjection(
     }
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error)
-    return {
+    const failure = {
       ...state,
       failure: `devlead replay failed at session event ${event.seq} (${record.type}): ${message}`,
     }
+    wireViews.set(failure, devLeadProjectionView(state))
+    return failure
   }
 }
 
@@ -143,11 +176,16 @@ export function applyDevLeadProjection(
 export const devLeadProjectionDefinition = {
   key: DEVLEAD_PROJECTION_KEY,
   stateSchema: devLeadProjectionStateSchema,
+  // The unit owns no Session-metadata-derived state, so it ignores the header
+  // and inherited-prefix arguments the registry passes.
   init: emptyDevLeadProjectionState,
   apply: applyDevLeadProjection,
   wire: {
     viewSchema: devLeadProjectionSchema,
     view: devLeadProjectionView,
+    // The retained digest makes this value large, and only the open
+    // conversation reads it: keep it out of every Session summary/list row.
+    summary: false,
   },
   // 1: the initial durable representation of the mode, watch set, and keyed
   // notification records.

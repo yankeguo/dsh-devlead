@@ -25,6 +25,10 @@ CI 方式在仓库里已经配置好（[`.github/workflows/publish.yml`](../.git
 推 tag → install / typecheck / test / build / `pnpm publish -r` → GitHub Release。
 工作流里 **没有 `NODE_AUTH_TOKEN`、也没有 `NPM_TOKEN`**，只依赖 `id-token: write` 权限。
 
+PR / push 到 main 另有 [`verify.yml`](../.github/workflows/verify.yml) 跑同样的
+`--frozen-lockfile` 安装、typecheck、test、build 与 `check:packages`（不发布）。
+`publish.yml` 的发布 job 串行（`concurrency: publish`）且 GitHub Release 创建是幂等的。
+
 ## 前置条件
 
 - Node.js ≥ 24.9、pnpm 12（`corepack enable` 或直接安装 pnpm 12.x）。
@@ -66,6 +70,8 @@ npm trust github @yankeguo/dsh-devlead \
   --yes
 ```
 
+- 脚本会先用 `npm trust --help` 探测本机 npm 是否具备 trusted publishing 能力（替代脆弱的
+  版本号比较），并跳过 `private` 包；`--list` 在未登录 / 查询失败时以非零码退出；
 - `--file` 必须只是工作流文件名（`publish.yml`），不能带路径，且文件必须位于
   `.github/workflows/` 下；
 - `--allow-publish` 允许直接 `pnpm publish`（自 2026-09-03 起新建配置默认只允许
@@ -140,10 +146,14 @@ CI 会用它作为 GitHub Release 正文。
 
 ```sh
 pnpm install --frozen-lockfile     # 锁文件一致
-pnpm typecheck                     # TS 检查
+pnpm typecheck                     # TS 检查（含 noUnusedLocals/Parameters）
 pnpm test                          # 单元测试（vitest）
 pnpm build                         # 生成 packages/*/lib（lib 被 gitignore，必须现构建；共 7 个 lib/*.js）
+pnpm check:packages                # 包不变式：版本/engines/peer 规则/模块表/别名/lockfile/CI pin
 pnpm release:dry                   # 递归 dry-run：打印 6 个包的发布计划，不上传
+
+# 可选（本机，需要已安装的 DSH 桌面端）：真实 DSH 端到端冒烟，两条加载流各 25 项检查
+pnpm e2e && pnpm e2e --flow installed
 ```
 
 `pnpm build` 产出 7 个 `lib/*.js`：protocol 的 `index`/`client`、core、tool、command、

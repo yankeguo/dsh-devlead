@@ -16,7 +16,8 @@
   它，让它决定下一步（继续追问、派发新任务、向人类汇报）。
 
 文档导航：[设计说明](docs/DESIGN.md) · [发布指南](docs/PUBLISHING.md) ·
-[v0.1.0 release notes](docs/releases/v0.1.0.md) · [Bundle 说明](packages/bundle/README.md)
+[审计记录](docs/AUDIT.md) · [v0.1.0 release notes](docs/releases/v0.1.0.md) ·
+[Bundle 说明](packages/bundle/README.md)
 
 ## 特性
 
@@ -103,7 +104,11 @@ packages/
 `pnpm build` 产出 7 个 `lib/*.js`：protocol 的 `index`/`client`、core、tool、command、
 client-ui 的 `index`/`client`；`bundle` 只有 patch 文件与 icon，不产出 JS。构建用 esbuild：
 host 入口把 `@deepseek-ai/*`、`@yankeguo/*` 与 `node:*` 保持为外部依赖——工作区包互相外置，
-确保整个进程共享同一份 protocol/core 实例。
+确保整个进程共享同一份 protocol/core 实例。浏览器入口的 platform singletons 单一来源于
+`scripts/client-externals.mjs`（必须与 DSH shell 的模块表一致，构建期有守卫）。
+
+`scripts/` 提供构建（`build.mjs`）、包不变式检查（`check-packages.mjs`）、profile 安装
+（`install-profile.mjs`）、开发 overlay（`dev-patch.mjs`）与本地 E2E（`e2e-smoke.mjs`）。
 
 ## 快速开始
 
@@ -115,6 +120,7 @@ host 入口把 `@deepseek-ai/*`、`@yankeguo/*` 与 `node:*` 保持为外部依�
 | Node.js | ≥ 24.9（仅本地构建 / 发布需要；从 npm 安装插件不需要本机 Node） |
 | pnpm | 12.x（CI 固定 `pnpm@12.16.1`） |
 | Web UI | DSH 桌面端或 `dsh web`；DevLead 界面只在 Web 端渲染 |
+| 本地 E2E | 已安装的 DSH 桌面端运行时（`dsh` 在 PATH，或设置 `DSH_BIN`）；`pnpm e2e` 用它启动隔离实例 |
 
 ### 安装：从 npm（发布后，推荐）
 
@@ -138,22 +144,42 @@ pnpm install:profile                  # 默认 --profile desktop
 node scripts/install-profile.mjs --profile desktop --dsh-home ~/.dsh
 ```
 
-脚本做三件事：
+脚本做四件事（`--dry-run` 只打印计划）：
 
 1. 把全部 6 个 workspace 包符号链接到 `$DSH_HOME/profiles/<profile>/node_modules/@yankeguo/`；
 2. 把 `@yankeguo/dsh-devlead-bundle` 追加进 profile 的 `dsh.profile.bundles`；
-3. 写入前备份 profile 的 `package.json`（有改动时）。
+3. 写入前备份 profile 的 `package.json`（内容有变化时；重复执行是幂等的）；
+4. 写入前先校验每个包的 `exports`/`main` 产物与 bundle 的 patch/icon，失败时不做任何改动；
 
+这些符号链接同时让 DSH 把本仓库当作 **linked root**：插件导入的 `@deepseek-ai/*` 会按
+`peerDependencies` 解析到安装实例，避免进程里出现第二份 DSH 运行时（见下文的开发 overlay）。
 DSH 的 profile HMR 会实时加载 Host 插件；浏览器侧刷新页面后出现 DevLead 界面。
 卸载：`pnpm uninstall:profile`。
 
-不写 profile 的调试路径（例如 E2E）：
+不写 profile 依赖安装的调试路径（开发 / E2E）：绝对路径 overlay 需要一个**专用 dev profile**
+作为 linked root 的落点（默认 `web` profile 通常不存在；已启用本 bundle 的 profile 会因
+loader row id 重复而被拒绝）：
 
 ```sh
 pnpm build
-pnpm dev:patch                        # 生成 .tmp/cordis.patch.yml（绝对路径插入全部 loader row）
-dsh web --patch .tmp/cordis.patch.yml --port 34000 --no-open
+
+# 1. 一次性创建专用 dev profile（从随安装包提供的 web 模板复制）
+dsh devlead --from-default-profile web --dump-config
+
+# 2. 生成 overlay，并把本仓库注册为该 profile 的 linked root
+pnpm dev:patch --profile devlead        # 可选 --dsh-home / --no-link
+
+# 3. 用脚本打印的命令启动
+dsh --profile devlead --patch .tmp/cordis.patch.yml --no-open --port 34000
 ```
+
+为什么需要 linked root：绝对路径插入的插件如果没有 linked root，会从本仓库的 pnpm
+`node_modules` 解析 `@deepseek-ai/*`，进程里出现第二份 DSH 运行时；第一次跨副本的私有类
+检查（例如写 Session 插件记录）会以
+`gateway/internal: Receiver must be an instance of class Session` 这样的错误炸出来。
+linked root 让 DSH 把这些 `peerDependencies` 解析到安装实例（官方 `app-boot` 的 profile
+resolution 机制）。`--no-link` 只生成 overlay 供检查，不能用于真实启动。撤销链接：删除
+`<profile>/node_modules/devlead-repo`。
 
 ### 升级 / 卸载
 
@@ -262,6 +288,10 @@ DSH 跳过。
   followup 排队到下一 turn；`agent/status` 变 idle 时也会尝试冲一次队列。
 - **冷 DevLead 会话**：Agent 不存活时默认只留持久记录，不自动 resume（`wakeColdSession:
   false`）；配置为 `true` 时先 `sessionController.resolveAgent(leadId)` 再投递。
+- **去重与重试**：同一确定性 id 的通知在一次 digest 中只出现一次（重放的 `turn/end` 不会
+  重复唤醒）；唤醒投递失败时按上限 1s 重试而不是丢弃；`notificationBatchMs: 0` 下模式关闭或
+  Agent 已 dispose 时不会再唤醒。
+- **归档的 lead 会话**：暂停投递并丢弃内存队列，持久记录保留；恢复会话后状态视图仍能看到。
 - **关闭模式**：`/devlead off` 立即停止投递与唤醒；正在投递中的通知保留在日志里，重新
   `/devlead on` 后状态视图仍能看到它们。
 - 唤醒消息形如（英文，面向模型）：
@@ -298,7 +328,7 @@ config 是整体替换）。
 | --- | --- | --- |
 | `notificationBatchMs` | `400` | `0` 或正整数毫秒；窗口内多通知合并为一条唤醒消息 |
 | `maxWatchedSessions` | `64` | 正整数；超过上限的 watch 操作报 `DEVLEAD_WATCH_LIMIT` |
-| `maxListedSessions` | `200` | 正整数；`/devlead` 状态与命令前缀寻址使用的列表上限 |
+| `maxListedSessions` | `200` | 正整数；列表类调用（`devlead_list_sessions` / `/devlead` 状态）的行数上限。身份解析不受该上限限制；watched-only 列表也不会截断到小于 watch 集合 |
 | `wakeColdSession` | `false` | 为 `true` 时冷 lead 会话会先 resume 再投递通知 |
 | `defaultAgentPreset` | `''` | 创建会话时未指定 `preset` 的默认值；空字符串表示不指定 |
 
@@ -328,7 +358,8 @@ config 是整体替换）。
   `wakeColdSession: true`。
 - **通知保留 64 条**：projection 内按常量截断；更早记录仍在 Session 日志中。
 - **监督上限默认 64、列表默认 200**：可通过配置调整；命令的候选列表按该上限截断，列表之外
-  的会话仍可用完整 id 或唯一前缀寻址（回退到 core 解析），只是歧义提示只基于列表 + watch 集合。
+  的会话仍可用完整 id 或唯一前缀寻址（core 的身份解析是穷尽的，不受列表上限限制），只是命令
+  的歧义提示只基于列表 + watch 集合。
 - **不做 git 仓库创建 / clone / worktree 管理**：用 shell 工具完成，然后注册 Workspace。
 - **不跨进程 / 跨 DSH 实例编排**；不新增 Remote API；UI 只读 projection + 走命令。
 - **未开启时入口较小**：为了不在每个会话上显示常驻状态条，未开启时只有一个 composer 工具条
@@ -350,29 +381,40 @@ config 是整体替换）。
 | 状态条显示的数量与侧边栏不一致 | 状态条按 projection 的 watch 集合与标准 Session 列表计算；刚变更时可能有短暂延迟，刷新页面可重读 |
 | 未开启时找不到开关 | 开关是 composer 工具条里的用户图标（权限下拉旁），悬停有「开启 DevLead 模式」提示；也可直接 `/devlead on` |
 | 重启后 DevLead 状态仍在 | 预期行为：模式 / watch 集合 / 通知都是持久记录；不需要时 `/devlead off` |
+| 开发 overlay 下 `/devlead on` 报 `gateway/internal: Receiver must be an instance of class Session` | overlay 缺少 linked root（旧版生成物、手写 patch，或 profile 被换过）。重新执行 `pnpm dev:patch --profile <dev>`，确认 `<profile>/node_modules/devlead-repo` 存在后重启；或用 `pnpm e2e` 复现正确流程 |
+| `pnpm dev:patch` 报 profile not found / already enables bundle | 需要专用 dev profile：`dsh devlead --from-default-profile web --dump-config`；已启用本 bundle 的 profile 不能再插入同 id 的 loader row |
+| 对已注册 Workspace 再传 `title` 不生效 | 预期行为：`title` 只用于新注册的 Workspace 记录；已存在的记录保留原标题 |
 
 ## 开发与验证
 
 ```sh
-pnpm typecheck     # 全仓 TS 检查（strict + exactOptionalPropertyTypes）
-pnpm test          # 单元测试（vitest）
-pnpm build         # esbuild 产物（7 个 lib/*.js）
-pnpm verify        # typecheck + test + build
-pnpm dev:patch     # 生成 .tmp/cordis.patch.yml（绝对路径插入，免安装调试）
+pnpm typecheck      # 全仓 TS 检查（strict + exactOptionalPropertyTypes + noUnused*）
+pnpm test           # 单元测试（vitest）
+pnpm build          # esbuild 产物（7 个 lib/*.js）
+pnpm check:packages # 包不变式：版本 / engines.dsh / peer 规则 / 模块表 / 路径别名 / lockfile / CI pin
+pnpm verify         # typecheck + test + build
+pnpm e2e            # 本地 E2E：隔离 DSH_HOME + 真实 DSH Web + /devlead on/watch/通知/off
+pnpm dev:patch      # 生成 overlay 并注册 linked root（见「安装：本地 checkout」）
 ```
+
+`pnpm e2e` 默认走 `patch` 加载流（等价于上面的 dev overlay）；`pnpm e2e --flow installed`
+走 `install-profile` 的包链接流。它只在本地运行（需要已安装的 DSH 运行时），CI 不包含；
+两种加载流都用真实浏览器 HTTP API 驱动，并断言 `/devlead on`、投影翻转、真实子会话 watch、
+被 watch 会话的 `turn/end` → 持久通知 → 投影可见、`/devlead off`。
 
 测试布局（详见 [`docs/DESIGN.md`](docs/DESIGN.md) §9）：
 
-- `protocol`：格式化 / 转场判定等纯函数；
-- `devlead`：严格 fold（模式 / watch / 通知 / 损坏记录 / 截断）、通知泵（合并窗口 / 唤醒内容 /
-  dispose）、Workspace 与 Session 编排（fake 服务）；
-- `tool`：`when` 门控、参数校验、值渲染、错误翻译、每个工具的 execute 转发；
+- `protocol`：格式化 / 转场判定 / 共享类型等纯函数；
+- `devlead`：严格 fold（模式 / watch / 通知 / 损坏记录 / 截断）、严格解码器（字段集 / 时间
+  范围）、通知泵（合并窗口 / 去重 / 重试 / dispose / 冷会话）、Workspace 与 Session 编排
+  （fake 服务）、列表排序与截断、身份解析（列表窗口外仍可寻址）；
+- `tool`：`when` 门控、参数校验、值渲染、错误翻译、每个工具的 execute 转发与取消信号转发；
 - `command`：`/devlead` 语法解析、会话前缀寻址（唯一 / 歧义 / 缺失）、状态渲染、全部错误路径；
-- `client-ui`：格式化 / 命令结果提取 / 样式注入契约等纯函数。
+- `client-ui`：格式化 / 命令结果提取 / 准入状态机 / 样式注入契约等纯函数。
 
-本地端到端验收：`pnpm build && pnpm install:profile` 或 `pnpm dev:patch` 启动一个隔离 DSH，
-按「推荐工作流」走一遍：`/devlead on` → 注册 Workspace → 创建子会话并下发任务 → 子会话结束
-后 DevLead 被唤醒 → 状态条显示监督列表与通知。
+本地端到端验收：`pnpm verify && pnpm e2e`。E2E 会启动一个隔离 DSH，走完
+`/devlead on` → 真实子会话 watch → 子会话 turn 结束 → 通知进入 lead 投影 → `/devlead off`；
+`--flow patch` 与 `--flow installed` 分别覆盖两条加载路径。
 
 ## 发布
 
@@ -382,10 +424,13 @@ pnpm dev:patch     # 生成 .tmp/cordis.patch.yml（绝对路径插入，免安�
 dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 ```
 
+PR / push 到 main 由 [`verify.yml`](.github/workflows/verify.yml) 跑
+`pnpm install --frozen-lockfile` → typecheck → test → build → `check:packages`。
+
 CI 发布采用 **npm Trusted Publishing（Keyless OIDC）**：推 `v*` tag 触发
 [`.github/workflows/publish.yml`](.github/workflows/publish.yml)，由 GitHub Actions 的
 `id-token: write` 换取 npm 短时 token，**不需要 `NPM_TOKEN` secret**，公开仓库下自动附带
-provenance。CI 还会先校验 `v*` tag 与全部 6 个可发布包（含根 `package.json`）的 `version`
+provenance。CI 还会先校验 `v*` tag 与全部 6 个可发布包与根 `package.json` 的 `version`
 完全一致，不一致直接失败，避免 tag 与 npm 版本错位。每个包需一次性配置 trusted publisher：
 
 ```sh

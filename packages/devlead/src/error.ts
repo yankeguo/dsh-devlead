@@ -49,3 +49,21 @@ export function isDevLeadError(error: unknown): error is DevLeadError {
   const candidate = error as unknown as { code?: unknown }
   return typeof candidate.code === 'string' && candidate.code.startsWith('DEVLEAD_')
 }
+
+/**
+ * Extract the human message of any thrown value. Structured DSH failures
+ * (`LlmFailure`, typed remote failures) are plain records rather than `Error`
+ * instances, so `String(error)` would render `[object Object]`; their own
+ * `message` field is preferred, and the value is stringified only as a last
+ * resort.
+ * @param error - thrown value.
+ * @returns the message text.
+ */
+export function thrownMessage(error: unknown): string {
+  if (error instanceof Error) return error.message
+  if (typeof error === 'object' && error !== null && 'message' in error) {
+    const message = (error as { message?: unknown }).message
+    if (typeof message === 'string') return message
+  }
+  return String(error)
+}

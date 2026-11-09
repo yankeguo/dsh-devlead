@@ -128,6 +128,8 @@ export class FakeAgent {
 /** Fake `ctx.agents` registry: exact-identity lookups over scripted Agents. */
 export class FakeAgentRegistry {
   private readonly byId = new Map<string, FakeAgent>()
+  /** Number of {@link turnBoundaryOf} folds requested, for listing-cost assertions. */
+  turnBoundaryCalls = 0
 
   /**
    * Register one fake Agent, replacing any previous identity.
@@ -177,6 +179,7 @@ export class FakeAgentRegistry {
    * @returns the latest turn number.
    */
   turnBoundaryOf(session: Session): TurnBoundaryProjection {
+    this.turnBoundaryCalls += 1
     let lastTurn = 0
     for (const event of session.snapshotEvents()) {
       if (event.type === 'turn/start' || event.type === 'turn/end') {
@@ -249,6 +252,10 @@ export class FakeWorkspaceRegistry {
   readonly createCalls: Array<{ path: string; title?: string }> = []
   /** When set, every `create` call throws this error. */
   createError: Error | undefined
+  /** Per-path one-shot `create` failures, keyed by exact requested path. */
+  readonly createErrors = new Map<string, Error>()
+  /** Number of complete registry listings requested, for listing-cost assertions. */
+  listCalls = 0
 
   /**
    * Add one Workspace fixture.
@@ -268,6 +275,7 @@ export class FakeWorkspaceRegistry {
 
   /** Every registered Workspace, in registry order. */
   list(): Workspace[] {
+    this.listCalls += 1
     return [...this.workspaces]
   }
 
@@ -290,6 +298,11 @@ export class FakeWorkspaceRegistry {
     const call: { path: string; title?: string } = { path }
     if (title !== undefined) call.title = title
     this.createCalls.push(call)
+    const oneShot = this.createErrors.get(path)
+    if (oneShot !== undefined) {
+      this.createErrors.delete(path)
+      throw oneShot
+    }
     if (this.createError !== undefined) throw this.createError
     const existing = this.workspaces.find(workspace => workspace.path === path)
     if (existing !== undefined) return existing
@@ -363,6 +376,14 @@ export class FakeSessionQuery {
   listError: Error | undefined
   /** When set, every log/title read rejects. */
   readError: Error | undefined
+  /** Number of corpus listings requested. */
+  listSessionsCalls = 0
+  /** Number of complete log reads requested. */
+  readSessionCalls = 0
+  /** Number of batch title reads requested. */
+  readTitleSnapshotsCalls = 0
+  /** Number of single title reads requested. */
+  readTitleCalls = 0
 
   /**
    * Seed one persisted Session's log and folded title.
@@ -379,6 +400,7 @@ export class FakeSessionQuery {
 
   /** Every persisted Session record, newest-listed first. */
   async listSessions(): Promise<Array<{ header: SessionHeader }>> {
+    this.listSessionsCalls += 1
     if (this.listError !== undefined) throw this.listError
     return [...this.logs.keys()].map(id => ({ header: { id: SessionId(id) } as unknown as SessionHeader }))
   }
@@ -389,8 +411,28 @@ export class FakeSessionQuery {
    * @returns the complete raw event log.
    */
   async readSession(sessionId: SessionId): Promise<{ events: readonly SessionEvent[] }> {
+    this.readSessionCalls += 1
     if (this.readError !== undefined) throw this.readError
-    return { events: this.logs.get(String(sessionId)) ?? [] }
+    const events = this.logs.get(String(sessionId))
+    if (events === undefined) throw new Error(`persisted Session ${String(sessionId)} does not exist`)
+    return { events }
+  }
+
+  /**
+   * Read one persisted Session title and header together.
+   * @param sessionId - persisted Session identity.
+   * @returns the header and optional title, as the query engine observes them.
+   */
+  async readTitleSnapshot(sessionId: SessionId): Promise<{ session: SessionHeader; title?: SessionTitleSnapshot }> {
+    this.readTitleCalls += 1
+    if (this.readError !== undefined) throw this.readError
+    const events = this.logs.get(String(sessionId))
+    if (events === undefined) throw new Error(`persisted Session ${String(sessionId)} does not exist`)
+    const title = this.snapshotOf(String(sessionId))
+    return {
+      session: { id: sessionId } as unknown as SessionHeader,
+      ...(title === undefined ? {} : { title }),
+    }
   }
 
   /**
@@ -399,6 +441,7 @@ export class FakeSessionQuery {
    * @returns the title snapshot, or undefined.
    */
   async readTitle(sessionId: SessionId): Promise<SessionTitleSnapshot | undefined> {
+    this.readTitleCalls += 1
     if (this.readError !== undefined) throw this.readError
     return this.snapshotOf(String(sessionId))
   }
@@ -411,6 +454,7 @@ export class FakeSessionQuery {
   async readTitleSnapshots(
     sessionIds: readonly SessionId[],
   ): Promise<Array<{ status: 'fulfilled'; value: { session: SessionHeader; title?: SessionTitleSnapshot } }>> {
+    this.readTitleSnapshotsCalls += 1
     if (this.readError !== undefined) throw this.readError
     return sessionIds.map((sessionId) => {
       const title = this.snapshotOf(String(sessionId))
@@ -555,8 +599,12 @@ export interface BootServiceOptions {
   readonly sessionController?: FakeSessionController
   /** Fake Session query engine to provide (cold logs and titles). */
   readonly sessionQuery?: FakeSessionQuery
+  /** Whether a durability participant is registered; false models an unpersisted Host. */
+  readonly persistence?: boolean
+  /** When set, the durability participant rejects with this failure. */
+  readonly flushFailure?: Error
   /** Extra fake Agents to register before the service loads. */
-  readonly extraAgents?: (registry: FakeAgentRegistry) => void
+  readonly extraAgents?: (registry: FakeAgentRegistry, sessions: Readonly<Record<string, Session>>) => void
   /** Core-service configuration passed to the plugin. */
   readonly config?: Record<string, unknown>
 }
@@ -591,7 +639,11 @@ export async function bootService(options: BootServiceOptions = {}): Promise<Ser
   // A no-op durability participant, so `sessions.flush()` reports true the way
   // a profile with a persistence plugin does and production code paths avoid
   // their "not flushed" warning branch.
-  ctx.on('session/flush', () => undefined)
+  if (options.persistence !== false) {
+    ctx.on('session/flush', () => {
+      if (options.flushFailure !== undefined) throw options.flushFailure
+    })
+  }
   const leadId = options.leadId ?? `service-lead-${String(bootCounter)}`
   const leadSession = options.leadCwd === undefined
     ? ctx.sessions.create(SessionId(leadId))
@@ -604,7 +656,7 @@ export async function bootService(options: BootServiceOptions = {}): Promise<Ser
   const agents = new FakeAgentRegistry()
   const lead = new FakeAgent(leadSession)
   if (options.registerLeadAgent !== false) agents.add(lead)
-  options.extraAgents?.(agents)
+  options.extraAgents?.(agents, sessions)
   ctx.provide('agents', agents.asRegistry())
   const sessionTitle = new FakeSessionTitle()
   ctx.provide('sessionTitle', sessionTitle.asService())
@@ -654,6 +706,10 @@ export interface BootHubOptions {
   readonly seedWatched?: (session: Session) => void
   /** Whether the hub is started on load; defaults to true. */
   readonly start?: boolean
+  /** Whether a durability participant is registered; false models an unpersisted Host. */
+  readonly persistence?: boolean
+  /** When set, the durability participant rejects with this failure. */
+  readonly flushFailure?: Error
 }
 
 /** One scripted lead of a booted notification-hub harness. */
@@ -686,7 +742,11 @@ export async function bootHub(options: BootHubOptions = {}): Promise<HubHarness>
   const bootId = bootCounter
   const ctx = new Context()
   await ctx.plugin(SessionStore)
-  ctx.on('session/flush', () => undefined)
+  if (options.persistence !== false) {
+    ctx.on('session/flush', () => {
+      if (options.flushFailure !== undefined) throw options.flushFailure
+    })
+  }
   const watched = ctx.sessions.create(SessionId(`hub-watched-${String(bootId)}`))
   options.seedWatched?.(watched)
   const agents = new FakeAgentRegistry()

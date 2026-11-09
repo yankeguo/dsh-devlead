@@ -8,25 +8,25 @@
  * resolved through the profile's linked roots) so every plugin shares one
  * protocol/core instance instead of embedding per-package copies. Browser
  * entries are bundled the same way and then wrapped in the client-module loader
- * factory format (`window.__ModuleLoader__.load`), externalizing exactly the
- * shell's platform-singleton module seeding (`packages/client/web/src/seed.ts`
- * in DeepSeek Harness).
+ * factory format (`window.__ModuleLoader__.load({ id, factory })`), exactly
+ * like the DSH shell's own client bundles: externals are resolved through the
+ * module-table `require` handed to the factory, and the bundle must not inline
+ * a second copy of a platform-singleton module (see CLIENT_EXTERNALS).
  *
- * A package that ships no build sources (`source: false`) contributes only
- * hand-written runtime assets copied verbatim into `lib/`
- * (`disable-goal-bundle/src/preset-filter.js`). Assets are copied, not
- * transpiled, so a `pnpm clean` + `pnpm build` reproduces the published file
- * byte for byte.
+ * The `bundle` package ships no build sources: its target validates
+ * `dsh.bundle.patch`, the patch files, the icon, and the `files` list instead,
+ * so a broken package cannot be published unnoticed.
  *
  * Usage:
  *   node scripts/build.mjs                      # every target
  *   node scripts/build.mjs --only client-ui     # one target (repeatable/comma separated)
  */
-import { copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { build } from 'esbuild'
+import { CLIENT_EXTERNALS } from './client-externals.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const PACKAGES = join(ROOT, 'packages')
@@ -34,8 +34,10 @@ const PACKAGES = join(ROOT, 'packages')
 /**
  * Every plugin package in build order.
  *
- * `assets` lists hand-written runtime files copied into `lib/` after the target
- * directory is cleaned; those packages are not transpiled.
+ * - `entries` builds host ESM entries from `src/<entry>.ts`.
+ * - `client` additionally builds the browser half from `src/<client>.tsx` and
+ *   wraps it for the client-module loader.
+ * - `patchOnly` ships configuration assets instead of bundled code.
  */
 const TARGETS = [
   { dir: 'protocol', entries: ['index', 'client'] },
@@ -43,8 +45,7 @@ const TARGETS = [
   { dir: 'tool', entries: ['index'] },
   { dir: 'command', entries: ['index'] },
   { dir: 'client-ui', entries: ['index'], client: 'client/index' },
-  // Patch-only bundle: `dsh.bundle.patch` points at cordis.patch.yml.
-  { dir: 'bundle', source: false },
+  { dir: 'bundle', patchOnly: true },
 ]
 
 /** Shared esbuild options for a Host plugin bundle. */
@@ -64,6 +65,30 @@ const HOST_OPTIONS = {
   banner: { js: '// Built by dsh-devlead. Do not edit.' },
 }
 
+/**
+ * Reject a browser import of an `@deepseek-ai/*` package that is not a
+ * platform singleton. Such an import would inline a second runtime instance of
+ * a plugin-owned module; the shell's module table cannot answer for it and the
+ * DSH client build rejects the same shape ("bundle purity"). Type-only imports
+ * never reach esbuild, and our own `@yankeguo/*` wire layers are pure code that
+ * may be inlined.
+ */
+const clientModuleTableGuard = {
+  name: 'client-module-table-guard',
+  setup(context) {
+    context.onResolve({ filter: /^@deepseek-ai\// }, (args) => {
+      if (CLIENT_EXTERNALS.includes(args.path)) return undefined
+      throw new Error(
+        `${args.importer}: imports "${args.path}", which is not a DSH platform-singleton module.\n`
+        + '  A browser bundle may only import @deepseek-ai/* from the module table '
+        + `(${CLIENT_EXTERNALS.join(', ')}) or inline a pure wire layer.\n`
+        + '  Make the import type-only, or — only when DSH 0.2.2-rc.1 seeds it in '
+        + 'packages/client/web/src/platform.ts — add it to scripts/client-externals.mjs.',
+      )
+    })
+  },
+}
+
 /** Shared esbuild options for a browser bundle. */
 const CLIENT_OPTIONS = {
   bundle: true,
@@ -74,23 +99,8 @@ const CLIENT_OPTIONS = {
   jsxImportSource: 'react',
   legalComments: 'none',
   logLevel: 'warning',
-  // Platform modules shared by the browser shell through the module table.
-  // This list must stay identical to the Harness shell's platform-singleton
-  // seed (`packages/client/web/src/seed.ts`); a drift makes the loader throw
-  // "require(...) missed the module table" at runtime.
-  external: [
-    'react',
-    'react/jsx-runtime',
-    'react-dom',
-    'react-dom/client',
-    '@deepseek-ai/cordis',
-    'zod',
-    '@tanstack/react-virtual',
-    '@deepseek-ai/dsh-client-store',
-    '@deepseek-ai/dsh-client-ui-slots',
-    '@deepseek-ai/dsh-client-ui-primitives',
-    '@deepseek-ai/dsh-client-ui-dockkit',
-  ],
+  external: CLIENT_EXTERNALS,
+  plugins: [clientModuleTableGuard],
 }
 
 /** Read and parse one package manifest. */
@@ -119,6 +129,9 @@ async function buildClientEntry(dir, entry, packageName) {
   })
   const code = result.outputFiles[0]?.text
   if (code === undefined) throw new Error(`${dir}: esbuild produced no client output`)
+  // Same handoff shape as the DSH shell's client bundles: registration runs at
+  // script evaluation, the factory body (and every module side effect) runs on
+  // first materialization with the injected module-table `require`.
   const wrapped = [
     `window.__ModuleLoader__.load({`,
     `\tid: ${JSON.stringify(packageName)},`,
@@ -136,14 +149,126 @@ async function buildClientEntry(dir, entry, packageName) {
   return outfile
 }
 
-/** Copy one hand-written runtime asset into the package's `lib/`. */
-async function copyAsset(dir, asset) {
-  const from = join(PACKAGES, dir, asset.from)
-  const to = join(PACKAGES, dir, asset.to)
-  if (!existsSync(from)) throw new Error(`${dir}: missing runtime asset ${asset.from}`)
-  await mkdir(dirname(to), { recursive: true })
-  await copyFile(from, to)
-  return to
+/**
+ * Fail when a manifest export or `main` points at a file the build did not
+ * produce, or when `files` does not cover the `lib/` output.
+ * @param dir - package directory name.
+ * @param manifest - parsed package manifest.
+ */
+async function validateSourcePackage(dir, manifest) {
+  const packageDir = join(PACKAGES, dir)
+  const relativeTargets = []
+  if (typeof manifest.main === 'string') relativeTargets.push(manifest.main)
+  for (const value of Object.values(manifest.exports ?? {})) {
+    if (typeof value === 'string') relativeTargets.push(value)
+    else if (value !== null && typeof value === 'object') {
+      for (const target of Object.values(value)) if (typeof target === 'string') relativeTargets.push(target)
+    }
+  }
+  const missing = relativeTargets.filter((target) => target.startsWith('./lib/')
+    && !existsSync(join(packageDir, target)))
+  if (missing.length > 0) {
+    throw new Error(`${dir}: manifest references files the build did not produce: ${missing.join(', ')}`)
+  }
+  if (!Array.isArray(manifest.files) || !manifest.files.some(file => file === 'lib' || file.startsWith('lib/'))) {
+    throw new Error(`${dir}: package.json "files" must include "lib" so the published package carries the build`)
+  }
+}
+
+/**
+ * Validate the client-module declaration consumed by `@deepseek-ai/dsh-client-modules`.
+ * @param dir - package directory name.
+ * @param manifest - parsed package manifest.
+ */
+async function validateClientPackage(dir, manifest) {
+  const client = manifest.dsh?.client
+  if (client === undefined) return
+  if (client.platform !== 'web') {
+    throw new Error(`${dir}: dsh.client.platform must be "web" for the Web surface (got ${JSON.stringify(client.platform)})`)
+  }
+  const clientExport = manifest.exports?.['./client']
+  const target = typeof clientExport === 'string' ? clientExport : clientExport?.default
+  if (target !== './lib/client.js') {
+    throw new Error(`${dir}: dsh.client requires exports["./client"] === "./lib/client.js" (got ${JSON.stringify(target)})`)
+  }
+  if (!existsSync(join(PACKAGES, dir, 'lib', 'client.js'))) {
+    throw new Error(`${dir}: missing built browser bundle lib/client.js`)
+  }
+}
+
+/**
+ * Parse the quoted `name:` values of one bundle patch file.
+ * The bundle patch is plain YAML without a parser dependency; the shape is
+ * pinned by the DSH bundle convention (`- insert:` rows with `id` and `name`).
+ * @param path - absolute patch file path.
+ * @returns inserted row ids and module names.
+ */
+async function readBundlePatch(path) {
+  const text = await readFile(path, 'utf8')
+  if (!/^- insert:\s*$/m.test(text)) {
+    throw new Error(`${path}: a bundle patch must start with an "- insert:" row list`)
+  }
+  const names = [...text.matchAll(/^\s+name:\s*(['"])(.+?)\1\s*$/gm)].map(match => match[2])
+  const ids = [...text.matchAll(/^\s+- id:\s*(['"]?)([A-Za-z0-9._-]+)\1\s*$/gm)].map(match => match[2])
+  if (names.length === 0 || ids.length === 0) {
+    throw new Error(`${path}: no id/name rows found in the insert list`)
+  }
+  if (new Set(ids).size !== ids.length) {
+    throw new Error(`${path}: duplicate Loader row ids: ${ids.join(', ')}`)
+  }
+  return { names, ids }
+}
+
+/**
+ * Validate a patch-only bundle package: manifest declaration, patch files,
+ * icon, `files` completeness, and that the patch inserts every dependency.
+ * @param dir - package directory name.
+ * @param manifest - parsed package manifest.
+ */
+async function validatePatchBundle(dir, manifest) {
+  const packageDir = join(PACKAGES, dir)
+  const patch = manifest.dsh?.bundle?.patch
+  const patchFiles = typeof patch === 'string' ? [patch] : patch
+  if (!Array.isArray(patchFiles) || patchFiles.length === 0
+    || !patchFiles.every(file => typeof file === 'string' && file.trim().length > 0)) {
+    throw new Error(`${dir}: dsh.bundle.patch must be a patch file path or a non-empty list of them`)
+  }
+  if (typeof manifest.icon !== 'string' || !manifest.icon.trim().endsWith('.svg')) {
+    throw new Error(`${dir}: a bundle should declare an SVG "icon" for the plugin manager`)
+  }
+  const files = (Array.isArray(manifest.files) ? manifest.files : [])
+    .map(file => String(file).replace(/^\.\//u, ''))
+  const declaredPaths = [...patchFiles, manifest.icon, 'README.md'].map(file => file.replace(/^\.\//u, ''))
+  const missingFiles = declaredPaths.filter(file => !files.includes(file))
+  if (missingFiles.length > 0) {
+    throw new Error(`${dir}: package.json "files" must include ${missingFiles.join(', ')} so the published bundle is complete`)
+  }
+  const insertedNames = []
+  const insertedIds = []
+  for (const file of patchFiles) {
+    const path = join(packageDir, file)
+    if (!existsSync(path)) {
+      throw new Error(`${dir}: dsh.bundle.patch references a missing file: ${file}`)
+    }
+    const { names, ids } = await readBundlePatch(path)
+    insertedNames.push(...names)
+    insertedIds.push(...ids)
+  }
+  if (new Set(insertedIds).size !== insertedIds.length) {
+    throw new Error(`${dir}: duplicate Loader row ids across the bundle patches: ${insertedIds.join(', ')}`)
+  }
+  const dependencies = Object.keys(manifest.dependencies ?? {})
+  const unknown = insertedNames.filter(name => !dependencies.includes(name))
+  const notInserted = dependencies.filter(name => !insertedNames.includes(name))
+  if (unknown.length > 0 || notInserted.length > 0) {
+    throw new Error(
+      `${dir}: the bundle patch must insert exactly the bundle's runtime dependencies.\n`
+      + `  not a dependency: ${unknown.join(', ') || '-'}\n`
+      + `  dependency never inserted: ${notInserted.join(', ') || '-'}`,
+    )
+  }
+  const svg = await readFile(join(packageDir, manifest.icon), 'utf8')
+  if (!svg.trimStart().startsWith('<svg')) throw new Error(`${dir}: ${manifest.icon} is not an SVG document`)
 }
 
 /** Build transpiled entries of one source package (host half plus browser half). */
@@ -166,6 +291,8 @@ async function buildSourceEntries(target, packageDir) {
     const outfile = await buildClientEntry(target.dir, target.client, manifest.name)
     console.log(`built ${outfile.slice(ROOT.length + 1)}`)
   }
+  await validateSourcePackage(target.dir, manifest)
+  await validateClientPackage(target.dir, manifest)
 }
 
 /** Build one plugin package. */
@@ -174,16 +301,12 @@ async function buildPackage(target) {
   if (!existsSync(packageDir)) {
     throw new Error(`build: missing package directory packages/${target.dir}`)
   }
-  if (target.source !== false) await buildSourceEntries(target, packageDir)
-  if (target.assets !== undefined) {
-    // A target that ships only hand-written runtime assets owns nothing else in
-    // `lib/`: clean it so a removed asset cannot survive as a stale file.
-    if (target.source === false) await rm(join(packageDir, 'lib'), { recursive: true, force: true })
-    for (const asset of target.assets) {
-      const outfile = await copyAsset(target.dir, asset)
-      console.log(`built ${outfile.slice(ROOT.length + 1)}`)
-    }
+  if (target.patchOnly === true) {
+    await validatePatchBundle(target.dir, await readManifest(target.dir))
+    console.log(`validated ${target.dir} (patch-only)`)
+    return
   }
+  await buildSourceEntries(target, packageDir)
 }
 
 /** Parse `--only <dirs>` / `--only=<dirs>` from argv. */
@@ -208,16 +331,21 @@ function parseOnly(argv) {
     }
     throw new Error(`unknown argument: ${arg}`)
   }
-  return values.flatMap(value => value.split(',').map(name => name.trim()).filter(Boolean))
+  const names = values.flatMap(value => value.split(',').map(name => name.trim()).filter(Boolean))
+  if (values.length > 0 && names.length === 0) throw new Error('--only needs at least one package directory')
+  return [...new Set(names)]
 }
 
-const only = parseOnly(process.argv.slice(2))
-const known = new Set(TARGETS.map(target => target.dir))
-for (const dir of only) {
-  if (!known.has(dir)) throw new Error(`--only: unknown package directory "${dir}" (known: ${[...known].join(', ')})`)
+try {
+  const only = parseOnly(process.argv.slice(2))
+  const known = TARGETS.map(target => target.dir)
+  for (const dir of only) {
+    if (!known.includes(dir)) throw new Error(`--only: unknown package directory "${dir}" (known: ${known.join(', ')})`)
+  }
+  const selected = only.length === 0 ? TARGETS : TARGETS.filter(target => only.includes(target.dir))
+  for (const target of selected) await buildPackage(target)
+  console.log(`build complete (${selected.length} target${selected.length === 1 ? '' : 's'})`)
+} catch (error) {
+  console.error(`build: ${error instanceof Error ? error.message : String(error)}`)
+  process.exit(1)
 }
-const selected = only.length === 0 ? TARGETS : TARGETS.filter(target => only.includes(target.dir))
-for (const target of selected) {
-  await buildPackage(target)
-}
-console.log('build complete')

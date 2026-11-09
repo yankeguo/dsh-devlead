@@ -64,6 +64,8 @@ export function apply(ctx: ClientContext): void {
   ctx.slots.inject('conversation.input.left', () => ctx.slots.register({
     name: 'conversation.input.left',
     id: 'devlead',
+    // No shipped entry occupies this list; the order only sequences additive
+    // contributions, so the compact switch stays ahead of any later entry.
     order: 12,
     locale: NS,
     inject: face,
@@ -72,6 +74,8 @@ export function apply(ctx: ClientContext): void {
   ctx.slots.inject('conversation.input.dock', () => ctx.slots.register({
     name: 'conversation.input.dock',
     id: 'devlead',
+    // The shipped context stack orders Todo (0), Goal (10), and Queue (20):
+    // the DevLead strip sits directly below the goal card.
     order: 12,
     locale: NS,
     inject: face,

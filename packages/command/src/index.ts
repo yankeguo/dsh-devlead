@@ -24,7 +24,7 @@ import { COMMAND_GRAMMAR, USAGE, parseDevLeadCommand } from './parse.ts'
 import type { DevLeadCommand } from './parse.ts'
 import { RECENT_NOTIFICATION_LIMIT, errorResult, renderStatus } from './render.ts'
 import type { DevLeadStatusSnapshot } from './render.ts'
-import { formatCandidates, mergeCandidates, resolveSessionReference } from './resolve.ts'
+import { formatCandidates, mergeCandidates, resolveSessionReference, sessionRefLabel } from './resolve.ts'
 import type { SessionCandidate } from './resolve.ts'
 
 /** Plugin name reported to the Cordis loader. */
@@ -43,22 +43,23 @@ const NOT_ENABLED_MESSAGE =
   + 'Turn it on with /devlead on first.'
 
 /**
- * Collect the current status: the Session projection view, the host's rows for
- * the watched Sessions, and the retained notification digest.
+ * Collect the current status: one Session projection read for the mode, watch
+ * set, and retained digest, plus the host's rows for the watched Sessions.
  * @param ctx - host context carrying `ctx.devLead`.
  * @param invocation - command invocation supplying the agent and signal.
- * @returns one renderable status snapshot.
+ * @returns one renderable status snapshot taken from a single projection read.
  */
 async function collectStatus(ctx: Context, invocation: CommandInvocation): Promise<DevLeadStatusSnapshot> {
+  // One projection read supplies every durable fact, so the mode, the watch
+  // set, and the digest cannot disagree with a concurrent append.
   const view = ctx.devLead.view(invocation.agent)
   const watched: DevLeadSessionView[] = []
   const missingWatched: string[] = []
   if (view.sessions.length > 0) {
-    const sessions = await ctx.devLead.listSessions(
-      invocation.agent,
-      { watchedOnly: true },
-      invocation.signal,
-    )
+    const sessions = await ctx.devLead.listSessions(invocation.agent, {
+      watchedOnly: true,
+      signal: invocation.signal,
+    })
     const byId = new Map(sessions.map(session => [session.sessionId, session]))
     for (const sessionId of view.sessions) {
       const session = byId.get(sessionId)
@@ -70,7 +71,7 @@ async function collectStatus(ctx: Context, invocation: CommandInvocation): Promi
     enabled: view.enabled,
     watched,
     missingWatched,
-    notifications: ctx.devLead.notifications(invocation.agent, { limit: RECENT_NOTIFICATION_LIMIT }),
+    notifications: view.notifications.slice(-RECENT_NOTIFICATION_LIMIT),
   }
 }
 
@@ -88,7 +89,7 @@ async function collectCandidates(
   invocation: CommandInvocation,
   watchedSessionIds: readonly string[],
 ): Promise<SessionCandidate[]> {
-  const sessions = await ctx.devLead.listSessions(invocation.agent, {}, invocation.signal)
+  const sessions = await ctx.devLead.listSessions(invocation.agent, { signal: invocation.signal })
   return mergeCandidates(sessions, watchedSessionIds)
 }
 
@@ -109,11 +110,6 @@ function missingSessionResult(query: string): CommandResult {
   )
 }
 
-/** Render one resolved Session reference as `title (id)` or the bare id. */
-function referenceLabel(sessionId: string, title: string | undefined): string {
-  return title === undefined ? sessionId : `${title} (${sessionId})`
-}
-
 /** Outcome of asking the core service to resolve a reference beyond the command's listing. */
 type CoreSessionResolution =
   | { readonly kind: 'resolved'; readonly sessionId: string; readonly title?: string }
@@ -122,9 +118,9 @@ type CoreSessionResolution =
 
 /**
  * Resolve a reference the command's own listing could not match by asking the
- * core service. The command lists at most `maxListedSessions` rows, so the full
- * id of a Session beyond that window still has to stay addressable;
- * `ctx.devLead.getSession` resolves against every Session the core knows.
+ * core service. The listing is bounded and need not include every cold Session
+ * the Host knows, so `ctx.devLead.getSession` remains the authoritative resolver
+ * for references outside it (a full id or a unique prefix alike).
  * @param ctx - host context carrying `ctx.devLead`.
  * @param invocation - command invocation supplying the agent and signal.
  * @param reference - human-supplied Session reference.
@@ -156,7 +152,7 @@ type WatchTargetResolution =
 /**
  * Resolve one Session reference for a watch mutation: the command listing first
  * (friendly ambiguity candidates with titles), then the core resolver for
- * Sessions beyond the listed window.
+ * Sessions the bounded listing does not include.
  * @param ctx - host context carrying `ctx.devLead`.
  * @param invocation - command invocation supplying the agent and signal.
  * @param reference - human-supplied Session reference.
@@ -212,15 +208,15 @@ async function executeWatch(
   const target = await resolveWatchTarget(ctx, invocation, command.session, view.sessions)
   if (target.kind === 'failure') return target.result
   const { sessionId } = target
-  const label = referenceLabel(sessionId, target.title)
+  const label = sessionRefLabel(sessionId, target.title)
   const watching = view.sessions.includes(sessionId)
   if (command.kind === 'watch') {
     const title = watching ? `Already watching ${label}.` : `Now watching ${label}.`
-    if (!watching) await ctx.devLead.watchSession(invocation.agent, sessionId, true)
+    if (!watching) await ctx.devLead.watchSession(invocation.agent, sessionId, true, invocation.signal)
     return renderStatus(await collectStatus(ctx, invocation), title)
   }
   const title = watching ? `Stopped watching ${label}.` : `Not watching ${label}.`
-  if (watching) await ctx.devLead.watchSession(invocation.agent, sessionId, false)
+  if (watching) await ctx.devLead.watchSession(invocation.agent, sessionId, false, invocation.signal)
   return renderStatus(await collectStatus(ctx, invocation), title)
 }
 
@@ -230,14 +226,14 @@ function friendlyDevLeadError(error: DevLeadError): string {
     case 'DEVLEAD_NOT_ENABLED':
       return NOT_ENABLED_MESSAGE
     case 'DEVLEAD_AGENT_NOT_LIVE':
-      return 'This Session is no longer live, so DevLead mode cannot be changed. '
+      return 'This Session is no longer live in this Host, so the command cannot run. '
         + 'Open it again from the sidebar and retry.'
     case 'DEVLEAD_INVALID_INPUT':
       return `The /devlead request is not usable: ${error.message}`
     case 'DEVLEAD_SESSION_NOT_FOUND':
       return `The host could not find that Session: ${error.message}`
     case 'DEVLEAD_SESSION_ARCHIVED':
-      return 'That Session is archived; unarchive it in DSH before watching or steering it.'
+      return 'That Session is archived; restore it from the Workspace sidebar before watching it.'
     case 'DEVLEAD_SESSION_UNAVAILABLE':
       return `That Session cannot be resumed right now: ${error.message}`
     case 'DEVLEAD_WATCH_LIMIT':
@@ -260,11 +256,6 @@ function friendlyDevLeadError(error: DevLeadError): string {
 /** Execute one already-parsed command against the core service. */
 async function executeDevLeadCommand(ctx: Context, invocation: CommandInvocation): Promise<CommandResult> {
   const command = parseDevLeadCommand(invocation.rawInput)
-  if (invocation.attachments.length > 0) {
-    return errorResult(
-      'The /devlead command does not accept attachments; use the plain command text instead.',
-    )
-  }
   if (command.kind === 'invalid') return errorResult(`${command.message}\n${USAGE}`)
   try {
     switch (command.kind) {
@@ -289,6 +280,9 @@ export function apply(ctx: Context): void {
     definitionId: CommandDefinitionId('@yankeguo/dsh-command-devlead'),
     name: DEVLEAD_COMMAND_NAME,
     description: DESCRIPTION,
+    // The grammar is text-only, so the definition deliberately declares no
+    // `input.attachments`: the CommandRuntime then rejects composer attachments
+    // before this handler runs, and no handler-side guard is needed.
     input: { hint: COMMAND_GRAMMAR },
     handler: invocation => executeDevLeadCommand(ctx, invocation),
   })

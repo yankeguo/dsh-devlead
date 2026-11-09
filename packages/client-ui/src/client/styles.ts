@@ -17,8 +17,14 @@ const STYLE_KEY = 'devlead'
 
 /** Global stylesheet of the DevLeadBar dock. */
 export const styles = `
+/* Composer-tool row control: the 28px round glyph seat of the shipped attach
+   and mode controls, so the off-state entry reads as one of them. */
 .devlead-toggle {
   flex: none;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 999px;
   color: var(--dsw-alias-label-tertiary, GrayText);
 }
 
@@ -38,17 +44,22 @@ export const styles = `
     100% -
     var(--dsh-composer-side-clearance, 16px) -
     var(--dsh-composer-side-clearance, 16px) -
-    var(--dsh-composer-dock-inset, 4px) -
-    var(--dsh-composer-dock-inset, 4px) -
-    var(--dsh-composer-dock-inset, 4px) -
-    var(--dsh-composer-dock-inset, 4px)
+    var(--dsh-composer-dock-inset, 8px) -
+    var(--dsh-composer-dock-inset, 8px) -
+    var(--dsh-composer-dock-inset, 8px) -
+    var(--dsh-composer-dock-inset, 8px)
   );
-  max-width: calc(var(--dsh-composer-card-max-width, 960px) - 4 * var(--dsh-composer-dock-inset, 4px));
+  max-width: calc(var(--dsh-composer-card-max-width, 952px) - 4 * var(--dsh-composer-dock-inset, 8px));
   margin: 0 auto;
 }
 
+/* Menu-surface card: the composer context-stack geometry and elevation triple
+   (stroke + soft light) rather than an extra CSS border, which would double the
+   hairline and add layout width; the blur needs the surface on a background
+   layer, so it is painted by the pseudo-element behind the content. */
 .devlead-bar {
   position: relative;
+  isolation: isolate;
   box-sizing: border-box;
   display: flex;
   align-items: center;
@@ -57,14 +68,25 @@ export const styles = `
   min-height: 34px;
   margin: 0 auto;
   padding: 4px 6px 4px 12px;
-  border: 1px solid var(--dsw-alias-border-l1, rgba(127, 127, 127, 0.24));
+  border: 0;
+  --dsw-elevation-stroke-color: var(--dsw-alias-border-l1, rgba(127, 127, 127, 0.24));
   border-radius: var(--dsw-radius-md, 10px);
-  background: var(--dsw-specific-menu, Canvas);
   box-shadow: var(--dsw-elevation-panel, 0 1px 2px rgba(0, 0, 0, 0.08));
   color: var(--dsw-alias-label-primary, CanvasText);
   font-size: 13px;
   line-height: 20px;
   font-family: inherit;
+}
+
+.devlead-bar::before {
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--dsw-specific-menu, Canvas);
+  backdrop-filter: var(--dsw-menu-backdrop-filter, none);
+  content: '';
+  pointer-events: none;
 }
 
 .devlead-glyph {
@@ -119,6 +141,18 @@ export const styles = `
 
 .devlead-missing {
   color: var(--dsw-alias-state-warn-primary, #a15c00);
+}
+
+/* One stable live region wrapping the hint or the latest-notification chip so
+   assistive technology announces a new notification as a content change of an
+   existing region, not as a freshly inserted one. */
+.devlead-notice {
+  display: inline-flex;
+  flex: 1 1 auto;
+  align-items: center;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
 }
 
 .devlead-hint {
@@ -192,6 +226,18 @@ export const styles = `
   color: var(--dsw-alias-state-error-primary, #c0392b);
   font-size: 12px;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Visually hidden but announced: the compact toolbar surface has no inline
+   error seat, so its failure text is mirrored into a live region through this
+   class (the shipped visually-hidden idiom used by the chat surfaces). */
+.devlead-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
   white-space: nowrap;
 }
 `

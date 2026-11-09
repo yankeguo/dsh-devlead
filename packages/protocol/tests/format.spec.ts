@@ -6,12 +6,18 @@
 
 import { describe, expect, it } from 'vitest'
 import {
+  DEVLEAD_COMMAND_NAME,
   DEVLEAD_DEFAULT_MAX_WATCHED,
   DEVLEAD_DEFAULT_NOTIFICATION_RETENTION,
   DEVLEAD_ERROR_EXCERPT_MAX,
+  DEVLEAD_MESSAGE_KIND,
+  DEVLEAD_MODE_RECORD_TYPE,
+  DEVLEAD_NOTIFICATION_RECORD_TYPE,
   DEVLEAD_PROJECTION_KEY,
   DEVLEAD_RECORD_VERSION,
+  DEVLEAD_TOOL_PREFIX,
   DEVLEAD_TRANSITIONS,
+  DEVLEAD_WATCH_RECORD_TYPE,
   excerptLine,
   formatInstant,
   isDevLeadTransition,
@@ -49,6 +55,21 @@ describe('isDevLeadTransition', () => {
       'interrupted',
       'forked',
     ])
+  })
+
+  it('lists every member of the transition union', () => {
+    // The record is exhaustive by type, so a member added to DevLeadTransition
+    // cannot be forgotten here; the array must also carry each member.
+    const members: Record<DevLeadTransition, true> = {
+      completed: true,
+      error: true,
+      blocked: true,
+      aborted: true,
+      'max-tokens': true,
+      interrupted: true,
+      forked: true,
+    }
+    expect([...DEVLEAD_TRANSITIONS].sort()).toEqual(Object.keys(members).sort())
   })
 
   it('rejects labels, casing, and non-string values', () => {
@@ -109,6 +130,10 @@ describe('notificationLine', () => {
     expect(notificationLine(notification())).toBe('session-alpha — turn 3 completed')
   })
 
+  it('treats a blank title as absent instead of rendering an empty pair', () => {
+    expect(notificationLine(notification({ sessionTitle: '   ' }))).toBe('session-alpha — turn 3 completed')
+  })
+
   it('appends the bounded failure excerpt when one was recorded', () => {
     expect(notificationLine(notification({ transition: 'error', error: 'provider quota exhausted' }))).toBe(
       'session-alpha — turn 3 failed: provider quota exhausted',
@@ -131,6 +156,20 @@ describe('notificationLine', () => {
     expect(
       notificationLine(notification({ transition: 'error', error: 'quota exhausted', summary: 'tried the fix' })),
     ).toBe('session-alpha — turn 3 failed: quota exhausted')
+  })
+
+  it('falls through to the summary when the failure excerpt is blank', () => {
+    // The wire value crossed a record boundary: a whitespace-only failure text
+    // is not a recorded excerpt and must not suppress the summary.
+    expect(
+      notificationLine(notification({ transition: 'error', error: '   ', summary: 'tried the fix' })),
+    ).toBe('session-alpha — turn 3 failed: tried the fix')
+  })
+
+  it('drops blank excerpts entirely instead of rendering an empty suffix', () => {
+    expect(notificationLine(notification({ error: '  ', summary: '\n' }))).toBe(
+      'session-alpha — turn 3 completed',
+    )
   })
 
   it('renders every transition with its stable label', () => {
@@ -176,6 +215,14 @@ describe('formatInstant', () => {
     expect(Date.parse(formatted)).toBe(T0)
     expect(formatted).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/u)
   })
+
+  it('rejects an instant the Date range cannot represent', () => {
+    // Host records validate `at` before writing, so this is the documented
+    // failure mode for a value that slipped past validation.
+    expect(() => formatInstant(Number.NaN)).toThrow(RangeError)
+    expect(() => formatInstant(Number.POSITIVE_INFINITY)).toThrow(RangeError)
+    expect(() => formatInstant(8.64e15 + 1)).toThrow(RangeError)
+  })
 })
 
 describe('excerptLine', () => {
@@ -201,11 +248,28 @@ describe('excerptLine', () => {
     expect(excerptLine('abcdef', 1)).toBe('…')
   })
 
-  it('documents the zero-budget edge: one ellipsis character is still returned', () => {
-    // The docstring calls `max` the maximum retained characters including the
-    // ellipsis, but a zero budget still yields the ellipsis itself. Not
-    // reachable from production callers, which pass DEVLEAD_ERROR_EXCERPT_MAX.
-    expect(excerptLine('abcdef', 0)).toBe('…')
+  it('never splits a surrogate pair when truncating', () => {
+    // The budget counts code points: the astral character is retained whole
+    // rather than sliced into a lone surrogate.
+    const excerpt = excerptLine('ab😀cd', 4)
+    expect(excerpt).toBe('ab😀…')
+    expect(excerpt?.isWellFormed()).toBe(true)
+    expect(excerptLine('😀😀', 2)).toBe('😀😀')
+    expect(excerptLine('😀😀', 1)).toBe('…')
+  })
+
+  it('rejects a budget that cannot hold the ellipsis', () => {
+    // A zero or negative budget used to return the bare ellipsis, breaking the
+    // "maximum retained code points" contract; it now yields no excerpt.
+    expect(excerptLine('abcdef', 0)).toBeUndefined()
+    expect(excerptLine('abcdef', -3)).toBeUndefined()
+    expect(excerptLine('abcdef', 0.5)).toBeUndefined()
+  })
+
+  it('floors a fractional budget and disables truncation for a non-finite one', () => {
+    expect(excerptLine('abcdef', 3.9)).toBe('ab…')
+    expect(excerptLine('abcdef', Number.POSITIVE_INFINITY)).toBe('abcdef')
+    expect(excerptLine('abcdef', Number.NaN)).toBe('abcdef')
   })
 })
 
@@ -217,5 +281,16 @@ describe('protocol constants', () => {
     expect(DEVLEAD_DEFAULT_NOTIFICATION_RETENTION).toBe(64)
     expect(DEVLEAD_ERROR_EXCERPT_MAX).toBe(240)
     expect(DEVLEAD_TRANSITIONS).toHaveLength(7)
+  })
+
+  it('pins the durable record types and message vocabulary', () => {
+    // These strings are persisted in user Session logs and ride the wire: a
+    // rename is a data migration, not a refactor, so keep them fixed.
+    expect(DEVLEAD_MODE_RECORD_TYPE).toBe('plugin:devlead/mode')
+    expect(DEVLEAD_WATCH_RECORD_TYPE).toBe('plugin:devlead/watch')
+    expect(DEVLEAD_NOTIFICATION_RECORD_TYPE).toBe('plugin:devlead/notification')
+    expect(DEVLEAD_COMMAND_NAME).toBe('devlead')
+    expect(DEVLEAD_MESSAGE_KIND).toBe('devlead')
+    expect(DEVLEAD_TOOL_PREFIX).toBe('devlead_')
   })
 })

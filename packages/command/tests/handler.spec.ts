@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Context } from '@deepseek-ai/cordis'
 import type { CommandInvocation, CommandResult } from '@deepseek-ai/dsh-commands'
+import type { DevLeadErrorCode } from '@yankeguo/dsh-devlead'
 import { apply, inject, name } from '../src/index.ts'
 import { RECENT_NOTIFICATION_LIMIT } from '../src/render.ts'
 import {
@@ -17,7 +18,7 @@ interface CapturedCommand {
   readonly definitionId?: unknown
   readonly name: string
   readonly description: string
-  readonly input?: { readonly hint?: string }
+  readonly input?: { readonly hint?: string; readonly attachments?: boolean }
   readonly handler: (invocation: CommandInvocation) => CommandResult | Promise<CommandResult>
 }
 
@@ -39,19 +40,23 @@ function boot(): { readonly handler: CapturedCommand['handler']; readonly servic
   return { handler: captured.handler, service }
 }
 
-/** Invoke the registered command with one raw input and one deterministic Agent. */
+/**
+ * Invoke the registered command with one raw input and one deterministic Agent.
+ * Invocations carry no attachments: the CommandRuntime rejects them before a
+ * handler runs because the definition does not declare `input.attachments`.
+ */
 function run(
   handler: CapturedCommand['handler'],
   rawInput: string,
-  attachments: readonly unknown[] = [],
   agent = fakeAgent(),
+  signal: AbortSignal = new AbortController().signal,
 ): Promise<CommandResult> {
   return Promise.resolve(handler({
     commandId: 'command-1',
     agent,
     rawInput,
-    attachments,
-    signal: new AbortController().signal,
+    attachments: [],
+    signal,
   } as unknown as CommandInvocation))
 }
 
@@ -82,6 +87,9 @@ describe('devlead command registration', () => {
     expect(captured?.definitionId).toBe('@yankeguo/dsh-command-devlead')
     expect(captured?.description).toContain('DevLead mode')
     expect(captured?.input?.hint).toContain('watch <session>')
+    // Attachments are rejected by the CommandRuntime before the handler runs
+    // unless a definition advertises them; /devlead must never advertise them.
+    expect(captured?.input?.attachments).toBeUndefined()
   })
 })
 
@@ -94,7 +102,9 @@ describe('devlead command status', () => {
     expect(text(result)).toContain('Watched sessions: none')
     expect(text(result)).toContain('Recent notifications: none')
     expect(text(result)).toContain('Turn DevLead mode on with: /devlead on')
+    // An empty watch set needs no listing: the status view is complete without it.
     expect(service.calls).not.toContain('listSessions')
+    expect(service.listSessionsOptions).toEqual([])
   })
 
   it('renders the explicit status alias', async () => {
@@ -128,11 +138,43 @@ describe('devlead command status', () => {
         lastError: 'provider quota exhausted',
       }),
     ]
-    const result = await run(handler, '')
+    const controller = new AbortController()
+    const result = await run(handler, '', fakeAgent(), controller.signal)
     expect(text(result)).toContain('Watched sessions: 2 (1 running)')
     expect(text(result)).toContain('  - webapp (session-alpha) — running · 1 queued · last turn 3 completed')
     expect(text(result)).toContain('  - api (session-beta) — cold · last turn 1 failed: provider quota exhausted')
     expect(service.calls).toContain('listSessions:watchedOnly')
+    expect(service.listSessionsOptions).toEqual([{ watchedOnly: true, signal: controller.signal }])
+  })
+
+  it('renders an archived watched Session with its archive state', async () => {
+    const { handler, service } = boot()
+    service.enabled = true
+    service.watching = ['session-alpha']
+    service.sessions = [sessionView('session-alpha', { title: 'webapp', archived: true, watched: true })]
+    const result = await run(handler, '')
+    expect(text(result)).toContain('  - webapp (session-alpha) — archived')
+  })
+
+  it('renders a corrupt DevLead projection as a friendly error instead of throwing', async () => {
+    const { handler, service } = boot()
+    service.view = () => {
+      throw new FakeDevLeadError('DEVLEAD_PROJECTION_INVALID', 'record 4 is not valid JSON')
+    }
+    const result = await run(handler, '')
+    expect(result.kind).toBe('error')
+    expect(text(result)).toContain('records are damaged')
+    expect(text(result)).toContain('record 4 is not valid JSON')
+  })
+
+  it('renders a dead receiving Agent as a friendly error instead of throwing', async () => {
+    const { handler, service } = boot()
+    service.view = () => {
+      throw new FakeDevLeadError('DEVLEAD_AGENT_NOT_LIVE', 'agent is not live')
+    }
+    const result = await run(handler, '')
+    expect(result.kind).toBe('error')
+    expect(text(result)).toContain('no longer live')
   })
 
   it('marks a watched id the listing cannot describe as not found', async () => {
@@ -141,6 +183,19 @@ describe('devlead command status', () => {
     service.watching = ['session-missing']
     const result = await run(handler, '')
     expect(text(result)).toContain('  - session-missing — not found')
+  })
+
+  it('renders a domain listing failure as a friendly error instead of throwing', async () => {
+    const { handler, service } = boot()
+    service.enabled = true
+    service.watching = ['session-alpha']
+    service.listSessions = async () => {
+      throw new FakeDevLeadError('DEVLEAD_PROJECTION_INVALID', 'fold failed on record 2')
+    }
+    const result = await run(handler, '')
+    expect(result.kind).toBe('error')
+    expect(text(result)).toContain('records are damaged')
+    expect(text(result)).toContain('fold failed on record 2')
   })
 
   it('shows only the most recent notifications', async () => {
@@ -306,11 +361,56 @@ describe('devlead command watch set', () => {
     service.enabled = true
     service.sessions = []
     service.extraSessions = [sessionView('session-hidden', { title: 'hidden' })]
-    const result = await run(handler, 'watch session-hidden')
+    const controller = new AbortController()
+    const result = await run(handler, 'watch session-hidden', fakeAgent(), controller.signal)
     expect(result.kind).toBe('success')
     expect(text(result)).toContain('Now watching hidden (session-hidden).')
     expect(service.watching).toEqual(['session-hidden'])
     expect(service.calls).toContain('getSession:session-hidden')
+    expect(service.getSessionSignals).toEqual([controller.signal])
+  })
+
+  it('reports a Session that vanished between resolution and the watch mutation', async () => {
+    const { handler, service } = boot()
+    service.enabled = true
+    service.sessions = [sessionView('session-alpha')]
+    service.watchSession = async () => {
+      throw new FakeDevLeadError('DEVLEAD_SESSION_NOT_FOUND', 'no Session matches "session-alpha"')
+    }
+    const result = await run(handler, 'watch session-alpha')
+    expect(result.kind).toBe('error')
+    expect(text(result)).toContain('could not find that Session')
+  })
+
+  it('reports mode switched off between the view and the watch mutation', async () => {
+    const { handler, service } = boot()
+    service.enabled = true
+    service.sessions = [sessionView('session-alpha')]
+    service.watchSession = async () => {
+      throw new FakeDevLeadError('DEVLEAD_NOT_ENABLED', 'devlead mode is not enabled')
+    }
+    const result = await run(handler, 'watch session-alpha')
+    expect(result.kind).toBe('error')
+    expect(text(result)).toContain('DevLead mode is off for this Session')
+  })
+
+  it('rethrows a resolver transport failure unchanged', async () => {
+    const { handler, service } = boot()
+    service.enabled = true
+    service.getSession = async () => {
+      throw new Error('query engine offline')
+    }
+    await expect(run(handler, 'watch session-hidden')).rejects.toThrow('query engine offline')
+  })
+
+  it('rethrows a watch-set transport failure unchanged', async () => {
+    const { handler, service } = boot()
+    service.enabled = true
+    service.watching = ['session-alpha']
+    service.listSessions = async () => {
+      throw new Error('session store offline')
+    }
+    await expect(run(handler, 'watch session-alpha')).rejects.toThrow('session store offline')
   })
 
   it('reports the core ambiguity for a prefix beyond the listing', async () => {
@@ -371,6 +471,37 @@ describe('devlead command watch set', () => {
   })
 })
 
+describe('devlead command friendly error mapping', () => {
+  /** Every stable code with the phrase the friendly command error must carry. */
+  const MAPPING: readonly (readonly [DevLeadErrorCode, string])[] = [
+    ['DEVLEAD_INVALID_INPUT', 'not usable'],
+    ['DEVLEAD_NOT_ENABLED', 'DevLead mode is off for this Session'],
+    ['DEVLEAD_AGENT_NOT_LIVE', 'no longer live'],
+    ['DEVLEAD_WORKSPACE_NOT_FOUND', 'Workspace could not be resolved'],
+    ['DEVLEAD_DIRECTORY_MISSING', 'target directory is missing'],
+    ['DEVLEAD_SESSION_NOT_FOUND', 'could not find that Session'],
+    ['DEVLEAD_SESSION_ARCHIVED', 'archived'],
+    ['DEVLEAD_SESSION_UNAVAILABLE', 'cannot be resumed right now'],
+    ['DEVLEAD_WATCH_LIMIT', 'maximum number of watched Sessions'],
+    ['DEVLEAD_SELF_WATCH', 'cannot watch itself'],
+    ['DEVLEAD_PROJECTION_INVALID', 'records are damaged'],
+  ]
+
+  it('covers every stable core error code with actionable text', async () => {
+    for (const [code, phrase] of MAPPING) {
+      const { handler, service } = boot()
+      service.enabled = true
+      service.sessions = [sessionView('session-alpha')]
+      service.watchSession = async () => {
+        throw new FakeDevLeadError(code, `injected ${code}`)
+      }
+      const result = await run(handler, 'watch session-alpha')
+      expect(result.kind, code).toBe('error')
+      expect(text(result), code).toContain(phrase)
+    }
+  })
+})
+
 describe('devlead command input and failure handling', () => {
   it('appends the usage line to malformed input', async () => {
     const { handler } = boot()
@@ -378,13 +509,6 @@ describe('devlead command input and failure handling', () => {
     expect(result.kind).toBe('error')
     expect(text(result)).toContain('Unknown /devlead subcommand')
     expect(text(result)).toContain('Usage: /devlead')
-  })
-
-  it('rejects composer attachments', async () => {
-    const { handler } = boot()
-    const result = await run(handler, 'on', [{ type: 'text', text: 'attachment' }])
-    expect(result.kind).toBe('error')
-    expect(text(result)).toContain('does not accept attachments')
   })
 
   it('does not convert unexpected implementation failures into command results', async () => {

@@ -150,4 +150,75 @@ describe('styles', () => {
     // Neutral fallbacks keep the strip readable if a harness token is missing.
     expect(styles).toContain('CanvasText')
   })
+
+  it('lines the dock up with the composer card geometry', () => {
+    // The composer context-stack contract: 100% minus two side clearances and
+    // four dock insets, capped by the card max width minus the same insets.
+    expect(styles).toContain('--dsh-composer-side-clearance')
+    expect(styles).toContain('--dsh-composer-dock-inset')
+    expect(styles).toContain('--dsh-composer-card-max-width')
+  })
+
+  it('draws the menu-surface card with the elevation triple and a backdrop layer', () => {
+    // Matches the shipped composer cards: the hairline lives inside the
+    // elevation shadow (`--dsw-elevation-stroke-color`), so there is no CSS
+    // border and the translucent menu fill gets its blur from a painted layer.
+    expect(styles).toContain('--dsw-elevation-stroke-color: var(--dsw-alias-border-l1')
+    expect(styles).toContain('box-shadow: var(--dsw-elevation-panel')
+    expect(styles).toContain('backdrop-filter: var(--dsw-menu-backdrop-filter')
+    expect(styles).toContain('.devlead-bar::before')
+  })
+
+  it('sizes the off-state toggle as the composer toolbar glyph seat', () => {
+    expect(styles).toMatch(/\.devlead-toggle \{[^}]*width: 28px;/u)
+    expect(styles).toMatch(/\.devlead-toggle \{[^}]*height: 28px;/u)
+    expect(styles).toMatch(/\.devlead-toggle \{[^}]*border-radius: 999px;/u)
+  })
+
+  it('ships the notice live region and the visually-hidden failure seat', () => {
+    expect(styles).toContain('.devlead-notice {')
+    expect(styles).toContain('.devlead-notification-dot[data-transition="completed"]')
+    expect(styles).toMatch(/\.devlead-sr-only \{[^}]*clip: rect\(0 0 0 0\);/u)
+  })
+
+  it('uses only harness theme custom properties for colors and geometry', () => {
+    const properties = [...themeProperties()]
+    expect(properties.length).toBeGreaterThan(10)
+    for (const property of properties) {
+      expect(property.startsWith('--dsw-') || property.startsWith('--dsh-'), property).toBe(true)
+    }
+  })
+
+  it('pins the token set verified against the DSH 0.2.2-rc.1 theme', () => {
+    // Every name here was found in the DSH reference theme sources or their
+    // shipped consumers; a misspelled or renamed token fails this list.
+    expect(themeProperties()).toEqual(new Set([
+      '--dsw-alias-label-tertiary',
+      '--dsw-alias-label-secondary',
+      '--dsw-alias-state-error-primary',
+      '--dsw-alias-border-l1',
+      '--dsw-elevation-stroke-color',
+      '--dsw-radius-md',
+      '--dsw-elevation-panel',
+      '--dsw-specific-menu',
+      '--dsw-menu-backdrop-filter',
+      '--dsw-alias-label-primary',
+      '--dsw-alias-state-success-primary',
+      '--dsw-alias-state-warn-primary',
+      '--dsw-alias-label-primary-dimmed',
+      '--dsh-composer-side-clearance',
+      '--dsh-composer-dock-inset',
+      '--dsh-composer-card-max-width',
+    ]))
+  })
 })
+
+/**
+ * Every custom property the stylesheet declares or reads.
+ * @returns declared names and `var()` reads, deduplicated.
+ */
+function themeProperties(): Set<string> {
+  const declared = [...styles.matchAll(/(--[a-z0-9-]+)\s*:/gu)].map(match => match[1] ?? '')
+  const read = [...styles.matchAll(/var\((--[a-z0-9-]+)/gu)].map(match => match[1] ?? '')
+  return new Set([...declared, ...read])
+}

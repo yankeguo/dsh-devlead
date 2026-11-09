@@ -5,7 +5,7 @@
  * Every tool is visible only inside a Session whose Agent has DevLead mode
  * enabled: registration carries a `when` condition that asks the core service,
  * so a normal Session never sees the tools or the policy text. The plugin owns
- * no state of its own; it validates model input, forwards one call to
+ * no state of its own; it validates model input, forwards the call to
  * `ctx.devLead`, and projects the result onto a canonical JSON value.
  *
  * @module @yankeguo/dsh-tool-devlead
@@ -70,11 +70,14 @@ const LIST_WORKSPACES_DESCRIPTION =
 
 const USE_WORKSPACE_DESCRIPTION =
   'Register a repository directory as a DSH Workspace so Sessions can be created in it. The path must be absolute; an '
-  + 'already-registered path is reused, and when the directory is missing it is created first unless create is false.'
+  + 'already-registered path is reused with its existing title, and when the directory is missing it is created first '
+  + 'unless create is false.'
 
 const LIST_SESSIONS_DESCRIPTION =
-  'List DSH Sessions this DevLead Session can address, including live, running, watched, archived, latest turn, and '
-  + 'latest transcript facts. Optionally restrict to one Workspace or to the watched set.'
+  'List DSH Sessions this DevLead Session can address: whether each is live, running, watched, or archived, plus '
+  + 'latest-turn facts when the Host knows them. Watched and running rows come first. Optionally restrict to one '
+  + 'Workspace or to the watched set; use devlead_get_session for a log detail with the latest turn outcome and '
+  + 'assistant excerpt.'
 
 const CREATE_SESSION_DESCRIPTION =
   'Create an ordinary DSH Session in a Workspace and optionally start it with a prompt. The Session is a real Session '
@@ -82,8 +85,9 @@ const CREATE_SESSION_DESCRIPTION =
   + 'turns settle.'
 
 const GET_SESSION_DESCRIPTION =
-  'Read one Session in detail: whether it is live and running, the latest turn number and outcome, the latest '
-  + 'assistant excerpt, and whether it is archived. Address it by full id or unique id prefix.'
+  'Read one Session in detail: whether it is live and running, whether it is archived, and, when the Host can read '
+  + 'the Session log, the latest turn number and outcome plus the latest error and assistant excerpts. Address it by '
+  + 'full id or unique id prefix.'
 
 const PROMPT_SESSION_DESCRIPTION =
   'Admit a follow-up prompt into an existing Session, resuming a cold Session first. The prompt is attributed to this '
@@ -101,8 +105,9 @@ const NOTIFICATIONS_DESCRIPTION =
  * Register the eight DevLead tools and their shared policy section.
  *
  * The tools and the policy text follow the same condition: DevLead mode is
- * enabled for the assembling Agent. Because visibility is per step, toggling the
- * mode off removes the surface on the next turn without touching registration.
+ * enabled for the assembling Agent. Because both are evaluated per step, toggling
+ * the mode off removes the surface and the policy on the next step without
+ * touching registration.
  * @param ctx - context carrying the DevLead, tool, and system-prompt services.
  */
 export function apply(ctx: Context): void {
@@ -119,7 +124,7 @@ export function apply(ctx: Context): void {
     description: LIST_WORKSPACES_DESCRIPTION,
     parameters: {},
     output: LIST_WORKSPACES_OUTPUT,
-    presentCall: () => presentListWorkspacesCall(),
+    presentCall: presentListWorkspacesCall,
     execute(_args, exec) {
       return runTool(async () => ({
         workspaces: (await ctx.devLead.listWorkspaces(exec.signal)).map(workspaceValue),
@@ -138,7 +143,7 @@ export function apply(ctx: Context): void {
       },
       title: {
         type: 'string',
-        description: 'Optional display title for the Workspace.',
+        description: 'Optional display title for a newly registered Workspace; an already-registered path keeps its current title.',
       },
       create: {
         type: 'boolean',
@@ -175,7 +180,7 @@ export function apply(ctx: Context): void {
       },
       limit: {
         type: 'integer',
-        description: 'Maximum number of Session rows to return.',
+        description: 'Maximum number of Session rows to return; the Host may return fewer when its listing cap is lower.',
       },
     },
     output: LIST_SESSIONS_OUTPUT,
@@ -189,7 +194,8 @@ export function apply(ctx: Context): void {
           ...workspace === undefined ? {} : { workspace },
           ...args.watched_only === undefined ? {} : { watchedOnly: args.watched_only },
           ...limit === undefined ? {} : { limit },
-        }, exec.signal)
+          signal: exec.signal,
+        })
         return {
           sessions: sessions.map(sessionValue),
           watched: watchedIds(ctx.devLead.view(agent)),
@@ -228,7 +234,7 @@ export function apply(ctx: Context): void {
     execute(args, exec) {
       return runTool(async () => {
         const agent = requireAgent(exec.agent, 'devlead_create_session')
-        const created = await ctx.devLead.createSession(agent, createSessionRequest(args))
+        const created = await ctx.devLead.createSession(agent, createSessionRequest(args), exec.signal)
         return createdSessionValue(created)
       })
     },
@@ -283,7 +289,7 @@ export function apply(ctx: Context): void {
           agent,
           requireSessionRef(args.session),
           requirePrompt(args.prompt),
-          { watch: args.watch ?? true },
+          { watch: args.watch ?? true, signal: exec.signal },
         )
         return promptedSessionValue(prompted)
       })
@@ -310,7 +316,12 @@ export function apply(ctx: Context): void {
     execute(args, exec) {
       return runTool(async () => {
         const agent = requireAgent(exec.agent, 'devlead_watch_session')
-        const mutation = await ctx.devLead.watchSession(agent, requireSessionRef(args.session), args.watching)
+        const mutation = await ctx.devLead.watchSession(
+          agent,
+          requireSessionRef(args.session),
+          args.watching,
+          exec.signal,
+        )
         return watchMutationValue(mutation)
       })
     },

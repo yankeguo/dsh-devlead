@@ -23,10 +23,17 @@ import type {
 /** The exact live-Agent type the core service accepts. */
 export type DevLeadCommandAgent = Parameters<DevLeadService['isEnabled']>[0]
 
-/** Options accepted by the core Session listing, without the signal slot. */
-export type DevLeadListSessionsOptions = Omit<
-  NonNullable<Parameters<DevLeadService['listSessions']>[1]>,
-  'signal'
+/** Options accepted by the core Session listing, including its signal slot. */
+export type DevLeadListSessionsOptions = NonNullable<Parameters<DevLeadService['listSessions']>[1]>
+
+/**
+ * Public core members the command drives. Declaring the fake against this slice
+ * makes a core signature change fail to compile here instead of drifting
+ * silently at runtime.
+ */
+type FakeDevLeadSurface = Pick<
+  DevLeadService,
+  'isEnabled' | 'setEnabled' | 'view' | 'listSessions' | 'getSession' | 'watchSession' | 'notifications'
 >
 
 /** Fixed epoch milliseconds used by every notification fixture. */
@@ -102,7 +109,7 @@ export function notification(
  * forwarding (including that read-only paths do not write, and that a no-op
  * path does not call the service at all).
  */
-export class FakeDevLead {
+export class FakeDevLead implements FakeDevLeadSurface {
   /** Current persistent mode switch. */
   enabled = false
   /** Complete watch set, in add order. */
@@ -115,6 +122,10 @@ export class FakeDevLead {
   extraSessions: DevLeadSessionView[] = []
   /** Ordered log of service calls made by the command. */
   readonly calls: string[] = []
+  /** Options of every `listSessions` call, in call order. */
+  readonly listSessionsOptions: DevLeadListSessionsOptions[] = []
+  /** Signals of every `getSession` call, in call order. */
+  readonly getSessionSignals: (AbortSignal | undefined)[] = []
 
   /**
    * Replace the retained feed with one fixture list.
@@ -186,9 +197,9 @@ export class FakeDevLead {
   async listSessions(
     _agent: DevLeadCommandAgent,
     options: DevLeadListSessionsOptions = {},
-    _signal?: AbortSignal,
   ): Promise<DevLeadSessionView[]> {
     this.calls.push(options.watchedOnly === true ? 'listSessions:watchedOnly' : 'listSessions')
+    this.listSessionsOptions.push(options)
     const rows = options.watchedOnly === true
       ? [...this.sessions, ...this.extraSessions]
         .filter(session => this.watching.includes(session.sessionId))
@@ -200,9 +211,10 @@ export class FakeDevLead {
   async getSession(
     _agent: DevLeadCommandAgent,
     sessionId: string,
-    _signal?: AbortSignal,
+    signal?: AbortSignal,
   ): Promise<DevLeadSessionView> {
     this.calls.push(`getSession:${sessionId}`)
+    this.getSessionSignals.push(signal)
     const pool = [...this.sessions, ...this.extraSessions]
     const exact = pool.find(session => session.sessionId === sessionId)
     if (exact !== undefined) return exact

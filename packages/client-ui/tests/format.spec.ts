@@ -1,13 +1,14 @@
 /** Unit tests for the pure strip helpers of the DevLeadBar dock. */
 
 import { describe, expect, it } from 'vitest'
-import { notificationLine } from '@yankeguo/dsh-devlead-protocol/client'
+import { DEVLEAD_TRANSITIONS, notificationLine } from '@yankeguo/dsh-devlead-protocol/client'
 import type { DevLeadNotification } from '@yankeguo/dsh-devlead-protocol/client'
 import {
   latestNotification,
   notificationSummary,
   summarizeWatched,
   transitionLabelKey,
+  type DevLeadTransitionKey,
 } from '../src/client/format.ts'
 
 /** One notification fixture; individual tests override fields. */
@@ -29,6 +30,22 @@ describe('transitionLabelKey', () => {
     expect(transitionLabelKey('max-tokens')).toBe('transition.max-tokens')
     expect(transitionLabelKey('interrupted')).toBe('transition.interrupted')
     expect(transitionLabelKey('forked')).toBe('transition.forked')
+  })
+
+  it('covers exactly the protocol transition vocabulary', () => {
+    // The label table is exhaustive by type, so a protocol transition without a
+    // localized label fails to compile; this runtime twin keeps the mapping
+    // itself pinned to the shared vocabulary.
+    const keys: DevLeadTransitionKey[] = DEVLEAD_TRANSITIONS.map(transitionLabelKey)
+    expect(keys).toEqual([
+      'transition.completed',
+      'transition.error',
+      'transition.blocked',
+      'transition.aborted',
+      'transition.max-tokens',
+      'transition.interrupted',
+      'transition.forked',
+    ])
   })
 
   it('falls back to the neutral label for a transition a newer Host reports', () => {
@@ -140,5 +157,12 @@ describe('summarizeWatched', () => {
 
   it('summarizes an empty watch set as zero everywhere', () => {
     expect(summarizeWatched([], {}, new Map())).toEqual({ watched: 0, running: 0, missing: 0 })
+  })
+
+  it('keeps a live status fact for a Session the catalog lost', () => {
+    // The catalog row can vanish before the status map drops its last fact; the
+    // watched entry is still reported as missing while its running fact counts.
+    const statuses = new Map([['ghost', { running: true }]])
+    expect(summarizeWatched(['ghost'], {}, statuses)).toEqual({ watched: 1, running: 1, missing: 1 })
   })
 })

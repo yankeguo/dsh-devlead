@@ -16,6 +16,8 @@
     "clean": "node scripts/clean.mjs",
     "dev:patch": "node scripts/dev-patch.mjs",
     "verify": "pnpm run typecheck && pnpm run test && pnpm run build",
+    "check:packages": "node scripts/check-packages.mjs",
+    "e2e": "node scripts/e2e-smoke.mjs",
     "install:profile": "node scripts/install-profile.mjs",
     "uninstall:profile": "node scripts/install-profile.mjs --uninstall",
     "release:dry": "pnpm build && pnpm publish -r --dry-run --access public --no-git-checks --tag latest",

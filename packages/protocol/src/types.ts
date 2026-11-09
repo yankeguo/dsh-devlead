@@ -4,11 +4,17 @@
  * model-facing tool views, and the formatting rules both the Host prompt
  * builder and the browser status strip use.
  *
- * Nothing here imports a DSH runtime package: the browser bundle resolves this
- * module too, so it stays pure types plus pure functions.
+ * No DSH package is imported at runtime: the browser bundle resolves this
+ * module too, so it stays pure types plus pure functions. The single DSH
+ * `import type` below is erased at compile time and exists only for the
+ * projection-map augmentation.
  *
  * @module @yankeguo/dsh-devlead-protocol
  */
+
+// Type-only: erased before any bundler sees it, so the browser half stays free
+// of DSH runtime imports.
+import type { SessionProjectionSummaryExcluded } from '@deepseek-ai/dsh-session-projection/types'
 
 /** Persistent `plugin:` record carrying the current DevLead selection. */
 export const DEVLEAD_MODE_RECORD_TYPE = 'plugin:devlead/mode'
@@ -45,8 +51,12 @@ export const DEVLEAD_ERROR_EXCERPT_MAX = 240
 
 /**
  * How one watched Session transition ended. Mirrors the durable
- * `TurnEndReason` union without importing the Session types, so the browser
- * can render an unknown future kind as `interrupted`.
+ * `TurnEndReason` union without importing the Session types.
+ *
+ * The Host maps a future `TurnEndReason` kind it cannot name to `interrupted`
+ * before writing a notification; the browser instead renders an unrecognized
+ * literal with the neutral `transition.unknown` label, so wire drift never
+ * breaks the strip.
  */
 export type DevLeadTransition =
   | 'completed'
@@ -69,9 +79,9 @@ export interface DevLeadNotification {
   readonly transition: DevLeadTransition
   /** 1-based turn number that settled. */
   readonly turn: number
-  /** Epoch milliseconds when the Host observed the transition. */
+  /** Epoch milliseconds recorded on the settling `turn/end` event. */
   readonly at: number
-  /** Compact single-line failure excerpt for `error`/`blocked` transitions. */
+  /** Compact single-line failure excerpt, recorded by the Host for `error` transitions. */
   readonly error?: string
   /** Compact single-line excerpt of the latest assistant message before the turn settled. */
   readonly summary?: string
@@ -79,25 +89,35 @@ export interface DevLeadNotification {
 
 /** Durable record payload selecting DevLead mode for one Session. */
 export interface DevLeadModeRecord {
+  /** Record discriminator. */
   readonly kind: 'devlead/mode'
+  /** Durable payload version; the fold rejects any other value. */
   readonly version: typeof DEVLEAD_RECORD_VERSION
+  /** Whether DevLead mode was selected. */
   readonly enabled: boolean
+  /** Epoch milliseconds of the recorded change. */
   readonly at: number
 }
 
 /** Durable record payload replacing the complete watched-session set. */
 export interface DevLeadWatchRecord {
+  /** Record discriminator. */
   readonly kind: 'devlead/watch'
+  /** Durable payload version; the fold rejects any other value. */
   readonly version: typeof DEVLEAD_RECORD_VERSION
   /** Complete watch set after the mutation, in add order. */
   readonly sessions: readonly string[]
+  /** Epoch milliseconds of the recorded change. */
   readonly at: number
 }
 
 /** Durable record payload appending one watched-session notification. */
 export interface DevLeadNotificationRecord {
+  /** Record discriminator. */
   readonly kind: 'devlead/notification'
+  /** Durable payload version; the fold rejects any other value. */
   readonly version: typeof DEVLEAD_RECORD_VERSION
+  /** Notification appended to the lead's retained digest. */
   readonly notification: DevLeadNotification
 }
 
@@ -233,7 +253,12 @@ declare module '@deepseek-ai/dsh-session-projection/types' {
      * The Session's durable DevLead selection, watched-session set, and
      * retained notification digest. Always present (defaults to disabled) and
      * folded from `plugin:devlead/*` records.
+     *
+     * Excluded from Session summaries: the retained digest is what makes this
+     * value large (up to 64 notifications) and only the open conversation reads
+     * it, so Session list rows and summary payloads do not carry it. The unit
+     * declares the matching `wire.summary: false`.
      */
-    devLead: DevLeadProjection
+    devLead: SessionProjectionSummaryExcluded<DevLeadProjection>
   }
 }

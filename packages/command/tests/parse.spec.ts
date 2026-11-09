@@ -39,6 +39,8 @@ describe('parseDevLeadCommand', () => {
   it('strips one surrounding quote pair from a Session reference', () => {
     expect(parseDevLeadCommand('watch "session-alpha"')).toEqual({ kind: 'watch', session: 'session-alpha' })
     expect(parseDevLeadCommand("unwatch 'session-beta'")).toEqual({ kind: 'unwatch', session: 'session-beta' })
+    expect(parseDevLeadCommand('watch  "session-alpha"  ')).toEqual({ kind: 'watch', session: 'session-alpha' })
+    expect(parseDevLeadCommand("watch 'session-alpha'")).toEqual({ kind: 'watch', session: 'session-alpha' })
   })
 
   it('rejects watch and unwatch without a Session reference', () => {
@@ -81,14 +83,33 @@ describe('parseDevLeadCommand', () => {
     expect(parseDevLeadCommand('watch\nsession-alpha')).toEqual({ kind: 'watch', session: 'session-alpha' })
   })
 
-  it('accepts a complete command line as rawInput', () => {
-    // Some command clients pass the whole line rather than the text after the
-    // command name; both spellings must resolve to the same grammar.
-    expect(parseDevLeadCommand('/devlead')).toEqual({ kind: 'status' })
-    expect(parseDevLeadCommand('/devlead/')).toEqual({ kind: 'status' })
-    expect(parseDevLeadCommand('/devlead on')).toEqual({ kind: 'on' })
-    expect(parseDevLeadCommand('/devlead watch session-alpha')).toEqual({ kind: 'watch', session: 'session-alpha' })
-    expect(parseDevLeadCommand(' /devlead  status ')).toEqual({ kind: 'status' })
+  it('accepts the leading separator whitespace of the rawInput contract', () => {
+    // DSH passes the exact text following the command name, including the
+    // separator: "/devlead on" arrives as " on", "/devlead" as "".
+    expect(parseDevLeadCommand(' on')).toEqual({ kind: 'on' })
+    expect(parseDevLeadCommand('\toff\r\n')).toEqual({ kind: 'off' })
+    expect(parseDevLeadCommand('  status  ')).toEqual({ kind: 'status' })
+    expect(parseDevLeadCommand(' watch\tsession-alpha')).toEqual({ kind: 'watch', session: 'session-alpha' })
+    expect(parseDevLeadCommand('watch\r\nsession-alpha')).toEqual({ kind: 'watch', session: 'session-alpha' })
+  })
+
+  it('rejects a complete command line instead of guessing the client contract', () => {
+    // No DSH 0.2.2-rc.1 adapter passes a complete line: the CommandRuntime
+    // strips the name and separator before every handler. Surfacing the
+    // violation loudly beats silently accepting a malformed rawInput.
+    for (const line of ['/devlead', '/devlead/', '/devlead on', '/devlead watch session-alpha']) {
+      const command = parseDevLeadCommand(line)
+      expect(command.kind).toBe('invalid')
+      expect(command.kind === 'invalid' ? command.message : '').toContain('Unknown /devlead subcommand')
+    }
+  })
+
+  it('rejects an unmatched surrounding quote instead of resolving a broken reference', () => {
+    for (const line of ['watch "session-alpha', "unwatch 'session-beta", 'watch "']) {
+      const command = parseDevLeadCommand(line)
+      expect(command.kind).toBe('invalid')
+      expect(command.kind === 'invalid' ? command.message : '').toContain('unmatched quote')
+    }
   })
 
   it('exposes one stable usage line and its advertised grammar', () => {

@@ -4,8 +4,8 @@
  *
  * The strip renders only while DevLead mode is enabled for this Session. An
  * inactive Session shows nothing here: the off-state switch lives in the
- * composer's model options menu (`DevLeadModeToggle`), so installing the plugin
- * does not put a permanent bar above every conversation.
+ * composer toolbar (`DevLeadIconToggle`, `conversation.input.left`), so
+ * installing the plugin does not put a permanent bar above every conversation.
  *
  * Enabled state shows the brand, the on switch, the watched/running counts, and
  * the latest retained notification (or the help hint when there is none).
@@ -13,26 +13,23 @@
  * The switch is controlled by the projection only — never optimistically
  * flipped. A click executes the Host `/devlead off` command through the
  * injected face, and the strip disappears from the projection once the Host
- * append lands. Both failure layers (a failed Remote admission and a logical
- * command rejection) surface inline; the strip never swallows them.
+ * append lands. Every failure (a failed Remote admission, a logical command
+ * rejection, or a line the Host resolved to no command) surfaces inline; the
+ * strip never swallows it.
  */
 
-import { useEffect, useRef, useState } from 'react'
 import { IconUsersOutlineRegular, Switch } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { SessionListState } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { SessionStatusSnapshot } from '@deepseek-ai/dsh-client-ui-session/client'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
+import { DEVLEAD_PROJECTION_KEY } from '@yankeguo/dsh-devlead-protocol/client'
 import {
   latestNotification,
   notificationSummary,
   summarizeWatched,
 } from './format.ts'
-import {
-  admitCommand,
-  failureCopy,
-  type DevLeadCommandAdmission,
-  type DevLeadCommandFailure,
-} from './results.ts'
+import { failureCopy, type DevLeadCommandAdmission } from './results.ts'
+import { useDevLeadAdmission } from './useDevLeadAdmission.ts'
 
 /** Injected business face shared by every DevLead surface: command admission. */
 export interface DevLeadCommandInjected {
@@ -52,26 +49,14 @@ export type DevLeadBarProps =
 export function DevLeadBar({
   useProjection, useSessions, useSessionStatus, executeCommand, t,
 }: DevLeadBarProps) {
-  const projection = useProjection('devLead')
+  const projection = useProjection(DEVLEAD_PROJECTION_KEY)
   // Both sources are selector hooks over framework snapshots; the explicit
   // parameter types keep this component typed even in a workspace that does not
   // install the shell store package that declares the canonical hook shape.
   const rows = useSessions((state: SessionListState) => state.byId)
   const statuses = useSessionStatus((current: SessionStatusSnapshot) => current)
   const enabled = projection?.enabled ?? false
-
-  const [pending, setPending] = useState(false)
-  const [failure, setFailure] = useState<DevLeadCommandFailure | null>(null)
-  // React state disables the switch on the next render; the ref closes the
-  // same-render window so a rapid double click cannot admit two commands.
-  const pendingRef = useRef(false)
-
-  // A mode change from any source invalidates feedback that belonged to the
-  // previous attempt; a failed toggle leaves `enabled` untouched, so its error
-  // stays visible.
-  useEffect(() => {
-    setFailure(null)
-  }, [enabled])
+  const { pending, failure, run } = useDevLeadAdmission(executeCommand, enabled)
 
   if (projection === undefined || !enabled) return null
 
@@ -85,15 +70,8 @@ export function DevLeadBar({
   // request is turning the mode off; a reported check (for example a duplicated
   // click after the projection already caught up) is ignored.
   const toggle = (next: boolean): void => {
-    if (next || pendingRef.current) return
-    pendingRef.current = true
-    setPending(true)
-    setFailure(null)
-    void admitCommand(executeCommand, '/devlead off').then((rejected) => {
-      pendingRef.current = false
-      setPending(false)
-      if (rejected !== undefined) setFailure(rejected)
-    })
+    if (next) return
+    run('/devlead off')
   }
 
   return (
@@ -138,27 +116,37 @@ export function DevLeadBar({
             </span>
           )}
         </span>
-        {notice === null ? (
-          // An enabled Session with no retained notification keeps the help
-          // hint visible instead of leaving the row visually empty.
-          <span className="devlead-hint" title={t('hint.enabled')}>{t('hint.enabled')}</span>
-        ) : (
-          <span className="devlead-notification" title={notice.tooltip}>
-            <span
-              className="devlead-notification-dot"
-              data-transition={notice.transition}
-              aria-hidden="true"
-            />
-            <span className="devlead-notification-who">{notice.who}</span>
-            {notice.turn > 0 && (
-              <span className="devlead-notification-turn">{t('notification.turn', { turn: notice.turn })}</span>
-            )}
-            <span className="devlead-notification-label">{t(notice.labelKey)}</span>
-            {notice.error !== undefined && (
-              <span className="devlead-notification-error">{notice.error}</span>
-            )}
-          </span>
-        )}
+        <span
+          className="devlead-notice"
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+          title={notice === null ? t('hint.enabled') : notice.tooltip}
+        >
+          {notice === null ? (
+            // An enabled Session with no retained notification keeps the help
+            // hint visible instead of leaving the row visually empty.
+            <span className="devlead-hint">{t('hint.enabled')}</span>
+          ) : (
+            <span className="devlead-notification">
+              <span
+                className="devlead-notification-dot"
+                data-transition={notice.transition}
+                aria-hidden="true"
+              />
+              <span className="devlead-notification-who">{notice.who}</span>
+              {notice.turn > 0 && (
+                <span className="devlead-notification-turn">
+                  {t('notification.turn', { turn: notice.turn })}
+                </span>
+              )}
+              <span className="devlead-notification-label">{t(notice.labelKey)}</span>
+              {notice.error !== undefined && (
+                <span className="devlead-notification-error">{notice.error}</span>
+              )}
+            </span>
+          )}
+        </span>
         {failureLine !== null && (
           <span className="devlead-error" role="alert">{t(failureLine.key, failureLine.params)}</span>
         )}

@@ -9,8 +9,7 @@
  * @module @yankeguo/dsh-devlead
  */
 
-import { mkdir, stat } from 'node:fs/promises'
-import { isAbsolute } from 'node:path'
+import { mkdir } from 'node:fs/promises'
 import { Service } from '@deepseek-ai/cordis'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
@@ -44,7 +43,7 @@ import {
   modeRecord,
   watchRecord,
 } from './domain.ts'
-import { DevLeadError } from './error.ts'
+import { DevLeadError, thrownMessage } from './error.ts'
 import { devLeadProjectionDefinition, devLeadProjectionView } from './fold.ts'
 import { DevLeadNotificationHub } from './notification.ts'
 import {
@@ -52,6 +51,8 @@ import {
   devLeadSessionView,
   devLeadSessionViews,
   devLeadWorkspaceView,
+  rankSessionIds,
+  readSessionFacts,
   resolveSessionReference,
   resolveWorkspaceReference,
   type DevLeadViewDeps,
@@ -101,12 +102,17 @@ export const Config: z<Config> = z.object({
   defaultAgentPreset: z.string().default(''),
 })
 
-/** Fully materialized deployment configuration. */
-interface ResolvedConfig {
+/** Fully materialized deployment configuration, with Loader defaults applied. */
+export interface DevLeadSettings {
+  /** Coalescing window before one notification digest wakes the lead, in milliseconds. */
   readonly notificationBatchMs: number
+  /** Maximum watched Sessions one lead may keep. */
   readonly maxWatchedSessions: number
+  /** Maximum Session rows one listing may yield; a caller `limit` is capped by it. */
   readonly maxListedSessions: number
+  /** Whether a cold lead Session is resumed to receive its notification digest. */
   readonly wakeColdSession: boolean
+  /** Agent preset used by created Sessions when the request names none. */
   readonly defaultAgentPreset: string | undefined
 }
 
@@ -116,7 +122,7 @@ interface ResolvedConfig {
  * @param config - raw configuration.
  * @returns resolved configuration.
  */
-function resolveConfig(config: Config): ResolvedConfig {
+function resolveConfig(config: Config): DevLeadSettings {
   const notificationBatchMs = config.notificationBatchMs ?? 400
   if (!Number.isSafeInteger(notificationBatchMs) || notificationBatchMs < 0) {
     throw new TypeError('notificationBatchMs must be a non-negative safe integer')
@@ -154,9 +160,51 @@ function remoteCodeOf(error: unknown): string | undefined {
   return typeof code === 'string' ? code : undefined
 }
 
-/** Render any thrown value for a domain failure message. */
-function renderThrown(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
+/**
+ * Validate one listing limit and cap it at the deployment maximum.
+ * @param limit - caller-supplied row limit, when given.
+ * @param maximum - configured maximum Session rows one listing may yield.
+ * @returns the effective positive row limit.
+ */
+function listLimit(limit: number | undefined, maximum: number): number {
+  if (limit === undefined) return maximum
+  if (!Number.isSafeInteger(limit) || limit < 1) {
+    throw new DevLeadError('limit must be a positive safe integer', 'DEVLEAD_INVALID_INPUT')
+  }
+  return Math.min(limit, maximum)
+}
+
+/**
+ * Classify one Workspace registration failure into the stable error vocabulary.
+ * The Workspace registry canonicalizes the path through `fs.realpath`, rejects
+ * relative paths, and requires an existing directory, so its own rejections are
+ * the authoritative signal:
+ * - a missing directory becomes `DEVLEAD_DIRECTORY_MISSING`, so a caller knows
+ *   creation was possible but not attempted;
+ * - every other unusable path (relative spelling, file instead of directory,
+ *   unusable parents, registry write failure) becomes `DEVLEAD_INVALID_INPUT`.
+ * @param error - failure thrown by `workspaceRegistry.create` or `fs.mkdir`.
+ * @param path - caller-supplied directory path.
+ * @returns the mapped domain failure.
+ */
+function workspacePathFailure(error: unknown, path: string): DevLeadError {
+  const errno = (error as NodeJS.ErrnoException | null)?.code
+  if (errno === 'ENOENT') {
+    return new DevLeadError(
+      `directory "${path}" does not exist; create it first or let this call create it`,
+      'DEVLEAD_DIRECTORY_MISSING',
+    )
+  }
+  if (error instanceof TypeError && /fully qualified/u.test(thrownMessage(error))) {
+    return new DevLeadError(
+      `"${path}" is not a fully qualified path; pass an absolute directory path`,
+      'DEVLEAD_INVALID_INPUT',
+    )
+  }
+  return new DevLeadError(
+    `could not register "${path}" as a Workspace: ${thrownMessage(error)}`,
+    'DEVLEAD_INVALID_INPUT',
+  )
 }
 
 /**
@@ -171,7 +219,7 @@ export class DevLeadService extends Service {
   static Config = Config
 
   /** Validated deployment configuration. */
-  private readonly resolved: ResolvedConfig
+  private readonly resolved: DevLeadSettings
 
   /** Awaited registration of the `devLead` projection unit. */
   private projectionHandle!: ProjectionHandle<DevLeadProjectionState>
@@ -199,7 +247,7 @@ export class DevLeadService extends Service {
   }
 
   /** Deployment configuration after validation; read-only. */
-  get settings(): Readonly<ResolvedConfig> {
+  get settings(): Readonly<DevLeadSettings> {
     return this.resolved
   }
 
@@ -235,7 +283,8 @@ export class DevLeadService extends Service {
    * @param agent - exact live Session Agent receiving the selection.
    * @param enabled - selected mode.
    * @param signal - cancellation checked before the write.
-   * @returns fulfillment after the selection is durable.
+   * @returns fulfillment after the committed selection's durability checkpoint
+   *   was attempted (a host without a persistence participant keeps it in memory).
    * @throws {@link DevLeadError} when the Agent is not live or the replay failed.
    */
   async setEnabled(agent: Agent, enabled: boolean, signal?: AbortSignal): Promise<void> {
@@ -244,10 +293,7 @@ export class DevLeadService extends Service {
     const current = this.strictStateOf(agent.session)
     if (current.enabled === enabled) return
     appendPluginRecord(agent.session, DEVLEAD_MODE_RECORD_TYPE, modeRecord(enabled, Date.now()))
-    const flushed = await this.ctx.sessions.flush(agent.session)
-    if (!flushed) {
-      this.ctx.logger.warn(`devlead: DevLead mode for Session "${agent.id}" was not flushed to persistence`)
-    }
+    await this.flushDurably(agent.session, `DevLead mode for Session "${agent.id}"`)
   }
 
   // ---------------------------------------------------------------------------
@@ -273,10 +319,20 @@ export class DevLeadService extends Service {
   /**
    * Register an existing directory as a Workspace, creating a missing
    * directory first when allowed.
+   *
+   * The Workspace registry itself canonicalizes the path (`fs.realpath`, so
+   * trailing slashes and symlinks normalize), rejects relative spellings, and
+   * requires an existing directory; this method only adds the optional
+   * missing-directory creation and the stable DevLead error vocabulary.
+   * An already-registered canonical path reuses its Workspace and keeps the
+   * registered title: `options.title` applies only when a new record is created.
    * @param path - fully qualified directory path.
-   * @param options - optional title and missing-directory policy (default creates).
+   * @param options - optional title (new registrations only), missing-directory
+   *   policy (default creates), and cancellation checked before the registry write.
    * @returns the registered or existing Workspace view.
-   * @throws {@link DevLeadError} when the path is not usable.
+   * @throws {@link DevLeadError} `DEVLEAD_DIRECTORY_MISSING` when the directory
+   *   is missing and creation is disabled, `DEVLEAD_INVALID_INPUT` for every
+   *   other unusable path or registration failure.
    */
   async useWorkspace(
     path: string,
@@ -284,34 +340,36 @@ export class DevLeadService extends Service {
   ): Promise<DevLeadWorkspaceView> {
     const trimmed = path.trim()
     if (trimmed.length === 0) throw new DevLeadError('a directory path is required', 'DEVLEAD_INVALID_INPUT')
-    if (!isAbsolute(trimmed)) {
-      throw new DevLeadError(`"${trimmed}" is not a fully qualified path`, 'DEVLEAD_INVALID_INPUT')
-    }
-    options.signal?.throwIfAborted()
+    const signal = options.signal
+    signal?.throwIfAborted()
     const create = options.create ?? true
-    const exists = await stat(trimmed).then(() => true, () => false)
-    if (!exists) {
-      if (!create) {
-        throw new DevLeadError(`directory "${trimmed}" does not exist`, 'DEVLEAD_DIRECTORY_MISSING')
-      }
-      try {
-        await mkdir(trimmed, { recursive: true })
-      } catch (error: unknown) {
-        throw new DevLeadError(
-          `could not create directory "${trimmed}": ${renderThrown(error)}`,
-          'DEVLEAD_DIRECTORY_MISSING',
-        )
-      }
-    }
+    const title = options.title?.trim()
+    const resolvedTitle = title === undefined || title.length === 0 ? undefined : title
     const registry = this.requireWorkspaceRegistry()
     let workspace: Workspace
     try {
-      workspace = await registry.create(trimmed, options.title)
+      workspace = await registry.create(trimmed, resolvedTitle)
     } catch (error: unknown) {
-      throw new DevLeadError(
-        `could not register "${trimmed}" as a Workspace: ${renderThrown(error)}`,
-        'DEVLEAD_DIRECTORY_MISSING',
-      )
+      const failure = workspacePathFailure(error, trimmed)
+      if (failure.code !== 'DEVLEAD_DIRECTORY_MISSING') throw failure
+      if (!create) {
+        throw new DevLeadError(
+          `directory "${trimmed}" does not exist; create it first or retry with create enabled`,
+          'DEVLEAD_DIRECTORY_MISSING',
+        )
+      }
+      signal?.throwIfAborted()
+      try {
+        await mkdir(trimmed, { recursive: true })
+      } catch (mkdirError: unknown) {
+        throw workspacePathFailure(mkdirError, trimmed)
+      }
+      signal?.throwIfAborted()
+      try {
+        workspace = await registry.create(trimmed, resolvedTitle)
+      } catch (retryError: unknown) {
+        throw workspacePathFailure(retryError, trimmed)
+      }
     }
     return await devLeadWorkspaceView(workspace)
   }
@@ -322,49 +380,60 @@ export class DevLeadService extends Service {
 
   /**
    * List Sessions this lead can address.
-   * @param options - optional Workspace filter, watch-only filter, and row limit.
-   * @param signal - cancellation checked between rows.
+   *
+   * Rows are ranked by cheap live facts (watched, running, then most recently
+   * created) before the limit is applied, so a watched or running Session
+   * always survives truncation; only retained rows pay for full view assembly.
+   * @param agent - exact live lead Agent.
+   * @param options - optional Workspace filter, watch-only filter, row limit
+   *   (capped by `maxListedSessions`), and cancellation checked between reads
+   *   and rows. A watched-only listing is never truncated below the watch set:
+   *   that set is already bounded by `maxWatchedSessions`, and the `/devlead`
+   *   status view would otherwise report truncated watch rows as missing.
    * @returns detached Session views, watched and running rows first.
+   * @throws {@link DevLeadError} when the Agent is not live, the Workspace does
+   *   not resolve, the projection replay failed, or `limit` is not a positive
+   *   safe integer.
    */
   async listSessions(
     agent: Agent,
     options: { workspace?: string; watchedOnly?: boolean; limit?: number; signal?: AbortSignal } = {},
-    signal?: AbortSignal,
   ): Promise<DevLeadSessionView[]> {
     this.assertLive(agent)
-    const deps = this.viewDeps(agent)
+    const signal = options.signal
+    const deps = this.viewDeps(agent, signal)
     signal?.throwIfAborted()
     let ids: string[]
     if (options.workspace !== undefined && options.workspace.trim().length > 0) {
-      const workspace = await resolveWorkspaceReference(this.ctx, options.workspace)
+      const workspace = await resolveWorkspaceReference(this.ctx, options.workspace, signal)
       ids = await collectSessionIds(deps, workspace)
     } else {
       ids = await collectSessionIds(deps, undefined)
     }
+    signal?.throwIfAborted()
     if (options.watchedOnly === true) ids = ids.filter(id => deps.isWatched(id))
-    const limit = options.limit ?? this.resolved.maxListedSessions
-    const views = await devLeadSessionViews(deps, ids, false)
-    // Priority ordering must precede the row cap: slicing first could drop a
-    // watched or running Session that the caller most needs to see.
-    views.sort((left, right) => {
-      if (left.watched !== right.watched) return left.watched ? -1 : 1
-      if (left.running !== right.running) return left.running ? -1 : 1
-      return (right.updatedAt ?? right.createdAt ?? 0) - (left.updatedAt ?? left.createdAt ?? 0)
-        || left.sessionId.localeCompare(right.sessionId)
-    })
-    return views.slice(0, Math.max(1, limit))
+    const listingCap = options.watchedOnly === true
+      ? Math.max(this.resolved.maxListedSessions, deps.watchedSessions.length)
+      : this.resolved.maxListedSessions
+    const limit = listLimit(options.limit, listingCap)
+    const facts = await readSessionFacts(deps, ids)
+    signal?.throwIfAborted()
+    const retained = rankSessionIds(deps, ids, facts, limit)
+    return await devLeadSessionViews(deps, retained, false, facts)
   }
 
   /**
    * Read one Session in detail, including folded turn and assistant facts.
-   * @param sessionId - Session id or unique prefix.
-   * @param signal - cancellation checked before the log read.
+   * @param agent - exact live lead Agent.
+   * @param sessionId - Session id or unique prefix; exact ids stay addressable
+   *   beyond the bounded listing window.
+   * @param signal - cancellation checked before and between the query reads.
    * @returns the detached Session view.
    * @throws {@link DevLeadError} when the reference is missing or ambiguous.
    */
   async getSession(agent: Agent, sessionId: string, signal?: AbortSignal): Promise<DevLeadSessionView> {
     this.assertLive(agent)
-    const deps = this.viewDeps(agent)
+    const deps = this.viewDeps(agent, signal)
     const resolved = await resolveSessionReference(deps, sessionId)
     signal?.throwIfAborted()
     return await devLeadSessionView(deps, String(resolved.sessionId), true)
@@ -372,14 +441,24 @@ export class DevLeadService extends Service {
 
   /**
    * Create one ordinary Session in a Workspace and optionally prompt it.
+   *
+   * Cancellation is cooperative: the signal is checked before each awaited
+   * stage, so a cancelled call stops before it watches or prompts the new
+   * Session. Session creation itself is not abortable once started.
    * @param agent - exact live lead Agent.
    * @param request - Workspace, optional title, initial prompt, watch policy, and preset.
+   * @param signal - cancellation checked between stages.
    * @returns the created Session and the Workspace it joined.
    * @throws {@link DevLeadError} when the mode is off, the Host cannot create
    *   Sessions, or the destination is not usable.
    */
-  async createSession(agent: Agent, request: DevLeadCreateSessionRequest): Promise<DevLeadCreatedSession> {
+  async createSession(
+    agent: Agent,
+    request: DevLeadCreateSessionRequest,
+    signal?: AbortSignal,
+  ): Promise<DevLeadCreatedSession> {
     this.assertReady(agent)
+    signal?.throwIfAborted()
     const controller = this.ctx.get('sessionController')
     if (controller === undefined) {
       throw new DevLeadError(
@@ -387,7 +466,12 @@ export class DevLeadService extends Service {
         'DEVLEAD_SESSION_UNAVAILABLE',
       )
     }
+    const watch = request.watch ?? true
+    // Check the watch capacity before creating: a rejected watch after creation
+    // would leave an orphan Session the caller was told did not exist.
+    if (watch) this.assertWatchCapacity(agent)
     const workspace = await this.createTargetWorkspace(agent, request.workspace)
+    signal?.throwIfAborted()
     const preset = request.preset?.trim() ?? this.resolved.defaultAgentPreset
     let created: SessionCreateValue
     try {
@@ -396,20 +480,20 @@ export class DevLeadService extends Service {
         ...(preset === undefined || preset.length === 0 ? {} : { agentPreset: preset }),
       })
     } catch (error: unknown) {
-      throw this.sessionUnavailable(`could not create a Session in "${workspace.title}": ${renderThrown(error)}`, error)
+      throw this.sessionUnavailable(`could not create a Session in "${workspace.title}": ${thrownMessage(error)}`, error)
     }
+    signal?.throwIfAborted()
     const sessionId = String(created.sessionId)
     if (request.title !== undefined && request.title.trim().length > 0) {
       this.tryRename(created.sessionId, request.title.trim())
     }
-    const watch = request.watch ?? true
-    if (watch) await this.setWatching(agent, created.sessionId, true)
+    if (watch) await this.setWatching(agent, created.sessionId, true, signal)
     const prompt = request.prompt?.trim() ?? ''
     const prompted = prompt.length > 0
     if (prompted) {
-      await this.admitPrompt(agent, created.sessionId, prompt, false)
+      await this.admitPrompt(agent, created.sessionId, prompt, false, signal)
     }
-    const deps = this.viewDeps(agent)
+    const deps = this.viewDeps(agent, signal)
     return {
       session: await devLeadSessionView(deps, sessionId, true),
       workspace: await devLeadWorkspaceView(workspace),
@@ -423,7 +507,8 @@ export class DevLeadService extends Service {
    * @param agent - exact live lead Agent.
    * @param sessionId - Session id or unique prefix.
    * @param prompt - non-empty prompt text.
-   * @param options - optional watch policy (default watches).
+   * @param options - optional watch policy (default watches) and cancellation
+   *   checked between stages.
    * @returns the admitted prompt receipt.
    * @throws {@link DevLeadError} when the Session is missing, archived, or cannot be resumed.
    */
@@ -431,13 +516,16 @@ export class DevLeadService extends Service {
     agent: Agent,
     sessionId: string,
     prompt: string,
-    options: { watch?: boolean } = {},
+    options: { watch?: boolean; signal?: AbortSignal } = {},
   ): Promise<DevLeadPromptedSession> {
     this.assertReady(agent)
+    const signal = options.signal
+    signal?.throwIfAborted()
     const text = prompt.trim()
     if (text.length === 0) throw new DevLeadError('a non-empty prompt is required', 'DEVLEAD_INVALID_INPUT')
-    const deps = this.viewDeps(agent)
+    const deps = this.viewDeps(agent, signal)
     const resolved = await resolveSessionReference(deps, sessionId)
+    signal?.throwIfAborted()
     if (String(resolved.sessionId) === String(agent.id)) {
       throw new DevLeadError(
         'a DevLead Session cannot prompt itself; end this turn and continue from a new human turn',
@@ -445,9 +533,17 @@ export class DevLeadService extends Service {
       )
     }
     this.assertNotArchived(resolved.sessionId)
+    // Validate the cold-resume capability before the watch mutation, so a Host
+    // that cannot resume the Session does not leave a half-applied watch.
+    if (!resolved.live && this.ctx.get('sessionController') === undefined) {
+      throw new DevLeadError(
+        `Session "${resolved.sessionId}" is not live and this Host composes no Session activator, so it cannot be prompted`,
+        'DEVLEAD_SESSION_UNAVAILABLE',
+      )
+    }
     const watch = options.watch ?? true
-    if (watch) await this.setWatching(agent, resolved.sessionId, true)
-    const resumed = await this.admitPrompt(agent, resolved.sessionId, text, true)
+    if (watch) await this.setWatching(agent, resolved.sessionId, true, signal)
+    const resumed = await this.admitPrompt(agent, resolved.sessionId, text, true, signal)
     return {
       sessionId: String(resolved.sessionId),
       watched: this.strictStateOf(agent.session).sessions.includes(String(resolved.sessionId)),
@@ -460,24 +556,33 @@ export class DevLeadService extends Service {
    * @param agent - exact live lead Agent.
    * @param sessionId - Session id or unique prefix.
    * @param watching - whether the Session should be watched.
+   * @param signal - cancellation checked before resolving and before the write.
    * @returns the resulting watch mutation.
    * @throws {@link DevLeadError} when the Session is missing, self-addressed, or over the limit.
    */
-  async watchSession(agent: Agent, sessionId: string, watching: boolean): Promise<DevLeadWatchMutation> {
+  async watchSession(
+    agent: Agent,
+    sessionId: string,
+    watching: boolean,
+    signal?: AbortSignal,
+  ): Promise<DevLeadWatchMutation> {
     this.assertReady(agent)
-    const deps = this.viewDeps(agent)
+    signal?.throwIfAborted()
+    const deps = this.viewDeps(agent, signal)
     const resolved = await resolveSessionReference(deps, sessionId)
+    signal?.throwIfAborted()
     if (String(resolved.sessionId) === String(agent.id)) {
       throw new DevLeadError('a DevLead Session cannot watch itself', 'DEVLEAD_SELF_WATCH')
     }
-    return await this.setWatching(agent, resolved.sessionId, watching)
+    return await this.setWatching(agent, resolved.sessionId, watching, signal)
   }
 
   /**
    * Read the retained notification digest of one live lead Session.
    * @param agent - exact live lead Agent.
-   * @param options - maximum rows (newest last).
-   * @returns retained notifications, oldest first.
+   * @param options - newest-row limit; omitted or not a positive safe integer
+   *   keeps the default of 20 rows.
+   * @returns the newest retained notifications, oldest first.
    * @throws {@link DevLeadError} when the Agent is not live or the replay failed.
    */
   notifications(agent: Agent, options: { limit?: number } = {}): DevLeadNotification[] {
@@ -495,7 +600,42 @@ export class DevLeadService extends Service {
   /** Reject an Agent that is not this registry's exact live instance. */
   private assertLive(agent: Agent): void {
     if (this.ctx.agents.get(agent.id) !== agent) {
-      throw new DevLeadError(`agent "${agent.id}" is not live in this registry`, 'DEVLEAD_AGENT_NOT_LIVE')
+      throw new DevLeadError(
+        `agent "${agent.id}" is not live in this registry; reopen its Session and retry`,
+        'DEVLEAD_AGENT_NOT_LIVE',
+      )
+    }
+  }
+
+  /**
+   * Check that one more watched Session fits under the configured cap, before a
+   * write path creates side effects it cannot roll back.
+   * @param agent - exact live lead Agent.
+   */
+  private assertWatchCapacity(agent: Agent): void {
+    const state = this.strictStateOf(agent.session)
+    if (state.sessions.length < this.resolved.maxWatchedSessions) return
+    throw new DevLeadError(
+      `watch limit reached (${this.resolved.maxWatchedSessions}); unwatch a Session before adding another`,
+      'DEVLEAD_WATCH_LIMIT',
+    )
+  }
+
+  /**
+   * Flush one Session's durability checkpoint. `SessionStore.flush` returns
+   * false when no durability participant is composed (a headless/SDK host that
+   * keeps logs in memory) — that is not a failure, so it stays silent; only a
+   * composed participant's own rejection is reported, and it is downgraded to a
+   * warning because the append already committed to the live log and a later
+   * checkpoint can still reach storage.
+   * @param session - Session whose buffered events should be persisted.
+   * @param what - operation name used in the warning text.
+   */
+  private async flushDurably(session: Session, what: string): Promise<void> {
+    try {
+      await this.ctx.sessions.flush(session)
+    } catch (error: unknown) {
+      this.ctx.logger.warn(`devlead: ${what} could not be flushed to persistence: ${thrownMessage(error)}`)
     }
   }
 
@@ -529,14 +669,21 @@ export class DevLeadService extends Service {
     return registry
   }
 
-  /** Build the read-side dependency bundle for one live lead Agent. */
-  private viewDeps(agent: Agent): DevLeadViewDeps {
+  /**
+   * Build the read-side dependency bundle for one live lead Agent.
+   * @param agent - exact live lead Agent.
+   * @param signal - optional cancellation threaded into every read.
+   * @returns the view dependencies.
+   */
+  private viewDeps(agent: Agent, signal?: AbortSignal): DevLeadViewDeps {
     const state = this.strictStateOf(agent.session)
+    const watched = new Set(state.sessions)
     return {
       ctx: this.ctx,
       maxListedSessions: this.resolved.maxListedSessions,
       watchedSessions: state.sessions,
-      isWatched: sessionId => state.sessions.includes(sessionId),
+      isWatched: sessionId => watched.has(sessionId),
+      ...(signal === undefined ? {} : { signal }),
     }
   }
 
@@ -565,7 +712,19 @@ export class DevLeadService extends Service {
     if (byPath !== undefined) return byPath
     const recorded = registry.list().find(workspace => workspace.path === cwd)
     if (recorded !== undefined) return recorded
-    return await registry.create(cwd)
+    try {
+      return await registry.create(cwd)
+    } catch (error: unknown) {
+      // The lead's own directory cannot be created implicitly: a moved or
+      // unreadable directory must surface as a stable domain failure, not as a
+      // raw `fs` rejection from the registry.
+      const failure = workspacePathFailure(error, cwd)
+      throw new DevLeadError(
+        `the lead Session's working directory "${cwd}" is not usable: ${thrownMessage(error)}; `
+        + 'name a Workspace or path explicitly',
+        failure.code,
+      )
+    }
   }
 
   /** Rename a freshly created Session, logging a failure instead of aborting creation. */
@@ -576,7 +735,7 @@ export class DevLeadService extends Service {
     try {
       titles.rename(session, title)
     } catch (error: unknown) {
-      this.ctx.logger.warn(`devlead: Session "${sessionId}" was not renamed: ${renderThrown(error)}`)
+      this.ctx.logger.warn(`devlead: Session "${sessionId}" was not renamed: ${thrownMessage(error)}`)
     }
   }
 
@@ -604,6 +763,7 @@ export class DevLeadService extends Service {
    * @param sessionId - target Session identity.
    * @param text - non-empty prompt text.
    * @param allowResume - whether a cold Session may be resumed.
+   * @param signal - cancellation checked before the resume and the admission.
    * @returns whether the Host resumed a cold Session.
    */
   private async admitPrompt(
@@ -611,7 +771,9 @@ export class DevLeadService extends Service {
     sessionId: ReturnType<typeof toSessionId>,
     text: string,
     allowResume: boolean,
+    signal?: AbortSignal,
   ): Promise<boolean> {
+    signal?.throwIfAborted()
     let target = this.ctx.agents.get(sessionId)
     let resumed = false
     if (target === undefined) {
@@ -638,23 +800,24 @@ export class DevLeadService extends Service {
       } catch (error: unknown) {
         if (error instanceof DevLeadError) throw error
         throw new DevLeadError(
-          `could not resume Session "${sessionId}": ${renderThrown(error)}`,
+          `could not resume Session "${sessionId}": ${thrownMessage(error)}`,
           'DEVLEAD_SESSION_UNAVAILABLE',
         )
       }
+      // A cancellation observed while the Host resumed the Session must not
+      // admit the prompt (or be misreported as an unavailable Session).
+      signal?.throwIfAborted()
     }
+    signal?.throwIfAborted()
     try {
       target.followup(createDevLeadPromptMessage(text, leadAgent))
     } catch (error: unknown) {
       throw new DevLeadError(
-        `could not admit a prompt into Session "${sessionId}": ${renderThrown(error)}`,
+        `could not admit a prompt into Session "${sessionId}": ${thrownMessage(error)}`,
         'DEVLEAD_SESSION_UNAVAILABLE',
       )
     }
-    const flushed = await this.ctx.sessions.flush(target.session)
-    if (!flushed) {
-      this.ctx.logger.warn(`devlead: prompt into Session "${sessionId}" was not flushed to persistence`)
-    }
+    await this.flushDurably(target.session, `prompt into Session "${sessionId}"`)
     return resumed
   }
 
@@ -663,13 +826,16 @@ export class DevLeadService extends Service {
    * @param agent - exact live lead Agent.
    * @param sessionId - target Session identity.
    * @param watching - whether to include the Session.
+   * @param signal - cancellation checked before the write.
    * @returns the resulting watch mutation.
    */
   private async setWatching(
     agent: Agent,
     sessionId: ReturnType<typeof toSessionId>,
     watching: boolean,
+    signal?: AbortSignal,
   ): Promise<DevLeadWatchMutation> {
+    signal?.throwIfAborted()
     const id = String(sessionId)
     // Every automatic watch path (create, prompt) funnels through here, so the
     // self-watch rejection cannot be bypassed by a convenience default.
@@ -681,20 +847,12 @@ export class DevLeadService extends Service {
     if (present === watching) {
       return { sessionId: id, watched: present, sessions: state.sessions }
     }
-    if (watching && state.sessions.length >= this.resolved.maxWatchedSessions) {
-      throw new DevLeadError(
-        `watch limit reached (${this.resolved.maxWatchedSessions}); unwatch a Session before adding another`,
-        'DEVLEAD_WATCH_LIMIT',
-      )
-    }
+    if (watching) this.assertWatchCapacity(agent)
     const next = watching
       ? [...state.sessions, id]
       : state.sessions.filter(existing => existing !== id)
     appendPluginRecord(agent.session, DEVLEAD_WATCH_RECORD_TYPE, watchRecord(next, Date.now()))
-    const flushed = await this.ctx.sessions.flush(agent.session)
-    if (!flushed) {
-      this.ctx.logger.warn(`devlead: watch set for lead "${agent.id}" was not flushed to persistence`)
-    }
+    await this.flushDurably(agent.session, `watch set for lead "${agent.id}"`)
     return { sessionId: id, watched: watching, sessions: next }
   }
 }

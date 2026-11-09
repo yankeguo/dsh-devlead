@@ -26,6 +26,10 @@ name: publish
 #   - repository/workflow/environment claims match the trust configuration.
 # Provenance is attached automatically: the packages are public and this
 # repository is public.
+#
+# Pull requests and pushes run the same typecheck/test/build in verify.yml;
+# this workflow repeats them at release time so a tag never publishes from a
+# commit whose tests were not green at that exact revision.
 on:
   push:
     tags:
@@ -38,13 +42,16 @@ permissions:
   # it with the npm registry for a short-lived publish token.
   id-token: write
 
+# One publish at a time, regardless of ref: two tags must not interleave npm
+# uploads, and a manual dispatch must not race a tag run.
 concurrency:
-  group: publish-${{ github.ref }}
+  group: publish
   cancel-in-progress: false
 
 jobs:
   publish:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.1
@@ -113,14 +120,21 @@ jobs:
         # repository.
         run: pnpm publish -r --access public --no-git-checks --tag latest
 
-      - name: Create GitHub Release
+      - name: Create or update the GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
+        # Idempotent: a re-run after a partial failure updates the existing
+        # release instead of failing on "release already exists".
         run: |
-          notes="docs/releases/${GITHUB_REF_NAME}.md"
+          tag="${GITHUB_REF_NAME}"
+          notes="docs/releases/${tag}.md"
           if [ -f "$notes" ]; then
-            gh release create "${GITHUB_REF_NAME}" --title "${GITHUB_REF_NAME}" --notes-file "$notes"
+            gh release view "$tag" >/dev/null 2>&1 \
+              && gh release edit "$tag" --title "$tag" --notes-file "$notes" \
+              || gh release create "$tag" --title "$tag" --notes-file "$notes"
           else
-            gh release create "${GITHUB_REF_NAME}" --title "${GITHUB_REF_NAME}" --generate-notes
+            gh release view "$tag" >/dev/null 2>&1 \
+              && gh release edit "$tag" --title "$tag" \
+              || gh release create "$tag" --title "$tag" --generate-notes
           fi
         env:
           GH_TOKEN: ${{ github.token }}

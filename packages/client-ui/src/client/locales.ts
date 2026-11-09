@@ -18,6 +18,7 @@ export const zh = {
   'count.missing': '{count} 个已不可用',
   'toggle.enable': '开启 DevLead 模式',
   'toggle.failed': '开启 DevLead 模式失败：{message}（悬停查看，可重试）',
+  'toggle.failed.status': '开启 DevLead 模式失败：{message}',
   'notification.turn': '第 {turn} 轮',
   'transition.completed': '完成',
   'transition.error': '失败',
@@ -30,6 +31,7 @@ export const zh = {
   'error.command': '命令失败：{message}（{code}）',
   'error.rejected': '命令被拒绝：{message}',
   'error.unknown': '命令执行失败：{message}',
+  'error.unresolved': '命令未执行：Host 未识别 {line}',
 } satisfies Record<string, string>
 
 /** The `devlead` namespace key union. */
@@ -50,6 +52,7 @@ export const en = {
   'count.missing': '{count} unavailable',
   'toggle.enable': 'Turn on DevLead mode',
   'toggle.failed': 'Could not turn on DevLead mode: {message} (hover to read, then retry)',
+  'toggle.failed.status': 'Could not turn on DevLead mode: {message}',
   'notification.turn': 'turn {turn}',
   'transition.completed': 'completed',
   'transition.error': 'failed',
@@ -62,4 +65,5 @@ export const en = {
   'error.command': 'Command failed: {message} ({code})',
   'error.rejected': 'Command rejected: {message}',
   'error.unknown': 'Command failed: {message}',
+  'error.unresolved': 'Command did not run: the Host did not recognize {line}',
 } satisfies Record<DevLeadKey, string>

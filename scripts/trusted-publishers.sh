@@ -30,8 +30,9 @@ WORKFLOW_FILE="publish.yml"
 ENVIRONMENT=""
 MODE="configure"
 
+# Print this script's header comment block as --help output.
 usage() {
-  sed -n '2,24p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "${BASH_SOURCE[0]}"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -46,18 +47,30 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# Reject values the registry would only reject after a round trip. npm requires
+# the bare workflow filename (no directory) and an owner/repository pair.
+if [[ ! "${WORKFLOW_FILE}" =~ ^[A-Za-z0-9._-]+\.ya?ml$ ]]; then
+  echo "--file must be a bare workflow filename ending in .yml/.yaml (got ${WORKFLOW_FILE})" >&2
+  exit 2
+fi
+if [[ ! "${REPO}" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
+  echo "--repo must be owner/repository (got ${REPO})" >&2
+  exit 2
+fi
+
 # ---- prerequisites ---------------------------------------------------------
 command -v npm >/dev/null 2>&1 || { echo "npm is required" >&2; exit 2; }
 if ! command -v node >/dev/null 2>&1; then
-  echo "node is required" >&2
+  echo "node is required"
   exit 2
 fi
 
 npm_version="$(npm --version)"
 node_version="$(node --version)"
 echo "npm ${npm_version} / node ${node_version}"
-# npm trust requires >= 11.15.0.
-if [[ "$(printf '%s\n11.15.0\n' "${npm_version}" | sort -V | head -1)" != "11.15.0" ]]; then
+# Capability check instead of parsing versions: `npm trust` is the feature we
+# actually need, and old npm versions print an unknown-command error.
+if ! npm trust --help >/dev/null 2>&1; then
   echo "npm >= 11.15.0 is required for 'npm trust' (found ${npm_version}); run: npm install -g npm@latest" >&2
   exit 2
 fi
@@ -77,6 +90,7 @@ for (const dir of fs.readdirSync(root).sort()) {
   if (!fs.existsSync(manifestPath)) continue
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
   if (typeof manifest.name !== 'string' || !manifest.name.startsWith('@')) continue
+  if (manifest.private === true) continue
   process.stdout.write(manifest.name + '\n')
 }
 NODE
@@ -93,13 +107,29 @@ echo "workflow:   ${WORKFLOW_FILE}"
 echo "packages:   ${#PACKAGES[@]}"
 printf '  - %s\n' "${PACKAGES[@]}"
 
+# npm trust only needs the registry and the per-user config; running it from a
+# neutral directory keeps the repository's pnpm-only .npmrc out of npm's config
+# warnings.
+npm_trust() {
+  ( cd / && npm trust "$@" )
+}
+
 # ---- list mode -------------------------------------------------------------
 if [[ "${MODE}" == "list" ]]; then
+  failed=()
   for name in "${PACKAGES[@]}"; do
     echo ""
     echo "== ${name} =="
-    npm trust list "${name}" 2>&1 || true
+    if ! npm_trust list "${name}"; then
+      echo "   FAILED to list ${name} (not logged in?)" >&2
+      failed+=("${name}")
+    fi
   done
+  if [[ "${#failed[@]}" -gt 0 ]]; then
+    echo "" >&2
+    echo "FAILED: ${failed[*]}" >&2
+    exit 1
+  fi
   exit 0
 fi
 
@@ -109,17 +139,21 @@ TRUST_ARGS=(--file "${WORKFLOW_FILE}" --repo "${REPO}" --allow-publish --yes)
 [[ "${MODE}" == "dry-run" ]] && TRUST_ARGS+=(--dry-run)
 
 failed=()
-for name in "${PACKAGES[@]}"; do
+for index in "${!PACKAGES[@]}"; do
+  name="${PACKAGES[$index]}"
   echo ""
   echo "== configuring ${name} =="
-  if npm trust github "${name}" "${TRUST_ARGS[@]}"; then
+  if npm_trust github "${name}" "${TRUST_ARGS[@]}"; then
     echo "   OK ${name}"
   else
     echo "   FAILED ${name}" >&2
     failed+=("${name}")
   fi
-  # npm recommends spacing bulk trust calls to avoid rate limiting.
-  sleep 2
+  # npm recommends spacing bulk trust calls to avoid rate limiting. A dry run
+  # makes no calls, so it needs no delay.
+  if [[ "${MODE}" != "dry-run" && "${index}" -lt "$(( ${#PACKAGES[@]} - 1 ))" ]]; then
+    sleep 2
+  fi
 done
 
 echo ""

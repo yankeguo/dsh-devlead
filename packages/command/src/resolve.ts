@@ -87,15 +87,26 @@ export function resolveSessionReference(
 const MAX_RENDERED_CANDIDATES = 10
 
 /**
+ * Render one Session reference as `title (session-id)` when a non-blank title
+ * is known, or the bare id otherwise. Shared by candidate lists, status rows,
+ * and mutation titles so every surface names a Session the same way.
+ * @param sessionId - exact Session identity.
+ * @param title - folded title, possibly absent or blank.
+ * @returns the human-readable reference.
+ */
+export function sessionRefLabel(sessionId: string, title: string | undefined): string {
+  const trimmed = title?.trim() ?? ''
+  return trimmed.length === 0 ? sessionId : `${trimmed} (${sessionId})`
+}
+
+/**
  * Render one candidate as a bullet line: `title (session-id)` when the title is
  * known, the bare id otherwise.
  * @param candidate - addressable Session.
  * @returns one human-readable line without indentation.
  */
 export function candidateLabel(candidate: SessionCandidate): string {
-  return candidate.title === undefined
-    ? candidate.sessionId
-    : `${candidate.title} (${candidate.sessionId})`
+  return sessionRefLabel(candidate.sessionId, candidate.title)
 }
 
 /**

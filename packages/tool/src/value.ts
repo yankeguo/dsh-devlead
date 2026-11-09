@@ -81,11 +81,15 @@ export const SESSION_VIEW_SCHEMA = {
     workspaceId: { type: 'string', description: 'Accounting Workspace id, when the Session belongs to one.' },
     workspaceTitle: { type: 'string', description: 'Accounting Workspace title, when the Session belongs to one.' },
     cwd: { type: 'string', description: 'Recorded working directory, when the header carries one.' },
-    live: { type: 'boolean', required: true, description: 'Whether the Session currently has a live Agent.' },
+    live: {
+      type: 'boolean',
+      required: true,
+      description: 'Whether the Session is live in the Host store, with an Agent or an attached Session.',
+    },
     running: { type: 'boolean', required: true, description: 'Whether the Session Agent is inside a turn.' },
     watched: { type: 'boolean', required: true, description: 'Whether this lead watches the Session.' },
     archived: { type: 'boolean', required: true, description: 'Whether the Workspace registry lists the Session as archived.' },
-    lastTurn: { type: 'integer', description: 'Latest recorded turn number, when the log was observed.' },
+    lastTurn: { type: 'integer', description: 'Latest turn number observed on the Session, when known.' },
     pendingInputs: { type: 'integer', description: 'Pending inbox messages, when the Agent is live.' },
     lastTransition: {
       type: 'string',
@@ -115,7 +119,7 @@ export const NOTIFICATION_SCHEMA = {
     },
     turn: { type: 'integer', required: true, description: '1-based turn number that settled.' },
     at: { type: 'integer', required: true, description: 'Epoch milliseconds when the Host observed the transition.' },
-    error: { type: 'string', description: 'Compact single-line failure excerpt for error or blocked transitions.' },
+    error: { type: 'string', description: 'Compact single-line failure excerpt when the settled turn failed.' },
     summary: { type: 'string', description: 'Compact excerpt of the latest assistant message before the turn settled.' },
   },
 } as const

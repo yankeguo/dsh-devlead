@@ -18,21 +18,23 @@ import { SessionId as toSessionId } from '@deepseek-ai/dsh-session'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import {
   DEVLEAD_DEFAULT_NOTIFICATION_RETENTION,
-  DEVLEAD_ERROR_EXCERPT_MAX,
   DEVLEAD_MESSAGE_KIND,
   DEVLEAD_MODE_RECORD_TYPE,
   DEVLEAD_NOTIFICATION_RECORD_TYPE,
   DEVLEAD_WATCH_RECORD_TYPE,
-  excerptLine,
+  isDevLeadTransition,
   notificationLine,
 } from '@yankeguo/dsh-devlead-protocol'
 import type { DevLeadNotification, DevLeadProjectionState } from '@yankeguo/dsh-devlead-protocol'
 import {
+  assistantExcerpt,
   createDevLeadNoticeMessage,
   devLeadNotification,
   failureExcerpt,
   notificationRecord,
+  representableInstant,
 } from './domain.ts'
+import { thrownMessage } from './error.ts'
 
 /** Deployment policy the hub obeys. */
 export interface DevLeadNotificationConfig {
@@ -51,12 +53,22 @@ interface LeadRuntime {
   pending: DevLeadNotification[]
   /** Pending coalescing timer. */
   timer: ReturnType<typeof setTimeout> | undefined
+  /** Whether a zero-delay microtask flush is queued (the `batchMs: 0` path). */
+  scheduled: boolean
   /** Whether one delivery is in flight. */
   flushing: boolean
 }
 
 /** Maximum digest lines a single wake-up message carries. */
 const MAX_DIGEST_LINES = 12
+
+/**
+ * Retry delay after a failed wake-up delivery. A failed `followup` is retried on
+ * this bounded timer instead of the coalescing window: with `batchMs: 0` a
+ * zero-delay reschedule would spin a microtask loop for as long as the Agent
+ * keeps rejecting messages.
+ */
+const DELIVERY_RETRY_MS = 1_000
 
 /**
  * Render the wake-up digest text.
@@ -95,6 +107,9 @@ export class DevLeadNotificationHub {
   private readonly resuming = new Set<string>()
   /** Latest assistant excerpt observed per watched Session, bounded and pruned with the index. */
   private readonly lastAssistant = new Map<string, string>()
+  /** Sessions whose replay failure has already been reported, so a corrupt log warns once. */
+  private readonly warnedFailures = new Set<string>()
+  private started = false
   private stopping = false
 
   /**
@@ -108,8 +123,13 @@ export class DevLeadNotificationHub {
     private readonly config: DevLeadNotificationConfig,
   ) {}
 
-  /** Install the lifecycle listeners and index every currently live lead. */
+  /**
+   * Install the lifecycle listeners and index every currently live lead.
+   * Calling this twice is a no-op: the hub owns exactly one listener set.
+   */
   start(): void {
+    if (this.started) return
+    this.started = true
     this.bootstrap()
     this.ctx.effect(function* (this: DevLeadNotificationHub) {
       this.ctx.on('agent/created', ({ agent }): undefined => {
@@ -150,15 +170,22 @@ export class DevLeadNotificationHub {
 
   /**
    * Read one Session's fold state, treating a replay failure as unavailable.
+   * A corrupt log is reported once per Session to keep a poisoned Session from
+   * flooding the log on every event.
    * @param session - live Session.
    * @returns the fold state, or undefined when the projection is invalid.
    */
   private stateOf(session: Session): DevLeadProjectionState | undefined {
     const state = this.readState(session)
+    const sessionId = String(session.id)
     if (state.failure !== null) {
-      this.ctx.logger.warn(`devlead: ${state.failure}`)
+      if (!this.warnedFailures.has(sessionId)) {
+        this.warnedFailures.add(sessionId)
+        this.ctx.logger.warn(`devlead: ${state.failure}`)
+      }
       return undefined
     }
+    this.warnedFailures.delete(sessionId)
     return state
   }
 
@@ -193,6 +220,7 @@ export class DevLeadNotificationHub {
       watched: new Set(),
       pending: [],
       timer: undefined,
+      scheduled: false,
       flushing: false,
     }
     this.leads.set(sessionId, runtime)
@@ -249,16 +277,20 @@ export class DevLeadNotificationHub {
           this.lastAssistant.delete(watched)
         }
       }
+      runtime.pending = []
       this.leads.delete(leadId)
     }
     this.resuming.delete(leadId)
+    this.warnedFailures.delete(leadId)
   }
 
-  /** Clear one pending coalescing timer. */
+  /** Clear one pending coalescing timer or queued zero-delay flush. */
   private clearTimer(runtime: LeadRuntime): void {
-    if (runtime.timer === undefined) return
-    clearTimeout(runtime.timer)
-    runtime.timer = undefined
+    if (runtime.timer !== undefined) {
+      clearTimeout(runtime.timer)
+      runtime.timer = undefined
+    }
+    runtime.scheduled = false
   }
 
   /**
@@ -297,13 +329,7 @@ export class DevLeadNotificationHub {
    * @param blocks - assistant message content blocks.
    */
   private rememberAssistant(sessionId: string, blocks: readonly unknown[]): void {
-    const text = blocks
-      .filter((block): block is { type: 'text'; text: string } => typeof block === 'object' && block !== null
-        && (block as { type?: unknown }).type === 'text'
-        && typeof (block as { text?: unknown }).text === 'string')
-      .map(block => block.text)
-      .join(' ')
-    const excerpt = excerptLine(text, DEVLEAD_ERROR_EXCERPT_MAX)
+    const excerpt = assistantExcerpt(blocks)
     if (excerpt !== undefined) this.lastAssistant.set(sessionId, excerpt)
   }
 
@@ -315,11 +341,14 @@ export class DevLeadNotificationHub {
    */
   private notificationOf(session: Session, event: SessionEvent): DevLeadNotification | undefined {
     if (event.type !== 'turn/end') return undefined
+    const turn = event.data.turn
+    // A settled-turn number is the notification identity: an unusable value
+    // cannot be written into a record the fold would accept, so skip it.
+    if (!Number.isSafeInteger(turn) || turn < 1) return undefined
     const reason = event.data.reason.kind
-    const transition = reason === 'completed' || reason === 'aborted' || reason === 'blocked'
-      || reason === 'error' || reason === 'max-tokens' || reason === 'interrupted' || reason === 'forked'
-      ? reason
-      : 'interrupted'
+    // TurnEndReasonMap is merge-extensible: an unknown future kind degrades to
+    // `interrupted` instead of dropping the transition notification.
+    const transition = isDevLeadTransition(reason) ? reason : 'interrupted'
     const title = this.ctx.get('sessionTitle')?.get(session)?.title
     const error = reason === 'error' ? failureExcerpt(event.data.reason.error) : undefined
     const summary = this.lastAssistant.get(String(session.id))
@@ -327,15 +356,17 @@ export class DevLeadNotificationHub {
       String(session.id),
       title,
       transition,
-      event.data.turn,
-      event.time,
+      turn,
+      representableInstant(event.time, Date.now()),
       error,
       summary,
     )
   }
 
   /**
-   * Persist one notification into a lead Session and queue its wake-up.
+   * Persist one notification into a lead Session and queue its wake-up. A
+   * notification whose identity is already queued is not queued twice, so a
+   * replayed `turn/end` cannot double a digest line.
    * @param leadId - lead Session identity.
    * @param notification - observed notification.
    */
@@ -346,8 +377,9 @@ export class DevLeadNotificationHub {
     try {
       appendPluginRecord(session, DEVLEAD_NOTIFICATION_RECORD_TYPE, notificationRecord(notification))
     } catch (error: unknown) {
-      this.ctx.logger.warn(`devlead: could not record a notification for lead "${leadId}": ${String(error)}`)
+      this.ctx.logger.warn(`devlead: could not record a notification for lead "${leadId}": ${thrownMessage(error)}`)
     }
+    if (runtime.pending.some(existing => existing.id === notification.id)) return
     runtime.pending = [...runtime.pending, notification].slice(-DEVLEAD_DEFAULT_NOTIFICATION_RETENTION)
     this.scheduleFlush(runtime)
   }
@@ -357,9 +389,13 @@ export class DevLeadNotificationHub {
    * @param runtime - lead runtime row.
    */
   private scheduleFlush(runtime: LeadRuntime): void {
-    if (this.stopping || runtime.timer !== undefined || runtime.flushing) return
+    if (this.stopping || runtime.timer !== undefined || runtime.scheduled || runtime.flushing) return
     if (this.config.batchMs <= 0) {
-      queueMicrotask(() => { void this.flush(runtime) })
+      runtime.scheduled = true
+      queueMicrotask(() => {
+        runtime.scheduled = false
+        void this.flush(runtime)
+      })
       return
     }
     runtime.timer = setTimeout(() => {
@@ -374,7 +410,11 @@ export class DevLeadNotificationHub {
    * @returns fulfillment after the delivery attempt settles.
    */
   private async flush(runtime: LeadRuntime): Promise<void> {
-    if (this.stopping || runtime.flushing || runtime.pending.length === 0) return
+    if (this.stopping) return
+    // A queued zero-delay flush can outlive its runtime: a mode toggle or Agent
+    // disposal drops the runtime but cannot cancel the microtask.
+    if (this.leads.get(runtime.sessionId) !== runtime) return
+    if (runtime.flushing || runtime.pending.length === 0) return
     const agent = this.ctx.agents.get(toSessionId(runtime.sessionId))
     if (agent === undefined) {
       if (this.config.wakeColdSession) await this.resumeCold(runtime)
@@ -385,29 +425,54 @@ export class DevLeadNotificationHub {
     const archived = this.ctx.get('workspaceRegistry')?.archivedSessionIds.includes(toSessionId(runtime.sessionId)) ?? false
     if (archived) {
       runtime.pending = []
+      this.clearTimer(runtime)
       return
     }
     const batch = runtime.pending
     runtime.pending = []
+    this.clearTimer(runtime)
     runtime.flushing = true
+    let failed = false
     try {
       // A digest already waiting in the inbox already points the model at the
       // notification tool, so a second queued turn would only double the wake.
       if (!this.hasQueuedNotice(agent)) {
         agent.followup(createDevLeadNoticeMessage(renderDevLeadNotice(batch)))
         try {
+          // False means no durability participant is composed (headless/SDK),
+          // not a persistence failure; only a composed participant's rejection
+          // is worth reporting.
           await this.ctx.sessions.flush(agent.session)
         } catch (error: unknown) {
-          this.ctx.logger.warn(`devlead: notification digest was not flushed for lead "${runtime.sessionId}": ${String(error)}`)
+          this.ctx.logger.warn(`devlead: notification digest could not be flushed for lead "${runtime.sessionId}": ${thrownMessage(error)}`)
         }
       }
     } catch (error: unknown) {
-      this.ctx.logger.warn(`devlead: could not wake lead "${runtime.sessionId}": ${String(error)}`)
+      this.ctx.logger.warn(`devlead: could not wake lead "${runtime.sessionId}": ${thrownMessage(error)}`)
       runtime.pending = [...batch, ...runtime.pending].slice(-DEVLEAD_DEFAULT_NOTIFICATION_RETENTION)
+      failed = true
     } finally {
       runtime.flushing = false
     }
-    if (runtime.pending.length > 0) this.scheduleFlush(runtime)
+    if (runtime.pending.length > 0 && this.leads.get(runtime.sessionId) === runtime) {
+      if (failed) {
+        this.scheduleRetry(runtime)
+      } else {
+        this.scheduleFlush(runtime)
+      }
+    }
+  }
+
+  /**
+   * Arm one bounded retry after a failed wake-up delivery.
+   * @param runtime - lead runtime row.
+   */
+  private scheduleRetry(runtime: LeadRuntime): void {
+    if (this.stopping || runtime.timer !== undefined || runtime.scheduled || runtime.flushing) return
+    runtime.timer = setTimeout(() => {
+      runtime.timer = undefined
+      void this.flush(runtime)
+    }, DELIVERY_RETRY_MS)
   }
 
   /**
@@ -428,6 +493,7 @@ export class DevLeadNotificationHub {
    * @returns fulfillment after the resume attempt settles.
    */
   private async resumeCold(runtime: LeadRuntime): Promise<void> {
+    if (this.stopping) return
     const leadId = runtime.sessionId
     if (this.resuming.has(leadId)) return
     const controller = this.ctx.get('sessionController')
@@ -435,13 +501,18 @@ export class DevLeadNotificationHub {
     this.resuming.add(leadId)
     try {
       const resolved = await controller.resolveAgent(toSessionId(leadId))
+      if (this.stopping) return
       if ('error' in resolved) {
         this.ctx.logger.warn(`devlead: could not resume lead "${leadId}": ${resolved.error.message}`)
         return
       }
+      // The queued digest stays pending: syncLead re-arms the flush once the
+      // resumed Agent is indexed.
       this.syncLead(resolved.agent)
     } catch (error: unknown) {
-      this.ctx.logger.warn(`devlead: could not resume lead "${leadId}": ${String(error)}`)
+      if (!this.stopping) {
+        this.ctx.logger.warn(`devlead: could not resume lead "${leadId}": ${thrownMessage(error)}`)
+      }
     } finally {
       this.resuming.delete(leadId)
     }

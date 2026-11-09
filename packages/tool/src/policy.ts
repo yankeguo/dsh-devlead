@@ -21,7 +21,7 @@ export const DEVLEAD_POLICY = `DevLead mode is enabled in this session. You are 
 Workflow:
 - List known Workspaces with devlead_list_workspaces. Register a repository directory with devlead_use_workspace using an absolute path; create defaults to true, so a missing directory is created and registering an already-registered path is idempotent.
 - Dispatch work with devlead_create_session: pass workspace (id or registered path; omit it to use this session's directory) and a self-contained prompt, plus an optional title and Agent preset. The new Session is watched by default and runs independently; it does not see this conversation, so restate every fact it needs.
-- Inspect progress with devlead_list_sessions and devlead_get_session. Read live, running, watched, archived, lastTurn, lastTransition, lastError, and lastAssistant rather than guessing.
+- Inspect progress with devlead_list_sessions and devlead_get_session. The listing carries live, running, watched, archived, and lastTurn; the single-Session detail adds lastTransition, lastError, and lastAssistant when the Host can read the log. Read those fields rather than guessing.
 - Continue a Session with devlead_prompt_session: the prompt is admitted as a user message attributed to you, and a cold Session is resumed first. Archived Sessions are rejected.
 - Manage the watch set with devlead_watch_session. Only watched Sessions produce notifications, so unwatch work you no longer need and do not let the set grow without purpose.
 

@@ -7,9 +7,47 @@
 import { describe, expect, it } from 'vitest'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import { HarnessError } from '@deepseek-ai/dsh-llm'
-import type { GenericCallView } from '@deepseek-ai/dsh-tools'
-import { boot, devLeadFailure, makeAgent, NOTIFICATION, SESSION, WORKSPACE } from './harness.ts'
+import type { GenericCallView, InferValue } from '@deepseek-ai/dsh-tools'
+import { validateJsonSchemaValue } from '@deepseek-ai/dsh-tools'
+import type {
+  DevLeadCreatedSession,
+  DevLeadNotification,
+  DevLeadPromptedSession,
+  DevLeadSessionView,
+  DevLeadWatchMutation,
+  DevLeadWorkspaceView,
+} from '@yankeguo/dsh-devlead-protocol'
+import {
+  CREATE_SESSION_OUTPUT,
+  PROMPT_SESSION_OUTPUT,
+  WATCH_SESSION_OUTPUT,
+  type NotificationValue,
+  type SessionValue,
+  type WorkspaceValue,
+} from '../src/value.ts'
+import { boot, devLeadFailure, makeAgent, makeExec, NOTIFICATION, SESSION, WORKSPACE } from './harness.ts'
 import type { Harness } from './harness.ts'
+
+/**
+ * Compile-time conformance assertions: each schema-derived canonical value must
+ * stay assignable to the protocol view it projects, and each output value must
+ * stay assignable to the protocol result type. A drift fails `tsc` here instead
+ * of surfacing as a runtime `ToolOutputError` in a real host.
+ */
+type Assert<T extends true> = T
+type SchemaWorkspaceConforms = Assert<WorkspaceValue extends DevLeadWorkspaceView ? true : false>
+type SchemaSessionConforms = Assert<SessionValue extends DevLeadSessionView ? true : false>
+type SchemaNotificationConforms = Assert<NotificationValue extends DevLeadNotification ? true : false>
+type SchemaCreatedConforms = Assert<
+  InferValue<typeof CREATE_SESSION_OUTPUT.schema> extends DevLeadCreatedSession ? true : false
+>
+type SchemaPromptedConforms = Assert<
+  InferValue<typeof PROMPT_SESSION_OUTPUT.schema> extends DevLeadPromptedSession ? true : false
+>
+type SchemaWatchedConforms = Assert<
+  InferValue<typeof WATCH_SESSION_OUTPUT.schema> extends DevLeadWatchMutation ? true : false
+>
+
 
 /** Exact registered surface promised by DESIGN §5. */
 const TOOL_NAMES = [
@@ -35,6 +73,16 @@ const MINIMAL_ARGS: Record<(typeof TOOL_NAMES)[number], Record<string, unknown>>
   devlead_notifications: {},
 }
 
+/** Tools whose body requires the calling Agent carried by the Step. */
+const CALLER_TOOLS = [
+  'devlead_list_sessions',
+  'devlead_create_session',
+  'devlead_get_session',
+  'devlead_prompt_session',
+  'devlead_watch_session',
+  'devlead_notifications',
+] as const
+
 /**
  * Wait for a tool call to fail and return the structured failure.
  * @param promise - pending tool call.
@@ -58,6 +106,12 @@ function renderedText(harness: Harness, toolName: string, value: unknown): strin
   expect(block.type).toBe('text')
   if (block.type !== 'text') throw new Error('unreachable')
   return block.text
+}
+
+/** Assert one canonical value satisfies the tool's compiled output schema. */
+function expectValidOutput(harness: Harness, toolName: string, value: unknown): void {
+  const schema = harness.tool(toolName).definition.output.schema
+  expect(validateJsonSchemaValue(schema, value)).toEqual([])
 }
 
 describe('registration', () => {
@@ -93,13 +147,75 @@ describe('registration', () => {
     harness.devLead.enabled.add(agent.id)
     const text = harness.sectionText(agent)
     expect(text.length).toBeGreaterThan(0)
-    expect(text).toContain('devlead_create_session')
-    expect(text).toContain('devlead_notifications')
     expect(text).toContain('runtime notice')
     expect(text).toContain('/devlead on')
+    for (const name of TOOL_NAMES) expect(text).toContain(name)
+    // The provider re-resolves on every assembly, so disabling the mode drops
+    // the section on the next step without a re-registration.
+    harness.devLead.enabled.delete(agent.id)
+    expect(harness.sectionText(agent)).toBe('')
     const provider = harness.section.text
     if (typeof provider !== 'function') throw new Error('policy section must resolve its text per assembly')
     expect(provider({})).toBe('')
+  })
+})
+
+describe('caller invariant', () => {
+  it('rejects every caller-dependent tool with one structured agent-not-live error', async () => {
+    const harness = boot()
+    const agentless = makeExec(undefined)
+    for (const name of CALLER_TOOLS) {
+      const error = await failureOf(harness.call(name, MINIMAL_ARGS[name], agentless))
+      expect(error.code).toBe('DEVLEAD_AGENT_NOT_LIVE')
+      expect(error.message).toContain(name)
+    }
+    expect(harness.devLead.calls).toHaveLength(0)
+  })
+
+  it('keeps the two caller-free tools working for a Step without an Agent', async () => {
+    const harness = boot()
+    const agentless = makeExec(undefined)
+    await expect(harness.call('devlead_list_workspaces', {}, agentless)).resolves.toEqual({ workspaces: [WORKSPACE] })
+    await expect(harness.call('devlead_use_workspace', { path: '/tmp/webapp' }, agentless))
+      .resolves.toEqual({ workspace: WORKSPACE })
+  })
+})
+
+describe('canonical values', () => {
+  it('keeps every schema-derived value assignable to its protocol view', () => {
+    // The element types are the compile-time proof; this test keeps them in the
+    // file's normal import/type-checking path. A failing assertion breaks `tsc`
+    // before this test can run.
+    const conformance: readonly [
+      SchemaWorkspaceConforms,
+      SchemaSessionConforms,
+      SchemaNotificationConforms,
+      SchemaCreatedConforms,
+      SchemaPromptedConforms,
+      SchemaWatchedConforms,
+    ] = [true, true, true, true, true, true]
+    expect(conformance.every(value => value)).toBe(true)
+  })
+
+  it('projects every tool result onto its declared output schema', async () => {
+    const harness = boot()
+    for (const name of TOOL_NAMES) {
+      const value = await harness.call(name, MINIMAL_ARGS[name])
+      expectValidOutput(harness, name, value)
+    }
+  })
+
+  it('omits optional Session facts the host cannot observe', async () => {
+    const harness = boot()
+    const minimal = { sessionId: 'session-min', live: false, running: false, watched: false, archived: false }
+    harness.devLead.session = minimal
+    harness.devLead.sessions = [minimal]
+    const detail = await harness.call('devlead_get_session', { session: 'session-min' })
+    expect(detail).toEqual({ session: minimal })
+    expectValidOutput(harness, 'devlead_get_session', detail)
+    const listing = await harness.call('devlead_list_sessions')
+    expectValidOutput(harness, 'devlead_list_sessions', listing)
+    expect(listing).toEqual({ sessions: [minimal], watched: ['session-1'] })
   })
 })
 
@@ -174,25 +290,29 @@ describe('devlead_use_workspace', () => {
 })
 
 describe('devlead_list_sessions', () => {
-  it('forwards the caller, mapped options, and the signal', async () => {
+  it('forwards the caller, mapped options, and the cancellation signal inside the options', async () => {
     const harness = boot()
     const value = await harness.call('devlead_list_sessions', {
       workspace: '  ws-1  ',
       watched_only: true,
       limit: 5,
     })
-    const [agent, options, signal] = harness.devLead.callsOf('listSessions')[0] ?? []
+    const [agent, options] = harness.devLead.callsOf('listSessions')[0] ?? []
     expect(agent).toBe(harness.agent)
-    expect(options).toEqual({ workspace: 'ws-1', watchedOnly: true, limit: 5 })
-    expect(signal).toBe(harness.exec.signal)
+    expect(options).toEqual({
+      workspace: 'ws-1',
+      watchedOnly: true,
+      limit: 5,
+      signal: harness.exec.signal,
+    })
     expect(value).toEqual({ sessions: [SESSION], watched: ['session-1'] })
   })
 
-  it('omits every option the model did not set', async () => {
+  it('omits every option the model did not set but still forwards the signal', async () => {
     const harness = boot()
     await harness.call('devlead_list_sessions')
     const [, options] = harness.devLead.callsOf('listSessions')[0] ?? []
-    expect(options).toEqual({})
+    expect(options).toEqual({ signal: harness.exec.signal })
   })
 
   it('reads the watch set from the projection, not from the listing', async () => {
@@ -248,8 +368,18 @@ describe('devlead_create_session', () => {
   it('sends only the watch policy when the model passes no destination', async () => {
     const harness = boot()
     await harness.call('devlead_create_session')
-    const [, request] = harness.devLead.callsOf('createSession')[0] ?? []
+    const [, request, signal] = harness.devLead.callsOf('createSession')[0] ?? []
     expect(request).toEqual({ watch: true })
+    expect(signal).toBe(harness.exec.signal)
+  })
+
+  it('forwards the caller and the cancellation signal to the core mutation', async () => {
+    const harness = boot()
+    await harness.call('devlead_create_session', { prompt: 'go' })
+    const [agent, request, signal] = harness.devLead.callsOf('createSession')[0] ?? []
+    expect(agent).toBe(harness.agent)
+    expect(request).toEqual({ prompt: 'go', watch: true })
+    expect(signal).toBe(harness.exec.signal)
   })
 
   it('honors an explicit watch=false and preserves prompt formatting', async () => {
@@ -263,6 +393,13 @@ describe('devlead_create_session', () => {
   it('treats a blank title as omitted', async () => {
     const harness = boot()
     await harness.call('devlead_create_session', { title: '   ' })
+    const [, request] = harness.devLead.callsOf('createSession')[0] ?? []
+    expect(request).toEqual({ watch: true })
+  })
+
+  it('treats a blank preset as omitted', async () => {
+    const harness = boot()
+    await harness.call('devlead_create_session', { preset: '   ' })
     const [, request] = harness.devLead.callsOf('createSession')[0] ?? []
     expect(request).toEqual({ watch: true })
   })
@@ -328,7 +465,7 @@ describe('devlead_prompt_session', () => {
     expect(agent).toBe(harness.agent)
     expect(sessionId).toBe('session-1')
     expect(prompt).toBe('continue with tests')
-    expect(options).toEqual({ watch: true })
+    expect(options).toEqual({ watch: true, signal: harness.exec.signal })
     expect(value).toEqual({ sessionId: 'session-1', watched: true, resumed: false })
   })
 
@@ -336,7 +473,7 @@ describe('devlead_prompt_session', () => {
     const harness = boot()
     await harness.call('devlead_prompt_session', { session: 'session-1', prompt: 'go', watch: false })
     const [, , , options] = harness.devLead.callsOf('promptSession')[0] ?? []
-    expect(options).toEqual({ watch: false })
+    expect(options).toEqual({ watch: false, signal: harness.exec.signal })
   })
 
   it('rejects a blank session or prompt before calling the core', async () => {
@@ -361,10 +498,11 @@ describe('devlead_watch_session', () => {
     const harness = boot()
     harness.devLead.mutation = { sessionId: 'session-2', watched: false, sessions: ['session-1'] }
     const value = await harness.call('devlead_watch_session', { session: ' session-2 ', watching: false })
-    const [agent, sessionId, watching] = harness.devLead.callsOf('watchSession')[0] ?? []
+    const [agent, sessionId, watching, signal] = harness.devLead.callsOf('watchSession')[0] ?? []
     expect(agent).toBe(harness.agent)
     expect(sessionId).toBe('session-2')
     expect(watching).toBe(false)
+    expect(signal).toBe(harness.exec.signal)
     expect(value).toEqual({ sessionId: 'session-2', watched: false, sessions: ['session-1'] })
   })
 
@@ -440,6 +578,26 @@ describe('presentation', () => {
     const unwatching = presentCall?.({ session: 'session-1', watching: false }) as GenericCallView
     expect(watching.title).toBe('Watch DevLead session')
     expect(unwatching.title).toBe('Unwatch DevLead session')
+  })
+
+  it('shows trimmed salient text and omits blank filler arguments', () => {
+    const harness = boot()
+    const workspaces = harness.tool('devlead_use_workspace').definition.presentCall
+    expect((workspaces?.({ path: '  /tmp/webapp  ' }) as GenericCallView).rawInput).toBe('/tmp/webapp')
+    expect((workspaces?.({ path: '   ' }) as GenericCallView).rawInput).toBeUndefined()
+    const listSessions = harness.tool('devlead_list_sessions').definition.presentCall
+    expect((listSessions?.({}) as GenericCallView).rawInput).toBeUndefined()
+    expect((listSessions?.({ workspace: '  ' }) as GenericCallView).rawInput).toBeUndefined()
+    const getSession = harness.tool('devlead_get_session').definition.presentCall
+    expect((getSession?.({ session: '  session-1  ' }) as GenericCallView).rawInput).toBe('session-1')
+  })
+
+  it('prefers a usable Create title over a blank one and falls back to the Workspace', () => {
+    const harness = boot()
+    const presentCall = harness.tool('devlead_create_session').definition.presentCall
+    expect((presentCall?.({ title: '  Parser  ', workspace: 'ws-1' }) as GenericCallView).rawInput).toBe('Parser')
+    expect((presentCall?.({ title: '   ', workspace: 'ws-1' }) as GenericCallView).rawInput).toBe('ws-1')
+    expect((presentCall?.({}) as GenericCallView).rawInput).toBeUndefined()
   })
 
   it('falls back to the generic card for logged arguments the current schema rejects', () => {

@@ -82,12 +82,19 @@ describe('empty state and projection definition', () => {
     expect(devLeadProjectionDefinition.stateVersion).toBe(1)
     expect(devLeadProjectionDefinition.apply).toBe(applyDevLeadProjection)
     expect(devLeadProjectionDefinition.init()).toEqual(emptyDevLeadProjectionState())
+    // Every init call hands out an independent empty state: the registry seeds
+    // each Session from it and a shared object would leak state across Sessions.
+    expect(devLeadProjectionDefinition.init()).not.toBe(devLeadProjectionDefinition.init())
   })
 
   it('builds the client view from the same unit', () => {
     const state = fold([modeEvent(0, true), watchEvent(1, ['session-alpha'])])
     expect(devLeadProjectionDefinition.wire.view(state)).toEqual(devLeadProjectionView(state))
     expect(devLeadProjectionDefinition.wire.viewSchema).toBe(devLeadProjectionSchema)
+    // The retained digest only matters to the open conversation, so the unit
+    // must stay out of Session summaries (the protocol map carries the matching
+    // SessionProjectionSummaryExcluded mark).
+    expect(devLeadProjectionDefinition.wire.summary).toBe(false)
   })
 })
 
@@ -159,6 +166,11 @@ describe('watch records', () => {
     const enabled = fold([modeEvent(0, true), watchEvent(1, ['session-alpha'])])
     expect(enabled.enabled).toBe(true)
     expect(enabled.sessions).toEqual(['session-alpha'])
+  })
+
+  it('keeps the state reference when a whole-value record repeats the current set', () => {
+    const state = fold([watchEvent(0, ['session-alpha', 'session-beta'])])
+    expect(apply(state, watchEvent(1, ['session-alpha', 'session-beta']))).toBe(state)
   })
 
   it('rejects duplicate, empty, or non-string Session ids', () => {
@@ -267,6 +279,78 @@ describe('unrelated events', () => {
   })
 })
 
+describe('record strictness', () => {
+  it('rejects unknown fields on owned record payloads', () => {
+    const cases: Array<[string, SessionEvent]> = [
+      [
+        'mode extra field',
+        corruptModeRecord({ kind: 'devlead/mode', version: 1, enabled: true, at: T0, extra: true }),
+      ],
+      [
+        'watch extra field',
+        pluginRecordEvent(1, DEVLEAD_WATCH_RECORD_TYPE, {
+          kind: 'devlead/watch',
+          version: 1,
+          sessions: [],
+          at: T0,
+          extra: true,
+        }),
+      ],
+      [
+        'notification record extra field',
+        pluginRecordEvent(1, DEVLEAD_NOTIFICATION_RECORD_TYPE, {
+          kind: 'devlead/notification',
+          version: 1,
+          notification: notification({ sessionId: 'session-alpha', turn: 1 }),
+          extra: true,
+        }),
+      ],
+      [
+        'notification value extra field',
+        pluginRecordEvent(1, DEVLEAD_NOTIFICATION_RECORD_TYPE, {
+          kind: 'devlead/notification',
+          version: 1,
+          notification: { ...notification({ sessionId: 'session-alpha', turn: 1 }), extra: true },
+        }),
+      ],
+    ]
+    for (const [label, event] of cases) {
+      const state = fold([event])
+      expect(state.failure, label).not.toBeNull()
+      expect(state.failure, label).toContain('unexpected field')
+    }
+  })
+
+  it('rejects a missing required field instead of coercing it', () => {
+    const state = fold([pluginRecordEvent(1, DEVLEAD_WATCH_RECORD_TYPE, { kind: 'devlead/watch', version: 1, at: T0 })])
+    expect(state.failure).toContain('missing field "sessions"')
+  })
+
+  it('rejects an instant outside the representable Date range', () => {
+    const beyond = 8_640_000_000_000_001
+    const cases: Array<[string, SessionEvent]> = [
+      ['mode', corruptModeRecord({ kind: 'devlead/mode', version: 1, enabled: true, at: beyond })],
+      [
+        'watch',
+        pluginRecordEvent(1, DEVLEAD_WATCH_RECORD_TYPE, {
+          kind: 'devlead/watch',
+          version: 1,
+          sessions: ['session-alpha'],
+          at: beyond,
+        }),
+      ],
+      [
+        'notification',
+        notificationEvent(1, notification({ sessionId: 'session-alpha', turn: 1, at: beyond })),
+      ],
+    ]
+    for (const [label, event] of cases) {
+      const state = fold([event])
+      expect(state.failure, label).toContain('epoch milliseconds')
+    }
+  })
+})
+
 describe('failure handling', () => {
   it('freezes the fold at the last valid state once a record is corrupt', () => {
     const events: SessionEvent[] = [
@@ -291,7 +375,7 @@ describe('failure handling', () => {
   it('records a failure for a corrupt first record', () => {
     const failed = fold([pluginRecordEvent(0, DEVLEAD_NOTIFICATION_RECORD_TYPE, { kind: 'devlead/notification' })])
     expect(failed.failure).toBe(
-      `devlead replay failed at session event 0 (${DEVLEAD_NOTIFICATION_RECORD_TYPE}): record "${DEVLEAD_NOTIFICATION_RECORD_TYPE}" carries unsupported version undefined`,
+      `devlead replay failed at session event 0 (${DEVLEAD_NOTIFICATION_RECORD_TYPE}): notification record is missing field "version"`,
     )
     expect(failed.enabled).toBe(false)
     expect(failed.sessions).toEqual([])
@@ -302,6 +386,19 @@ describe('failure handling', () => {
     const first = fold([corruptModeRecord({ kind: 'devlead/mode', version: 2, enabled: true, at: T0 })])
     const second = apply(first, corruptModeRecord({ kind: 'devlead/watch', version: 4, sessions: [], at: T0 }))
     expect(second.failure).toBe(first.failure)
+  })
+
+  it('reuses the wire view reference when only the host failure field changes', () => {
+    const healthy = fold([modeEvent(0, true), watchEvent(1, ['session-alpha'])])
+    const view = devLeadProjectionView(healthy)
+    const failed = apply(
+      healthy,
+      corruptModeRecord({ kind: 'devlead/mode', version: 1, enabled: 'yes', at: T0 }),
+    )
+    expect(failed.failure).not.toBeNull()
+    // The registry compares consecutive wire views with Object.is: an
+    // internal-only change must not publish a deep-equal client value.
+    expect(devLeadProjectionView(failed)).toBe(view)
   })
 
   it('keeps the failure state schema-valid', () => {
@@ -338,6 +435,16 @@ describe('wire view and schemas', () => {
     const view = devLeadProjectionView(state)
     expect(devLeadProjectionSchema.safeParse({ ...view, failure: null }).success).toBe(false)
     expect(devLeadProjectionStateSchema.safeParse({ ...state, extra: true }).success).toBe(false)
+  })
+
+  it('rejects a notification carrying an unknown wire field', () => {
+    const view = devLeadProjectionView(fold([modeEvent(0, true)]))
+    expect(
+      devLeadProjectionSchema.safeParse({
+        ...view,
+        notifications: [{ ...notification(), extra: true }],
+      }).success,
+    ).toBe(false)
   })
 
   it('rejects malformed retained notifications on the wire', () => {

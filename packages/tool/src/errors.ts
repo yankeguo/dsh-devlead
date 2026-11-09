@@ -3,8 +3,9 @@
  *
  * Two failure classes reach a tool body: the core service's `DevLeadError`
  * (stable `DEVLEAD_*` code) and the tool's own input validation. Both must
- * surface as `HarnessError` so the executor and replay can route on the code;
- * anything else is an infrastructure failure and is rethrown unchanged.
+ * surface as `HarnessError` so the executor records a stable code on the
+ * structured failure instead of an opaque crash; anything else is an
+ * infrastructure failure and is rethrown unchanged.
  *
  * @module @yankeguo/dsh-tool-devlead/errors
  */

@@ -158,10 +158,9 @@ export class FakeDevLead {
 
   async listSessions(
     agent: Agent,
-    options?: { workspace?: string; watchedOnly?: boolean; limit?: number; signal?: AbortSignal },
-    signal?: AbortSignal,
+    options: { workspace?: string; watchedOnly?: boolean; limit?: number; signal?: AbortSignal } = {},
   ): Promise<DevLeadSessionView[]> {
-    this.enter('listSessions', agent, options, signal)
+    this.enter('listSessions', agent, options)
     return this.sessions
   }
 
@@ -170,8 +169,12 @@ export class FakeDevLead {
     return this.session
   }
 
-  async createSession(agent: Agent, request: unknown): Promise<DevLeadCreatedSession> {
-    this.enter('createSession', agent, request)
+  async createSession(
+    agent: Agent,
+    request: unknown,
+    signal?: AbortSignal,
+  ): Promise<DevLeadCreatedSession> {
+    this.enter('createSession', agent, request, signal)
     return this.created
   }
 
@@ -179,14 +182,19 @@ export class FakeDevLead {
     agent: Agent,
     sessionId: string,
     prompt: string,
-    options?: { watch?: boolean },
+    options?: { watch?: boolean; signal?: AbortSignal },
   ): Promise<DevLeadPromptedSession> {
     this.enter('promptSession', agent, sessionId, prompt, options)
     return this.prompted
   }
 
-  async watchSession(agent: Agent, sessionId: string, watching: boolean): Promise<DevLeadWatchMutation> {
-    this.enter('watchSession', agent, sessionId, watching)
+  async watchSession(
+    agent: Agent,
+    sessionId: string,
+    watching: boolean,
+    signal?: AbortSignal,
+  ): Promise<DevLeadWatchMutation> {
+    this.enter('watchSession', agent, sessionId, watching, signal)
     return this.mutation
   }
 
@@ -224,8 +232,13 @@ export interface Harness {
   sectionText(agent?: Agent): string
 }
 
-/** Build one run context carrying a fixed caller and a fresh signal. */
-function makeExec(agent: Agent, signal: AbortSignal): ToolRunContext {
+/**
+ * Build one run context carrying the given caller and a fresh signal.
+ * @param agent - calling Agent, or undefined to model a Step that carried none.
+ * @param signal - cancellation signal; defaults to a fresh un-aborted signal.
+ * @returns the run context one tool call receives from the executor.
+ */
+export function makeExec(agent: Agent | undefined, signal: AbortSignal = new AbortController().signal): ToolRunContext {
   return {
     callId: 'call-1',
     rootCallId: 'call-1',
@@ -248,7 +261,7 @@ export function boot(): Harness {
   const registered = new Map<string, CapturedTool>()
   let section: PromptSection | undefined
   const agent = makeAgent()
-  const exec = makeExec(agent, new AbortController().signal)
+  const exec = makeExec(agent)
 
   const ctx = {
     devLead,

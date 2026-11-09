@@ -37,9 +37,9 @@ function invalid(message: string): DevLeadCommand {
 
 /** Split one non-empty trimmed input into its first token and the remaining text. */
 function splitHead(input: string): { readonly head: string; readonly rest: string } {
-  const match = /^(\S+)(?:\s+([\s\S]*))?$/u.exec(input)
-  if (match === null) return { head: input.toLowerCase(), rest: '' }
-  return { head: (match[1] as string).toLowerCase(), rest: (match[2] ?? '').trim() }
+  const separator = input.search(/\s/u)
+  if (separator === -1) return { head: input.toLowerCase(), rest: '' }
+  return { head: input.slice(0, separator).toLowerCase(), rest: input.slice(separator).trim() }
 }
 
 /**
@@ -81,6 +81,14 @@ function parseSessionArgument(subcommand: 'watch' | 'unwatch', text: string): De
       + 'Run /devlead to inspect the current watch set.',
     )
   }
+  // A human who pastes a quote-wrapped id from a transcript can leave one side
+  // behind; name that mistake instead of reporting a Session that cannot match.
+  if (/^["']|["']$/u.test(session)) {
+    return invalid(
+      `The /devlead ${subcommand} Session reference has an unmatched quote; `
+      + 'wrap the whole reference in one matching pair of quotes.',
+    )
+  }
   if (/\s/u.test(session)) {
     return invalid(
       `"/devlead ${subcommand}" takes one Session reference without spaces; `
@@ -98,18 +106,17 @@ function parseSessionArgument(subcommand: 'watch' | 'unwatch', text: string): De
  * one Session reference. Keywords are case-insensitive; a Session reference is
  * never lower-cased, and one pair of matching surrounding quotes is stripped
  * from it.
+ *
+ * `rawInput` is the text following the registered command name (DSH's
+ * `CommandInvocation.rawInput` contract), so the leading separator whitespace
+ * is the only wrapper the parser tolerates: a complete line such as
+ * `/devlead on` is not silently accepted, because no command adapter passes one
+ * and a loud grammar error surfaces such a client bug instead of hiding it.
  * @param rawInput - exact text following the command name.
  * @returns the parsed command; malformed known subcommands yield `invalid`.
  */
 export function parseDevLeadCommand(rawInput: string): DevLeadCommand {
-  // The documented field is the text after the command name, and the grammar
-  // hint advertises `/devlead [args]`. A client that passes the complete line
-  // instead — or a command palette that leaves a trailing slash — must still
-  // resolve, so one leading `/devlead` token with optional slash/whitespace is
-  // accepted and dropped.
-  const trimmed = rawInput.trim()
-  const complete = /^\/devlead[/\s]*/iu.exec(trimmed)
-  const input = (complete === null ? trimmed : trimmed.slice(complete[0].length)).trim()
+  const input = rawInput.trim()
   if (input.length === 0) return { kind: 'status' }
   switch (input.toLowerCase()) {
     case 'status': return { kind: 'status' }

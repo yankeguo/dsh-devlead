@@ -8,10 +8,10 @@
  * window is flushed on microtasks instead of wall-clock sleeps.
  */
 
-import { mkdtemp, rm, stat } from 'node:fs/promises'
+import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { SessionId, appendPluginRecord, pluginRecordOf } from '@deepseek-ai/dsh-session'
 import type { Session } from '@deepseek-ai/dsh-session'
@@ -29,9 +29,7 @@ import {
   DevLeadService,
   devLeadNotification,
   isDevLeadError,
-  modeRecord,
   notificationRecord,
-  watchRecord,
 } from '../src/index.ts'
 import type { Config as DevLeadConfig, DevLeadErrorCode } from '../src/index.ts'
 import {
@@ -98,6 +96,13 @@ async function tempDir(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), 'dsh-devlead-service-'))
   tempDirs.push(dir)
   return dir
+}
+
+/** Read one required Session from a booted harness session record. */
+function requireSession2(sessions: Readonly<Record<string, Session>>, id: string): Session {
+  const session = sessions[id]
+  if (session === undefined) throw new Error(`expected a booted Session "${id}"`)
+  return session
 }
 
 /** Read one required Session of a booted harness. */
@@ -231,6 +236,34 @@ describe('mode selection', () => {
     await expectCodeAsync(() => harness.service.setEnabled(stale.agent, true), 'DEVLEAD_AGENT_NOT_LIVE')
     await expectCodeAsync(() => harness.service.watchSession(stale.agent, String(harness.lead.id), true), 'DEVLEAD_AGENT_NOT_LIVE')
     await expectCodeAsync(() => harness.service.listSessions(stale.agent), 'DEVLEAD_AGENT_NOT_LIVE')
+  })
+
+  it('keeps writes working on a host without a persistence participant', async () => {
+    const harness = await bootService({ persistence: false })
+    const warn = vi.spyOn(harness.ctx.logger, 'warn')
+    try {
+      // flush() returning false means "no durability participant composed",
+      // which is normal for a headless/SDK Host and must stay silent.
+      await expect(harness.service.setEnabled(harness.lead.agent, true)).resolves.toBeUndefined()
+      expect(harness.service.isEnabled(harness.lead.agent)).toBe(true)
+      expect(warn).not.toHaveBeenCalled()
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it('reports a failing durability participant without rejecting the mutation', async () => {
+    const harness = await bootService({ flushFailure: new Error('disk offline') })
+    const warn = vi.spyOn(harness.ctx.logger, 'warn')
+    try {
+      // The append already committed to the live log: a persistence failure is
+      // a warning, not a thrown error with no DevLead code.
+      await expect(harness.service.setEnabled(harness.lead.agent, true)).resolves.toBeUndefined()
+      expect(harness.service.isEnabled(harness.lead.agent)).toBe(true)
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('disk offline'))
+    } finally {
+      warn.mockRestore()
+    }
   })
 
   it('honors a pre-aborted signal before writing', async () => {
@@ -423,16 +456,33 @@ describe('workspace orchestration', () => {
   })
 
   it('validates and resolves the directory argument', async () => {
-    const harness = await bootService({ workspaceRegistry: new FakeWorkspaceRegistry() })
+    const registry = new FakeWorkspaceRegistry()
+    const harness = await bootService({ workspaceRegistry: registry })
     await expectCodeAsync(() => harness.service.useWorkspace('   '), 'DEVLEAD_INVALID_INPUT')
-    await expectCodeAsync(() => harness.service.useWorkspace('relative/repo'), 'DEVLEAD_INVALID_INPUT')
+
+    // The registry (not this service) rejects a relative spelling; the service
+    // maps that rejection to the stable input vocabulary.
+    registry.createErrors.set(
+      'relative/repo',
+      new TypeError("Workspace path is not fully qualified: 'relative/repo'"),
+    )
+    const relative = await expectCodeAsync(
+      () => harness.service.useWorkspace('relative/repo'),
+      'DEVLEAD_INVALID_INPUT',
+    )
+    expect(relative.message).toContain('fully qualified')
 
     const missing = join(await tempDir(), 'missing')
-    await expectCodeAsync(
+    registry.createErrors.set(missing, Object.assign(new Error('missing directory'), { code: 'ENOENT' }))
+    const missingError = await expectCodeAsync(
       () => harness.service.useWorkspace(missing, { create: false }),
       'DEVLEAD_DIRECTORY_MISSING',
     )
+    expect(missingError.message).toContain('create')
+    // No directory was created when creation was disabled.
+    await expect(stat(missing).then(() => true, () => false)).resolves.toBe(false)
 
+    registry.createErrors.set(missing, Object.assign(new Error('missing directory'), { code: 'ENOENT' }))
     const controller = new AbortController()
     controller.abort()
     await expect(harness.service.useWorkspace(missing, { create: true, signal: controller.signal })).rejects.toMatchObject({
@@ -440,13 +490,38 @@ describe('workspace orchestration', () => {
     })
   })
 
+  it('maps a non-directory path and other registration failures to invalid input', async () => {
+    const registry = new FakeWorkspaceRegistry()
+    const harness = await bootService({ workspaceRegistry: registry })
+    const file = join(await tempDir(), 'plain-file')
+    await writeFile(file, 'not a directory')
+    registry.createErrors.set(file, new Error(`cannot create a workspace at '${file}': path is not a directory`))
+    const notDirectory = await expectCodeAsync(
+      () => harness.service.useWorkspace(file),
+      'DEVLEAD_INVALID_INPUT',
+    )
+    expect(notDirectory.message).toContain('not a directory')
+
+    // A parent that is a file makes the recursive creation fail; the failure is
+    // classified instead of surfacing a raw `fs` rejection.
+    const nested = join(file, 'child')
+    registry.createErrors.set(nested, Object.assign(new Error('missing directory'), { code: 'ENOENT' }))
+    await expectCodeAsync(() => harness.service.useWorkspace(nested), 'DEVLEAD_INVALID_INPUT')
+  })
+
   it('creates a missing directory and registers it as a Workspace', async () => {
     const registry = new FakeWorkspaceRegistry()
     const harness = await bootService({ workspaceRegistry: registry })
     const missing = join(await tempDir(), 'nested', 'repo')
-    const view = await harness.service.useWorkspace(missing, { title: 'Nested Repo' })
-    await expect(stat(missing).then(() => true)).resolves.toBe(true)
-    expect(registry.createCalls).toEqual([{ path: missing, title: 'Nested Repo' }])
+    registry.createErrors.set(missing, Object.assign(new Error('missing directory'), { code: 'ENOENT' }))
+    const view = await harness.service.useWorkspace(missing, { title: '  Nested Repo  ' })
+    await expect(stat(missing).then(result => result.isDirectory())).resolves.toBe(true)
+    // One rejected attempt, then the registration after creating the directory;
+    // the title is trimmed because the registry uses it verbatim.
+    expect(registry.createCalls).toEqual([
+      { path: missing, title: 'Nested Repo' },
+      { path: missing, title: 'Nested Repo' },
+    ])
     expect(view).toMatchObject({
       title: 'Nested Repo',
       path: missing,
@@ -477,9 +552,11 @@ describe('workspace orchestration', () => {
     registry.createError = new Error('registry is read-only')
     const harness = await bootService({ workspaceRegistry: registry })
     const failedDir = await tempDir()
+    // A registration failure is not a missing directory: the path exists, so the
+    // caller must not be told to create it.
     const error = await expectCodeAsync(
       () => harness.service.useWorkspace(failedDir),
-      'DEVLEAD_DIRECTORY_MISSING',
+      'DEVLEAD_INVALID_INPUT',
     )
     expect(error.message).toContain('registry is read-only')
   })
@@ -664,12 +741,154 @@ describe('session listings', () => {
     const { harness } = await bootListing()
     const controller = new AbortController()
     controller.abort()
-    await expect(harness.service.listSessions(harness.lead.agent, {}, controller.signal)).rejects.toMatchObject({
-      name: 'AbortError',
-    })
+    await expect(
+      harness.service.listSessions(harness.lead.agent, { signal: controller.signal }),
+    ).rejects.toMatchObject({ name: 'AbortError' })
     await expect(harness.service.getSession(harness.lead.agent, 'child-alpha', controller.signal)).rejects.toMatchObject({
       name: 'AbortError',
     })
+  })
+
+  it('honors a pre-aborted write signal before it mutates anything', async () => {
+    const controller = new FakeSessionController()
+    const harness = await bootService({ enabled: true, sessionIds: ['child-alpha'], sessionController: controller })
+    const aborter = new AbortController()
+    aborter.abort()
+    await expect(
+      harness.service.watchSession(harness.lead.agent, 'child-alpha', true, aborter.signal),
+    ).rejects.toMatchObject({ name: 'AbortError' })
+    await expect(
+      harness.service.promptSession(harness.lead.agent, 'child-alpha', 'continue', { signal: aborter.signal }),
+    ).rejects.toMatchObject({ name: 'AbortError' })
+    await expect(
+      harness.service.createSession(harness.lead.agent, { workspace: 'missing-workspace' }, aborter.signal),
+    ).rejects.toMatchObject({ name: 'AbortError' })
+    // No watch record, no admitted prompt, and no created Session were left
+    // behind by a call whose caller had already cancelled.
+    expect(harness.service.view(harness.lead.agent).sessions).toEqual([])
+    expect(durableWatchRecords(harness)).toEqual([])
+    expect(controller.createCalls).toEqual([])
+    expect(controller.resolveCalls).toEqual([])
+  })
+
+  it('stops a cancellation that arrives during prompt resolution', async () => {
+    const controller = new FakeSessionController()
+    const harness = await bootService({ enabled: true, sessionIds: ['child-alpha'], sessionController: controller })
+    const aborter = new AbortController()
+    // Abort while the core is resolving the cold Session, before admission.
+    controller.resolveHandler = () => {
+      aborter.abort()
+      const target = new FakeAgent(requireSession(harness, 'child-alpha'))
+      harness.agents.add(target)
+      return { agent: target.agent }
+    }
+    await expect(
+      harness.service.promptSession(harness.lead.agent, 'child-alpha', 'continue', { signal: aborter.signal }),
+    ).rejects.toMatchObject({ name: 'AbortError' })
+    expect(harness.service.view(harness.lead.agent).sessions).toEqual(['child-alpha'])
+  })
+
+  it('builds views only for the retained rows and scans the registry once', async () => {
+    const ids = ['kid-1', 'kid-2', 'kid-3', 'kid-4', 'kid-5', 'kid-6']
+    const registry = new FakeWorkspaceRegistry()
+    const harness = await bootService({
+      enabled: true,
+      sessionIds: ids,
+      workspaceRegistry: registry,
+      extraAgents: (agents, sessions) => {
+        for (const id of ids) agents.add(new FakeAgent(requireSession2(sessions, id)))
+      },
+    })
+    const listCalls = registry.listCalls
+    const boundaryCalls = harness.agents.turnBoundaryCalls
+    const views = await harness.service.listSessions(harness.lead.agent, { limit: 2 })
+    expect(views).toHaveLength(2)
+    // Exactly the retained rows pay for Agent projection folds, and the
+    // Workspace registry is scanned once for collection and once for facts
+    // rather than once per row.
+    expect(harness.agents.turnBoundaryCalls - boundaryCalls).toBe(views.length)
+    expect(registry.listCalls - listCalls).toBe(2)
+  })
+
+  it('caps an explicit limit at the configured listing maximum', async () => {
+    const harness = await bootService({
+      enabled: true,
+      sessionIds: ['cap-1', 'cap-2', 'cap-3'],
+      config: { maxListedSessions: 2 },
+    })
+    const views = await harness.service.listSessions(harness.lead.agent, { limit: 50 })
+    expect(views).toHaveLength(2)
+  })
+
+  it('never truncates a watched-only listing below the watch set', async () => {
+    const harness = await bootService({
+      enabled: true,
+      sessionIds: ['watch-1', 'watch-2', 'watch-3'],
+      watched: ['watch-1', 'watch-2', 'watch-3'],
+      config: { maxListedSessions: 2 },
+    })
+    const views = await harness.service.listSessions(harness.lead.agent, { watchedOnly: true })
+    expect(views.map(view => view.sessionId).sort()).toEqual(['watch-1', 'watch-2', 'watch-3'])
+    // A plain listing still honors the configured cap.
+    const plain = await harness.service.listSessions(harness.lead.agent)
+    expect(plain).toHaveLength(2)
+  })
+
+  it('rejects a non-positive or fractional row limit', async () => {
+    const harness = await bootService({ enabled: true })
+    for (const limit of [0, -1, 1.5, Number.NaN]) {
+      await expectCodeAsync(() => harness.service.listSessions(harness.lead.agent, { limit }), 'DEVLEAD_INVALID_INPUT')
+    }
+  })
+
+  it('resolves a live exact id without listing the persisted corpus', async () => {
+    const query = new FakeSessionQuery()
+    query.seed('cold-persisted', [], 'Cold')
+    const harness = await bootService({ enabled: true, sessionIds: ['live-child'], sessionQuery: query })
+    await harness.service.watchSession(harness.lead.agent, 'live-child', true)
+    // Identity resolution short-circuits on the live Session: no corpus listing
+    // or title observation is needed for an already-known id.
+    expect(query.listSessionsCalls).toBe(0)
+    expect(query.readTitleCalls).toBe(0)
+    expect(harness.service.view(harness.lead.agent).sessions).toEqual(['live-child'])
+  })
+
+  it('reports an unknown future turn-end kind as interrupted instead of a stale outcome', async () => {
+    const query = new FakeSessionQuery()
+    query.seed('cold-future', [
+      sessionEvent(0, 'turn/start', { turn: 1 }, T0 + 1),
+      sessionEvent(1, 'turn/end', { turn: 1, reason: { kind: 'completed' } }, T0 + 2),
+      sessionEvent(2, 'turn/start', { turn: 2 }, T0 + 3),
+      sessionEvent(3, 'turn/end', { turn: 2, reason: { kind: 'custom-future-kind' } }, T0 + 4),
+    ])
+    const harness = await bootService({ enabled: true, sessionQuery: query })
+    const view = await harness.service.getSession(harness.lead.agent, 'cold-future')
+    expect(view.lastTurn).toBe(2)
+    expect(view.lastTransition).toBe('interrupted')
+    expect(view.lastError).toBeUndefined()
+  })
+
+  it('resolves exact ids and unique prefixes beyond the listing window', async () => {
+    const query = new FakeSessionQuery()
+    const persisted = ['out-alpha', 'out-beta', 'out-gamma', 'out-delta', 'out-epsilon']
+    for (const [index, id] of persisted.entries()) {
+      query.seed(id, [sessionEvent(0, 'turn/start', { turn: 1 }, T0 + index)])
+    }
+    const harness = await bootService({
+      enabled: true,
+      sessionQuery: query,
+      config: { maxListedSessions: 2 },
+    })
+    // The listing stays bounded by the configured window...
+    const listed = await harness.service.listSessions(harness.lead.agent)
+    expect(listed).toHaveLength(2)
+    // ...while identity resolution still sees every persisted Session.
+    const exact = await harness.service.getSession(harness.lead.agent, 'out-epsilon')
+    expect(exact.sessionId).toBe('out-epsilon')
+    const prefixed = await harness.service.getSession(harness.lead.agent, 'out-e')
+    expect(prefixed.sessionId).toBe('out-epsilon')
+    await harness.service.watchSession(harness.lead.agent, 'out-delta', true)
+    expect(harness.service.view(harness.lead.agent).sessions).toEqual(['out-delta'])
   })
 })
 
@@ -764,6 +983,18 @@ describe('prompt admission', () => {
       () => harness.service.promptSession(harness.lead.agent, 'target', 'continue'),
       'DEVLEAD_SESSION_UNAVAILABLE',
     )
+  })
+
+  it('rejects a cold Session before applying the automatic watch when no controller is composed', async () => {
+    const harness = await bootService({ enabled: true, sessionIds: ['cold-target'] })
+    const error = await expectCodeAsync(
+      () => harness.service.promptSession(harness.lead.agent, 'cold-target', 'continue'),
+      'DEVLEAD_SESSION_UNAVAILABLE',
+    )
+    expect(error.message).toContain('no Session activator')
+    // The failed call left no half-applied watch behind.
+    expect(harness.service.view(harness.lead.agent).sessions).toEqual([])
+    expect(durableWatchRecords(harness)).toEqual([])
   })
 
   it('maps an admission failure to a stable unreachable-Session error', async () => {
@@ -900,6 +1131,51 @@ describe('session creation', () => {
       'DEVLEAD_SESSION_UNAVAILABLE',
     )
     expect(error.message).toContain('gateway down')
+  })
+
+  it('rejects a create that cannot be watched before creating the Session', async () => {
+    const controller = new FakeSessionController()
+    controller.createHandler = () => ({ sessionId: SessionId('unused-created') })
+    const registry = new FakeWorkspaceRegistry()
+    registry.add({ path: '/tmp/full-watch-space', title: 'Full' })
+    const harness = await bootService({
+      enabled: true,
+      watched: ['already-watched'],
+      sessionController: controller,
+      workspaceRegistry: registry,
+      config: { maxWatchedSessions: 1 },
+    })
+    await expectCodeAsync(
+      () => harness.service.createSession(harness.lead.agent, { workspace: 'ws-1' }),
+      'DEVLEAD_WATCH_LIMIT',
+    )
+    expect(controller.createCalls).toEqual([])
+    expect(harness.ctx.sessions.get(SessionId('unused-created'))).toBeUndefined()
+  })
+
+  it('maps an unusable lead directory to the stable error vocabulary', async () => {
+    const controller = new FakeSessionController()
+    const registry = new FakeWorkspaceRegistry()
+    registry.createError = Object.assign(new Error('gone'), { code: 'ENOENT' })
+    const leadCwd = join(await tempDir(), 'moved-away')
+    const harness = await bootService({
+      enabled: true,
+      leadCwd,
+      sessionController: controller,
+      workspaceRegistry: registry,
+    })
+    const missing = await expectCodeAsync(
+      () => harness.service.createSession(harness.lead.agent, {}),
+      'DEVLEAD_DIRECTORY_MISSING',
+    )
+    expect(missing.message).toContain('moved-away')
+
+    registry.createError = new Error('storage offline')
+    await expectCodeAsync(
+      () => harness.service.createSession(harness.lead.agent, {}),
+      'DEVLEAD_INVALID_INPUT',
+    )
+    expect(controller.createCalls).toEqual([])
   })
 
   it('requires a Workspace registry when no explicit target is named', async () => {

@@ -312,10 +312,65 @@ describe('DevLeadNotificationHub wake coalescing', () => {
     expect(lead.agent.followups).toHaveLength(1)
   })
 
-  it('treats deliverNow for an unknown lead as a no-op', async () => {
+  it('drops a queued zero-delay flush when the lead mode is disabled first', async () => {
+    installFakeTimers()
+    const harness = await bootHub({ batchMs: 0 })
+    const lead = onlyLead(harness)
+    appendTurnEnd(harness.watched, 1)
+    appendPluginRecord(lead.session, DEVLEAD_MODE_RECORD_TYPE, modeRecord(false, T0 + 2))
+    await flushMicrotasks()
+    // The durable row is kept; only the stale wake-up is dropped.
+    expect(notificationRecords(lead.session)).toHaveLength(1)
+    expect(lead.agent.followups).toHaveLength(0)
+  })
+
+  it('clears the pending batch timer when deliverNow takes the batch', async () => {
+    installFakeTimers()
+    const harness = await bootHub({ batchMs: 60_000 })
+    const lead = onlyLead(harness)
+    appendTurnEnd(harness.watched, 1)
+    expect(vi.getTimerCount()).toBeGreaterThan(0)
+    await harness.hub.deliverNow(String(lead.agent.id))
+    await flushMicrotasks()
+    expect(lead.agent.followups).toHaveLength(1)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('queues one digest line for a duplicated turn identity', async () => {
     installFakeTimers()
     const harness = await bootHub({ batchMs: 400 })
-    await expect(harness.hub.deliverNow('no-such-lead')).resolves.toBeUndefined()
+    const lead = onlyLead(harness)
+    appendTurnEnd(harness.watched, 1)
+    appendTurnEnd(harness.watched, 1)
+    await vi.advanceTimersByTimeAsync(400)
+    expect(lead.agent.followups).toHaveLength(1)
+    expect(followupText(lead, 0).split('\n').filter(line => line.startsWith('- '))).toHaveLength(1)
+    // Both durable audit rows still exist; replay folds them idempotently.
+    expect(notificationRecords(lead.session)).toHaveLength(2)
+  })
+
+  it('retries a failed wake-up on a bounded timer instead of spinning', async () => {
+    installFakeTimers()
+    const harness = await bootHub({ batchMs: 0 })
+    const lead = onlyLead(harness)
+    lead.agent.failFollowups = 1
+    appendTurnEnd(harness.watched, 1)
+    await flushMicrotasks()
+    expect(lead.agent.followups).toHaveLength(0)
+    expect(vi.getTimerCount()).toBe(1)
+    await vi.advanceTimersByTimeAsync(1_000)
+    await flushMicrotasks()
+    expect(lead.agent.followups).toHaveLength(1)
+  })
+
+  it('wakes a lead on a host that composes no durability participant', async () => {
+    const harness = await bootHub({ batchMs: 0, persistence: false })
+    const lead = onlyLead(harness)
+    appendTurnEnd(harness.watched, 1)
+    await flushMicrotasks()
+    // flush() returning false means "nothing to persist to", not a failure.
+    expect(lead.agent.followups).toHaveLength(1)
+    expect(notificationRecords(lead.session)).toHaveLength(1)
   })
 })
 
@@ -364,6 +419,23 @@ describe('DevLeadNotificationHub lifecycle', () => {
     await harness.hub.deliverNow(String(lead.agent.id))
     await flushMicrotasks()
     expect(lead.agent.followups).toHaveLength(0)
+  })
+
+  it('re-indexes a lead whose Agent is recreated for the same Session', async () => {
+    installFakeTimers()
+    const harness = await bootHub({ batchMs: 400 })
+    const lead = onlyLead(harness)
+    harness.ctx.emit('agent/disposed', { agent: lead.agent.agent })
+    appendTurnEnd(harness.watched, 1)
+    await vi.advanceTimersByTimeAsync(400)
+    expect(notificationRecords(lead.session)).toEqual([])
+    // A resume re-announces the Agent: the durable watch set rebuilds the index.
+    harness.agents.add(lead.agent)
+    harness.ctx.emit('agent/created', { agent: lead.agent.agent, source: 'resume' })
+    appendTurnEnd(harness.watched, 2)
+    await vi.advanceTimersByTimeAsync(400)
+    expect(lead.agent.followups).toHaveLength(1)
+    expect(followupText(lead, 0)).toContain('— turn 2 completed')
   })
 
   it('drops one disposed lead runtime without throwing', async () => {
@@ -468,6 +540,28 @@ describe('cold lead delivery', () => {
     await vi.advanceTimersByTimeAsync(400)
     expect(controller.resolveCalls.map(String)).toEqual([String(lead.agent.id)])
     // The resumed Agent is re-synced and the still-pending digest flushes.
+    await vi.advanceTimersByTimeAsync(400)
+    await flushMicrotasks()
+    expect(lead.agent.followups).toHaveLength(1)
+  })
+
+  it('keeps the digest pending after a failed cold resume and delivers later', async () => {
+    installFakeTimers()
+    const controller = new FakeSessionController()
+    const harness = await bootHub({ batchMs: 400, wakeColdSession: true, sessionController: controller })
+    const lead = onlyLead(harness)
+    controller.resolveHandler = () => ({ error: { message: 'busy', code: 'session/agent-busy' } })
+    harness.agents.remove(String(lead.agent.id))
+    appendTurnEnd(harness.watched, 1)
+    await vi.advanceTimersByTimeAsync(400)
+    expect(controller.resolveCalls).toHaveLength(1)
+    expect(lead.agent.followups).toHaveLength(0)
+    controller.resolveHandler = () => {
+      harness.agents.add(lead.agent)
+      return { agent: lead.agent.agent }
+    }
+    await harness.hub.deliverNow(String(lead.agent.id))
+    // The resume re-indexes the Agent and arms the digest for the batch window.
     await vi.advanceTimersByTimeAsync(400)
     await flushMicrotasks()
     expect(lead.agent.followups).toHaveLength(1)

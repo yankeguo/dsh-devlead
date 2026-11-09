@@ -15,19 +15,16 @@ import type { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { SessionId as toSessionId } from '@deepseek-ai/dsh-session'
 import type { SessionHeader, SessionEvent } from '@deepseek-ai/dsh-session'
 import type { Workspace } from '@deepseek-ai/dsh-workspace'
-import {
-  DEVLEAD_ERROR_EXCERPT_MAX,
-  excerptLine,
-  isDevLeadTransition,
-} from '@yankeguo/dsh-devlead-protocol'
+import { isDevLeadTransition } from '@yankeguo/dsh-devlead-protocol'
 import type {
   DevLeadSessionView,
   DevLeadTransition,
   DevLeadWorkspaceView,
 } from '@yankeguo/dsh-devlead-protocol'
+import { assistantExcerpt } from './domain.ts'
 import { DevLeadError } from './error.ts'
 
-/** Read-side services and limits shared by every view builder. */
+/** Read-side services, limits, and cancellation shared by every view builder. */
 export interface DevLeadViewDeps {
   /** Host context carrying the optional capabilities. */
   readonly ctx: Context
@@ -37,12 +34,37 @@ export interface DevLeadViewDeps {
   readonly isWatched: (sessionId: string) => boolean
   /** Complete watch set of this lead, in add order. */
   readonly watchedSessions: readonly string[]
+  /** Cancellation checked between reads and rows, and threaded into query reads. */
+  readonly signal?: AbortSignal
 }
 
 /** One resolved Session reference and whether an Agent is currently live. */
 export interface ResolvedSession {
   readonly sessionId: SessionId
   readonly live: boolean
+}
+
+/** Known non-log facts of one Session, gathered without activating it. */
+interface KnownFacts {
+  /** Latest folded title, when a title service or the query engine knows one. */
+  readonly title: string | undefined
+  /** Recorded header, from the live Session or the query engine's clone. */
+  readonly header: SessionHeader | undefined
+  /** Whether a Session or Agent for the id is live in the host registries. */
+  readonly live: boolean
+}
+
+/**
+ * Batch facts one listing or detail view needs beyond the live registries:
+ * per-Session titles and headers, Workspace accounting, and archive state.
+ */
+export interface SessionFacts {
+  /** Per-Session title/header/liveness, keyed by Session id. */
+  readonly known: ReadonlyMap<string, KnownFacts>
+  /** First Workspace accounting each Session, keyed by Session id. */
+  readonly workspaces: ReadonlyMap<string, Workspace>
+  /** Whether the Workspace registry lists one Session as archived. */
+  readonly archived: ReadonlySet<string>
 }
 
 /**
@@ -63,25 +85,36 @@ export async function devLeadWorkspaceView(workspace: Workspace): Promise<DevLea
   }
 }
 
-/** Known header facts of one listed Session, gathered without activating it. */
-interface KnownSession {
-  readonly header: SessionHeader | undefined
-  readonly live: boolean
+/**
+ * Re-throw a read failure the caller cancelled instead of degrading it to an
+ * unknown fact: best-effort reads only swallow genuine capability failures.
+ * @param error - caught failure.
+ * @param signal - caller cancellation.
+ */
+function rethrowIfAborted(error: unknown, signal: AbortSignal | undefined): void {
+  if (signal?.aborted === true) throw error
 }
 
 /**
  * Collect the Session ids one listing should consider: live Agents, live
  * Sessions without an Agent, Workspace accounting, the lead's watch set, and —
  * when the query engine is composed — persisted Sessions beyond the live set.
+ *
+ * The persisted-Session window is bounded by `maxListedSessions` for listings,
+ * where only the retained rows are ever read. Identity resolution passes
+ * `exhaustive: true` instead: the cap belongs to row lists, never to whether an
+ * exact id or unique prefix is addressable.
  * @param deps - view dependencies.
  * @param workspace - restrict to one Workspace's accounting when provided.
- * @returns candidate ids, most recently active first where known.
+ * @param exhaustive - scan every persisted Session instead of the listing window.
+ * @returns candidate ids, deduplicated, without subagent-origin Sessions.
  */
 export async function collectSessionIds(
   deps: DevLeadViewDeps,
   workspace: Workspace | undefined,
+  exhaustive = false,
 ): Promise<string[]> {
-  const { ctx } = deps
+  const { ctx, signal } = deps
   const ids = new Set<string>()
   /** Subagent-origin Sessions are routed by the subagent runtime and are not addressable here. */
   const admissible = (id: string): boolean => {
@@ -107,61 +140,41 @@ export async function collectSessionIds(
     const query = ctx.get('sessionQuery')
     if (query !== undefined) {
       try {
-        const records = await query.listSessions()
+        const records = await query.listSessions(signal)
         for (const record of records) {
-          if (ids.size >= deps.maxListedSessions) break
+          if (!exhaustive && ids.size >= deps.maxListedSessions) break
           if (record.header.origin === 'subagent') continue
           ids.add(record.header.id)
         }
-      } catch {
+      } catch (error: unknown) {
+        rethrowIfAborted(error, signal)
         // A listing that fails only loses the cold rows; live facts stay valid.
       }
     }
   }
+  signal?.throwIfAborted()
   return [...ids].filter(admissible)
-}
-
-/**
- * Fold the latest title for one Session without activating it.
- * @param deps - view dependencies.
- * @param sessionId - Session identity.
- * @returns the title, or undefined when none was folded.
- */
-async function foldedTitle(deps: DevLeadViewDeps, sessionId: string): Promise<string | undefined> {
-  const live = deps.ctx.sessions.get(toSessionId(sessionId))
-  if (live !== undefined) {
-    const snapshot = deps.ctx.get('sessionTitle')?.get(live)
-    if (snapshot !== undefined) return snapshot.title
-  }
-  const query = deps.ctx.get('sessionQuery')
-  if (query === undefined) return undefined
-  try {
-    const snapshot = await query.readTitle(toSessionId(sessionId))
-    return snapshot?.title
-  } catch {
-    return undefined
-  }
 }
 
 /**
  * Read title, header, and existence facts for one batch of Sessions.
  * @param deps - view dependencies.
  * @param ids - Session identities.
- * @returns per-id title, header, live flag, and recorded cwd.
+ * @returns per-id title, header, and live flag.
  */
 async function knownSessions(
   deps: DevLeadViewDeps,
   ids: readonly string[],
-): Promise<Map<string, { title: string | undefined; header: SessionHeader | undefined; live: boolean }>> {
-  const { ctx } = deps
-  const result = new Map<string, { title: string | undefined; header: SessionHeader | undefined; live: boolean }>()
+): Promise<Map<string, KnownFacts>> {
+  const { ctx, signal } = deps
+  const result = new Map<string, KnownFacts>()
   const pendingTitles: string[] = []
   for (const id of ids) {
     const session = ctx.sessions.get(toSessionId(id))
     const agent = ctx.agents.get(toSessionId(id))
     const live = session !== undefined || agent !== undefined
     const sessionObject: Session | undefined = session ?? agent?.session
-    let title: string | undefined = sessionObject === undefined
+    const title: string | undefined = sessionObject === undefined
       ? undefined
       : ctx.get('sessionTitle')?.get(sessionObject)?.title
     if (title === undefined) pendingTitles.push(id)
@@ -171,7 +184,7 @@ async function knownSessions(
     const query = ctx.get('sessionQuery')
     if (query !== undefined) {
       try {
-        const observations = await query.readTitleSnapshots(pendingTitles.map(id => toSessionId(id)))
+        const observations = await query.readTitleSnapshots(pendingTitles.map(id => toSessionId(id)), signal)
         for (const observation of observations) {
           if (observation.status !== 'fulfilled') continue
           const { session, title: snapshot } = observation.value
@@ -180,12 +193,78 @@ async function knownSessions(
           if (entry === undefined) continue
           result.set(id, { ...entry, title: snapshot?.title ?? entry.title, header: session })
         }
-      } catch {
+      } catch (error: unknown) {
+        rethrowIfAborted(error, signal)
         // Titles and cold headers degrade to unknown facts; the row still lists.
       }
     }
   }
   return result
+}
+
+/**
+ * Gather every non-log fact one listing or detail view needs: known Session
+ * facts, Workspace accounting, and archive state. The Workspace registry is
+ * scanned once instead of once per row.
+ * @param deps - view dependencies.
+ * @param ids - Session identities the views will report.
+ * @returns the batch facts.
+ */
+export async function readSessionFacts(
+  deps: DevLeadViewDeps,
+  ids: readonly string[],
+): Promise<SessionFacts> {
+  const known = await knownSessions(deps, ids)
+  const workspaces = new Map<string, Workspace>()
+  const archived = new Set<string>()
+  const registry = deps.ctx.get('workspaceRegistry')
+  if (registry !== undefined) {
+    const requested = new Set(ids)
+    for (const sessionId of registry.archivedSessionIds) {
+      const id = String(sessionId)
+      if (requested.has(id)) archived.add(id)
+    }
+    for (const workspace of registry.list()) {
+      for (const sessionId of workspace.sessionIds) {
+        const id = String(sessionId)
+        if (!requested.has(id) || workspaces.has(id)) continue
+        workspaces.set(id, workspace)
+      }
+    }
+  }
+  return { known, workspaces, archived }
+}
+
+/**
+ * Rank candidate ids by the cheap live facts and cap the listing, so full
+ * Session views are only built for rows the caller receives.
+ *
+ * Priority: watched first, then running, then most recently created; Session
+ * id breaks ties so ordering is deterministic.
+ * @param deps - view dependencies.
+ * @param ids - candidate ids.
+ * @param facts - pre-read batch facts.
+ * @param limit - maximum retained rows, already validated as positive.
+ * @returns the retained ids in display order.
+ */
+export function rankSessionIds(
+  deps: DevLeadViewDeps,
+  ids: readonly string[],
+  facts: SessionFacts,
+  limit: number,
+): string[] {
+  const ranked = ids.map((id) => ({
+    id,
+    watched: deps.isWatched(id),
+    running: deps.ctx.agents.get(toSessionId(id))?.status === 'running',
+    createdAt: facts.known.get(id)?.header?.createdAt ?? 0,
+  }))
+  ranked.sort((left, right) => {
+    if (left.watched !== right.watched) return left.watched ? -1 : 1
+    if (left.running !== right.running) return left.running ? -1 : 1
+    return right.createdAt - left.createdAt || left.id.localeCompare(right.id)
+  })
+  return ranked.slice(0, Math.max(1, limit)).map(entry => entry.id)
 }
 
 /**
@@ -197,14 +276,7 @@ function lastAssistantExcerpt(events: readonly SessionEvent[]): string | undefin
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index]
     if (event === undefined || event.type !== 'assistant/message') continue
-    const blocks: readonly unknown[] = event.data.message.content
-    const text = blocks
-      .filter((block): block is { type: 'text'; text: string } => typeof block === 'object' && block !== null
-        && (block as { type?: unknown }).type === 'text'
-        && typeof (block as { text?: unknown }).text === 'string')
-      .map(block => block.text)
-      .join(' ')
-    const excerpt = excerptLine(text, DEVLEAD_ERROR_EXCERPT_MAX)
+    const excerpt = assistantExcerpt(event.data.message.content)
     if (excerpt !== undefined) return excerpt
   }
   return undefined
@@ -223,18 +295,22 @@ interface LogFacts {
  * Fold turn and assistant facts from one Session log through the query engine.
  * @param deps - view dependencies.
  * @param sessionId - Session identity.
- * @returns folded facts, empty when the engine is absent or the read fails.
+ * @returns folded facts, empty when the engine is absent, the read fails, or
+ *   the caller cancels between reads.
  */
 async function sessionLogFacts(deps: DevLeadViewDeps, sessionId: string): Promise<LogFacts> {
   const query = deps.ctx.get('sessionQuery')
   if (query === undefined) return {}
+  deps.signal?.throwIfAborted()
   let events: readonly SessionEvent[]
   try {
     const snapshot = await query.readSession(toSessionId(sessionId))
     events = snapshot.events
-  } catch {
+  } catch (error: unknown) {
+    rethrowIfAborted(error, deps.signal)
     return {}
   }
+  deps.signal?.throwIfAborted()
   const last = events.at(-1)
   let lastTurn: number | undefined
   let lastTransition: DevLeadTransition | undefined
@@ -245,10 +321,10 @@ async function sessionLogFacts(deps: DevLeadViewDeps, sessionId: string): Promis
     }
     if (event.type === 'turn/end') {
       const kind = event.data.reason.kind
-      if (isDevLeadTransition(kind)) {
-        lastTransition = kind
-        lastError = kind === 'error' ? event.data.reason.error.message : undefined
-      }
+      // TurnEndReasonMap is merge-extensible: report an unknown future kind the
+      // same way notifications do instead of keeping a stale earlier outcome.
+      lastTransition = isDevLeadTransition(kind) ? kind : 'interrupted'
+      lastError = kind === 'error' ? event.data.reason.error.message : undefined
     }
   }
   const lastAssistant = lastAssistantExcerpt(events)
@@ -266,54 +342,36 @@ async function sessionLogFacts(deps: DevLeadViewDeps, sessionId: string): Promis
  * @param deps - view dependencies.
  * @param sessionId - Session identity.
  * @param withLog - read the complete log for turn and assistant facts.
- * @param known - pre-read title/header/live facts; omitted to read them here.
+ * @param facts - pre-read batch facts for this Session.
  * @returns the detached view.
  */
 async function buildSessionView(
   deps: DevLeadViewDeps,
   sessionId: string,
   withLog: boolean,
-  known?: { title: string | undefined; header: SessionHeader | undefined; live: boolean },
+  facts: SessionFacts,
 ): Promise<DevLeadSessionView> {
   const { ctx } = deps
-  const facts = known ?? (await knownSessions(deps, [sessionId])).get(sessionId)
-  const session = ctx.sessions.get(toSessionId(sessionId))
+  const known = facts.known.get(sessionId)
   const agent = ctx.agents.get(toSessionId(sessionId))
-  const archived = ctx.get('workspaceRegistry')?.archivedSessionIds.includes(toSessionId(sessionId)) ?? false
-  const workspace = workspaceOf(deps, sessionId)
-  const live = facts?.live ?? false
+  const workspace = facts.workspaces.get(sessionId)
   const boundary = agent === undefined ? undefined : ctx.agents.turnBoundaryOf(agent.session)
   const log = withLog ? await sessionLogFacts(deps, sessionId) : {}
+  const lastTurn = log.lastTurn ?? boundary?.lastTurn
   return {
     sessionId,
-    ...(facts?.title === undefined ? {} : { title: facts.title }),
+    ...(known?.title === undefined ? {} : { title: known.title }),
     ...(workspace === undefined ? {} : { workspaceId: workspace.id, workspaceTitle: workspace.title }),
-    ...(facts?.header?.cwd === undefined ? {} : { cwd: facts.header.cwd }),
-    live,
+    ...(known?.header?.cwd === undefined ? {} : { cwd: known.header.cwd }),
+    live: known?.live ?? false,
     running: agent?.status === 'running',
     watched: deps.isWatched(sessionId),
-    archived,
-    ...(boundary === undefined ? {} : { lastTurn: boundary.lastTurn }),
+    archived: facts.archived.has(sessionId),
+    ...(lastTurn === undefined ? {} : { lastTurn }),
     ...(agent === undefined ? {} : { pendingInputs: agent.inbox.nextTurn.length + agent.inbox.nextStep.length }),
     ...log,
-    ...(log.lastTurn === undefined && boundary !== undefined ? { lastTurn: boundary.lastTurn } : {}),
-    ...(facts?.header?.createdAt === undefined ? {} : { createdAt: facts.header.createdAt }),
+    ...(known?.header?.createdAt === undefined ? {} : { createdAt: known.header.createdAt }),
   }
-}
-
-/**
- * Find the Workspace whose accounting contains one Session.
- * @param deps - view dependencies.
- * @param sessionId - Session identity.
- * @returns the accounting Workspace, or undefined.
- */
-export function workspaceOf(deps: DevLeadViewDeps, sessionId: string): Workspace | undefined {
-  const registry = deps.ctx.get('workspaceRegistry')
-  if (registry === undefined) return undefined
-  for (const workspace of registry.list()) {
-    if (workspace.sessionIds.includes(toSessionId(sessionId))) return workspace
-  }
-  return undefined
 }
 
 /**
@@ -328,25 +386,29 @@ export async function devLeadSessionView(
   sessionId: string,
   withLog: boolean,
 ): Promise<DevLeadSessionView> {
-  return await buildSessionView(deps, sessionId, withLog)
+  const facts = await readSessionFacts(deps, [sessionId])
+  return await buildSessionView(deps, sessionId, withLog, facts)
 }
 
 /**
  * Build a listing of Session views.
  * @param deps - view dependencies.
- * @param ids - candidate Session identities, most relevant first.
+ * @param ids - retained Session identities, in display order.
  * @param withLog - include folded log facts per row.
+ * @param facts - pre-read batch facts; omitted to read them here.
  * @returns detached views in candidate order.
  */
 export async function devLeadSessionViews(
   deps: DevLeadViewDeps,
   ids: readonly string[],
   withLog: boolean,
+  facts?: SessionFacts,
 ): Promise<DevLeadSessionView[]> {
-  const facts = await knownSessions(deps, ids)
+  const batch = facts ?? await readSessionFacts(deps, ids)
   const views: DevLeadSessionView[] = []
   for (const id of ids) {
-    views.push(await buildSessionView(deps, id, withLog, facts.get(id)))
+    deps.signal?.throwIfAborted()
+    views.push(await buildSessionView(deps, id, withLog, batch))
   }
   return views
 }
@@ -356,10 +418,15 @@ export async function devLeadSessionViews(
  * directory path the registry already knows.
  * @param ctx - host context.
  * @param reference - Workspace id or path.
+ * @param signal - cancellation checked before and after the path lookup.
  * @returns the resolved Workspace.
  * @throws {@link DevLeadError} `DEVLEAD_WORKSPACE_NOT_FOUND` when nothing matches.
  */
-export async function resolveWorkspaceReference(ctx: Context, reference: string): Promise<Workspace> {
+export async function resolveWorkspaceReference(
+  ctx: Context,
+  reference: string,
+  signal?: AbortSignal,
+): Promise<Workspace> {
   const registry = ctx.get('workspaceRegistry')
   if (registry === undefined) {
     throw new DevLeadError('this Host composes no Workspace registry', 'DEVLEAD_WORKSPACE_NOT_FOUND')
@@ -368,15 +435,53 @@ export async function resolveWorkspaceReference(ctx: Context, reference: string)
   const byId = registry.list().find(workspace => workspace.id === trimmed)
   if (byId !== undefined) return byId
   try {
+    signal?.throwIfAborted()
     const byPath = await registry.resolveByPath(trimmed)
     if (byPath !== undefined) return byPath
-  } catch {
+  } catch (error: unknown) {
+    rethrowIfAborted(error, signal)
     // A path outside the registry falls through to the not-found failure.
   }
+  signal?.throwIfAborted()
   throw new DevLeadError(
     `no Workspace matches "${reference}"; register the repository directory first with devlead_use_workspace`,
     'DEVLEAD_WORKSPACE_NOT_FOUND',
   )
+}
+
+/**
+ * Resolve one exact Session identity without listing the corpus: a live
+ * Session or Agent, a watched id, or a persisted Session the query engine can
+ * observe. Exact ids must stay addressable beyond the listing window the
+ * caller-visible listing is capped to.
+ * @param deps - view dependencies.
+ * @param reference - trimmed reference that failed no prefix checks yet.
+ * @returns the resolved Session, or undefined when no exact Session exists.
+ */
+async function resolveExactSession(
+  deps: DevLeadViewDeps,
+  reference: string,
+): Promise<ResolvedSession | undefined> {
+  const { ctx } = deps
+  const sessionId = toSessionId(reference)
+  const live = ctx.agents.get(sessionId) !== undefined
+  if (deps.watchedSessions.includes(reference)) return { sessionId, live }
+  const session = ctx.sessions.get(sessionId) ?? ctx.agents.get(sessionId)?.session
+  if (session !== undefined) {
+    if (session.header.origin === 'subagent') return undefined
+    return { sessionId, live }
+  }
+  const query = ctx.get('sessionQuery')
+  if (query === undefined) return undefined
+  try {
+    const observation = await query.readTitleSnapshot(sessionId, deps.signal)
+    if (observation.session.origin === 'subagent') return undefined
+    return { sessionId, live: false }
+  } catch (error: unknown) {
+    rethrowIfAborted(error, deps.signal)
+    // An unobservable exact id falls through to bounded prefix resolution.
+    return undefined
+  }
 }
 
 /**
@@ -393,22 +498,23 @@ export async function resolveSessionReference(
 ): Promise<ResolvedSession> {
   const trimmed = reference.trim()
   if (trimmed.length === 0) throw new DevLeadError('a Session id is required', 'DEVLEAD_INVALID_INPUT')
-  const candidates = await collectSessionIds(deps, undefined)
-  const exact = candidates.find(id => id === trimmed)
-  let resolvedId = exact
-  if (resolvedId === undefined) {
-    const matched = candidates.filter(id => id.startsWith(trimmed))
-    if (matched.length === 0) {
-      throw new DevLeadError(`no Session matches "${reference}"`, 'DEVLEAD_SESSION_NOT_FOUND')
-    }
-    if (matched.length > 1) {
-      throw new DevLeadError(
-        `Session prefix "${reference}" is ambiguous: ${matched.slice(0, 8).join(', ')}`,
-        'DEVLEAD_INVALID_INPUT',
-      )
-    }
-    resolvedId = matched[0]
+  const exact = await resolveExactSession(deps, trimmed)
+  if (exact !== undefined) return exact
+  const candidates = await collectSessionIds(deps, undefined, true)
+  const matched = candidates.filter(id => id.startsWith(trimmed))
+  const resolvedId = matched.find(id => id === trimmed) ?? (matched.length === 1 ? matched[0] : undefined)
+  if (resolvedId === undefined && matched.length === 0) {
+    throw new DevLeadError(
+      `no Session matches "${reference}"; list the addressable Sessions with devlead_list_sessions`,
+      'DEVLEAD_SESSION_NOT_FOUND',
+    )
   }
-  const sessionId = toSessionId(resolvedId as string)
+  if (resolvedId === undefined) {
+    throw new DevLeadError(
+      `Session prefix "${reference}" is ambiguous: ${matched.slice(0, 8).join(', ')}`,
+      'DEVLEAD_INVALID_INPUT',
+    )
+  }
+  const sessionId = toSessionId(resolvedId)
   return { sessionId, live: deps.ctx.agents.get(sessionId) !== undefined }
 }

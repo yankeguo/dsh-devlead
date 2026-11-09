@@ -5,6 +5,7 @@ import {
   formatCandidates,
   mergeCandidates,
   resolveSessionReference,
+  sessionRefLabel,
 } from '../src/resolve.ts'
 import type { SessionCandidate } from '../src/resolve.ts'
 import { sessionView } from './fake.ts'
@@ -83,10 +84,24 @@ describe('mergeCandidates', () => {
   })
 })
 
+describe('sessionRefLabel', () => {
+  it('renders title and id when a non-blank title is known', () => {
+    expect(sessionRefLabel('session-alpha', 'webapp')).toBe('webapp (session-alpha)')
+    expect(sessionRefLabel('session-alpha', '  webapp  ')).toBe('webapp (session-alpha)')
+  })
+
+  it('falls back to the bare id without a usable title', () => {
+    expect(sessionRefLabel('session-alpha', undefined)).toBe('session-alpha')
+    expect(sessionRefLabel('session-alpha', '')).toBe('session-alpha')
+    expect(sessionRefLabel('session-alpha', '   ')).toBe('session-alpha')
+  })
+})
+
 describe('candidateLabel', () => {
   it('renders title and id when known, the bare id otherwise', () => {
     expect(candidateLabel(titled('session-alpha', 'webapp'))).toBe('webapp (session-alpha)')
     expect(candidateLabel(bare('session-alpha'))).toBe('session-alpha')
+    expect(candidateLabel(titled('session-alpha', '   '))).toBe('session-alpha')
   })
 })
 

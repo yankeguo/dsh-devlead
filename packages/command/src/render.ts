@@ -16,13 +16,14 @@ import {
   transitionLabel,
 } from '@yankeguo/dsh-devlead-protocol'
 import type { DevLeadNotification, DevLeadSessionView } from '@yankeguo/dsh-devlead-protocol'
+import { sessionRefLabel } from './resolve.ts'
 
 /** How many retained notifications the status view shows. */
 export const RECENT_NOTIFICATION_LIMIT = 5
 
 /** One-line command reminder shown at the bottom of every status view. */
 export const HELP_LINE =
-  'Help: /devlead on | /devlead off | /devlead watch <session> | /devlead unwatch <session>'
+  'Help: /devlead (status) | /devlead on | /devlead off | /devlead watch <session> | /devlead unwatch <session>'
 
 /** Everything the status view renders. */
 export interface DevLeadStatusSnapshot {
@@ -41,10 +42,13 @@ export function modeLabel(enabled: boolean): string {
   return enabled ? 'on' : 'off'
 }
 
-/** Render one Session as `title (session-id)`, or the bare id without a title. */
+/**
+ * Render one Session as `title (session-id)`, or the bare id without a title.
+ * @param view - one Session view.
+ * @returns the human-readable reference shared with the command's other views.
+ */
 export function sessionLabel(view: DevLeadSessionView): string {
-  const title = view.title?.trim() ?? ''
-  return title.length === 0 ? view.sessionId : `${title} (${view.sessionId})`
+  return sessionRefLabel(view.sessionId, view.title)
 }
 
 /**

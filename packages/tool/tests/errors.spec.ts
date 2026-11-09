@@ -7,13 +7,31 @@
 import { describe, expect, it } from 'vitest'
 import { HarnessError } from '@deepseek-ai/dsh-llm'
 import { DevLeadError } from '@yankeguo/dsh-devlead'
-import { DevLeadToolInputError } from '../src/arguments.ts'
+import { DevLeadToolInputError, requireAgent } from '../src/arguments.ts'
 import { runTool, translateToolError } from '../src/errors.ts'
 
 /** Build one `Error` carrying a DevLead code without the core class. */
 function codeOnlyError(code: string, message = 'domain failure'): Error {
   return Object.assign(new Error(message), { code })
 }
+
+describe('requireAgent', () => {
+  it('returns the exact caller when the Step carried one', () => {
+    const agent = { id: 'agent-lead' } as unknown as Parameters<typeof requireAgent>[0]
+    expect(requireAgent(agent, 'devlead_get_session')).toBe(agent)
+  })
+
+  it('reports a missing caller as a structured agent-not-live failure', () => {
+    expect(() => requireAgent(undefined, 'devlead_get_session')).toThrow(HarnessError)
+    try {
+      requireAgent(undefined, 'devlead_get_session')
+    } catch (error: unknown) {
+      expect(error).toBeInstanceOf(HarnessError)
+      expect((error as HarnessError).code).toBe('DEVLEAD_AGENT_NOT_LIVE')
+      expect((error as HarnessError).message).toBe('devlead_get_session requires a calling Agent')
+    }
+  })
+})
 
 describe('translateToolError', () => {
   it('passes an existing HarnessError through unchanged', () => {
@@ -84,5 +102,12 @@ describe('runTool', () => {
       throw infrastructure
     }).catch((thrown: unknown) => thrown)
     expect(error).toBe(infrastructure)
+  })
+
+  it('keeps a guard HarnessError structured instead of remapping it', async () => {
+    const error = await runTool(() => requireAgent(undefined, 'devlead_notifications'))
+      .catch((thrown: unknown) => thrown)
+    expect(error).toBeInstanceOf(HarnessError)
+    expect((error as HarnessError).code).toBe('DEVLEAD_AGENT_NOT_LIVE')
   })
 })

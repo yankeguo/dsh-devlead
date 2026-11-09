@@ -6,6 +6,11 @@
  * Kept apart from `@yankeguo/dsh-devlead-protocol` (pure, browser-safe) because
  * these declarations pull dsh-session and dsh-llm into the Host program.
  *
+ * The decoders are the fold's only trust boundary: a persisted plugin record is
+ * attacker-adjacent JSON (a hand-edited or migrated log), so each decoder
+ * accepts exactly the fields its writer produces and rejects drift instead of
+ * silently dropping or coercing it.
+ *
  * @module @yankeguo/dsh-devlead
  */
 
@@ -35,6 +40,7 @@ import type {
   DevLeadTransition,
   DevLeadWatchRecord,
 } from '@yankeguo/dsh-devlead-protocol'
+import { thrownMessage } from './error.ts'
 
 export {
   DEVLEAD_ERROR_EXCERPT_MAX,
@@ -173,10 +179,24 @@ export function devLeadNotification(
   }
 }
 
-/** One decoded payload with its record's sequence position for failure text. */
-export interface DecodedRecord<T> {
-  readonly value: T
-  readonly seq: number
+/**
+ * Largest epoch-millisecond instant a JavaScript `Date` can represent. A larger
+ * persisted instant would survive schema validation but make every renderer
+ * fail on `new Date(value).toISOString()`, so the decoders reject it here.
+ */
+const MAX_INSTANT = 8_640_000_000_000_000
+
+/**
+ * Clamp one observed instant into the representable Date range. The hub writes
+ * the settled event's own `time` into durable records; a restored or foreign
+ * log carrying an unrepresentable instant must not make the writer persist a
+ * record that the strict fold then rejects.
+ * @param at - observed epoch milliseconds.
+ * @param fallback - replacement instant (normally the current clock).
+ * @returns a non-negative representable epoch-millisecond instant.
+ */
+export function representableInstant(at: number, fallback: number): number {
+  return Number.isSafeInteger(at) && at >= 0 && at <= MAX_INSTANT ? at : fallback
 }
 
 /**
@@ -192,6 +212,30 @@ function expectRecord(value: unknown, type: string): Record<string, unknown> {
   return value as Record<string, unknown>
 }
 
+/**
+ * Reject unexpected or missing fields of one decoded payload. Writers always
+ * stamp a complete, closed shape, so an unknown field is version drift and a
+ * missing required field is corruption.
+ * @param value - payload record.
+ * @param label - payload name used in the failure text.
+ * @param required - fields every payload must carry.
+ * @param optional - further fields a payload may carry.
+ */
+function expectFields(
+  value: Record<string, unknown>,
+  label: string,
+  required: readonly string[],
+  optional: readonly string[] = [],
+): void {
+  const allowed = new Set([...required, ...optional])
+  for (const key of Object.keys(value)) {
+    if (!allowed.has(key)) throw new Error(`${label} carries unexpected field ${JSON.stringify(key)}`)
+  }
+  for (const key of required) {
+    if (!(key in value)) throw new Error(`${label} is missing field ${JSON.stringify(key)}`)
+  }
+}
+
 /** Reject a persisted record with an unexpected kind or version. */
 function expectEnvelope(value: Record<string, unknown>, type: string, kind: string): void {
   if (value.kind !== kind) {
@@ -203,6 +247,32 @@ function expectEnvelope(value: Record<string, unknown>, type: string, kind: stri
 }
 
 /**
+ * Validate one persisted epoch-millisecond instant.
+ * @param value - persisted field.
+ * @param label - field name used in the failure text.
+ * @returns the validated instant.
+ */
+function decodeInstant(value: unknown, label: string): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 0 || (value as number) > MAX_INSTANT) {
+    throw new Error(`${label} must be a non-negative integer instant in epoch milliseconds`)
+  }
+  return value as number
+}
+
+/**
+ * Validate one persisted 1-based turn number.
+ * @param value - persisted field.
+ * @param label - field name used in the failure text.
+ * @returns the validated turn.
+ */
+function decodeTurn(value: unknown, label: string): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 1) {
+    throw new Error(`${label} must be a positive safe integer`)
+  }
+  return value as number
+}
+
+/**
  * Decode one persisted mode record.
  * @param value - persisted payload.
  * @returns the decoded mode record.
@@ -210,12 +280,16 @@ function expectEnvelope(value: Record<string, unknown>, type: string, kind: stri
  */
 export function decodeModeRecord(value: unknown): DevLeadModeRecord {
   const record = expectRecord(value, DEVLEAD_MODE_RECORD_TYPE)
+  const label = 'mode record'
+  expectFields(record, label, ['kind', 'version', 'enabled', 'at'])
   expectEnvelope(record, DEVLEAD_MODE_RECORD_TYPE, 'devlead/mode')
-  if (typeof record.enabled !== 'boolean') throw new Error('mode record enabled must be a boolean')
-  if (!Number.isSafeInteger(record.at) || (record.at as number) < 0) {
-    throw new Error('mode record at must be a non-negative safe integer')
+  if (typeof record.enabled !== 'boolean') throw new Error(`${label} enabled must be a boolean`)
+  return {
+    kind: 'devlead/mode',
+    version: DEVLEAD_RECORD_VERSION,
+    enabled: record.enabled,
+    at: decodeInstant(record.at, `${label} at`),
   }
-  return { kind: 'devlead/mode', version: DEVLEAD_RECORD_VERSION, enabled: record.enabled, at: record.at as number }
 }
 
 /**
@@ -226,21 +300,21 @@ export function decodeModeRecord(value: unknown): DevLeadModeRecord {
  */
 export function decodeWatchRecord(value: unknown): DevLeadWatchRecord {
   const record = expectRecord(value, DEVLEAD_WATCH_RECORD_TYPE)
+  const label = 'watch record'
+  expectFields(record, label, ['kind', 'version', 'sessions', 'at'])
   expectEnvelope(record, DEVLEAD_WATCH_RECORD_TYPE, 'devlead/watch')
-  if (!Array.isArray(record.sessions) || !record.sessions.every(session => typeof session === 'string' && session.length > 0)) {
-    throw new Error('watch record sessions must be a non-empty string array')
+  if (!Array.isArray(record.sessions)
+    || !record.sessions.every(session => typeof session === 'string' && session.length > 0)) {
+    throw new Error(`${label} sessions must be a non-empty string array`)
   }
   if (new Set(record.sessions).size !== record.sessions.length) {
-    throw new Error('watch record sessions must be unique')
-  }
-  if (!Number.isSafeInteger(record.at) || (record.at as number) < 0) {
-    throw new Error('watch record at must be a non-negative safe integer')
+    throw new Error(`${label} sessions must be unique`)
   }
   return {
     kind: 'devlead/watch',
     version: DEVLEAD_RECORD_VERSION,
     sessions: [...record.sessions] as string[],
-    at: record.at as number,
+    at: decodeInstant(record.at, `${label} at`),
   }
 }
 
@@ -252,37 +326,41 @@ export function decodeWatchRecord(value: unknown): DevLeadWatchRecord {
  */
 export function decodeNotification(value: unknown): DevLeadNotification {
   const record = expectRecord(value, DEVLEAD_NOTIFICATION_RECORD_TYPE)
-  if (typeof record.id !== 'string' || record.id.length === 0) throw new Error('notification id must be a non-empty string')
-  if (typeof record.sessionId !== 'string' || record.sessionId.length === 0) {
-    throw new Error('notification sessionId must be a non-empty string')
+  const label = 'notification'
+  expectFields(record, label, ['id', 'sessionId', 'transition', 'turn', 'at'], [
+    'sessionTitle',
+    'error',
+    'summary',
+  ])
+  if (typeof record.id !== 'string' || record.id.length === 0) {
+    throw new Error(`${label} id must be a non-empty string`)
   }
-  if (record.sessionTitle !== undefined && (typeof record.sessionTitle !== 'string' || record.sessionTitle.length === 0)) {
-    throw new Error('notification sessionTitle must be a non-empty string when present')
+  if (typeof record.sessionId !== 'string' || record.sessionId.length === 0) {
+    throw new Error(`${label} sessionId must be a non-empty string`)
+  }
+  if (record.sessionTitle !== undefined
+    && (typeof record.sessionTitle !== 'string' || record.sessionTitle.length === 0)) {
+    throw new Error(`${label} sessionTitle must be a non-empty string when present`)
   }
   if (!isDevLeadTransition(record.transition)) {
-    throw new Error(`notification transition ${JSON.stringify(record.transition)} is not recognized`)
+    throw new Error(`${label} transition ${JSON.stringify(record.transition)} is not recognized`)
   }
-  if (!Number.isSafeInteger(record.turn) || (record.turn as number) < 1) {
-    throw new Error('notification turn must be a positive safe integer')
-  }
-  if (!Number.isSafeInteger(record.at) || (record.at as number) < 0) {
-    throw new Error('notification at must be a non-negative safe integer')
-  }
+  const turn = decodeTurn(record.turn, `${label} turn`)
   if (record.error !== undefined && (typeof record.error !== 'string' || record.error.length === 0)) {
-    throw new Error('notification error must be a non-empty string when present')
+    throw new Error(`${label} error must be a non-empty string when present`)
   }
   if (record.summary !== undefined && (typeof record.summary !== 'string' || record.summary.length === 0)) {
-    throw new Error('notification summary must be a non-empty string when present')
+    throw new Error(`${label} summary must be a non-empty string when present`)
   }
-  const id = notificationId(record.sessionId, record.turn as number, record.transition)
-  if (record.id !== id) throw new Error(`notification id must be ${id}`)
+  const id = notificationId(record.sessionId, turn, record.transition)
+  if (record.id !== id) throw new Error(`${label} id must be ${id}`)
   return {
     id,
     sessionId: record.sessionId,
     ...(record.sessionTitle === undefined ? {} : { sessionTitle: record.sessionTitle }),
     transition: record.transition,
-    turn: record.turn as number,
-    at: record.at as number,
+    turn,
+    at: decodeInstant(record.at, `${label} at`),
     ...(record.error === undefined ? {} : { error: record.error }),
     ...(record.summary === undefined ? {} : { summary: record.summary }),
   }
@@ -296,20 +374,35 @@ export function decodeNotification(value: unknown): DevLeadNotification {
  */
 export function decodeNotificationRecord(value: unknown): DevLeadNotification {
   const record = expectRecord(value, DEVLEAD_NOTIFICATION_RECORD_TYPE)
+  const label = 'notification record'
+  expectFields(record, label, ['kind', 'version', 'notification'])
   expectEnvelope(record, DEVLEAD_NOTIFICATION_RECORD_TYPE, 'devlead/notification')
   return decodeNotification(record.notification)
 }
 
 /**
  * Collapse one failure into the bounded excerpt a notification stores.
- * @param error - thrown value.
+ * @param error - thrown value or structured failure record.
  * @returns the excerpt, or undefined when no message remains.
  */
 export function failureExcerpt(error: unknown): string | undefined {
-  const message = error instanceof Error
-    ? error.message
-    : typeof error === 'object' && error !== null && 'message' in error && typeof (error as { message?: unknown }).message === 'string'
-      ? (error as { message: string }).message
-      : String(error)
-  return excerptLine(message, DEVLEAD_ERROR_EXCERPT_MAX)
+  return excerptLine(thrownMessage(error), DEVLEAD_ERROR_EXCERPT_MAX)
+}
+
+/**
+ * Collapse the text blocks of one assistant message into the bounded
+ * single-line excerpt stored on notifications and Session detail views. The
+ * excerpt rule exists here once, so the notification hub and the read-side
+ * views can never disagree about it.
+ * @param blocks - assistant message content blocks.
+ * @returns the excerpt, or undefined when the message carries no text.
+ */
+export function assistantExcerpt(blocks: readonly unknown[]): string | undefined {
+  const text = blocks
+    .filter((block): block is { type: 'text'; text: string } => typeof block === 'object' && block !== null
+      && (block as { type?: unknown }).type === 'text'
+      && typeof (block as { text?: unknown }).text === 'string')
+    .map(block => block.text)
+    .join(' ')
+  return excerptLine(text, DEVLEAD_ERROR_EXCERPT_MAX)
 }
