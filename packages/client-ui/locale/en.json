@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "DevLead Bar",
+    "description": "Shows the DevLead mode switch, watched-session status, and the latest notification above the composer."
+  }
+}

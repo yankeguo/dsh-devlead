@@ -1,0 +1,40 @@
+{
+  "name": "@yankeguo/dsh-tool-devlead",
+  "version": "0.1.0",
+  "description": "Model-facing DevLead tools: register and list DSH Workspaces, create and steer ordinary Sessions, read session status, watch state changes, and read the lead's notification feed.",
+  "license": "MIT",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib"
+  ],
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "~4.1.0",
+    "@deepseek-ai/dsh-agent": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-llm": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-session": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-system-prompt": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-tools": "0.2.2-rc.1",
+    "@deepseek-ai/schemastery": "~3.19.0"
+  },
+  "dependencies": {
+    "@yankeguo/dsh-devlead": "workspace:*",
+    "@yankeguo/dsh-devlead-protocol": "workspace:*"
+  },
+  "engines": {
+    "dsh": ">=0.2.2-rc.1 <0.3.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yankeguo/dsh-devlead.git",
+    "directory": "packages/tool"
+  },
+  "homepage": "https://github.com/yankeguo/dsh-devlead#readme"
+}

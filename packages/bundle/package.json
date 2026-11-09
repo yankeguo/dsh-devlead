@@ -1,0 +1,44 @@
+{
+  "name": "@yankeguo/dsh-devlead-bundle",
+  "version": "0.1.0",
+  "description": "Dev Lead mode for DeepSeek Harness: turn one session into a lead that creates and steers ordinary Workspaces and Sessions, watches their state, and is woken on change.",
+  "license": "MIT",
+  "type": "module",
+  "icon": "./icon.svg",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml",
+      "listedByDefault": false
+    }
+  },
+  "exports": {
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "cordis.patch.yml",
+    "icon.svg",
+    "README.md"
+  ],
+  "dependencies": {
+    "@yankeguo/dsh-devlead": "workspace:*",
+    "@yankeguo/dsh-tool-devlead": "workspace:*",
+    "@yankeguo/dsh-command-devlead": "workspace:*",
+    "@yankeguo/dsh-client-ui-devlead": "workspace:*"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "~4.1.0"
+  },
+  "engines": {
+    "dsh": ">=0.2.2-rc.1 <0.3.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yankeguo/dsh-devlead.git",
+    "directory": "packages/bundle"
+  },
+  "homepage": "https://github.com/yankeguo/dsh-devlead#readme"
+}

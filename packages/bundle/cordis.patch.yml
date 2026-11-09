@@ -1,0 +1,9 @@
+- insert:
+    - id: devlead
+      name: '@yankeguo/dsh-devlead'
+    - id: devlead-tool
+      name: '@yankeguo/dsh-tool-devlead'
+    - id: devlead-command
+      name: '@yankeguo/dsh-command-devlead'
+    - id: devlead-ui
+      name: '@yankeguo/dsh-client-ui-devlead'

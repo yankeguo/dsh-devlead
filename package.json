@@ -1,0 +1,53 @@
+{
+  "name": "dsh-devlead",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Dev Lead mode for DeepSeek Harness: an opt-in session role that creates and steers ordinary Workspaces and Sessions, watches their state, and wakes the lead on change.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=24.9"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "clean": "node scripts/clean.mjs",
+    "dev:patch": "node scripts/dev-patch.mjs",
+    "verify": "pnpm run typecheck && pnpm run test && pnpm run build",
+    "install:profile": "node scripts/install-profile.mjs",
+    "uninstall:profile": "node scripts/install-profile.mjs --uninstall",
+    "release:dry": "pnpm build && pnpm publish -r --dry-run --access public --no-git-checks --tag latest",
+    "release:publish": "pnpm build && pnpm publish -r --access public --no-git-checks --tag latest"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "~4.1.0",
+    "@deepseek-ai/dsh-agent": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-api-remotes": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-api-session-controller": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-client-locale": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-client-ui-conversation": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-client-ui-primitives": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-client-ui-renderer": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-client-ui-session": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-client-ui-slots": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-commands": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-llm": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-session": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-session-projection": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-session-query": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-session-title": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-system-prompt": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-tools": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-workspace": "0.2.2-rc.1",
+    "@deepseek-ai/schemastery": "~3.19.0",
+    "@types/node": "^24.0.0",
+    "@types/react": "^18.3.12",
+    "esbuild": "^0.28.2",
+    "react": "^18.3.1",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.11",
+    "zod": "4.4.3"
+  }
+}

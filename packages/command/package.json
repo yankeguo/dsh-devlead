@@ -1,0 +1,35 @@
+{
+  "name": "@yankeguo/dsh-command-devlead",
+  "version": "0.1.0",
+  "description": "Human-facing /devlead command: enable or disable DevLead mode for the current session and inspect the lead's managed workspaces, sessions, and notifications.",
+  "license": "MIT",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib"
+  ],
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "~4.1.0",
+    "@deepseek-ai/dsh-commands": "0.2.2-rc.1"
+  },
+  "dependencies": {
+    "@yankeguo/dsh-devlead": "workspace:*",
+    "@yankeguo/dsh-devlead-protocol": "workspace:*"
+  },
+  "engines": {
+    "dsh": ">=0.2.2-rc.1 <0.3.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yankeguo/dsh-devlead.git",
+    "directory": "packages/command"
+  },
+  "homepage": "https://github.com/yankeguo/dsh-devlead#readme"
+}

@@ -1,0 +1,126 @@
+name: publish
+
+# Keyless npm publishing via OIDC trusted publishing.
+#
+# When a `v*` tag is pushed (or the workflow is dispatched manually), this
+# workflow installs, typechecks, tests, builds, publishes every workspace
+# package to npm, and creates the GitHub Release.
+#
+# There is NO npm token secret. GitHub Actions mints a short-lived OIDC token
+# (`id-token: write`), pnpm exchanges it with the npm registry for a
+# short-lived publish token, and the registry accepts the upload only because
+# each package has this exact workflow configured as a trusted publisher:
+#
+#   npm trust github <package> \
+#     --file publish.yml \
+#     --repo yankeguo/dsh-devlead \
+#     --allow-publish --yes
+#
+# One-time setup (and troubleshooting) is documented in docs/PUBLISHING.md;
+# scripts/trusted-publishers.sh configures all packages in one go.
+#
+# Requirements enforced by npm for trusted publishing:
+#   - package already exists on the registry (first publish needs a token),
+#   - this workflow file lives at .github/workflows/publish.yml,
+#   - runner is GitHub-hosted (self-hosted runners are not supported),
+#   - repository/workflow/environment claims match the trust configuration.
+# Provenance is attached automatically: the packages are public and this
+# repository is public.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  # Required for OIDC: lets pnpm request a GitHub Actions ID token and exchange
+  # it with the npm registry for a short-lived publish token.
+  id-token: write
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6.1.1
+        with:
+          version: 12.16.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          # Never cache in release builds: build inputs must be reproducible.
+          package-manager-cache: false
+
+      - name: Verify the tag matches every package version
+        # Publishing a tag whose version differs from the manifests would push a
+        # release whose npm versions cannot be found from the tag/GitHub Release.
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFileSync, readdirSync } from 'node:fs'
+
+          const tag = process.env.TAG
+          const expected = tag.startsWith('v') ? tag.slice(1) : tag
+          const mismatched = []
+          for (const dir of readdirSync('packages')) {
+            let manifest
+            try {
+              manifest = JSON.parse(readFileSync(`packages/${dir}/package.json`, 'utf8'))
+            } catch {
+              continue
+            }
+            if (manifest.private === true) continue
+            if (manifest.version !== expected) mismatched.push(`${manifest.name}@${manifest.version}`)
+          }
+          const root = JSON.parse(readFileSync('package.json', 'utf8'))
+          if (root.version !== expected) mismatched.push(`${root.name}@${root.version}`)
+          if (mismatched.length > 0) {
+            console.error(`tag ${tag} expects version ${expected}, but: ${mismatched.join(', ')}`)
+            process.exit(1)
+          }
+          console.log(`tag ${tag} matches every publishable package version`)
+          NODE
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build
+
+      - name: Publish packages (OIDC trusted publishing)
+        # No NODE_AUTH_TOKEN and no NPM_TOKEN: pnpm detects the GitHub Actions
+        # OIDC environment, exchanges its ID token for a registry token, and
+        # attaches provenance automatically for public packages from a public
+        # repository.
+        run: pnpm publish -r --access public --no-git-checks --tag latest
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          notes="docs/releases/${GITHUB_REF_NAME}.md"
+          if [ -f "$notes" ]; then
+            gh release create "${GITHUB_REF_NAME}" --title "${GITHUB_REF_NAME}" --notes-file "$notes"
+          else
+            gh release create "${GITHUB_REF_NAME}" --title "${GITHUB_REF_NAME}" --generate-notes
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
