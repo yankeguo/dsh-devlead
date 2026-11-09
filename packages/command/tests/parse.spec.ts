@@ -81,6 +81,16 @@ describe('parseDevLeadCommand', () => {
     expect(parseDevLeadCommand('watch\nsession-alpha')).toEqual({ kind: 'watch', session: 'session-alpha' })
   })
 
+  it('accepts a complete command line as rawInput', () => {
+    // Some command clients pass the whole line rather than the text after the
+    // command name; both spellings must resolve to the same grammar.
+    expect(parseDevLeadCommand('/devlead')).toEqual({ kind: 'status' })
+    expect(parseDevLeadCommand('/devlead/')).toEqual({ kind: 'status' })
+    expect(parseDevLeadCommand('/devlead on')).toEqual({ kind: 'on' })
+    expect(parseDevLeadCommand('/devlead watch session-alpha')).toEqual({ kind: 'watch', session: 'session-alpha' })
+    expect(parseDevLeadCommand(' /devlead  status ')).toEqual({ kind: 'status' })
+  })
+
   it('exposes one stable usage line and its advertised grammar', () => {
     expect(USAGE).toBe(`Usage: /devlead ${COMMAND_GRAMMAR}`)
     for (const token of ['on', 'off', 'watch <session>', 'unwatch <session>']) {

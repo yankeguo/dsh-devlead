@@ -102,7 +102,14 @@ function parseSessionArgument(subcommand: 'watch' | 'unwatch', text: string): De
  * @returns the parsed command; malformed known subcommands yield `invalid`.
  */
 export function parseDevLeadCommand(rawInput: string): DevLeadCommand {
-  const input = rawInput.trim()
+  // The documented field is the text after the command name, and the grammar
+  // hint advertises `/devlead [args]`. A client that passes the complete line
+  // instead — or a command palette that leaves a trailing slash — must still
+  // resolve, so one leading `/devlead` token with optional slash/whitespace is
+  // accepted and dropped.
+  const trimmed = rawInput.trim()
+  const complete = /^\/devlead[/\s]*/iu.exec(trimmed)
+  const input = (complete === null ? trimmed : trimmed.slice(complete[0].length)).trim()
   if (input.length === 0) return { kind: 'status' }
   switch (input.toLowerCase()) {
     case 'status': return { kind: 'status' }
