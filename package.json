@@ -1,6 +1,6 @@
 {
   "name": "dsh-devlead",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "description": "Dev Lead mode for DeepSeek Harness: an opt-in session role that creates and steers ordinary Workspaces and Sessions, watches their state, and wakes the lead on change.",

@@ -51,7 +51,7 @@ dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 勾选一次即可），刷新 Web 页面。升级 / 卸载：
 
 ```sh
-dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.1.0   # 升级到指定版本
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.1.1   # 升级到指定版本
 dsh plugin --profile desktop remove @yankeguo/dsh-devlead-bundle     # 卸载
 ```
 
@@ -155,4 +155,4 @@ bundle 的 patch 行没有显式写配置，核心服务使用 DESIGN 默认值�
 - 仓库 [README](../../README.md)：功能、安装、使用、通知机制、配置与故障排查
 - [DESIGN](../../docs/DESIGN.md)：领域模型、持久记录、核心服务 API、通知泵与权限模型
 - [PUBLISHING](../../docs/PUBLISHING.md)：npm trusted publishing 发布流程
-- [v0.1.0 release notes](../../docs/releases/v0.1.0.md)
+- [v0.1.1 release notes](../../docs/releases/v0.1.1.md)

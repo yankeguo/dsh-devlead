@@ -12,7 +12,7 @@
 | 6 | `@yankeguo/dsh-devlead-bundle` | 安装入口 bundle（`cordis.patch.yml` 装齐整套） |
 
 `pnpm publish -r` 会按依赖拓扑自动排序，**功能包先发、bundle 最后发布**；
-bundle 的 `workspace:*` 依赖在打包时会被改写为当前精确版本（`0.1.0` 等）。
+bundle 的 `workspace:*` 依赖在打包时会被改写为当前精确版本（`0.1.1` 等）。
 
 ## 两种发布方式
 
@@ -139,7 +139,7 @@ pnpm install                # 同步 workspace 锁文件中的版本
 
 ### 3. 写 release notes
 
-新建 `docs/releases/v<VERSION>.md`（参考 [`v0.1.0.md`](releases/v0.1.0.md)）。
+新建 `docs/releases/v<VERSION>.md`（参考 [`v0.1.1.md`](releases/v0.1.1.md)）。
 CI 会用它作为 GitHub Release 正文。
 
 ### 4. 发布前检查
@@ -223,7 +223,7 @@ npm view @yankeguo/dsh-command-devlead version
 在 DSH 中安装验证：
 
 ```sh
-dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.1.0
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.1.1
 ```
 
 然后刷新 Web 页面，开一个会话执行 `/devlead on`，再让模型

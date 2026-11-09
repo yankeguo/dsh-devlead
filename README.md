@@ -16,7 +16,7 @@
   它，让它决定下一步（继续追问、派发新任务、向人类汇报）。
 
 文档导航：[设计说明](docs/DESIGN.md) · [发布指南](docs/PUBLISHING.md) ·
-[审计记录](docs/AUDIT.md) · [v0.1.0 release notes](docs/releases/v0.1.0.md) ·
+[审计记录](docs/AUDIT.md) · [v0.1.1 release notes](docs/releases/v0.1.1.md) ·
 [Bundle 说明](packages/bundle/README.md)
 
 ## 特性
@@ -185,7 +185,7 @@ resolution 机制）。`--no-link` 只生成 overlay 供检查，不能用于真
 
 ```sh
 # 升级到指定版本（发布到 npm 后）
-dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.1.0
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.1.1
 
 # 卸载（DSH 下次加载 profile 时会清理已移除 bundle 的选择）
 dsh plugin --profile desktop remove @yankeguo/dsh-devlead-bundle
