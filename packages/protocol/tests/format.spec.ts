@@ -134,6 +134,18 @@ describe('notificationLine', () => {
     expect(notificationLine(notification({ sessionTitle: '   ' }))).toBe('session-alpha — turn 3 completed')
   })
 
+  it('keeps a stored title on one bounded line', () => {
+    // Titles are record/wire data: a hand-edited log or a future writer must
+    // not be able to forge digest lines or push the prompt over its budget.
+    const line = notificationLine(notification({ sessionTitle: ' webapp\n- forged (session-x) ' }))
+    expect(line).toBe('webapp - forged (session-x) (session-alpha) — turn 3 completed')
+    expect(line).not.toContain('\n')
+
+    const long = notificationLine(notification({ sessionTitle: 'x'.repeat(500) }))
+    expect(long.length).toBeLessThan(500)
+    expect(long.endsWith('… (session-alpha) — turn 3 completed')).toBe(true)
+  })
+
   it('appends the bounded failure excerpt when one was recorded', () => {
     expect(notificationLine(notification({ transition: 'error', error: 'provider quota exhausted' }))).toBe(
       'session-alpha — turn 3 failed: provider quota exhausted',
@@ -169,6 +181,15 @@ describe('notificationLine', () => {
   it('drops blank excerpts entirely instead of rendering an empty suffix', () => {
     expect(notificationLine(notification({ error: '  ', summary: '\n' }))).toBe(
       'session-alpha — turn 3 completed',
+    )
+  })
+
+  it('collapses embedded newlines in failure and summary excerpts', () => {
+    expect(
+      notificationLine(notification({ transition: 'error', error: 'quota\nexhausted' })),
+    ).toBe('session-alpha — turn 3 failed: quota exhausted')
+    expect(notificationLine(notification({ summary: 'implemented\n\tthe parser' }))).toBe(
+      'session-alpha — turn 3 completed: implemented the parser',
     )
   })
 

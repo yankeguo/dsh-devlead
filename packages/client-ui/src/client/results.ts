@@ -39,19 +39,29 @@ export type DevLeadCommandAdmission =
 /** One inline command failure the surfaces must report. */
 export type DevLeadCommandFailure =
   /** The admission never reached the Host, or the Host failed it outright. */
-  | { readonly kind: 'transport'; readonly message: string; readonly code: string }
+  | { readonly kind: 'transport'; readonly message?: string; readonly code: string }
   /** The Host executed the command and the command itself rejected the input. */
-  | { readonly kind: 'rejected'; readonly message: string }
+  | { readonly kind: 'rejected'; readonly message?: string }
   /** The command face threw instead of settling (an assembly fault, not a command outcome). */
-  | { readonly kind: 'unexpected'; readonly message: string }
+  | { readonly kind: 'unexpected'; readonly message?: string }
   /** The Host settled the RPC without resolving a command for the line. */
   | { readonly kind: 'unresolved'; readonly line: string }
 
 /** Dictionary key of one rendered command failure. */
 export type DevLeadCommandFailureKey = Extract<
   DevLeadKey,
-  'error.command' | 'error.rejected' | 'error.unknown' | 'error.unresolved'
+  | 'error.command'
+  | 'error.rejected'
+  | 'error.unknown'
+  | 'error.unresolved'
+  | 'error.fallback.transport'
+  | 'error.fallback.rejected'
+  | 'error.fallback.unknown'
+  | 'error.fallback.unresolved'
 >
+
+/** Namespace-bound translate function accepted by the failure helpers. */
+export type DevLeadTranslate = (key: DevLeadKey, params?: Record<string, unknown>) => string
 
 /** One inline error line: dictionary key plus interpolation parameters. */
 export interface DevLeadCommandFailureCopy {
@@ -60,18 +70,6 @@ export interface DevLeadCommandFailureCopy {
   /** Template parameters interpolated by the locale runtime. */
   readonly params: Readonly<Record<string, string>>
 }
-
-/** Human text used when the Host rejects a command without a reason. */
-const REJECTED_FALLBACK = 'command rejected'
-
-/** Human text used when a transport failure carries no message. */
-const TRANSPORT_FALLBACK = 'command failed'
-
-/** Message used when the command face throws a non-Error value. */
-const UNEXPECTED_FALLBACK = 'unknown error'
-
-/** One-line explanation used by tooltip-only surfaces for an unresolved line. */
-const UNRESOLVED_TEXT = 'the Host did not recognize the command line'
 
 /**
  * Trimmed text of one optional message, or undefined when it is absent or
@@ -95,15 +93,17 @@ function presentMessage(value: string | undefined): string | undefined {
  */
 export function commandFailure(result: DevLeadCommandAdmission): DevLeadCommandFailure | undefined {
   if (!result.ok) {
+    const message = presentMessage(result.error.message)
     return {
       kind: 'transport',
-      message: presentMessage(result.error.message) ?? TRANSPORT_FALLBACK,
+      ...(message === undefined ? {} : { message }),
       code: result.error.code,
     }
   }
   const outcome = result.value?.result
   if (outcome === undefined || outcome.kind !== 'error') return undefined
-  return { kind: 'rejected', message: presentMessage(outcome.text) ?? REJECTED_FALLBACK }
+  const message = presentMessage(outcome.text)
+  return { kind: 'rejected', ...(message === undefined ? {} : { message }) }
 }
 
 /**
@@ -113,7 +113,7 @@ export function commandFailure(result: DevLeadCommandAdmission): DevLeadCommandF
  */
 export function unexpectedFailure(error: unknown): DevLeadCommandFailure {
   const message = error instanceof Error ? presentMessage(error.message) : undefined
-  return { kind: 'unexpected', message: message ?? UNEXPECTED_FALLBACK }
+  return { kind: 'unexpected', ...(message === undefined ? {} : { message }) }
 }
 
 /**
@@ -138,15 +138,25 @@ export async function admitCommand(
   }
 }
 
+/** Localized fallback key per failure kind that can lack a Host message. */
+const FAILURE_FALLBACK_KEYS = {
+  transport: 'error.fallback.transport',
+  rejected: 'error.fallback.rejected',
+  unexpected: 'error.fallback.unknown',
+} as const satisfies Record<'transport' | 'rejected' | 'unexpected', DevLeadKey>
+
 /**
  * One-line human text of a classified failure, for surfaces that report
  * through a tooltip instead of an inline row (the compact off-state toggle has
- * no inline error seat).
+ * no inline error seat). All client-authored fallbacks go through the locale
+ * dictionary; a Host message is used verbatim when present.
  * @param failure - classified command failure.
+ * @param t - namespace-bound translate function.
  * @returns the failure text.
  */
-export function failureMessage(failure: DevLeadCommandFailure): string {
-  return failure.kind === 'unresolved' ? UNRESOLVED_TEXT : failure.message
+export function failureMessage(failure: DevLeadCommandFailure, t: DevLeadTranslate): string {
+  if (failure.kind === 'unresolved') return t('error.fallback.unresolved')
+  return failure.message ?? t(FAILURE_FALLBACK_KEYS[failure.kind])
 }
 
 /**
@@ -157,11 +167,17 @@ export function failureMessage(failure: DevLeadCommandFailure): string {
 export function failureCopy(failure: DevLeadCommandFailure): DevLeadCommandFailureCopy {
   switch (failure.kind) {
     case 'transport':
-      return { key: 'error.command', params: { message: failure.message, code: failure.code } }
+      return failure.message === undefined
+        ? { key: 'error.fallback.transport', params: {} }
+        : { key: 'error.command', params: { message: failure.message, code: failure.code } }
     case 'rejected':
-      return { key: 'error.rejected', params: { message: failure.message } }
+      return failure.message === undefined
+        ? { key: 'error.fallback.rejected', params: {} }
+        : { key: 'error.rejected', params: { message: failure.message } }
     case 'unexpected':
-      return { key: 'error.unknown', params: { message: failure.message } }
+      return failure.message === undefined
+        ? { key: 'error.fallback.unknown', params: {} }
+        : { key: 'error.unknown', params: { message: failure.message } }
     case 'unresolved':
       return { key: 'error.unresolved', params: { line: failure.line } }
   }

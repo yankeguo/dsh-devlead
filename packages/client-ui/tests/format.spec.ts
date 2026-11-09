@@ -84,6 +84,18 @@ describe('notificationSummary', () => {
     }
   })
 
+  it('keeps the chip fields on one bounded line', () => {
+    const summary = notificationSummary({
+      ...BASE_NOTIFICATION,
+      sessionTitle: 'Fix\nthe parser',
+      error: 'tool\rcrashed',
+    })
+    expect(summary.who).toBe('Fix the parser')
+    expect(summary.error).toBe('tool crashed')
+    expect(summary.who).not.toContain('\n')
+    expect(summary.error).not.toContain('\r')
+  })
+
   it('keeps a real failure excerpt and drops whitespace-only ones', () => {
     expect(notificationSummary({
       ...BASE_NOTIFICATION,

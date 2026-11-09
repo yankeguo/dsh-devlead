@@ -168,10 +168,14 @@ async function resolveWatchTarget(
 ): Promise<WatchTargetResolution> {
   const candidates = await collectCandidates(ctx, invocation, watchedSessionIds)
   const resolution = resolveSessionReference(reference, candidates)
-  if (resolution.kind === 'resolved') return resolution
   if (resolution.kind === 'ambiguous') {
     return { kind: 'failure', result: ambiguousResult(reference, resolution.candidates) }
   }
+  // An exact id is unambiguous by construction. A prefix resolved against the
+  // bounded listing is not enough: another Session outside the listing window
+  // can share it, so the core's exhaustive resolver must confirm uniqueness
+  // before a watch mutation can silently address the wrong Session.
+  if (resolution.kind === 'resolved' && reference === resolution.sessionId) return resolution
   const fallback = await resolveBeyondListing(ctx, invocation, reference)
   if (fallback.kind === 'resolved') return fallback
   if (fallback.kind === 'ambiguous') {
@@ -249,8 +253,13 @@ function friendlyDevLeadError(error: DevLeadError): string {
       return `The Workspace could not be resolved: ${error.message}`
     case 'DEVLEAD_DIRECTORY_MISSING':
       return `The target directory is missing: ${error.message}`
-    default:
-      return `The DevLead request failed: ${error.message}`
+    default: {
+      // Keep a friendly runtime fallback for a duplicated/mismatched core
+      // package while still making a newly added stable code a compile error
+      // here: the assignment below is only valid when the union is exhausted.
+      const unknownCode: never = error.code
+      return `The DevLead request failed (${String(unknownCode)}): ${error.message}`
+    }
   }
 }
 

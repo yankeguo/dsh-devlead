@@ -54,8 +54,14 @@ export const DEVLEAD_DEFAULT_MAX_WATCHED = 64
 /** Deployment default of the retained notification digest length. */
 export const DEVLEAD_DEFAULT_NOTIFICATION_RETENTION = 64
 
-/** Longest single-line error excerpt stored on one notification. */
+/** Longest single-line error/excerpt field stored on one notification. */
 export const DEVLEAD_ERROR_EXCERPT_MAX = 240
+
+/**
+ * Largest epoch-millisecond instant a JavaScript `Date` can represent. Persisted
+ * instants are validated against it so renderers cannot throw `RangeError`.
+ */
+export const DEVLEAD_MAX_INSTANT = 8_640_000_000_000_000
 
 /**
  * How one watched Session transition ended. Mirrors the durable

@@ -12,6 +12,8 @@ import { validateJsonSchemaValue } from '@deepseek-ai/dsh-tools'
 import type {
   DevLeadCreatedSession,
   DevLeadIsolation,
+  DevLeadIsolationMode,
+  DevLeadIsolationStatus,
   DevLeadNotification,
   DevLeadPromptedSession,
   DevLeadSessionView,
@@ -21,6 +23,8 @@ import type {
 import { createSessionRequest, DevLeadToolInputError } from '../src/arguments.ts'
 import {
   CREATE_SESSION_OUTPUT,
+  DEVLEAD_ISOLATION_MODES,
+  DEVLEAD_ISOLATION_STATUSES,
   PROMPT_SESSION_OUTPUT,
   WATCH_SESSION_OUTPUT,
   type IsolationValue,
@@ -79,6 +83,7 @@ const MINIMAL_ARGS: Record<(typeof TOOL_NAMES)[number], Record<string, unknown>>
 
 /** Tools whose body requires the calling Agent carried by the Step. */
 const CALLER_TOOLS = [
+  'devlead_use_workspace',
   'devlead_list_sessions',
   'devlead_create_session',
   'devlead_get_session',
@@ -260,12 +265,24 @@ describe('caller invariant', () => {
     expect(harness.devLead.calls).toHaveLength(0)
   })
 
-  it('keeps the two caller-free tools working for a Step without an Agent', async () => {
+  it('keeps the read-only Workspace listing working for a Step without an Agent', async () => {
     const harness = boot()
     const agentless = makeExec(undefined)
     await expect(harness.call('devlead_list_workspaces', {}, agentless)).resolves.toEqual({ workspaces: [WORKSPACE] })
-    await expect(harness.call('devlead_use_workspace', { path: '/tmp/webapp' }, agentless))
-      .resolves.toEqual({ workspace: WORKSPACE })
+  })
+})
+
+describe('isolation vocabulary', () => {
+  it('keeps the declared mode and status arrays exhaustive against the protocol unions', () => {
+    const modes: Record<DevLeadIsolationMode, true> = { none: true, worktree: true }
+    const statuses: Record<DevLeadIsolationStatus, true> = {
+      none: true,
+      worktree: true,
+      unavailable: true,
+      failed: true,
+    }
+    expect([...DEVLEAD_ISOLATION_MODES].sort()).toEqual(Object.keys(modes).sort())
+    expect([...DEVLEAD_ISOLATION_STATUSES].sort()).toEqual(Object.keys(statuses).sort())
   })
 })
 
@@ -573,6 +590,22 @@ describe('devlead_create_session', () => {
     expectValidOutput(harness, 'devlead_create_session', value)
   })
 
+  it('defaults a missing isolation outcome from a pre-0.2 core instead of throwing', async () => {
+    const harness = boot()
+    // A 0.1.1 core returns no `isolation` field; the tool must still project a
+    // valid canonical value for a Session it already created.
+    harness.devLead.created = {
+      session: SESSION,
+      workspace: WORKSPACE,
+      prompted: true,
+    } as unknown as DevLeadCreatedSession
+    const value = await harness.call('devlead_create_session', { prompt: 'go' }) as {
+      readonly isolation: IsolationValue
+    }
+    expect(value.isolation).toEqual({ requested: 'none', status: 'none' })
+    expectValidOutput(harness, 'devlead_create_session', value)
+  })
+
   it('carries the active worktree outcome with its branch facts', async () => {
     const harness = boot()
     harness.devLead.created = {
@@ -829,6 +862,8 @@ describe('presentation', () => {
     const presentCall = harness.tool('devlead_create_session').definition.presentCall
     expect((presentCall?.({ title: '  Parser  ', workspace: 'ws-1' }) as GenericCallView).rawInput).toBe('Parser')
     expect((presentCall?.({ title: '   ', workspace: 'ws-1' }) as GenericCallView).rawInput).toBe('ws-1')
+    expect((presentCall?.({ isolation: 'worktree' }) as GenericCallView).title)
+      .toBe('Create DevLead session (worktree)')
     expect((presentCall?.({}) as GenericCallView).rawInput).toBeUndefined()
   })
 

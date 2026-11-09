@@ -16,17 +16,22 @@ import { z as zod } from 'zod'
 import type { ZodType } from 'zod'
 import {
   DEVLEAD_DEFAULT_NOTIFICATION_RETENTION,
+  DEVLEAD_ERROR_EXCERPT_MAX,
+  DEVLEAD_MAX_INSTANT,
   DEVLEAD_MODE_PROJECTION_KEY,
   DEVLEAD_MODE_RECORD_TYPE,
   DEVLEAD_NOTIFICATION_RECORD_TYPE,
   DEVLEAD_PROJECTION_KEY,
+  DEVLEAD_TRANSITIONS,
   DEVLEAD_WATCH_RECORD_TYPE,
+  notificationId,
 } from '@yankeguo/dsh-devlead-protocol'
 import type {
   DevLeadModeProjection,
   DevLeadNotification,
   DevLeadProjection,
   DevLeadProjectionState,
+  DevLeadTransition,
 } from '@yankeguo/dsh-devlead-protocol'
 import { decodeModeRecord, decodeNotificationRecord, decodeWatchRecord } from './domain.ts'
 
@@ -35,25 +40,33 @@ export function emptyDevLeadProjectionState(): DevLeadProjectionState {
   return { enabled: false, sessions: [], notifications: [], failure: null }
 }
 
+/** One bounded, non-empty excerpt as persisted by the notification writer. */
+const excerptSchema = zod.string().min(1).refine(
+  value => value.length <= DEVLEAD_ERROR_EXCERPT_MAX * 2
+    && Array.from(value).length <= DEVLEAD_ERROR_EXCERPT_MAX,
+  { message: `excerpt must be at most ${DEVLEAD_ERROR_EXCERPT_MAX} code points` },
+)
+
 /** Wire schema validating one retained notification before it leaves the Host. */
 const notificationSchema: ZodType<DevLeadNotification> = zod.object({
   id: zod.string().min(1),
   sessionId: zod.string().min(1),
-  sessionTitle: zod.string().min(1).optional(),
-  transition: zod.enum([
-    'completed',
-    'aborted',
-    'blocked',
-    'error',
-    'max-tokens',
-    'interrupted',
-    'forked',
-  ]),
+  sessionTitle: excerptSchema.optional(),
+  // Derived from the shared vocabulary: a protocol transition added and written
+  // by the core can never become a record that this fold rejects.
+  transition: zod.enum([...DEVLEAD_TRANSITIONS] as [DevLeadTransition, ...DevLeadTransition[]]),
   turn: zod.number().int().positive(),
-  at: zod.number().int().nonnegative(),
-  error: zod.string().min(1).optional(),
-  summary: zod.string().min(1).optional(),
-}).strict() as ZodType<DevLeadNotification>
+  at: zod.number().int().nonnegative().max(DEVLEAD_MAX_INSTANT),
+  error: excerptSchema.optional(),
+  summary: excerptSchema.optional(),
+}).strict().refine(
+  notification => notification.id === notificationId(
+    notification.sessionId,
+    notification.turn,
+    notification.transition,
+  ),
+  { message: 'notification id must match sessionId, turn, and transition' },
+) as ZodType<DevLeadNotification>
 
 /**
  * Append one notification to a bounded digest, dropping an already-retained
@@ -86,8 +99,16 @@ function sameSessionIds(left: readonly string[], right: readonly string[]): bool
 /** Persisted projection state schema; seeds a fold and validates cached rows. */
 export const devLeadProjectionStateSchema: ZodType<DevLeadProjectionState> = zod.object({
   enabled: zod.boolean(),
-  sessions: zod.array(zod.string().min(1)),
-  notifications: zod.array(notificationSchema),
+  sessions: zod.array(zod.string().min(1)).refine(
+    sessions => new Set(sessions).size === sessions.length,
+    { message: 'sessions must be unique' },
+  ),
+  notifications: zod.array(notificationSchema)
+    .max(DEVLEAD_DEFAULT_NOTIFICATION_RETENTION)
+    .refine(
+      notifications => new Set(notifications.map(notification => notification.id)).size === notifications.length,
+      { message: 'notification ids must be unique' },
+    ),
   failure: zod.string().min(1).nullable(),
 }).strict() as ZodType<DevLeadProjectionState>
 
@@ -95,7 +116,12 @@ export const devLeadProjectionStateSchema: ZodType<DevLeadProjectionState> = zod
 export const devLeadProjectionSchema: ZodType<DevLeadProjection> = zod.object({
   enabled: zod.boolean(),
   sessions: zod.array(zod.string().min(1)),
-  notifications: zod.array(notificationSchema),
+  notifications: zod.array(notificationSchema)
+    .max(DEVLEAD_DEFAULT_NOTIFICATION_RETENTION)
+    .refine(
+      notifications => new Set(notifications.map(notification => notification.id)).size === notifications.length,
+      { message: 'notification ids must be unique' },
+    ),
 }).strict() as ZodType<DevLeadProjection>
 
 /**
@@ -197,7 +223,9 @@ export const devLeadProjectionDefinition = {
 /**
  * Host-only fold state of the summary-sized `devLeadMode` projection. The
  * selection is the only client fact; `failure` mirrors the digest unit's
- * freezing rule so a corrupt log cannot paint a stale "enabled" mark either.
+ * freezing rule, so both units freeze on the same corrupt log (the service
+ * rejects reads while the failure is present; the frozen view keeps the last
+ * valid selection, exactly like the digest unit).
  */
 export interface DevLeadModeProjectionState {
   /** Whether DevLead mode is selected for this Session. */

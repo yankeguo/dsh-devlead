@@ -8,6 +8,7 @@
  */
 
 import { describe, expect, it } from 'vitest'
+import { DEVLEAD_MODE_PROJECTION_KEY } from '@yankeguo/dsh-devlead-protocol/client'
 import { devLeadRowEnabled } from '../src/client/sessionMark.ts'
 import type { DevLeadRowSummary } from '../src/client/sessionMark.ts'
 
@@ -24,7 +25,7 @@ describe('devLeadRowEnabled', () => {
   })
 
   it('is true only while the summary reports the mode enabled', () => {
-    expect(devLeadRowEnabled(summary({ devLeadMode: { enabled: true } }))).toBe(true)
+    expect(devLeadRowEnabled(summary({ [DEVLEAD_MODE_PROJECTION_KEY]: { enabled: true } }))).toBe(true)
     expect(devLeadRowEnabled(summary({ devLeadMode: { enabled: false } }))).toBe(false)
   })
 

@@ -21,7 +21,7 @@ import type {
   DevLeadTransition,
   DevLeadWorkspaceView,
 } from '@yankeguo/dsh-devlead-protocol'
-import { assistantExcerpt } from './domain.ts'
+import { assistantExcerpt, failureExcerpt } from './domain.ts'
 import { DevLeadError } from './error.ts'
 
 /** Read-side services, limits, and cancellation shared by every view builder. */
@@ -324,7 +324,9 @@ async function sessionLogFacts(deps: DevLeadViewDeps, sessionId: string): Promis
       // TurnEndReasonMap is merge-extensible: report an unknown future kind the
       // same way notifications do instead of keeping a stale earlier outcome.
       lastTransition = isDevLeadTransition(kind) ? kind : 'interrupted'
-      lastError = kind === 'error' ? event.data.reason.error.message : undefined
+      // The view type promises a compact excerpt; unbounded provider text would
+      // otherwise blow up the tool payload and the command status line.
+      lastError = kind === 'error' ? failureExcerpt(event.data.reason.error) : undefined
     }
   }
   const lastAssistant = lastAssistantExcerpt(events)

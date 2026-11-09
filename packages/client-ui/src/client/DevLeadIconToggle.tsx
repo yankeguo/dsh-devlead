@@ -16,7 +16,7 @@
 
 import { Button, IconUsersOutlineRegular, Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
-import { DEVLEAD_PROJECTION_KEY } from '@yankeguo/dsh-devlead-protocol/client'
+import { DEVLEAD_COMMAND_NAME, DEVLEAD_PROJECTION_KEY } from '@yankeguo/dsh-devlead-protocol/client'
 import { failureMessage } from './results.ts'
 import type { DevLeadCommandInjected } from './DevLeadBar.tsx'
 import { useDevLeadAdmission } from './useDevLeadAdmission.ts'
@@ -35,7 +35,7 @@ export function DevLeadIconToggle({ useProjection, executeCommand, t }: DevLeadI
 
   if (projection === undefined || enabled) return null
 
-  const label = failure === null ? t('toggle.enable') : t('toggle.failed', { message: failureMessage(failure) })
+  const label = failure === null ? t('toggle.enable') : t('toggle.failed', { message: failureMessage(failure, t) })
 
   return (
     <>
@@ -51,7 +51,7 @@ export function DevLeadIconToggle({ useProjection, executeCommand, t }: DevLeadI
           data-devlead-pending={pending ? 'true' : 'false'}
           data-devlead-failed={failure === null ? 'false' : 'true'}
           onClick={() => {
-            run('/devlead on')
+            run(`/${DEVLEAD_COMMAND_NAME} on`)
           }}
         >
           <IconUsersOutlineRegular size={16} />
@@ -61,7 +61,7 @@ export function DevLeadIconToggle({ useProjection, executeCommand, t }: DevLeadI
           The live region stays mounted and changes its text when a failure
           settles, so screen readers announce the change reliably. */}
       <span className="devlead-sr-only" role="status" aria-live="polite" aria-atomic="true">
-        {failure === null ? null : t('toggle.failed.status', { message: failureMessage(failure) })}
+        {failure === null ? null : t('toggle.failed.status', { message: failureMessage(failure, t) })}
       </span>
     </>
   )

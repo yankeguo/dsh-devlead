@@ -9,7 +9,11 @@
  * @module @yankeguo/dsh-command-devlead/resolve
  */
 
-import type { DevLeadSessionView } from '@yankeguo/dsh-devlead-protocol'
+import {
+  DEVLEAD_ERROR_EXCERPT_MAX,
+  excerptLine,
+  type DevLeadSessionView,
+} from '@yankeguo/dsh-devlead-protocol'
 
 /** One addressable Session: identity plus the folded title when the host knows one. */
 export interface SessionCandidate {
@@ -89,14 +93,16 @@ const MAX_RENDERED_CANDIDATES = 10
 /**
  * Render one Session reference as `title (session-id)` when a non-blank title
  * is known, or the bare id otherwise. Shared by candidate lists, status rows,
- * and mutation titles so every surface names a Session the same way.
+ * and mutation titles so every surface names a Session the same way. The title
+ * is folded through the shared single-line excerpt rule: a hand-edited log or a
+ * future title writer must not be able to inject Newlines into command output.
  * @param sessionId - exact Session identity.
  * @param title - folded title, possibly absent or blank.
  * @returns the human-readable reference.
  */
 export function sessionRefLabel(sessionId: string, title: string | undefined): string {
-  const trimmed = title?.trim() ?? ''
-  return trimmed.length === 0 ? sessionId : `${trimmed} (${sessionId})`
+  const line = title === undefined ? undefined : excerptLine(title, DEVLEAD_ERROR_EXCERPT_MAX)
+  return line === undefined ? sessionId : `${line} (${sessionId})`
 }
 
 /**

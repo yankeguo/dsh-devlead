@@ -34,6 +34,10 @@ export const zh = {
   'error.rejected': '命令被拒绝：{message}',
   'error.unknown': '命令执行失败：{message}',
   'error.unresolved': '命令未执行：Host 未识别 {line}',
+  'error.fallback.transport': '命令失败',
+  'error.fallback.rejected': '命令被拒绝',
+  'error.fallback.unknown': '未知错误',
+  'error.fallback.unresolved': 'Host 未识别该命令',
 } satisfies Record<string, string>
 
 /** The `devlead` namespace key union. */
@@ -70,4 +74,8 @@ export const en = {
   'error.rejected': 'Command rejected: {message}',
   'error.unknown': 'Command failed: {message}',
   'error.unresolved': 'Command did not run: the Host did not recognize {line}',
+  'error.fallback.transport': 'command failed',
+  'error.fallback.rejected': 'command rejected',
+  'error.fallback.unknown': 'unknown error',
+  'error.fallback.unresolved': 'the Host did not recognize the command',
 } satisfies Record<DevLeadKey, string>

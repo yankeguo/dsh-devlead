@@ -51,7 +51,7 @@ import {
   devLeadProjectionDefinition,
   devLeadProjectionView,
 } from './fold.ts'
-import { worktreeCapabilityOf } from './isolation.ts'
+import { worktreeCapabilityOf, worktreeCheckoutOf } from './isolation.ts'
 import { DevLeadNotificationHub } from './notification.ts'
 import {
   collectSessionIds,
@@ -101,15 +101,26 @@ export interface Config {
   maxWatchedSessions?: number
   /** Maximum Session rows one listing may yield. */
   maxListedSessions?: number
-  /** Whether a cold lead Session is resumed to receive its notification digest. */
+  /**
+   * Whether a lead Session that is cold while the hub still indexes it is
+   * resumed to receive an already-queued digest (it does not observe turns that
+   * settle while the lead is disposed).
+   */
   wakeColdSession?: boolean
   /** Agent preset used by Sessions this lead creates when the request names none. */
   defaultAgentPreset?: string
 }
 
+/**
+ * Largest delay Node's `setTimeout` accepts without clamping. A larger
+ * notification window would silently fire after 1 ms with an
+ * `TimeoutOverflowWarning`, so the loader schema rejects it.
+ */
+const MAX_TIMER_DELAY_MS = 2_147_483_647
+
 /** Loader schema for the DevLead core service. */
 export const Config: z<Config> = z.object({
-  notificationBatchMs: z.number().step(1).min(0).default(400),
+  notificationBatchMs: z.number().step(1).min(0).max(MAX_TIMER_DELAY_MS).default(400),
   maxWatchedSessions: z.number().step(1).min(1).default(DEVLEAD_DEFAULT_MAX_WATCHED),
   maxListedSessions: z.number().step(1).min(1).default(200),
   wakeColdSession: z.boolean().default(false),
@@ -124,7 +135,7 @@ export interface DevLeadSettings {
   readonly maxWatchedSessions: number
   /** Maximum Session rows one listing may yield; a caller `limit` is capped by it. */
   readonly maxListedSessions: number
-  /** Whether a cold lead Session is resumed to receive its notification digest. */
+  /** Whether an indexed-but-cold lead is resumed to receive an already-queued digest. */
   readonly wakeColdSession: boolean
   /** Agent preset used by created Sessions when the request names none. */
   readonly defaultAgentPreset: string | undefined
@@ -138,8 +149,10 @@ export interface DevLeadSettings {
  */
 function resolveConfig(config: Config): DevLeadSettings {
   const notificationBatchMs = config.notificationBatchMs ?? 400
-  if (!Number.isSafeInteger(notificationBatchMs) || notificationBatchMs < 0) {
-    throw new TypeError('notificationBatchMs must be a non-negative safe integer')
+  if (!Number.isSafeInteger(notificationBatchMs)
+    || notificationBatchMs < 0
+    || notificationBatchMs > MAX_TIMER_DELAY_MS) {
+    throw new TypeError(`notificationBatchMs must be an integer between 0 and ${MAX_TIMER_DELAY_MS}`)
   }
   const maxWatchedSessions = config.maxWatchedSessions ?? DEVLEAD_DEFAULT_MAX_WATCHED
   if (!Number.isSafeInteger(maxWatchedSessions) || maxWatchedSessions < 1) {
@@ -240,6 +253,15 @@ export class DevLeadService extends Service {
 
   /** Watched-session notification hub, started with the service. */
   private hub!: DevLeadNotificationHub
+
+  /**
+   * Watch slots reserved by in-flight `createSession` calls, per lead Session
+   * id. The pre-create capacity check alone is not atomic: two concurrent calls
+   * can both pass it, then the second watch write fails after its Session was
+   * already created. The reservation is counted by every capacity check and
+   * released in a `finally`.
+   */
+  private readonly watchReservations = new Map<string, number>()
 
   /**
    * @param ctx - owning cordis context.
@@ -359,6 +381,8 @@ export class DevLeadService extends Service {
    * missing-directory creation and the stable DevLead error vocabulary.
    * An already-registered canonical path reuses its Workspace and keeps the
    * registered title: `options.title` applies only when a new record is created.
+   * This is a Host-level registration method and deliberately takes no Agent;
+   * the `devlead_use_workspace` tool requires a live caller before calling it.
    * @param path - fully qualified directory path.
    * @param options - optional title (new registrations only), missing-directory
    *   policy (default creates), and cancellation checked before the registry write.
@@ -419,10 +443,11 @@ export class DevLeadService extends Service {
    * always survives truncation; only retained rows pay for full view assembly.
    * @param agent - exact live lead Agent.
    * @param options - optional Workspace filter, watch-only filter, row limit
-   *   (capped by `maxListedSessions`), and cancellation checked between reads
-   *   and rows. A watched-only listing is never truncated below the watch set:
-   *   that set is already bounded by `maxWatchedSessions`, and the `/devlead`
-   *   status view would otherwise report truncated watch rows as missing.
+   *   (capped by `maxListedSessions`, except that a watched-only listing is
+   *   never truncated below the watch set), and cancellation checked between
+   *   reads and rows. The watched set is already bounded by
+   *   `maxWatchedSessions`; the `/devlead` status view would otherwise report
+   *   truncated watch rows as missing.
    * @returns detached Session views, watched and running rows first.
    * @throws {@link DevLeadError} when the Agent is not live, the Workspace does
    *   not resolve, the projection replay failed, or `limit` is not a positive
@@ -448,7 +473,13 @@ export class DevLeadService extends Service {
     const listingCap = options.watchedOnly === true
       ? Math.max(this.resolved.maxListedSessions, deps.watchedSessions.length)
       : this.resolved.maxListedSessions
-    const limit = listLimit(options.limit, listingCap)
+    const requestedLimit = listLimit(options.limit, listingCap)
+    // The status view relies on the watched-only listing describing the whole
+    // watch set; an explicit smaller limit must not hide a watched row (the set
+    // itself is bounded by maxWatchedSessions).
+    const limit = options.watchedOnly === true
+      ? Math.max(requestedLimit, deps.watchedSessions.length)
+      : requestedLimit
     const facts = await readSessionFacts(deps, ids)
     signal?.throwIfAborted()
     const retained = rankSessionIds(deps, ids, facts, limit)
@@ -482,9 +513,12 @@ export class DevLeadService extends Service {
    * the call still succeeds, with the Session working in the Workspace
    * checkout.
    *
-   * Cancellation is cooperative: the signal is checked before each awaited
-   * stage, so a cancelled call stops before it watches or prompts the new
-   * Session. Session creation itself is not abortable once started.
+   * Cancellation is cooperative: the signal is checked before each stage. A
+   * cancellation that arrives after the Session was created cannot undo the
+   * creation (or a title/watch mutation already applied); it only stops the
+   * next side effect, so a cancelled create may leave a watched Session behind
+   * without running isolation or admitting the prompt. Session creation itself
+   * is not abortable once started.
    * @param agent - exact live lead Agent.
    * @param request - Workspace, optional title, initial prompt, watch policy,
    *   preset, and checkout isolation mode.
@@ -510,45 +544,67 @@ export class DevLeadService extends Service {
       )
     }
     const watch = request.watch ?? true
-    // Check the watch capacity before creating: a rejected watch after creation
-    // would leave an orphan Session the caller was told did not exist.
-    if (watch) this.assertWatchCapacity(agent)
-    const workspace = await this.createTargetWorkspace(agent, request.workspace)
-    signal?.throwIfAborted()
-    const preset = request.preset?.trim() ?? this.resolved.defaultAgentPreset
-    let created: SessionCreateValue
+    // Reserve the watch slot synchronously before the first await: a rejected
+    // watch after creation would leave an orphan Session the caller was told
+    // did not exist, and a second concurrent create must see the reservation.
+    const releaseWatch = watch ? this.reserveWatchSlot(agent) : undefined
     try {
-      created = await controller.create({
-        workspaceId: workspace.id,
-        ...(preset === undefined || preset.length === 0 ? {} : { agentPreset: preset }),
-      })
-    } catch (error: unknown) {
-      throw this.sessionUnavailable(`could not create a Session in "${workspace.title}": ${thrownMessage(error)}`, error)
-    }
-    signal?.throwIfAborted()
-    const sessionId = String(created.sessionId)
-    if (request.title !== undefined && request.title.trim().length > 0) {
-      this.tryRename(created.sessionId, request.title.trim())
-    }
-    if (watch) await this.setWatching(agent, created.sessionId, true, signal)
-    // Isolation must run before the prompt is admitted: the new Session's Agent
-    // is still blank, so entering the isolated checkout cannot lose context.
-    // The capability is resolved and called best effort; only cancellation
-    // throws out of this stage.
-    signal?.throwIfAborted()
-    const isolation = await this.isolateSession(created.sessionId, request.isolation ?? 'none', signal)
-    signal?.throwIfAborted()
-    const prompt = request.prompt?.trim() ?? ''
-    const prompted = prompt.length > 0
-    if (prompted) {
-      await this.admitPrompt(agent, created.sessionId, prompt, false, signal)
-    }
-    const deps = this.viewDeps(agent, signal)
-    return {
-      session: await devLeadSessionView(deps, sessionId, true),
-      workspace: await devLeadWorkspaceView(workspace),
-      prompted,
-      isolation,
+      const workspace = await this.createTargetWorkspace(agent, request.workspace)
+      signal?.throwIfAborted()
+      // The controller creates a missing Workspace directory implicitly; a
+      // registered Workspace whose directory moved must fail here instead of
+      // resurrecting an empty directory and dispatching a child into it.
+      if (await workspace.status() !== 'ok') {
+        throw new DevLeadError(
+          `Workspace "${workspace.title}" (${workspace.path}) is no longer an available directory; `
+          + 'restore it or register a different Workspace',
+          'DEVLEAD_DIRECTORY_MISSING',
+        )
+      }
+      signal?.throwIfAborted()
+      const preset = request.preset?.trim() ?? this.resolved.defaultAgentPreset
+      let created: SessionCreateValue
+      try {
+        created = await controller.create({
+          workspaceId: workspace.id,
+          ...(preset === undefined || preset.length === 0 ? {} : { agentPreset: preset }),
+        })
+      } catch (error: unknown) {
+        throw this.sessionUnavailable(`could not create a Session in "${workspace.title}": ${thrownMessage(error)}`, error)
+      }
+      signal?.throwIfAborted()
+      const sessionId = String(created.sessionId)
+      if (request.title !== undefined && request.title.trim().length > 0) {
+        this.tryRename(created.sessionId, request.title.trim())
+      }
+      if (watch) {
+        await this.setWatching(agent, created.sessionId, true, signal, true)
+        // The watch record is committed: release the reserved capacity now.
+        // Holding it through isolation/prompt would double-count this Session
+        // and block unrelated watch writes for the rest of the call.
+        releaseWatch?.()
+      }
+      // Isolation must run before the prompt is admitted: the new Session's Agent
+      // is still blank, so entering the isolated checkout cannot lose context.
+      // The capability is resolved and called best effort; only cancellation
+      // throws out of this stage.
+      signal?.throwIfAborted()
+      const isolation = await this.isolateSession(created.sessionId, request.isolation ?? 'none', signal)
+      signal?.throwIfAborted()
+      const prompt = request.prompt?.trim() ?? ''
+      const prompted = prompt.length > 0
+      if (prompted) {
+        await this.admitPrompt(agent, created.sessionId, prompt, false, signal)
+      }
+      const deps = this.viewDeps(agent, signal)
+      return {
+        session: await devLeadSessionView(deps, sessionId, true),
+        workspace: await devLeadWorkspaceView(workspace),
+        prompted,
+        isolation,
+      }
+    } finally {
+      releaseWatch?.()
     }
   }
 
@@ -659,17 +715,47 @@ export class DevLeadService extends Service {
   }
 
   /**
-   * Check that one more watched Session fits under the configured cap, before a
-   * write path creates side effects it cannot roll back.
+   * Check that one more watched Session fits under the configured cap, including
+   * watch slots reserved by in-flight creates, before a write path creates side
+   * effects it cannot roll back.
    * @param agent - exact live lead Agent.
    */
   private assertWatchCapacity(agent: Agent): void {
     const state = this.strictStateOf(agent.session)
-    if (state.sessions.length < this.resolved.maxWatchedSessions) return
+    const reserved = this.watchReservations.get(String(agent.id)) ?? 0
+    if (state.sessions.length + reserved < this.resolved.maxWatchedSessions) return
     throw new DevLeadError(
       `watch limit reached (${this.resolved.maxWatchedSessions}); unwatch a Session before adding another`,
       'DEVLEAD_WATCH_LIMIT',
     )
+  }
+
+  /**
+   * Claim one watch slot synchronously for an in-flight create call.
+   * @param agent - exact live lead Agent.
+   * @returns an idempotent release function for the caller's `finally`.
+   * @throws {@link DevLeadError} `DEVLEAD_WATCH_LIMIT` when the current watch
+   *   set plus every other reservation is already at the cap.
+   */
+  private reserveWatchSlot(agent: Agent): () => void {
+    const leadId = String(agent.id)
+    const state = this.strictStateOf(agent.session)
+    const reserved = this.watchReservations.get(leadId) ?? 0
+    if (state.sessions.length + reserved >= this.resolved.maxWatchedSessions) {
+      throw new DevLeadError(
+        `watch limit reached (${this.resolved.maxWatchedSessions}); unwatch a Session before adding another`,
+        'DEVLEAD_WATCH_LIMIT',
+      )
+    }
+    this.watchReservations.set(leadId, reserved + 1)
+    let released = false
+    return () => {
+      if (released) return
+      released = true
+      const current = this.watchReservations.get(leadId) ?? 0
+      if (current <= 1) this.watchReservations.delete(leadId)
+      else this.watchReservations.set(leadId, current - 1)
+    }
   }
 
   /**
@@ -821,7 +907,21 @@ export class DevLeadService extends Service {
       }
     }
     try {
-      const checkout = await capability.create(child, {}, signal)
+      const created = await capability.create(child, {}, signal)
+      // Cancellation observed while Git worked wins over a malformed result,
+      // exactly as it does over a rejected creation.
+      signal?.throwIfAborted()
+      const checkout = worktreeCheckoutOf(created)
+      if (checkout === undefined) {
+        this.ctx.logger.warn(
+          `devlead: the Git worktree service returned an unusable checkout for Session "${String(sessionId)}"`,
+        )
+        return {
+          requested: 'worktree',
+          status: 'failed',
+          reason: 'the Git worktree service returned an unusable checkout',
+        }
+      }
       return {
         requested: 'worktree',
         status: 'worktree',
@@ -940,6 +1040,8 @@ export class DevLeadService extends Service {
    * @param sessionId - target Session identity.
    * @param watching - whether to include the Session.
    * @param signal - cancellation checked before the write.
+   * @param reservedSlot - the caller already holds a watch reservation for this
+   *   lead (the create path), so the capacity check must not count it again.
    * @returns the resulting watch mutation.
    */
   private async setWatching(
@@ -947,6 +1049,7 @@ export class DevLeadService extends Service {
     sessionId: ReturnType<typeof toSessionId>,
     watching: boolean,
     signal?: AbortSignal,
+    reservedSlot = false,
   ): Promise<DevLeadWatchMutation> {
     signal?.throwIfAborted()
     const id = String(sessionId)
@@ -960,7 +1063,7 @@ export class DevLeadService extends Service {
     if (present === watching) {
       return { sessionId: id, watched: present, sessions: state.sessions }
     }
-    if (watching) this.assertWatchCapacity(agent)
+    if (watching && !reservedSlot) this.assertWatchCapacity(agent)
     const next = watching
       ? [...state.sessions, id]
       : state.sessions.filter(existing => existing !== id)

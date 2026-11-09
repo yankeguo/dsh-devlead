@@ -22,7 +22,7 @@ import { IconUsersOutlineRegular, Switch } from '@deepseek-ai/dsh-client-ui-prim
 import type { SessionListState } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { SessionStatusSnapshot } from '@deepseek-ai/dsh-client-ui-session/client'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
-import { DEVLEAD_PROJECTION_KEY } from '@yankeguo/dsh-devlead-protocol/client'
+import { DEVLEAD_COMMAND_NAME, DEVLEAD_PROJECTION_KEY } from '@yankeguo/dsh-devlead-protocol/client'
 import {
   latestNotification,
   notificationSummary,
@@ -71,7 +71,7 @@ export function DevLeadBar({
   // click after the projection already caught up) is ignored.
   const toggle = (next: boolean): void => {
     if (next) return
-    run('/devlead off')
+    run(`/${DEVLEAD_COMMAND_NAME} off`)
   }
 
   return (

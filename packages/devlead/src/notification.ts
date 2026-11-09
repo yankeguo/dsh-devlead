@@ -5,8 +5,11 @@
  *
  * Durable state lives in the lead's own Session log (`plugin:devlead/*`
  * records, folded by the `devLead` projection). This hub owns only the
- * process-local index, the batching window, and the wake-up transport: a lead
- * whose Agent is gone keeps its durable records and loses only the wake-up.
+ * process-local index, the batching window, and the wake-up transport. A lead
+ * whose Agent is gone keeps its already-written records; an indexed-but-cold
+ * lead can be resumed for a queued digest, while a disposed lead stops
+ * observing new turns until its Session is opened again (which rebuilds the
+ * index from the durable watch set).
  *
  * @module @yankeguo/dsh-devlead
  */
@@ -109,6 +112,8 @@ export class DevLeadNotificationHub {
   private readonly lastAssistant = new Map<string, string>()
   /** Sessions whose replay failure has already been reported, so a corrupt log warns once. */
   private readonly warnedFailures = new Set<string>()
+  /** Leads whose persisted watch set named themselves; warn once per live indexing. */
+  private readonly warnedSelfWatch = new Set<string>()
   private started = false
   private stopping = false
 
@@ -203,7 +208,18 @@ export class DevLeadNotificationHub {
       return
     }
     const runtime = this.ensureLead(sessionId)
-    this.setWatched(runtime, state.sessions)
+    // A hand-edited persist record can name the lead itself. The write side
+    // rejects that, but accepting it here would make each turn/end append a
+    // notification to the event currently being published (re-entrancy) and
+    // wake the lead on its own turn. Drop the self entry from the live index;
+    // the durable record stays untouched for an explicit repair.
+    const selfWatched = state.sessions.includes(sessionId)
+    if (selfWatched && !this.warnedSelfWatch.has(sessionId)) {
+      this.warnedSelfWatch.add(sessionId)
+      this.ctx.logger.warn(`devlead: lead "${sessionId}" lists itself in its persisted watch set; ignoring it`)
+    }
+    if (!selfWatched) this.warnedSelfWatch.delete(sessionId)
+    this.setWatched(runtime, selfWatched ? state.sessions.filter(id => id !== sessionId) : state.sessions)
     if (runtime.pending.length > 0) this.scheduleFlush(runtime)
   }
 
@@ -282,6 +298,7 @@ export class DevLeadNotificationHub {
     }
     this.resuming.delete(leadId)
     this.warnedFailures.delete(leadId)
+    this.warnedSelfWatch.delete(leadId)
   }
 
   /** Clear one pending coalescing timer or queued zero-delay flush. */
@@ -371,6 +388,9 @@ export class DevLeadNotificationHub {
    * @param notification - observed notification.
    */
   private record(leadId: string, notification: DevLeadNotification): void {
+    // Defensive: even if a runtime index were corrupted, never append to the
+    // Session currently publishing the event (rc.1 rejects reentrant appends).
+    if (notification.sessionId === leadId) return
     const runtime = this.leads.get(leadId)
     const session = this.ctx.sessions.get(toSessionId(leadId))
     if (runtime === undefined || session === undefined) return
@@ -405,7 +425,8 @@ export class DevLeadNotificationHub {
   }
 
   /**
-   * Deliver one coalesced digest to a lead whose Agent is live.
+   * Deliver one coalesced digest to a live lead, or resume an indexed-but-cold
+   * lead when `wakeColdSession` is enabled.
    * @param runtime - lead runtime row.
    * @returns fulfillment after the delivery attempt settles.
    */

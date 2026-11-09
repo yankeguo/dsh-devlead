@@ -11,6 +11,7 @@ import { describe, expect, it } from 'vitest'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import {
   DEVLEAD_DEFAULT_NOTIFICATION_RETENTION,
+  DEVLEAD_MAX_INSTANT,
   DEVLEAD_MODE_RECORD_TYPE,
   DEVLEAD_NOTIFICATION_RECORD_TYPE,
   DEVLEAD_PROJECTION_KEY,
@@ -435,6 +436,45 @@ describe('wire view and schemas', () => {
     const view = devLeadProjectionView(state)
     expect(devLeadProjectionSchema.safeParse({ ...view, failure: null }).success).toBe(false)
     expect(devLeadProjectionStateSchema.safeParse({ ...state, extra: true }).success).toBe(false)
+  })
+
+  it('rejects unrepresentable instants, oversized digests, and mismatched ids in cached state', () => {
+    const state = fold([
+      modeEvent(0, true),
+      notificationEvent(1, notification()),
+    ])
+    const outOfRange = notification({ at: DEVLEAD_MAX_INSTANT + 1 })
+    expect(devLeadProjectionStateSchema.safeParse({ ...state, notifications: [outOfRange] }).success).toBe(false)
+    expect(devLeadProjectionSchema.safeParse({
+      enabled: state.enabled,
+      sessions: state.sessions,
+      notifications: [outOfRange],
+    }).success).toBe(false)
+
+    const tooMany = Array.from(
+      { length: DEVLEAD_DEFAULT_NOTIFICATION_RETENTION + 1 },
+      (_, index) => notification({ turn: index + 1 }),
+    )
+    expect(devLeadProjectionStateSchema.safeParse({ ...state, notifications: tooMany }).success).toBe(false)
+
+    const mismatchedId = { ...notification(), id: 'session-alpha:1:error' }
+    expect(devLeadProjectionStateSchema.safeParse({ ...state, notifications: [mismatchedId] }).success).toBe(false)
+  })
+
+  it('rejects duplicate watch ids and notification ids in a cached state', () => {
+    const state = fold([
+      modeEvent(0, true),
+      watchEvent(1, ['session-alpha']),
+      notificationEvent(2, notification()),
+    ])
+    // The fold writers never produce duplicates; a hand-edited or migrated
+    // checkpoint must be discarded instead of restoring a double-counted row.
+    expect(devLeadProjectionStateSchema.safeParse({ ...state, sessions: ['session-alpha', 'session-alpha'] }).success)
+      .toBe(false)
+    expect(devLeadProjectionStateSchema.safeParse({
+      ...state,
+      notifications: [notification(), notification()],
+    }).success).toBe(false)
   })
 
   it('rejects a notification carrying an unknown wire field', () => {

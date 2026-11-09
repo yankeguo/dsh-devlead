@@ -25,6 +25,29 @@ export interface WorktreeCheckout {
 }
 
 /**
+ * Narrow one optional capability result to the checkout facts DevLead reports.
+ *
+ * The capability is experimental and structurally detected, so a future
+ * version can change or truncate its result. A malformed result must degrade
+ * to a reported `failed` isolation, never become a `worktree` outcome with
+ * untrustworthy path/branch fields (and never crash the renderer/projection).
+ * @param value - value resolved by the optional capability.
+ * @returns a detached checkout, or undefined when any reported fact is missing
+ *   or not a non-empty string.
+ */
+export function worktreeCheckoutOf(value: unknown): WorktreeCheckout | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
+  const record = value as Record<string, unknown>
+  const path = record.path
+  const branch = record.branch
+  const baseCommit = record.baseCommit
+  if (typeof path !== 'string' || path.length === 0) return undefined
+  if (typeof branch !== 'string' || branch.length === 0) return undefined
+  if (typeof baseCommit !== 'string' || baseCommit.length === 0) return undefined
+  return { path, branch, baseCommit }
+}
+
+/**
  * Structural view of the optional experimental Git worktree service.
  *
  * The real service takes the calling Agent, whose current directory selects

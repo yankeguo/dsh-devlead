@@ -12,12 +12,14 @@
  * needs the one projection value.
  */
 
+import { DEVLEAD_MODE_PROJECTION_KEY } from '@yankeguo/dsh-devlead-protocol/client'
+
 /** Structural view of the row's summary projection values this mark reads. */
 export interface DevLeadRowSummary {
   /** Summary projection values carried by one Session list row. */
   readonly projectionValues?: {
     /** Summary-sized DevLead mode selection, when the Host published it. */
-    readonly devLeadMode?: { readonly enabled?: boolean }
+    readonly [DEVLEAD_MODE_PROJECTION_KEY]?: { readonly enabled?: boolean }
   }
 }
 
@@ -27,5 +29,5 @@ export interface DevLeadRowSummary {
  * @returns true only when the summary explicitly reports DevLead mode enabled.
  */
 export function devLeadRowEnabled(summary: DevLeadRowSummary | undefined): boolean {
-  return summary?.projectionValues?.devLeadMode?.enabled === true
+  return summary?.projectionValues?.[DEVLEAD_MODE_PROJECTION_KEY]?.enabled === true
 }

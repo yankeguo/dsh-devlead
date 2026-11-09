@@ -77,6 +77,15 @@ describe('builders', () => {
     expect(value.id).toBe(notificationId('session-alpha', 1, 'completed'))
   })
 
+  it('stores notification titles in the same bounded single-line form readers draw', () => {
+    const multiline = devLeadNotification('session-alpha', 'webapp\n- forged line', 'completed', 1, T0)
+    expect(multiline.sessionTitle).toBe('webapp - forged line')
+    const long = devLeadNotification('session-alpha', 'x'.repeat(500), 'completed', 1, T0)
+    expect(long.sessionTitle).toHaveLength(DEVLEAD_ERROR_EXCERPT_MAX)
+    expect(long.sessionTitle?.endsWith('…')).toBe(true)
+    expect(devLeadNotification('session-alpha', '   ', 'completed', 1, T0)).not.toHaveProperty('sessionTitle')
+  })
+
   it('attributes relay and notice messages to the devlead kind', () => {
     const lead = { id: SessionId('lead-session') } as unknown as Agent
     const relay = createDevLeadPromptMessage('work', lead)
@@ -105,6 +114,18 @@ describe('strict decoders', () => {
     sessions.push('s2')
     expect(decoded.sessions).toEqual(['s1'])
     expect(decoded.sessions).not.toBe(sessions)
+  })
+
+  it('rejects persisted excerpts longer than the writer contract', () => {
+    const oversized = 'x'.repeat(DEVLEAD_ERROR_EXCERPT_MAX + 1)
+    for (const field of ['sessionTitle', 'error', 'summary']) {
+      expect(() => decodeNotification({ ...notificationValue(), [field]: oversized })).toThrow(/at most 240/)
+    }
+    // The exact writer budget is accepted.
+    expect(decodeNotification({
+      ...notificationValue(),
+      summary: 'y'.repeat(DEVLEAD_ERROR_EXCERPT_MAX),
+    }).summary).toHaveLength(DEVLEAD_ERROR_EXCERPT_MAX)
   })
 
   it('rejects unknown and missing fields on every payload', () => {

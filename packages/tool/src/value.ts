@@ -224,7 +224,11 @@ export function sessionValue(view: DevLeadSessionView): SessionValue {
  * @param isolation - outcome assembled by the core service.
  * @returns the detached canonical value.
  */
-export function isolationValue(isolation: DevLeadIsolation): IsolationValue {
+export function isolationValue(isolation: DevLeadIsolation | undefined): IsolationValue {
+  // A newer tool can run against a 0.1.1 core that predates the field. Default
+  // the absent outcome instead of dereferencing undefined after the Session was
+  // already created (which would look like a failed create to the model).
+  if (isolation === undefined) return { requested: 'none', status: 'none' }
   return {
     requested: isolation.requested,
     status: isolation.status,

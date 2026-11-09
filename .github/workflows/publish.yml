@@ -27,9 +27,9 @@ name: publish
 # Provenance is attached automatically: the packages are public and this
 # repository is public.
 #
-# Pull requests and pushes run the same typecheck/test/build in verify.yml;
-# this workflow repeats them at release time so a tag never publishes from a
-# commit whose tests were not green at that exact revision.
+# Pull requests and pushes run the same typecheck/test/build/check-packages in
+# verify.yml; this workflow repeats them at release time so a tag never publishes
+# from a commit whose tests were not green at that exact revision.
 on:
   push:
     tags:
@@ -112,6 +112,9 @@ jobs:
 
       - name: Build
         run: pnpm build
+
+      - name: Validate package manifests
+        run: node scripts/check-packages.mjs
 
       - name: Publish packages (OIDC trusted publishing)
         # No NODE_AUTH_TOKEN and no NPM_TOKEN: pnpm detects the GitHub Actions

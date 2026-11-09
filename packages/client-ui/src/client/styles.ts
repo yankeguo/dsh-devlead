@@ -272,10 +272,12 @@ export const styles = `
 /**
  * Inject the plugin stylesheet once, unless an instance already exists.
  *
- * The returned disposer removes only the tag this call created: a second
- * plugin instance (or a hot reload) leaves the existing tag alone. When an
- * existing tag is reused its text is refreshed, so a client-plugin hot update
- * that changed the stylesheet does not leave the previous CSS in the page.
+ * When an existing tag is reused its text is refreshed, so a client-plugin hot
+ * update that changed the stylesheet does not leave the previous CSS in the
+ * page. The returned disposer removes only a tag this call created; a call that
+ * reused an existing tag returns a no-op disposer. Overlapping plugin instances
+ * are therefore not reference-counted (HMR normally disposes the old plugin
+ * before re-applying); no tag is removed by the reuse path.
  * @returns idempotent disposer removing the style tag, if it was created here.
  */
 export function ensureStyleTag(): () => void {

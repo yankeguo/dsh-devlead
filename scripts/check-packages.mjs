@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 /**
  * Validate the workspace packaging contract that the build itself cannot see:
- * version/engine lockstep, dependency placement, peer completeness for DSH
- * linked-root resolution, tsconfig/vitest alias coverage, lockfile importers,
- * and the pinned CI workflows.
+ * version/engine lockstep, dependency placement (including no DSH direct or
+ * optional dependencies and no experimental packages), peer completeness for
+ * DSH linked-root resolution, browser/client-inject coverage, tsconfig/vitest
+ * alias coverage, lockfile importers, and the pinned CI workflows.
  *
  * This is intentionally dependency-free and read-only; it is safe to run in CI
- * after `pnpm build` (and is wired into .github/workflows/verify.yml). Run:
+ * after `pnpm build` and is wired into both verify.yml and publish.yml. Run:
  *
  *   node scripts/check-packages.mjs
  */
@@ -81,16 +82,27 @@ function listSources(dir) {
 function importsOf(file) {
   const source = readFileSync(file, 'utf8')
   const found = []
-  // `import ... from 'x'`, `export ... from 'x'`, `import 'x'`, `import type ... from 'x'`.
-  // The clause stays on one line so an `export function` body cannot swallow later strings.
-  const pattern = /(?:^|\n)[ \t]*(import|export)\s+(type\s+)?([^'"`\n;]*?)\s*(?:from\s+)?['"]([^'"]+)['"]/gu
-  for (const match of source.matchAll(pattern)) {
-    const [, keyword, typeOnly, clause, specifier] = match
-    if (specifier.startsWith('.') || specifier.startsWith('node:')) continue
-    // A side-effect import has no from clause; the regex still reports it.
-    if (keyword === 'export' && typeOnly === undefined && !clause.includes('{') && !clause.includes('*')) continue
-    found.push({ specifier, typeOnly: typeOnly !== undefined })
+  const push = (specifier, typeOnly) => {
+    if (specifier.startsWith('.') || specifier.startsWith('node:')) return
+    found.push({ specifier, typeOnly })
   }
+  // `import ... from 'x'` and `export ... from 'x'`, including multiline import
+  // clauses. Semicolons end a clause, so an unrelated later statement is not
+  // swallowed; `from` is required here so side-effect imports use their own
+  // pattern below.
+  const staticPattern = /(?:^|\n)[ \t]*(import|export)\s+(type\s+)?([^'"`;]*?)\bfrom\s+['"]([^'"]+)['"]/gu
+  for (const match of source.matchAll(staticPattern)) {
+    const [, keyword, typeOnly, clause, specifier] = match
+    // A non-re-export `export const x = ...` is not an import edge.
+    if (keyword === 'export' && typeOnly === undefined && !clause.includes('{') && !clause.includes('*')) continue
+    push(specifier, typeOnly !== undefined)
+  }
+  // Side-effect imports (`import 'x'`).
+  const sideEffectPattern = /(?:^|\n)[ \t]*import\s+['"]([^'"]+)['"]/gu
+  for (const match of source.matchAll(sideEffectPattern)) push(match[1], false)
+  // Literal dynamic imports are runtime edges too.
+  const dynamicPattern = /\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/gu
+  for (const match of source.matchAll(dynamicPattern)) push(match[1], false)
   return found
 }
 
@@ -171,6 +183,48 @@ for (const { dir, dirPath, manifest } of manifests) {
       fail(`${label}: peer ${name} is not installed at the root for type checking; add it to devDependencies`)
     } else if (rootSpec !== spec) {
       fail(`${label}: peer ${name}@${spec} must match the root devDependency ${name}@${rootSpec}`)
+    }
+  }
+  // Host runtime imports must be peers (linked-root routing), and no DSH
+  // package may be declared as a direct/optional dependency: those edges install
+  // a second physical copy and are only safe through peer resolution.
+  for (const name of Object.keys(dependencies)) {
+    if (name.startsWith('@deepseek-ai/')) {
+      fail(`${label}: DSH package ${name} must be a peerDependency, not a dependency`)
+    }
+    if (name.includes('dsh-experimental')) fail(`${label}: must not declare experimental package ${name}`)
+  }
+  for (const name of Object.keys(manifest.optionalDependencies ?? {})) {
+    if (name.startsWith('@deepseek-ai/')) fail(`${label}: DSH package ${name} must not be an optionalDependency`)
+    if (name.includes('dsh-experimental')) fail(`${label}: must not declare experimental package ${name}`)
+  }
+  for (const name of Object.keys(peers)) {
+    if (name.includes('dsh-experimental')) fail(`${label}: must not declare experimental package ${name}`)
+  }
+  // `dsh.client.inject` is informational to the loader, but a bogus or optional
+  // client id is still a packaging mistake worth catching before release.
+  const client = manifest.dsh?.client
+  if (client !== undefined) {
+    if (typeof client !== 'object' || client === null || Array.isArray(client)) {
+      fail(`${label}: dsh.client must be an object`)
+    } else {
+      const injects = client.inject
+      if (!Array.isArray(injects)) fail(`${label}: dsh.client.inject must be an array`)
+      else {
+        const seen = new Set()
+        for (const id of injects) {
+          if (typeof id !== 'string' || !id.startsWith('@deepseek-ai/')) {
+            fail(`${label}: dsh.client.inject entry ${JSON.stringify(id)} must be a @deepseek-ai/* package name`)
+            continue
+          }
+          if (id.includes('dsh-experimental')) fail(`${label}: dsh.client.inject must not reference ${id}`)
+          if (seen.has(id)) fail(`${label}: dsh.client.inject lists ${id} twice`)
+          seen.add(id)
+          if (!Object.hasOwn(rootManifest.devDependencies ?? {}, id) && !CLIENT_EXTERNALS.has(id)) {
+            fail(`${label}: dsh.client.inject entry ${id} is neither a root devDependency nor a platform singleton`)
+          }
+        }
+      }
     }
   }
   // Every workspace import is declared, and subpath imports are exported.

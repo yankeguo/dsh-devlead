@@ -25,6 +25,7 @@ import {
   messageText,
 } from './harness.ts'
 import type { BootServiceOptions, ServiceHarness } from './harness.ts'
+import type { WorktreeCheckout } from '../src/isolation.ts'
 
 /** Workspace path the fake registry hosts for every creation below. */
 const WORKSPACE_PATH = '/tmp/devlead-isolation-space'
@@ -235,6 +236,31 @@ describe('session creation with optional worktree isolation', () => {
     const warning = warn.mock.calls[0]?.[0]
     expect(String(warning)).toContain('git exploded')
     expect(String(warning)).toContain(CREATED_ID)
+    warn.mockRestore()
+  })
+
+  it('reports a malformed checkout result as failed instead of a broken worktree outcome', async () => {
+    const worktrees = new FakeWorktreesCapability()
+    worktrees.createHandler = () => ({ path: '/tmp/worktree', branch: '', baseCommit: '' } as WorktreeCheckout)
+    const { harness, controller } = await bootCreation({ worktrees })
+    scriptCreateLiveSession(harness, controller)
+    const warn = vi.spyOn(harness.ctx.logger, 'warn')
+
+    const result = await harness.service.createSession(harness.lead.agent, {
+      workspace: WORKSPACE_PATH,
+      prompt: 'start anyway',
+      isolation: 'worktree',
+    })
+
+    expect(result.isolation).toEqual({
+      requested: 'worktree',
+      status: 'failed',
+      reason: expect.stringContaining('unusable checkout'),
+    })
+    expect(result.isolation).not.toHaveProperty('path')
+    expect(result.prompted).toBe(true)
+    expect(liveChild(harness).followups).toHaveLength(1)
+    expect(warn).toHaveBeenCalledTimes(1)
     warn.mockRestore()
   })
 

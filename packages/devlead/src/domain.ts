@@ -22,6 +22,7 @@ import type { SessionId } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-session/types'
 import {
   DEVLEAD_ERROR_EXCERPT_MAX,
+  DEVLEAD_MAX_INSTANT,
   DEVLEAD_MESSAGE_KIND,
   DEVLEAD_NOTIFICATION_RECORD_TYPE,
   DEVLEAD_MODE_RECORD_TYPE,
@@ -44,6 +45,7 @@ import { thrownMessage } from './error.ts'
 
 export {
   DEVLEAD_ERROR_EXCERPT_MAX,
+  DEVLEAD_MAX_INSTANT,
   DEVLEAD_MESSAGE_KIND,
   DEVLEAD_NOTIFICATION_RECORD_TYPE,
   DEVLEAD_MODE_RECORD_TYPE,
@@ -167,10 +169,17 @@ export function devLeadNotification(
   error?: string,
   summary?: string,
 ): DevLeadNotification {
+  // The title is record data too, and it is rendered into a model-facing digest
+  // line: store the same bounded single-line form the renderer accepts, so a
+  // long or multi-line title cannot make the durable payload drift from what
+  // every reader will draw.
+  const title = sessionTitle === undefined
+    ? undefined
+    : excerptLine(sessionTitle, DEVLEAD_ERROR_EXCERPT_MAX)
   return {
     id: notificationId(sessionId, turn, transition),
     sessionId,
-    ...(sessionTitle === undefined ? {} : { sessionTitle }),
+    ...(title === undefined ? {} : { sessionTitle: title }),
     transition,
     turn,
     at,
@@ -178,13 +187,6 @@ export function devLeadNotification(
     ...(summary === undefined ? {} : { summary }),
   }
 }
-
-/**
- * Largest epoch-millisecond instant a JavaScript `Date` can represent. A larger
- * persisted instant would survive schema validation but make every renderer
- * fail on `new Date(value).toISOString()`, so the decoders reject it here.
- */
-const MAX_INSTANT = 8_640_000_000_000_000
 
 /**
  * Clamp one observed instant into the representable Date range. The hub writes
@@ -196,7 +198,7 @@ const MAX_INSTANT = 8_640_000_000_000_000
  * @returns a non-negative representable epoch-millisecond instant.
  */
 export function representableInstant(at: number, fallback: number): number {
-  return Number.isSafeInteger(at) && at >= 0 && at <= MAX_INSTANT ? at : fallback
+  return Number.isSafeInteger(at) && at >= 0 && at <= DEVLEAD_MAX_INSTANT ? at : fallback
 }
 
 /**
@@ -253,7 +255,7 @@ function expectEnvelope(value: Record<string, unknown>, type: string, kind: stri
  * @returns the validated instant.
  */
 function decodeInstant(value: unknown, label: string): number {
-  if (!Number.isSafeInteger(value) || (value as number) < 0 || (value as number) > MAX_INSTANT) {
+  if (!Number.isSafeInteger(value) || (value as number) < 0 || (value as number) > DEVLEAD_MAX_INSTANT) {
     throw new Error(`${label} must be a non-negative integer instant in epoch milliseconds`)
   }
   return value as number
@@ -270,6 +272,29 @@ function decodeTurn(value: unknown, label: string): number {
     throw new Error(`${label} must be a positive safe integer`)
   }
   return value as number
+}
+
+/**
+ * Decode one persisted free-text excerpt. The writer stores the shared bounded
+ * form (see `excerptLine`), so a value over the budget is drift or tampering:
+ * reject it rather than letting a hand-edited log dominate a model prompt or
+ * the browser strip. Whitespace is collapsed again by every renderer, so an
+ * older/migrated record containing a newline cannot forge an extra line.
+ * @param value - persisted field.
+ * @param label - field name used in the failure text.
+ * @returns the validated non-empty excerpt.
+ */
+function decodeExcerpt(value: unknown, label: string): string {
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new Error(`${label} must be a non-empty string when present`)
+  }
+  // Each code point is at most two UTF-16 units; check the cheap upper bound
+  // before allocating an array for a hand-edited multi-megabyte string.
+  if (value.length > DEVLEAD_ERROR_EXCERPT_MAX * 2
+    || Array.from(value).length > DEVLEAD_ERROR_EXCERPT_MAX) {
+    throw new Error(`${label} must be at most ${DEVLEAD_ERROR_EXCERPT_MAX} code points`)
+  }
+  return value
 }
 
 /**
@@ -338,31 +363,26 @@ export function decodeNotification(value: unknown): DevLeadNotification {
   if (typeof record.sessionId !== 'string' || record.sessionId.length === 0) {
     throw new Error(`${label} sessionId must be a non-empty string`)
   }
-  if (record.sessionTitle !== undefined
-    && (typeof record.sessionTitle !== 'string' || record.sessionTitle.length === 0)) {
-    throw new Error(`${label} sessionTitle must be a non-empty string when present`)
-  }
+  const sessionTitle = record.sessionTitle === undefined
+    ? undefined
+    : decodeExcerpt(record.sessionTitle, `${label} sessionTitle`)
   if (!isDevLeadTransition(record.transition)) {
     throw new Error(`${label} transition ${JSON.stringify(record.transition)} is not recognized`)
   }
   const turn = decodeTurn(record.turn, `${label} turn`)
-  if (record.error !== undefined && (typeof record.error !== 'string' || record.error.length === 0)) {
-    throw new Error(`${label} error must be a non-empty string when present`)
-  }
-  if (record.summary !== undefined && (typeof record.summary !== 'string' || record.summary.length === 0)) {
-    throw new Error(`${label} summary must be a non-empty string when present`)
-  }
+  const error = record.error === undefined ? undefined : decodeExcerpt(record.error, `${label} error`)
+  const summary = record.summary === undefined ? undefined : decodeExcerpt(record.summary, `${label} summary`)
   const id = notificationId(record.sessionId, turn, record.transition)
   if (record.id !== id) throw new Error(`${label} id must be ${id}`)
   return {
     id,
     sessionId: record.sessionId,
-    ...(record.sessionTitle === undefined ? {} : { sessionTitle: record.sessionTitle }),
+    ...(sessionTitle === undefined ? {} : { sessionTitle }),
     transition: record.transition,
     turn,
     at: decodeInstant(record.at, `${label} at`),
-    ...(record.error === undefined ? {} : { error: record.error }),
-    ...(record.summary === undefined ? {} : { summary: record.summary }),
+    ...(error === undefined ? {} : { error }),
+    ...(summary === undefined ? {} : { summary }),
   }
 }
 

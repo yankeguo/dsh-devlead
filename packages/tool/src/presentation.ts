@@ -65,7 +65,12 @@ export function presentListSessionsCall(args: ListSessionsArgs): GenericCallView
 
 /** Pending card of `devlead_create_session`. */
 export function presentCreateSessionCall(args: CreateSessionArgs): GenericCallView {
-  return present('Create DevLead session', 'other', firstText(args.title, args.workspace))
+  const isolated = args.isolation === 'worktree'
+  return present(
+    isolated ? 'Create DevLead session (worktree)' : 'Create DevLead session',
+    'other',
+    firstText(args.title, args.workspace),
+  )
 }
 
 /** Pending card of `devlead_get_session`. */

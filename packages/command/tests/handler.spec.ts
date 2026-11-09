@@ -296,8 +296,21 @@ describe('devlead command watch set', () => {
     expect(result.kind).toBe('success')
     expect(text(result)).toContain('Now watching webapp (session-alpha).')
     expect(service.watching).toEqual(['session-alpha'])
+    expect(service.calls).toContain('getSession:session-a')
     expect(service.calls).toContain('watchSession:session-alpha:true')
-    expect(service.calls.some(call => call.startsWith('getSession:'))).toBe(false)
+  })
+
+  it('confirms a prefix against the exhaustive resolver before mutating', async () => {
+    const { handler, service } = seeded()
+    // The bounded listing sees only one match; the core resolver also sees a
+    // persisted Session the listing window omitted. The prefix is ambiguous and
+    // must not silently resolve to the listed row.
+    service.extraSessions = [sessionView('session-alpine', { title: 'docs' })]
+    const result = await run(handler, 'watch session-a')
+    expect(result.kind).toBe('error')
+    expect(text(result)).toContain('ambiguous')
+    expect(service.watching).toEqual([])
+    expect(service.calls.filter(call => call.startsWith('watchSession:'))).toEqual([])
   })
 
   it('watches a Session by exact id', async () => {
@@ -495,6 +508,13 @@ describe('devlead command friendly error mapping', () => {
     ['DEVLEAD_SELF_WATCH', 'cannot watch itself'],
     ['DEVLEAD_PROJECTION_INVALID', 'records are damaged'],
   ]
+
+  /** Codes absent from {@link MAPPING}; the record fails to compile when non-never. */
+  const UNMAPPED_CODES: Record<Exclude<DevLeadErrorCode, (typeof MAPPING)[number][0]>, true> = {}
+
+  it('has a mapping fixture for every stable code', () => {
+    expect(UNMAPPED_CODES).toEqual({})
+  })
 
   it('covers every stable core error code with actionable text', async () => {
     for (const [code, phrase] of MAPPING) {

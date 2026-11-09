@@ -12,7 +12,8 @@
  *   - `/devlead` is a registered human command and the `devLead` projection is
  *     served with its default wire value;
  *   - the summary-sized `devLeadMode` projection is registered, follows the mode,
- *     and rides the `session/list` summary rows the sidebar renders;
+ *     and rides the `session/list` summary rows the sidebar renders, while the
+ *     digest-bearing `devLead` value stays out of those summaries;
  *   - `/devlead on` / `/devlead off` flip the durable mode and the projection
  *     follows it;
  *   - `watch` addresses a real child Session and self-watch is rejected;
@@ -33,10 +34,11 @@
  *   installed  `scripts/install-profile.mjs` package symlinks under the profile
  *              `node_modules`, the same shape an npm install produces.
  *
- * The child Session is prompted with every known model-provider credential
- * removed from the child environment, so its turn settles deterministically as
- * a provider error: a real `turn/end` event that produces a real notification
- * without spending tokens.
+ * The child Session is prompted with provider/infrastructure credentials
+ * removed from the child environment (explicit names plus common API-key /
+ * token / secret patterns), so its turn settles deterministically as a provider
+ * error: a real `turn/end` event that produces a real notification without
+ * spending tokens.
  *
  * This is a LOCAL acceptance harness: it requires the installed DSH desktop
  * runtime (or `DSH_BIN`) and never runs in CI.
@@ -53,28 +55,32 @@
  */
 import { spawn, spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 /** Scratch directory and throwaway profile name. */
 const SCRATCH_NAME = 'devlead-e2e'
+/** Marker file a reusable `--root` must carry before the script may delete it. */
+const SCRATCH_MARKER = '.devlead-e2e-scratch'
 /** Name of the profile `node_modules` link that registers the checkout as a linked root. */
 const REPO_LINK_NAME = 'devlead-repo'
-/** Environment variables that would let the child Session reach a real model provider. */
-const PROVIDER_KEY_VARIABLES = [
-  'DEEPSEEK_API_KEY',
-  'OPENAI_API_KEY',
-  'ANTHROPIC_API_KEY',
-  'DASHSCOPE_API_KEY',
-  'GOOGLE_API_KEY',
-  'GEMINI_API_KEY',
-  'AZURE_OPENAI_API_KEY',
-  'MOONSHOT_API_KEY',
-  'ZHIPU_API_KEY',
-]
+/**
+ * Environment names that carry a model-provider or infrastructure credential.
+ * The child runtime is supposed to fail deterministically without provider
+ * access; scrub by pattern instead of maintaining a provider-name allowlist.
+ */
+const SECRET_ENV_PATTERN = /(?:^|_)(?:API[_-]?KEY|API[_-]?TOKEN|ACCESS[_-]?KEY|ACCESS[_-]?TOKEN|AUTH[_-]?TOKEN|PRIVATE[_-]?KEY|SECRET|PASSWORD|PASSWD|CREDENTIALS?|TOKEN)(?:_|$)/iu
 /** Readiness line printed by the Web app once the server listens. */
 const READY_PATTERN = /dsh web: (http:\/\/\S+)/
 /** A durable notification identity: session id, turn, transition. */
@@ -93,7 +99,8 @@ const USAGE = `Usage: node scripts/e2e-smoke.mjs [options]
 Options:
   --flow <patch|installed>  loading flow to exercise (default: patch)
   --no-build                reuse the current packages/*/lib artifacts
-  --root <dir>              scratch directory under ${tmpdir()} (default: a unique one)
+  --root <dir>              scratch directory under ${tmpdir()} (default: a unique one);
+                            an existing root is reused only when it carries ${SCRATCH_MARKER}
   --port <n>                Web port; 0 lets the OS pick one (default: 0)
   --verbose                 stream the Web runtime output
   -h, --help                show this help
@@ -182,9 +189,33 @@ function run(command, args, options = {}) {
 
 /** Create one fresh scratch directory tree. */
 function prepareScratch(options) {
-  const base = options.root ?? join(tmpdir(), `${SCRATCH_NAME}-${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`)
-  if (!base.startsWith(tmpdir())) throw new Error(`the scratch root must live under ${tmpdir()}, got ${base}`)
-  if (options.root !== undefined && existsSync(base)) rmSync(base, { recursive: true, force: true })
+  const tmpRoot = resolve(tmpdir())
+  const base = resolve(options.root ?? join(tmpRoot, `${SCRATCH_NAME}-${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`))
+  const relativeToTmp = relative(tmpRoot, base)
+  if (relativeToTmp.length === 0
+    || relativeToTmp === '..'
+    || relativeToTmp.startsWith('../')
+    || relativeToTmp.startsWith('..\\')
+    || isAbsolute(relativeToTmp)) {
+    throw new Error(`the scratch root must be a child of ${tmpRoot}, got ${base}`)
+  }
+  if (existsSync(base)) {
+    const baseStat = lstatSync(base)
+    if (baseStat.isSymbolicLink() || !baseStat.isDirectory()) {
+      throw new Error(`the scratch root is not a plain directory: ${base}`)
+    }
+    // `--root` may point at a directory the caller already uses. Only delete a
+    // root this harness created (or an empty one); a string-prefix check is not
+    // containment and would otherwise let `--root` delete an unrelated tree.
+    const entries = readdirSync(base)
+    if (entries.length > 0 && !entries.includes(SCRATCH_MARKER)) {
+      throw new Error(
+        `refusing to delete existing --root ${base}: it does not carry the ${SCRATCH_MARKER} marker. `
+        + 'Choose a fresh directory or remove it yourself.',
+      )
+    }
+    rmSync(base, { recursive: true, force: true })
+  }
   const paths = {
     base,
     home: join(base, 'home'),
@@ -193,6 +224,7 @@ function prepareScratch(options) {
     config: join(base, 'config'),
   }
   for (const directory of Object.values(paths)) mkdirSync(directory, { recursive: true })
+  writeFileSync(join(base, SCRATCH_MARKER), 'created by scripts/e2e-smoke.mjs\n')
   return paths
 }
 
@@ -285,10 +317,12 @@ function installProfile(paths) {
   ], { inherit: true })
 }
 
-/** Build the child environment with every known model-provider credential removed. */
+/** Build the child environment with provider/infrastructure credentials removed. */
 function childEnvironment(paths) {
   const env = { ...process.env, DSH_HOME: paths.home }
-  for (const name of PROVIDER_KEY_VARIABLES) delete env[name]
+  for (const name of Object.keys(env)) {
+    if (SECRET_ENV_PATTERN.test(name)) delete env[name]
+  }
   return env
 }
 
@@ -339,6 +373,9 @@ async function startWeb(paths, dshBinary, options) {
     }
     const timer = setTimeout(() => {
       settle()
+      // The caller never receives the child on this path, so it cannot stop it
+      // later; tear the half-started runtime down here or leave an orphan.
+      void stopInstance(child)
       rejectUrl(new Error(`the Web runtime did not become ready within ${READY_TIMEOUT_MS}ms; see ${logPath}`))
     }, READY_TIMEOUT_MS)
     child.stdout.on('data', inspect)
@@ -542,6 +579,11 @@ async function runChecks(client, paths) {
     'Session-list summary row carries devLeadMode',
     row0?.projections?.values?.devLeadMode?.enabled === false,
     JSON.stringify(row0?.projections?.values?.devLeadMode),
+  )
+  checks.expect(
+    'Session-list summary excludes the digest-bearing devLead projection',
+    row0?.projections?.values?.devLead === undefined,
+    JSON.stringify(row0?.projections?.values?.devLead ?? null),
   )
 
   const on = await client.command(leadId, '/devlead on')

@@ -158,6 +158,7 @@ export function apply(ctx: Context): void {
     presentCall: presentUseWorkspaceCall,
     execute(args, exec) {
       return runTool(async () => {
+        requireAgent(exec.agent, 'devlead_use_workspace')
         const path = requireAbsolutePath(args.path)
         const title = optionalText(args.title)
         const workspace = await ctx.devLead.useWorkspace(path, {

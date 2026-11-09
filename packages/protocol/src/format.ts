@@ -5,7 +5,11 @@
  * @module @yankeguo/dsh-devlead-protocol
  */
 
-import type { DevLeadNotification, DevLeadTransition } from './types.ts'
+import {
+  DEVLEAD_ERROR_EXCERPT_MAX,
+  type DevLeadNotification,
+  type DevLeadTransition,
+} from './types.ts'
 
 /** Every accepted transition literal, in reporting order. */
 export const DEVLEAD_TRANSITIONS: readonly DevLeadTransition[] = [
@@ -89,14 +93,15 @@ export function transitionLabel(transition: DevLeadTransition): string {
 /**
  * One optional stored text field, or undefined when it is absent or collapses
  * to nothing. Titles and excerpts cross the record/wire boundary, so a blank
- * value must not become an empty title pair or an empty digest suffix.
+ * value must not become an empty title pair, a newline must not forge another
+ * digest line, and an oversized value must not dominate the prompt. The shared
+ * excerpt rule does all three (whitespace collapse, trim, code-point budget).
  * @param value - optional stored text.
- * @returns the trimmed text, or undefined when there is none.
+ * @returns the bounded single-line text, or undefined when there is none.
  */
 function presentLine(value: string | undefined): string | undefined {
   if (value === undefined) return undefined
-  const trimmed = value.trim()
-  return trimmed.length === 0 ? undefined : trimmed
+  return excerptLine(value, DEVLEAD_ERROR_EXCERPT_MAX)
 }
 
 /**

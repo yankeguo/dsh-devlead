@@ -19,7 +19,17 @@ import {
   unexpectedFailure,
   type DevLeadCommandAdmission,
   type DevLeadCommandExecution,
+  type DevLeadTranslate,
 } from '../src/client/results.ts'
+
+/** English dictionary used to prove fallback text is translation-owned. */
+const FALLBACKS: Record<string, string> = {
+  'error.fallback.transport': 'command failed',
+  'error.fallback.rejected': 'command rejected',
+  'error.fallback.unknown': 'unknown error',
+  'error.fallback.unresolved': 'the Host did not recognize the command',
+}
+const t: DevLeadTranslate = key => FALLBACKS[key] ?? key
 
 /**
  * Build a settled admission result.
@@ -36,11 +46,9 @@ describe('commandFailure', () => {
       .toEqual({ kind: 'rejected', message: 'This Session has no live Agent.' })
   })
 
-  it('falls back to a generic text for a rejection without usable text', () => {
-    expect(commandFailure(admitted({ kind: 'error' })))
-      .toEqual({ kind: 'rejected', message: 'command rejected' })
-    expect(commandFailure(admitted({ kind: 'error', text: '   ' })))
-      .toEqual({ kind: 'rejected', message: 'command rejected' })
+  it('leaves a rejection without usable text for the localized fallback', () => {
+    expect(commandFailure(admitted({ kind: 'error' }))).toEqual({ kind: 'rejected' })
+    expect(commandFailure(admitted({ kind: 'error', text: '   ' }))).toEqual({ kind: 'rejected' })
   })
 
   it('returns undefined for a successful command, with or without text', () => {
@@ -55,9 +63,9 @@ describe('commandFailure', () => {
     })).toEqual({ kind: 'transport', message: 'connection reset', code: 'gateway/internal' })
   })
 
-  it('falls back to a generic text for a transport failure without a message', () => {
+  it('leaves a transport failure without a message for the localized fallback', () => {
     expect(commandFailure({ ok: false, error: { code: 'gateway/internal', message: '  ' } }))
-      .toEqual({ kind: 'transport', message: 'command failed', code: 'gateway/internal' })
+      .toEqual({ kind: 'transport', code: 'gateway/internal' })
   })
 
   it('returns undefined when no command was executed (classified by admitCommand)', () => {
@@ -69,13 +77,12 @@ describe('unexpectedFailure', () => {
   it('keeps an Error message and substitutes one for a non-Error throw', () => {
     expect(unexpectedFailure(new Error('remote face unmounted')))
       .toEqual({ kind: 'unexpected', message: 'remote face unmounted' })
-    expect(unexpectedFailure('boom'))
-      .toEqual({ kind: 'unexpected', message: 'unknown error' })
+    expect(unexpectedFailure('boom')).toEqual({ kind: 'unexpected' })
   })
 
-  it('substitutes one for a blank Error message', () => {
-    expect(unexpectedFailure(new Error('   '))).toEqual({ kind: 'unexpected', message: 'unknown error' })
-    expect(unexpectedFailure(new Error(''))).toEqual({ kind: 'unexpected', message: 'unknown error' })
+  it('leaves a blank Error message for the localized fallback', () => {
+    expect(unexpectedFailure(new Error('   '))).toEqual({ kind: 'unexpected' })
+    expect(unexpectedFailure(new Error(''))).toEqual({ kind: 'unexpected' })
   })
 })
 
@@ -125,14 +132,17 @@ describe('admitCommand', () => {
 
 describe('failureMessage', () => {
   it('returns the host text of transport, rejection, and unexpected failures', () => {
-    expect(failureMessage({ kind: 'transport', message: 'offline', code: 'x' })).toBe('offline')
-    expect(failureMessage({ kind: 'rejected', message: 'nope' })).toBe('nope')
-    expect(failureMessage({ kind: 'unexpected', message: 'boom' })).toBe('boom')
+    expect(failureMessage({ kind: 'transport', message: 'offline', code: 'x' }, t)).toBe('offline')
+    expect(failureMessage({ kind: 'rejected', message: 'nope' }, t)).toBe('nope')
+    expect(failureMessage({ kind: 'unexpected', message: 'boom' }, t)).toBe('boom')
   })
 
-  it('explains an unresolved line instead of echoing the raw command', () => {
-    expect(failureMessage({ kind: 'unresolved', line: '/devlead on' }))
-      .toBe('the Host did not recognize the command line')
+  it('localizes every client-owned fallback', () => {
+    expect(failureMessage({ kind: 'transport', code: 'x' }, t)).toBe('command failed')
+    expect(failureMessage({ kind: 'rejected' }, t)).toBe('command rejected')
+    expect(failureMessage({ kind: 'unexpected' }, t)).toBe('unknown error')
+    expect(failureMessage({ kind: 'unresolved', line: '/devlead on' }, t))
+      .toBe('the Host did not recognize the command')
   })
 })
 
@@ -156,6 +166,15 @@ describe('failureCopy', () => {
   it('renders an unexpected throw as an unknown command failure', () => {
     expect(failureCopy({ kind: 'unexpected', message: 'boom' }))
       .toEqual({ key: 'error.unknown', params: { message: 'boom' } })
+  })
+
+  it('uses localized fallback keys when the Host supplied no text', () => {
+    expect(failureCopy({ kind: 'transport', code: 'x' }))
+      .toEqual({ key: 'error.fallback.transport', params: {} })
+    expect(failureCopy({ kind: 'rejected' }))
+      .toEqual({ key: 'error.fallback.rejected', params: {} })
+    expect(failureCopy({ kind: 'unexpected' }))
+      .toEqual({ key: 'error.fallback.unknown', params: {} })
   })
 
   it('renders an unresolved line as a not-recognized command line', () => {

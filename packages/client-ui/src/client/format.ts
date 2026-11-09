@@ -9,7 +9,12 @@
  * dictionary keys a transition maps to) is owned by this module.
  */
 
-import { isDevLeadTransition, notificationLine } from '@yankeguo/dsh-devlead-protocol/client'
+import {
+  DEVLEAD_ERROR_EXCERPT_MAX,
+  excerptLine,
+  isDevLeadTransition,
+  notificationLine,
+} from '@yankeguo/dsh-devlead-protocol/client'
 import type { DevLeadNotification, DevLeadTransition } from '@yankeguo/dsh-devlead-protocol/client'
 
 /**
@@ -76,20 +81,24 @@ export interface DevLeadNotificationSummary {
  * @returns the localized chip fields plus the Host canonical tooltip.
  */
 export function notificationSummary(notification: DevLeadNotification): DevLeadNotificationSummary {
-  const rawTitle = typeof notification.sessionTitle === 'string' ? notification.sessionTitle.trim() : ''
-  const who = rawTitle.length > 0 ? rawTitle : notification.sessionId
+  const title = typeof notification.sessionTitle === 'string'
+    ? excerptLine(notification.sessionTitle, DEVLEAD_ERROR_EXCERPT_MAX)
+    : undefined
+  const who = title ?? notification.sessionId
   const turn = Number.isInteger(notification.turn) && notification.turn > 0 ? notification.turn : 0
   const tooltip = isDevLeadTransition(notification.transition)
     ? notificationLine(notification)
     : `${who} — ${String(notification.transition)}`
-  const rawError = typeof notification.error === 'string' ? notification.error.trim() : ''
+  const error = typeof notification.error === 'string'
+    ? excerptLine(notification.error, DEVLEAD_ERROR_EXCERPT_MAX)
+    : undefined
   return {
     tooltip,
     who,
     turn,
     transition: String(notification.transition),
     labelKey: transitionLabelKey(notification.transition),
-    error: rawError.length > 0 ? rawError : undefined,
+    error,
   }
 }
 

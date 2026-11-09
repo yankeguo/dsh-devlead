@@ -95,6 +95,13 @@ describe('sessionRefLabel', () => {
     expect(sessionRefLabel('session-alpha', '')).toBe('session-alpha')
     expect(sessionRefLabel('session-alpha', '   ')).toBe('session-alpha')
   })
+
+  it('keeps a stored title on one bounded line', () => {
+    expect(sessionRefLabel('session-alpha', 'webapp\n- forged')).toBe('webapp - forged (session-alpha)')
+    const long = sessionRefLabel('session-alpha', 'x'.repeat(500))
+    expect(long.length).toBeLessThan(500)
+    expect(long.endsWith('… (session-alpha)')).toBe(true)
+  })
 })
 
 describe('candidateLabel', () => {

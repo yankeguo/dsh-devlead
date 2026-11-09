@@ -17,6 +17,7 @@ import { SessionId, appendPluginRecord, pluginRecordOf } from '@deepseek-ai/dsh-
 import type { Session } from '@deepseek-ai/dsh-session'
 import {
   DEVLEAD_DEFAULT_MAX_WATCHED,
+  DEVLEAD_ERROR_EXCERPT_MAX,
   DEVLEAD_MODE_RECORD_TYPE,
   DEVLEAD_NOTIFICATION_RECORD_TYPE,
   DEVLEAD_WATCH_RECORD_TYPE,
@@ -30,6 +31,7 @@ import {
   devLeadNotification,
   isDevLeadError,
   notificationRecord,
+  watchRecord,
 } from '../src/index.ts'
 import type { Config as DevLeadConfig, DevLeadErrorCode } from '../src/index.ts'
 import {
@@ -179,12 +181,16 @@ describe('configuration', () => {
     expect(() => Config({ maxWatchedSessions: 0 })).toThrow()
     expect(() => Config({ maxListedSessions: 0 })).toThrow()
     expect(() => Config({ notificationBatchMs: 1.5 })).toThrow()
+    // Node clamps a larger setTimeout to 1 ms; reject it at the loader boundary.
+    expect(() => Config({ notificationBatchMs: 2_147_483_648 })).toThrow()
+    expect(Config({ notificationBatchMs: 2_147_483_647 }).notificationBatchMs).toBe(2_147_483_647)
   })
 
   it('rejects an invalid direct construction outside Loader normalization', () => {
     const cases: Array<Record<string, unknown>> = [
       { notificationBatchMs: -1 },
       { notificationBatchMs: 1.5 },
+      { notificationBatchMs: 2_147_483_648 },
       { maxWatchedSessions: 0 },
       { maxListedSessions: 0 },
       { wakeColdSession: 'yes' },
@@ -710,6 +716,25 @@ describe('session listings', () => {
     })
   })
 
+  it('keeps the latest failure as a bounded single-line excerpt', async () => {
+    const query = new FakeSessionQuery()
+    query.seed('cold-error', [
+      sessionEvent(
+        0,
+        'turn/end',
+        { turn: 1, reason: { kind: 'error', error: { message: `provider\nquota ${'x'.repeat(500)}`, code: 'X' } } },
+        T0 + 1,
+      ),
+    ])
+    const harness = await bootService({ enabled: true, sessionQuery: query })
+    const view = await harness.service.getSession(harness.lead.agent, 'cold-error')
+    expect(view.lastTransition).toBe('error')
+    expect(view.lastError).toBeDefined()
+    expect(view.lastError).not.toContain('\n')
+    expect(view.lastError).toHaveLength(DEVLEAD_ERROR_EXCERPT_MAX)
+    expect(view.lastError?.endsWith('…')).toBe(true)
+  })
+
   it('lists persisted Sessions and their folded titles through the query engine', async () => {
     const query = new FakeSessionQuery()
     query.seed('cold-alpha', [sessionEvent(0, 'turn/start', { turn: 1 }, T0 + 1)], 'Persisted Alpha')
@@ -818,6 +843,17 @@ describe('session listings', () => {
     })
     const views = await harness.service.listSessions(harness.lead.agent, { limit: 50 })
     expect(views).toHaveLength(2)
+  })
+
+  it('never truncates a watched-only listing below the watch set even with an explicit limit', async () => {
+    const harness = await bootService({
+      enabled: true,
+      sessionIds: ['watch-1', 'watch-2', 'watch-3'],
+      watched: ['watch-1', 'watch-2', 'watch-3'],
+      config: { maxListedSessions: 2 },
+    })
+    const views = await harness.service.listSessions(harness.lead.agent, { watchedOnly: true, limit: 1 })
+    expect(views.map(view => view.sessionId).sort()).toEqual(['watch-1', 'watch-2', 'watch-3'])
   })
 
   it('never truncates a watched-only listing below the watch set', async () => {
@@ -1035,6 +1071,69 @@ describe('session creation', () => {
     expect(error.message).toContain('no working directory')
   })
 
+  it('reserves the watch slot before creating so a concurrent create cannot orphan', async () => {
+    const controller = new FakeSessionController()
+    let releaseCreate: (() => void) | undefined
+    const createGate = new Promise<void>((resolve) => {
+      releaseCreate = resolve
+    })
+    let created = 0
+    let booted: ServiceHarness | undefined
+    controller.createHandler = async () => {
+      await createGate
+      created += 1
+      const session = booted!.ctx.sessions.create(SessionId(`concurrent-${String(created)}`))
+      booted!.agents.add(new FakeAgent(session))
+      return { sessionId: session.id }
+    }
+    const registry = new FakeWorkspaceRegistry()
+    registry.add({ path: '/tmp/concurrent-space', title: 'Concurrent' })
+    booted = await bootService({
+      enabled: true,
+      sessionController: controller,
+      workspaceRegistry: registry,
+      config: { maxWatchedSessions: 1 },
+    })
+    const harness = booted
+    const first = harness.service.createSession(harness.lead.agent, { workspace: 'ws-1' })
+    // The first call has reserved the only slot and is awaiting create; the
+    // second must fail before it asks the controller for a Session.
+    await flushMicrotasks()
+    const secondError = await harness.service
+      .createSession(harness.lead.agent, { workspace: 'ws-1' })
+      .then(() => undefined, (error: unknown) => error)
+    expect((secondError as { code?: unknown } | undefined)?.code).toBe('DEVLEAD_WATCH_LIMIT')
+    // Only the first call reached the controller; the second was rejected while
+    // the first slot was reserved.
+    expect(controller.createCalls).toHaveLength(1)
+    releaseCreate?.()
+    const result = await first
+    expect(result.session.watched).toBe(true)
+    expect(controller.createCalls).toHaveLength(1)
+    expect(harness.service.view(harness.lead.agent).sessions).toHaveLength(1)
+  })
+
+  it('rejects a registered Workspace whose directory disappeared', async () => {
+    const controller = new FakeSessionController()
+    controller.createHandler = () => {
+      throw new Error('controller must not be called for a missing directory')
+    }
+    const registry = new FakeWorkspaceRegistry()
+    registry.add({ path: '/tmp/disappeared-space', title: 'Disappeared', status: 'missing-dir' })
+    const harness = await bootService({
+      enabled: true,
+      sessionController: controller,
+      workspaceRegistry: registry,
+    })
+    const error = await expectCodeAsync(
+      () => harness.service.createSession(harness.lead.agent, { workspace: 'ws-1' }),
+      'DEVLEAD_DIRECTORY_MISSING',
+    )
+    expect(error.message).toContain('Disappeared')
+    expect(controller.createCalls).toEqual([])
+    expect(harness.service.view(harness.lead.agent).sessions).toEqual([])
+  })
+
   it('creates, renames, watches, and prompts a Session in a Workspace', async () => {
     const controller = new FakeSessionController()
     const registry = new FakeWorkspaceRegistry()
@@ -1201,6 +1300,24 @@ describe('notification delivery through the real service', () => {
     await harness.service.watchSession(harness.lead.agent, 'child-beta', true)
     return harness
   }
+
+  it('ignores a persisted self-watch instead of notifying the lead on its own turn', async () => {
+    const harness = await bootService({
+      enabled: true,
+      leadId: 'self-lead',
+      config: { notificationBatchMs: 0 },
+    })
+    const spy = vi.spyOn(harness.ctx.logger, 'warn')
+    // A hand-edited log can still replay a syntactically valid watch record
+    // that names the lead itself; the hub must ignore it at index time.
+    appendPluginRecord(harness.leadSession, DEVLEAD_WATCH_RECORD_TYPE, watchRecord(['self-lead'], T0))
+    appendTurnEnd(harness.leadSession, 1)
+    await flushMicrotasks()
+    expect(notificationRecords(harness.leadSession)).toEqual([])
+    expect(harness.lead.followups).toHaveLength(0)
+    expect(spy.mock.calls.some(call => String(call[0]).includes('lists itself'))).toBe(true)
+    spy.mockRestore()
+  })
 
   it('wakes the lead with the durable notification digest of a settled turn', async () => {
     const harness = await bootWatching()
