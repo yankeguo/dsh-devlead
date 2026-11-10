@@ -219,6 +219,40 @@ describe('policy', () => {
     expect(text).toContain('ask the Session to run it and report the output')
   })
 
+  it('tells the model to end the turn instead of waiting after a dispatch', () => {
+    const harness = bootEnabled()
+    const text = harness.sectionText()
+    // Dispatch is asynchronous: sleeping, polling the read tools, or waiting
+    // through another mechanism all burn the turn without observing the child.
+    expect(text).toContain('Waiting after dispatch')
+    expect(text).toContain('dispatch is asynchronous, so never wait for a child Session inside the same turn')
+    expect(text).toContain('Do not sleep in a shell command')
+    expect(text).toContain('do not poll devlead_list_sessions, devlead_get_session, or devlead_notifications')
+    expect(text).toContain('do not call wait_agent to wait for a dispatched Session')
+    // Ending the turn is the mechanism: the settled turn wakes a new turn.
+    expect(text).toContain('End the turn instead')
+    expect(text).toContain('once this turn has ended, a watched Session\'s settled turn is delivered as a new turn of this session')
+    expect(text).toContain('resuming a cold lead Session by default')
+    // Read tools are inspection, never a waiting mechanism; a same-turn human
+    // request gets an explicit "dispatched, will report on wake-up" answer.
+    expect(text).toContain('never a waiting mechanism')
+    expect(text).toContain('say that the work is dispatched and that you will report the outcome when the wake-up brings it')
+  })
+
+  it('answers "should I wait?" in the dispatch and status tool descriptions', () => {
+    const harness = bootEnabled()
+    const createSession = harness.tool('devlead_create_session').definition.description
+    expect(createSession).toContain('after this call end the turn instead of waiting')
+    expect(createSession).toContain('never call wait_agent to wait for it')
+    expect(createSession).toContain('starts a new turn of this lead session with the wake-up message')
+    expect(harness.tool('devlead_prompt_session').definition.description)
+      .toContain('after this call end the turn instead of waiting')
+    for (const name of ['devlead_list_sessions', 'devlead_get_session', 'devlead_notifications']) {
+      expect(harness.tool(name).definition.description)
+        .toMatch(/not (to poll|as a polling loop) while waiting for a dispatched Session/)
+    }
+  })
+
   it('advertises worktree isolation only when the Host composes the capability', () => {
     const harness = bootEnabled()
     const serialText = harness.sectionText()

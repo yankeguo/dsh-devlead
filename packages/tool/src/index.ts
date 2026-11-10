@@ -78,22 +78,27 @@ const LIST_SESSIONS_DESCRIPTION =
   'List DSH Sessions this DevLead Session can address: whether each is live, running, watched, or archived, plus '
   + 'latest-turn facts when the Host knows them. Watched and running rows come first. Optionally restrict to one '
   + 'Workspace or to the watched set; use devlead_get_session for a log detail with the latest turn outcome and '
-  + 'assistant excerpt.'
+  + 'assistant excerpt. Inspect it after a wake-up or when the human explicitly asks, not as a polling loop while '
+  + 'waiting for a dispatched Session.'
 
 const CREATE_SESSION_DESCRIPTION =
   'Create an ordinary DSH Session in a Workspace and optionally start it with a prompt. The Session is a real Session '
-  + 'the human can open and take over, not a subagent. It is watched by default, so this lead is notified when its '
-  + 'turns settle. Use it to dispatch the owning Workspace\'s work to that Session instead of doing the work yourself '
-  + 'from this lead session.'
+  + 'the human can open and take over, not a subagent. It runs independently, so after this call end the turn instead '
+  + 'of waiting: never sleep, never poll devlead_get_session, devlead_list_sessions, or devlead_notifications, and '
+  + 'never call wait_agent to wait for it. A watched Session is the default, and its settled turn starts a new turn '
+  + 'of this lead session with the wake-up message. Use it to dispatch the owning Workspace\'s work to that Session '
+  + 'instead of doing the work yourself from this lead session.'
 
 const GET_SESSION_DESCRIPTION =
   'Read one Session in detail: whether it is live and running, whether it is archived, and, when the Host can read '
   + 'the Session log, the latest turn number and outcome plus the latest error and assistant excerpts. Address it by '
-  + 'full id or unique id prefix.'
+  + 'full id or unique id prefix. Use it to inspect state after a wake-up or when the human explicitly asks, not to '
+  + 'poll while waiting for a dispatched Session.'
 
 const PROMPT_SESSION_DESCRIPTION =
   'Admit a follow-up prompt into an existing Session, resuming a cold Session first. The prompt is attributed to this '
-  + 'DevLead Session. Archived Sessions are rejected. The Session is watched by default.'
+  + 'DevLead Session. Archived Sessions are rejected. The Session is watched by default, so after this call end the '
+  + 'turn instead of waiting: its settled turn starts a new turn of this lead session with the wake-up message.'
 
 const WATCH_SESSION_DESCRIPTION =
   'Add one Session to, or remove it from, this DevLead Session\'s watch set. Only watched Sessions produce wake-up '
@@ -101,7 +106,8 @@ const WATCH_SESSION_DESCRIPTION =
 
 const NOTIFICATIONS_DESCRIPTION =
   'Read the retained notification digest of this DevLead Session together with the current watch set. Each entry names '
-  + 'a watched Session whose turn settled and how it ended. The digest is newest last.'
+  + 'a watched Session whose turn settled and how it ended. The digest is newest last. Read it after a wake-up or when '
+  + 'the human explicitly asks, not as a polling loop while waiting for a dispatched Session.'
 
 /**
  * Register the eight DevLead tools and their shared policy section.

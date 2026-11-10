@@ -459,6 +459,16 @@ Session 的工作目录切到独立分支/检出，DevLead 用它**可选地**�
   汇报格式；每次组装按当前 Agent 重新求值，关闭模式后下一步即消失。`devlead_create_session`
   的工具描述与 `workspace` 参数说明同步强调「把工作派发到归属 Workspace 的 Session」，避免
   模型把「创建 + prompt」当成本会话的直接实现入口。
+- 派发后的等待契约（模型可见文案）：派发是异步的，`devlead_create_session` /
+  `devlead_prompt_session` 返回后模型不得在同一个 turn 内等待——不得用 shell `sleep`，不得用
+  `devlead_list_sessions` / `devlead_get_session` / `devlead_notifications` 轮询，也不得用
+  Agent Teams 的 `wait_agent` 等被派发的 Session；正确做法是**结束本轮**（end the turn）。
+  子会话继续独立运行，被 watch 会话的 turn 结束后运行时以**新 turn** 恢复本会话（冷 lead
+  默认 resume，见 §4.1）；读工具只用于唤醒之后或人类明确询问时的状态检查，永远不是等待
+  机制；人类期望唤醒前就得到答复时，模型先说明已派发、将在唤醒结果到达时汇报。
+  `devlead_create_session` 描述自身回答「派发后我该等吗」，`devlead_prompt_session` /
+  `devlead_list_sessions` / `devlead_get_session` / `devlead_notifications` 描述同步声明不要
+  把它们当等待手段。
 - `isolation` 参数只接受 `'none'` / `'worktree'`（其余报 `DEVLEAD_INVALID_INPUT`），默认不发；
   结果 schema 含必填 `isolation` 对象（`requested` 必填 `none|worktree`；`status` 必填
   `none|worktree|unavailable|failed`；可选 `path`/`branch`/`baseCommit`/`reason`；0.2.0 起
@@ -611,8 +621,10 @@ UI 分两态，避免在每个会话上显示常驻条：
 - `tool`：用 fake `ctx.devLead` + fake `ctx.tools`/`ctx.systemPrompt` 捕获工具定义，验证
   `when` gating、参数校验、值渲染、编译期 schema↔protocol 一致性、运行时 output schema
   校验、错误翻译、每个工具的 execute 转发与取消信号转发、presentCall replay 纯净性，以及
-  policy 文案的角色边界契约（默认调度、写入归属、归属未明时先问或注册、无空会话）；另覆盖
-  `isolation` 参数映射与非法值、创建结果四种 `isolation` 状态的投影，以及 policy 按
+  policy 文案的角色边界契约（默认调度、写入归属、归属未明时先问或注册、无空会话）与派发后的
+  等待契约（结束本轮、不 shell `sleep` / 不轮询 / 不用 `wait_agent`、唤醒以新 turn 恢复本
+  会话、读工具不是等待机制，`devlead_create_session` 等工具描述自身回答「派发后我该等吗」）；
+  另覆盖 `isolation` 参数映射与非法值、创建结果四种 `isolation` 状态的投影，以及 policy 按
   `worktreeIsolationAvailable` 真/假两种形态的条件文案。
 - `command`：解析（rawInput 契约 / 引号 / 空白 / 未知子命令 / `reset`）、前缀寻址（唯一 /
   歧义 / 缺失 / 列表窗口外回退）、渲染、穷尽错误码映射、单次 projection 快照、`/devlead reset`
@@ -674,9 +686,10 @@ UI 分两态，避免在每个会话上显示常驻条：
   patch 与 installed 两条加载流都跑完整多阶段；`--no-worktree` 跳过阶段 2（只跑阶段 1 + 1b，
   调试用）。两条加载流各 **61/61**（阶段 1 27 + 阶段 1b 12 + 阶段 2 22）；跳过阶段 2 时
   **39/39**（阶段 1 + 1b）。
-- 本轮最终验证数字（工作树）：`pnpm verify` = typecheck 通过 + **22 文件 / 558 tests** +
-  7 个构建产物；`node scripts/check-packages.mjs` → `OK (6 packages)`；E2E patch / installed
-  各 **61/61**（阶段 1 27 + 阶段 1b 12 + 阶段 2 22）。
+- 本轮最终验证数字（工作树）：`pnpm verify` = typecheck 通过 + **23 文件 / 582 tests** +
+  7 个构建产物；`node scripts/check-packages.mjs` → `OK (6 packages)`；E2E 本轮未重跑（纯
+  模型可见文案改动、不涉及运行时行为，沿用上一轮 patch / installed 各 **61/61**（阶段 1 27 +
+  阶段 1b 12 + 阶段 2 22））。
 - 手动验收路径：开一个会话 → `/devlead on`（或点开关）→ 让模型
   `devlead_use_workspace` 注册一个仓库 → `devlead_create_session` 创建子会话并下发任务 →
   子会话跑完后 DevLead 被唤醒 → 状态条显示监督列表与通知；人类可打开子会话继续参与。
