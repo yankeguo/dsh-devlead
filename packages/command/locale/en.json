@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "DevLead Command",
+    "description": "Human-facing /devlead command: enable or disable DevLead mode, watch or unwatch Sessions, reset damaged state, and show the status view."
+  }
+}

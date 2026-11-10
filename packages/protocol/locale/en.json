@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "DevLead Protocol",
+    "description": "Shared protocol types, constants, and formatting helpers used by the other DevLead packages on the host and in the browser."
+  }
+}

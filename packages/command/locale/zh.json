@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "DevLead 命令",
+    "description": "面向人类的 /devlead 命令：开启或关闭 DevLead 模式、监督或取消监督会话、重置损坏状态，并显示状态视图。"
+  }
+}

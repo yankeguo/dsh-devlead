@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "DevLead",
+    "description": "Host core of DevLead mode: the per-Session mode switch, Workspace and Session orchestration for the lead, watched-Session notifications, and the devLead Session projections."
+  }
+}

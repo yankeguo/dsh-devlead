@@ -1,6 +1,6 @@
 {
   "meta": {
-    "title": "DevLead mode",
-    "description": "Toggles DevLead mode from the composer toolbar; once enabled, a status strip appears above the composer and the Session is marked in the sidebar list."
+    "title": "DevLead UI",
+    "description": "Web UI for DevLead mode: the composer toolbar switch, the status strip shown while the mode is on, and the DevLead mark on enabled Sessions in the sidebar."
   }
 }

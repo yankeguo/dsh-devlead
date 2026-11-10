@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "DevLead Tools",
+    "description": "Model-facing devlead_* tools available only in DevLead mode: list and use Workspaces, create and prompt Sessions, read session status, watch Sessions, and read notifications."
+  }
+}

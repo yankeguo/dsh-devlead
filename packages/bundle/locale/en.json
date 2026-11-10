@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "DevLead Suite",
+    "description": "Installing this bundle provides DevLead mode: a mode service, model tools, the /devlead command, and a Web UI that let one Session lead other Workspaces and Sessions."
+  }
+}

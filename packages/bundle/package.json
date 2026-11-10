@@ -13,11 +13,13 @@
   },
   "exports": {
     "./cordis.patch.yml": "./cordis.patch.yml",
+    "./locale/*.json": "./locale/*.json",
     "./package.json": "./package.json"
   },
   "files": [
     "cordis.patch.yml",
     "icon.svg",
+    "locale/*.json",
     "README.md"
   ],
   "dependencies": {

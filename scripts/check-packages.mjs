@@ -4,7 +4,9 @@
  * version/engine lockstep, dependency placement (including no DSH direct or
  * optional dependencies and no experimental packages), peer completeness for
  * DSH linked-root resolution, browser/client-inject coverage, tsconfig/vitest
- * alias coverage, lockfile importers, and the pinned CI workflows.
+ * alias coverage, lockfile importers, the pinned/contracted CI workflows, the
+ * staged-publishing contract, and each publishable package's locale display
+ * metadata (DSH plugin manager titles/descriptions).
  *
  * This is intentionally dependency-free and read-only; it is safe to run in CI
  * after `pnpm build` and is wired into both verify.yml and publish.yml. Run:
@@ -38,7 +40,7 @@ const PINNED_ACTIONS = ['actions/checkout@', 'pnpm/action-setup@', 'actions/setu
 
 const argv = process.argv.slice(2)
 if (argv.includes('--help') || argv.includes('-h')) {
-  console.log('Usage: node scripts/check-packages.mjs\n\nRead-only workspace packaging checks: version/engine lockstep, dependency placement,\npeer completeness for DSH linked-root resolution, alias coverage, lockfile importers, and CI workflow pins.')
+  console.log('Usage: node scripts/check-packages.mjs\n\nRead-only workspace packaging checks: version/engine lockstep, dependency placement,\npeer completeness for DSH linked-root resolution, alias coverage, lockfile importers,\nCI workflow pins, the staged-publishing contract, and plugin locale display metadata.')
   process.exit(0)
 }
 if (argv.length > 0) {
@@ -340,6 +342,88 @@ if (bundle === undefined) {
   }
 }
 
+// ---- locale display metadata -----------------------------------------------
+// The DSH plugin manager renders a package's user-facing title and description
+// from locale/<language>.json (`{"meta":{"title":"...","description":"..."}}`),
+// resolved as `<name>/locale/en.json` through the package exports map; every
+// sibling *.json is read as a translation keyed by its lowercase language id.
+// Without this metadata the manager silently falls back to the package name and
+// the package.json description, so the locale wiring is part of the published
+// contract. Keep BANNED_SUPERLATIVES aligned with the same list in
+// packages/devlead/tests/plugin-metadata.spec.ts (the CI check cannot import a
+// TypeScript test); ASCII entries match whole lowercase words, CJK entries match
+// substrings (specific superlative phrases, so legitimate words such as 最近 are
+// not rejected).
+const LOCALE_LANGUAGES = ['en', 'zh']
+const BANNED_SUPERLATIVES = [
+  'best', 'world-class', 'powerful', 'seamless', 'seamlessly', 'ultimate',
+  'leading', 'top-tier', 'cutting-edge', 'state-of-the-art', 'revolutionary',
+  'game-changing', 'unmatched', 'effortless', 'supercharge', 'next-generation',
+  'premier', '最佳', '最强', '最优', '最先进', '最高级', '最领先', '第一',
+  '唯一', '极致', '顶级', '业界领先', '世界级',
+]
+
+/**
+ * Report the first banned superlative in a display string.
+ * @param {string} text
+ * @returns {string | undefined}
+ */
+function bannedSuperlativeIn(text) {
+  const lower = text.toLowerCase()
+  for (const word of BANNED_SUPERLATIVES) {
+    const ascii = /^[\x00-\x7F]+$/u.test(word)
+    if (ascii ? new RegExp(`\\b${word}\\b`, 'u').test(lower) : lower.includes(word)) return word
+  }
+  return undefined
+}
+
+/** locale language -> (title -> package label) for cross-package uniqueness. */
+const localeTitles = new Map()
+for (const language of LOCALE_LANGUAGES) localeTitles.set(language, new Map())
+for (const { dir, dirPath, manifest } of manifests) {
+  if (manifest.private === true) continue
+  const label = `packages/${dir}`
+  if (!Array.isArray(manifest.files) || !manifest.files.includes('locale/*.json')) {
+    fail(`${label}: package.json "files" must include "locale/*.json" so display metadata is published`)
+  }
+  if (manifest.exports?.['./locale/*.json'] !== './locale/*.json') {
+    fail(`${label}: package.json exports must map "./locale/*.json" to "./locale/*.json"`)
+  }
+  for (const language of LOCALE_LANGUAGES) {
+    const file = join(dirPath, 'locale', `${language}.json`)
+    if (!existsSync(file)) {
+      fail(`${label}: missing locale/${language}.json display metadata`)
+      continue
+    }
+    let parsed
+    try {
+      parsed = readJson(file)
+    } catch (error) {
+      fail(`${label}: locale/${language}.json must be valid JSON: ${String(error)}`)
+      continue
+    }
+    const meta = parsed !== null && typeof parsed === 'object' ? parsed.meta : undefined
+    if (meta === null || typeof meta !== 'object' || Array.isArray(meta)) {
+      fail(`${label}: locale/${language}.json must contain a "meta" object`)
+      continue
+    }
+    for (const field of ['title', 'description']) {
+      const value = meta[field]
+      if (typeof value !== 'string' || value.trim().length === 0) {
+        fail(`${label}: locale/${language}.json meta.${field} must be a non-empty string`)
+        continue
+      }
+      const banned = bannedSuperlativeIn(value)
+      if (banned !== undefined) fail(`${label}: locale/${language}.json meta.${field} uses banned superlative "${banned}"`)
+      if (field !== 'title') continue
+      const seen = localeTitles.get(language)
+      const previous = seen.get(value)
+      if (previous !== undefined) fail(`${label}: locale/${language}.json meta.title "${value}" duplicates ${previous}`)
+      else seen.set(value, label)
+    }
+  }
+}
+
 // ---- lockfile importers ----------------------------------------------------
 const lockfile = readFileSync(join(ROOT, 'pnpm-lock.yaml'), 'utf8')
 if (!/^lockfileVersion: '9\.0'$/mu.test(lockfile)) fail("pnpm-lock.yaml: unexpected lockfileVersion (expected '9.0')")
@@ -357,7 +441,7 @@ for (const pattern of ['node_modules/', 'packages/*/lib/', '.tmp/']) {
     fail(`.gitignore must ignore ${pattern}`)
   }
 }
-for (const script of ['build.mjs', 'clean.mjs', 'dev-patch.mjs', 'install-profile.mjs', 'trusted-publishers.sh', 'check-packages.mjs']) {
+for (const script of ['build.mjs', 'clean.mjs', 'dev-patch.mjs', 'install-profile.mjs', 'trusted-publishers.sh', 'check-packages.mjs', 'stage-release.mjs', 'promote-release.mjs']) {
   if (!existsSync(join(ROOT, 'scripts', script))) fail(`scripts/${script} is missing`)
 }
 const workflowDir = join(ROOT, '.github', 'workflows')
@@ -381,6 +465,63 @@ for (const [name, text] of [['publish.yml', publish], ['verify.yml', verify]]) {
 }
 if (!/permissions:\s*\n\s*contents: read/u.test(verify)) fail('verify.yml must declare read-only contents permission')
 if (!/id-token: write/u.test(publish)) fail('publish.yml must declare id-token: write for OIDC publishing')
+
+// ---- staged publishing contract --------------------------------------------
+// CI stages versions with a short-lived OIDC token and publishes nothing; a
+// maintainer approves the staged versions locally with scripts/promote-
+// release.mjs (interactive 2FA) and that script creates the GitHub Release.
+// These checks keep the workflow, the trust setup, and the root scripts wired
+// to that model instead of the retired direct-publish/CI-Release flow.
+if (!/run:\s*node scripts\/stage-release\.mjs/u.test(publish)) {
+  fail('publish.yml must stage through a "run: node scripts/stage-release.mjs" step')
+}
+// Scan executable workflow lines only: comments legitimately mention "npm publish"
+// while explaining that the workflow must never call it.
+const publishLines = publish.split('\n').filter(line => !/^\s*#/u.test(line)).join('\n')
+if (/\bpnpm publish\b/u.test(publishLines)) {
+  fail('publish.yml must not run pnpm publish; CI stages and never publishes directly')
+}
+if (/(?<!stage )\bnpm publish\b/u.test(publishLines)) {
+  fail('publish.yml must not run a plain "npm publish"; CI only runs "npm stage publish" via scripts/stage-release.mjs')
+}
+if (/gh release (?:create|edit)/u.test(publish)) {
+  fail('publish.yml must not create the GitHub Release; scripts/promote-release.mjs creates it locally')
+}
+if (/contents:\s*write/u.test(publish)) {
+  fail('publish.yml must not request contents: write; the GitHub Release is created by the local promote script')
+}
+if (!/workflow_dispatch:/u.test(publish) || !/release_tag:/u.test(publish)) {
+  fail('publish.yml must support workflow_dispatch with a release_tag input so an existing tag can be re-staged')
+}
+if (!/npm install -g npm@\d/u.test(publish) || !/npm stage --help/u.test(publish)) {
+  fail('publish.yml must install a staged-publishing-capable npm and verify it with "npm stage --help"')
+}
+const stageScript = existsSync(join(ROOT, 'scripts', 'stage-release.mjs'))
+  ? readFileSync(join(ROOT, 'scripts', 'stage-release.mjs'), 'utf8')
+  : ''
+if (!/--provenance/u.test(stageScript)) {
+  fail('scripts/stage-release.mjs must pass --provenance when running in GitHub Actions')
+}
+const trustScript = existsSync(join(ROOT, 'scripts', 'trusted-publishers.sh'))
+  ? readFileSync(join(ROOT, 'scripts', 'trusted-publishers.sh'), 'utf8')
+  : ''
+if (!/TRUST_ARGS=\([^)]*--allow-stage-publish/u.test(trustScript)) {
+  fail('scripts/trusted-publishers.sh must configure --allow-stage-publish')
+}
+if (/TRUST_ARGS=\([^)]*--allow-publish/u.test(trustScript)) {
+  fail('scripts/trusted-publishers.sh must not grant --allow-publish')
+}
+const rootScripts = rootManifest.scripts ?? {}
+for (const [name, target] of [['release:dry', 'stage-release.mjs'], ['release:stage', 'stage-release.mjs'], ['release:promote', 'promote-release.mjs']]) {
+  const value = rootScripts[name]
+  if (typeof value !== 'string' || !value.includes(target)) fail(`root package.json scripts["${name}"] must run ${target}`)
+}
+if (!String(rootScripts['release:dry'] ?? '').includes('--dry-run')) {
+  fail('root package.json scripts["release:dry"] must pass --dry-run to stage-release.mjs')
+}
+if (rootScripts['release:publish'] !== undefined) {
+  fail('root package.json must not keep a direct-publish script ("release:publish")')
+}
 
 // ---- report ----------------------------------------------------------------
 if (failures.length > 0) {

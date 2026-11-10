@@ -5,8 +5,8 @@
  * placeholders are `{name}` tokens interpolated by the locale runtime.
  */
 export const zh = {
-  'meta.title': 'DevLead 模式',
-  'meta.description': '在输入框工具条中开关 DevLead 模式；开启后在输入框上方显示状态条，并在侧边栏会话行标记该会话。',
+  'meta.title': 'DevLead 界面',
+  'meta.description': 'DevLead 模式的 Web 界面：输入框工具条开关、模式开启后显示的状态条，以及侧边栏中已开启会话的 DevLead 标记。',
   'bar.aria': 'DevLead 状态栏',
   'label': 'DevLead',
   'switch.aria': 'DevLead 模式',
@@ -45,8 +45,8 @@ export type DevLeadKey = keyof typeof zh
 
 /** English dictionary, checked complete against the zh key set. */
 export const en = {
-  'meta.title': 'DevLead mode',
-  'meta.description': 'Toggles DevLead mode from the composer toolbar; once enabled, a status strip appears above the composer and the Session is marked in the sidebar list.',
+  'meta.title': 'DevLead UI',
+  'meta.description': 'Web UI for DevLead mode: the composer toolbar switch, the status strip shown while the mode is on, and the DevLead mark on enabled Sessions in the sidebar.',
   'bar.aria': 'DevLead status bar',
   'label': 'DevLead',
   'switch.aria': 'DevLead mode',

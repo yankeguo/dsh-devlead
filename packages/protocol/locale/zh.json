@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "DevLead 协议",
+    "description": "DevLead 其他插件包在 Host 与浏览器端共用的协议类型、常量与格式化工具。"
+  }
+}

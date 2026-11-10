@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "DevLead 套件",
+    "description": "安装此套件即可获得 DevLead 模式：模式服务、模型工具、/devlead 命令与 Web 界面，让一个会话作为 lead 管理其他 Workspace 与会话。"
+  }
+}

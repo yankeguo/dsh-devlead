@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "DevLead 工具",
+    "description": "仅在 DevLead 模式下可用的 devlead_* 模型工具：列出并使用 Workspace、创建会话并发送提示词、读取会话状态、监督会话以及读取通知。"
+  }
+}
