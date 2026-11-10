@@ -152,8 +152,18 @@ Each package has its own short README: [protocol](packages/protocol/README.md) �
 [command](packages/command/README.md) · [client-ui](packages/client-ui/README.md) ·
 [bundle](packages/bundle/README.md).
 
+Every publishable package also ships **plugin display metadata** for the DSH plugin manager and
+plugin market: `locale/en.json` and `locale/zh.json` with a user-facing
+`{"meta":{"title":"…","description":"…"}}`, wired through `files: ["locale/*.json"]` and the
+`"./locale/*.json"` export. DSH resolves `<package>/locale/en.json`, reads the sibling language
+files as translations, and falls back to the package name / `package.json` description when a
+field is missing; the bundle additionally keeps its manifest `icon`. `pnpm check:packages`
+validates the locale files, the packaging wiring, and that no marketing superlatives slipped in,
+so a new publishable package must add both locale files or CI fails.
+
 `scripts/` provides the build (`build.mjs`), package invariants (`check-packages.mjs`), profile
-install (`install-profile.mjs`), dev overlay (`dev-patch.mjs`), and local E2E (`e2e-smoke.mjs`).
+install (`install-profile.mjs`), dev overlay (`dev-patch.mjs`), local E2E (`e2e-smoke.mjs`), and
+the staged-release helpers (`stage-release.mjs`, `promote-release.mjs`, `trusted-publishers.sh`).
 
 ## Getting started
 
@@ -679,20 +689,36 @@ dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 PRs and pushes to main run [`verify.yml`](.github/workflows/verify.yml):
 `pnpm install --frozen-lockfile` → typecheck → test → build → `check:packages`.
 
-CI publishing uses **npm Trusted Publishing (keyless OIDC)**: pushing a `v*` tag triggers
-[`.github/workflows/publish.yml`](.github/workflows/publish.yml), exchanges the GitHub Actions
-`id-token: write` for a short-lived npm token, and needs **no `NPM_TOKEN` secret**; provenance
-is attached automatically on a public repository. CI first validates that the `v*` tag matches
-the `version` of all 6 publishable packages and the root `package.json`, failing fast to avoid
-tag / npm version drift. Each package needs a one-time trusted-publisher configuration:
+Releases use **npm staged publishing** so a release is never partially public. Pushing a `v*`
+tag (or dispatching [`publish.yml`](.github/workflows/publish.yml) with an existing `release_tag`
+after a repair) first validates that the tag matches the `version` of all 6 publishable packages
+and the root `package.json`, then installs, typechecks, tests, builds, checks the package
+invariants, and finally **stages** every package in dependency order through `npm stage publish`
+with a keyless, short-lived OIDC token (`id-token: write`; **no `NPM_TOKEN` secret**; provenance
+is attached on a public repository). Staging publishes nothing: the registry holds the versions
+until a maintainer approves them. CI has no permission to approve: `npm stage approve`
+requires a maintainer's logged-in session and 2FA.
+
+Each package needs a one-time trusted-publisher configuration that allows staged publishes
+(`--allow-stage-publish`); an old `--allow-publish` configuration must be revoked and recreated:
 
 ```sh
 npm login
 scripts/trusted-publishers.sh          # configures all 6 packages (--dry-run / --list available)
 ```
 
-The full release flow (version bump, dry-run, local/CI publish, GitHub Release, troubleshooting)
-is documented in [`docs/PUBLISHING.md`](docs/PUBLISHING.md) (Chinese).
+After CI stages the versions, a maintainer approves them from a terminal and the script creates
+the GitHub Release from `docs/releases/v<version>.md`:
+
+```sh
+npm login
+node scripts/promote-release.mjs --version 0.3.0 --list-only   # inspect the staged versions
+node scripts/promote-release.mjs --version 0.3.0                # approve (2FA prompt) + gh release
+```
+
+The setup and the full release flow (version bump, pre-flight, tag push, re-staging an existing
+tag, approve, partial-failure recovery, troubleshooting) are documented in
+[`docs/PUBLISHING.md`](docs/PUBLISHING.md) (Chinese).
 
 ## License
 

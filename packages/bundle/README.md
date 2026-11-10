@@ -178,7 +178,7 @@ bundle 的 patch 行没有显式写配置，核心服务使用 DESIGN 默认值�
 
 - 仓库 [README.zh.md](https://github.com/yankeguo/dsh-devlead/blob/main/README.zh.md)：功能、安装、使用、通知机制、配置与故障排查（英文版见 [README.md](https://github.com/yankeguo/dsh-devlead/blob/main/README.md)）
 - [DESIGN](https://github.com/yankeguo/dsh-devlead/blob/main/docs/DESIGN.md)：领域模型、持久记录、核心服务 API、通知泵与权限模型
-- [PUBLISHING](https://github.com/yankeguo/dsh-devlead/blob/main/docs/PUBLISHING.md)：npm trusted publishing 发布流程
+- [PUBLISHING](https://github.com/yankeguo/dsh-devlead/blob/main/docs/PUBLISHING.md)：npm staged publish 发布流程（CI 只 stage、维护者人工 approve 后公开）
 - [v0.2.0 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.2.0.md)
 - 包 README：[protocol](https://github.com/yankeguo/dsh-devlead/blob/main/packages/protocol/README.md) · [devlead](https://github.com/yankeguo/dsh-devlead/blob/main/packages/devlead/README.md) ·
   [tool](https://github.com/yankeguo/dsh-devlead/blob/main/packages/tool/README.md) · [command](https://github.com/yankeguo/dsh-devlead/blob/main/packages/command/README.md) ·

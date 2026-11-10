@@ -1,49 +1,70 @@
 name: publish
 
-# Keyless npm publishing via OIDC trusted publishing.
+# Staged npm publishing via OIDC trusted publishing.
 #
-# When a `v*` tag is pushed (or the workflow is dispatched manually), this
-# workflow installs, typechecks, tests, builds, publishes every workspace
-# package to npm, and creates the GitHub Release.
+# Pushing a `v*` tag (or dispatching this workflow with an existing
+# `release_tag`) installs, typechecks, tests, builds, and STAGES every workspace
+# package on the npm registry. Staging publishes nothing. A maintainer then
+# approves the staged versions locally with:
 #
-# There is NO npm token secret. GitHub Actions mints a short-lived OIDC token
-# (`id-token: write`), pnpm exchanges it with the npm registry for a
-# short-lived publish token, and the registry accepts the upload only because
-# each package has this exact workflow configured as a trusted publisher:
+#   node scripts/promote-release.mjs
 #
-#   npm trust github <package> \
-#     --file publish.yml \
-#     --repo yankeguo/dsh-devlead \
-#     --allow-publish --yes
+# (interactive `npm login` + 2FA), and the same script creates the GitHub
+# Release. The approval step is human-only by design: npm accepts OIDC tokens
+# only for `npm stage publish`/`npm publish`, never for `npm stage
+# list`/`approve`/`reject`.
 #
-# One-time setup (and troubleshooting) is documented in docs/PUBLISHING.md;
-# scripts/trusted-publishers.sh configures all packages in one go.
+# Why this model:
+#   - Atomic release: nothing of a version is public until every package has
+#     been staged and the whole set is approved; a broken tarball never ships.
+#   - CI holds no long-lived npm credential and cannot publish on its own. It
+#     mints a short-lived OIDC token per package (`id-token: write`), and each
+#     package trusts exactly this workflow for staged publishing only.
+#   - Approval requires a human 2FA prompt, so a compromised workflow can at
+#     worst stage an unapproved version.
 #
-# Requirements enforced by npm for trusted publishing:
-#   - package already exists on the registry (first publish needs a token),
+# One-time trust configuration: scripts/trusted-publishers.sh, using
+# --allow-stage-publish. Records created earlier for direct publishing
+# (--allow-publish) do NOT authorize `npm stage publish` and must be revoked and
+# recreated; see docs/PUBLISHING.md.
+#
+# npm's requirements for trusted publishing:
+#   - the package already exists on the registry (first publish is a manual
+#     one-off, documented in docs/PUBLISHING.md),
 #   - this workflow file lives at .github/workflows/publish.yml,
-#   - runner is GitHub-hosted (self-hosted runners are not supported),
+#   - the runner is GitHub-hosted (self-hosted runners are not supported),
 #   - repository/workflow/environment claims match the trust configuration.
-# Provenance is attached automatically: the packages are public and this
-# repository is public.
+# Provenance is attached by the npm CLI (public package + public repository +
+# `id-token: write`); scripts/stage-release.mjs passes --provenance inside
+# GitHub Actions.
 #
-# Pull requests and pushes run the same typecheck/test/build/check-packages in
-# verify.yml; this workflow repeats them at release time so a tag never publishes
-# from a commit whose tests were not green at that exact revision.
+# Pull requests and pushes run the same install/typecheck/test/build/
+# check-packages in verify.yml; this workflow repeats them at release time so a
+# tag never stages from a commit whose tests were not green at that revision.
 on:
   push:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: >-
+          Existing release tag to stage (for example v0.2.0). It must already
+          exist and point at the checked-out commit; this workflow never
+          creates, moves, or deletes tags.
+        required: true
+        type: string
 
 permissions:
-  contents: write
-  # Required for OIDC: lets pnpm request a GitHub Actions ID token and exchange
-  # it with the npm registry for a short-lived publish token.
+  # Read-only repository access: the GitHub Release is created by the local
+  # promote script, not by CI.
+  contents: read
+  # Required for OIDC: lets the npm CLI exchange a GitHub Actions ID token for a
+  # short-lived npm token per package when staging. It cannot approve.
   id-token: write
 
 # One publish at a time, regardless of ref: two tags must not interleave npm
-# uploads, and a manual dispatch must not race a tag run.
+# staging, and a manual dispatch must not race a tag run.
 concurrency:
   group: publish
   cancel-in-progress: false
@@ -55,6 +76,53 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.1
+        with:
+          # workflow_dispatch: check out the requested tag; tag push: the tag ref.
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.release_tag) || github.ref }}
+          # Full history and tags: the next step proves the requested tag exists
+          # and points at the checked-out commit.
+          fetch-depth: 0
+
+      - name: Resolve and verify the release tag
+        # Resolve the release version before installing anything so a bad tag
+        # fails in seconds instead of after a full install/test/build cycle.
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${RELEASE_TAG}" ]]; then
+            echo "::error::could not determine the release tag (empty RELEASE_TAG)"
+            exit 1
+          fi
+          if [[ ! "${RELEASE_TAG}" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]]; then
+            echo "::error::release_tag ${RELEASE_TAG} is not a valid git ref name"
+            exit 1
+          fi
+          git fetch --tags --force origin
+          tag_commit="$(git rev-parse --verify --quiet "refs/tags/${RELEASE_TAG}^{commit}")" || {
+            echo "::error::release tag ${RELEASE_TAG} does not exist on origin. This workflow never creates or moves tags; push the tag first."
+            exit 1
+          }
+          head_commit="$(git rev-parse HEAD)"
+          if [[ "${tag_commit}" != "${head_commit}" ]]; then
+            echo "::error::${RELEASE_TAG} points at ${tag_commit}, but HEAD is ${head_commit}. Re-run with the existing tag (workflow_dispatch release_tag) or check out that tag; never move or recreate the tag."
+            exit 1
+          fi
+          release_version="${RELEASE_TAG#v}"
+          if [[ ! "${release_version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::cannot derive a semver version from tag ${RELEASE_TAG} (expected v<version>)"
+            exit 1
+          fi
+          if [[ "${release_version}" == *-* ]]; then
+            echo "::error::${RELEASE_TAG} is a prerelease (${release_version}). This workflow stages stable releases with the latest dist-tag only; stage prereleases locally with scripts/stage-release.mjs --dist-tag next (see docs/PUBLISHING.md)."
+            exit 1
+          fi
+          echo "RELEASE_TAG=${RELEASE_TAG}" >> "${GITHUB_ENV}"
+          echo "RELEASE_VERSION=${release_version}" >> "${GITHUB_ENV}"
+          echo "Release tag ${RELEASE_TAG} verified: ${head_commit} (version ${release_version})"
+          echo "### Release ${RELEASE_TAG}" >> "${GITHUB_STEP_SUMMARY}"
+          echo "" >> "${GITHUB_STEP_SUMMARY}"
+          echo "Tag \`${RELEASE_TAG}\` verified at \`${head_commit}\`; release version \`${release_version}\`." >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Set up pnpm
         uses: pnpm/action-setup@v6.1.1
@@ -69,18 +137,36 @@ jobs:
           # Never cache in release builds: build inputs must be reproducible.
           package-manager-cache: false
 
-      - name: Verify the tag matches every package version
-        # Publishing a tag whose version differs from the manifests would push a
-        # release whose npm versions cannot be found from the tag/GitHub Release.
-        if: startsWith(github.ref, 'refs/tags/')
-        env:
-          TAG: ${{ github.ref_name }}
+      - name: Install and verify npm 11.20.0
+        # Staged publishing, OIDC token exchange, and provenance are implemented
+        # by the npm CLI, not by pnpm. Staged publishing needs npm >= 11.15.0 and
+        # Node's bundled npm may be older, so pin the tested 11.20.0 explicitly
+        # and assert the capability instead of trusting the version string alone.
+        run: |
+          set -euo pipefail
+          npm install -g npm@11.20.0
+          installed="$(npm --version)"
+          echo "npm ${installed}"
+          if [[ "${installed}" != "11.20.0" ]]; then
+            echo "::error::expected npm 11.20.0 after install, found ${installed}"
+            exit 1
+          fi
+          if ! npm stage --help >/dev/null 2>&1; then
+            echo "::error::this npm does not implement 'npm stage'; npm >= 11.15.0 is required for staged publishing (this workflow pins 11.20.0)"
+            exit 1
+          fi
+          npm stage --help >/dev/null
+          echo "npm ${installed} supports staged publishing"
+
+      - name: Verify the release tag matches every package version
+        # Staging a tag whose version differs from the manifests would produce a
+        # release whose npm versions cannot be found from the tag/GitHub
+        # Release, and the local promote script would fail after CI succeeded.
         run: |
           node --input-type=module <<'NODE'
           import { readFileSync, readdirSync } from 'node:fs'
 
-          const tag = process.env.TAG
-          const expected = tag.startsWith('v') ? tag.slice(1) : tag
+          const expected = process.env.RELEASE_VERSION
           const mismatched = []
           for (const dir of readdirSync('packages')) {
             let manifest
@@ -95,10 +181,10 @@ jobs:
           const root = JSON.parse(readFileSync('package.json', 'utf8'))
           if (root.version !== expected) mismatched.push(`${root.name}@${root.version}`)
           if (mismatched.length > 0) {
-            console.error(`tag ${tag} expects version ${expected}, but: ${mismatched.join(', ')}`)
+            console.error(`release tag expects version ${expected}, but: ${mismatched.join(', ')}`)
             process.exit(1)
           }
-          console.log(`tag ${tag} matches every publishable package version`)
+          console.log(`release version ${expected} matches every publishable package`)
           NODE
 
       - name: Install dependencies
@@ -116,28 +202,34 @@ jobs:
       - name: Validate package manifests
         run: node scripts/check-packages.mjs
 
-      - name: Publish packages (OIDC trusted publishing)
-        # No NODE_AUTH_TOKEN and no NPM_TOKEN: pnpm detects the GitHub Actions
-        # OIDC environment, exchanges its ID token for a registry token, and
-        # attaches provenance automatically for public packages from a public
-        # repository.
-        run: pnpm publish -r --access public --no-git-checks --tag latest
+      - name: Stage packages on npm (publishes nothing)
+        # This uploads every package as a staged version and prints the stage
+        # ids. Nothing is public until a maintainer approves them locally with
+        # scripts/promote-release.mjs (npm login + 2FA). No NODE_AUTH_TOKEN and
+        # no NPM_TOKEN: the npm CLI detects GitHub Actions, exchanges the OIDC
+        # token (`id-token: write`) for a short-lived registry token per
+        # package, and attaches provenance.
+        run: node scripts/stage-release.mjs --version "$RELEASE_VERSION" --dist-tag latest
 
-      - name: Create or update the GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
-        # Idempotent: a re-run after a partial failure updates the existing
-        # release instead of failing on "release already exists".
+      - name: Release summary and next steps
+        # Only after a fully successful staging run: a partial failure must not
+        # suggest approving an incomplete version. The staging step itself
+        # writes the stage-id table to the job summary.
+        if: success()
         run: |
-          tag="${GITHUB_REF_NAME}"
-          notes="docs/releases/${tag}.md"
-          if [ -f "$notes" ]; then
-            gh release view "$tag" >/dev/null 2>&1 \
-              && gh release edit "$tag" --title "$tag" --notes-file "$notes" \
-              || gh release create "$tag" --title "$tag" --notes-file "$notes"
-          else
-            gh release view "$tag" >/dev/null 2>&1 \
-              && gh release edit "$tag" --title "$tag" \
-              || gh release create "$tag" --title "$tag" --generate-notes
-          fi
-        env:
-          GH_TOKEN: ${{ github.token }}
+          set -euo pipefail
+          {
+            echo ""
+            echo "### Next step: approve the staged versions (human, 2FA)"
+            echo ""
+            echo "Nothing is public yet. A maintainer runs locally, after \`npm login\` as an @yankeguo maintainer:"
+            echo ""
+            echo '```sh'
+            echo "node scripts/promote-release.mjs --version ${RELEASE_VERSION} --dry-run   # inspect the plan"
+            echo "node scripts/promote-release.mjs --version ${RELEASE_VERSION}             # approve + GitHub Release"
+            echo '```'
+            echo ""
+            echo "- Approval prompts for the one-time password; npm publishes each package as it is approved."
+            echo "- To restage after a fix, re-run this workflow via workflow_dispatch with the SAME \`release_tag\` (\`${RELEASE_TAG}\`); never move or recreate the tag."
+            echo "- The GitHub Release is created/updated by the promote script, not by this workflow."
+          } >> "${GITHUB_STEP_SUMMARY}"

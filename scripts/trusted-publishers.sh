@@ -1,13 +1,22 @@
 #!/usr/bin/env bash
 # Configure npm trusted publishing (keyless OIDC) for every package in this
-# workspace.
+# workspace, scoped to STAGED publishing only (--allow-stage-publish).
 #
 # Run this once per package after the package's FIRST publish (npm requires the
-# package to exist before a trusted publisher can be attached). Afterward the
-# GitHub Actions workflow publishes with no NPM_TOKEN secret at all.
+# package to exist before a trusted publisher can be attached). Afterward
+# .github/workflows/publish.yml stages new versions with a short-lived OIDC
+# token and no NPM_TOKEN secret at all; a human then approves the staged
+# versions locally with scripts/promote-release.mjs.
+#
+# The CI workflow never publishes directly. A trusted-publisher record created
+# with --allow-publish does NOT authorize `npm stage publish`; such old records
+# must be revoked and recreated by this script (see the migration hint printed
+# on failure, and docs/PUBLISHING.md).
 #
 # Prerequisites:
-#   - npm >= 11.15.0 (npm trust was added there; `npm install -g npm@latest`)
+#   - npm >= 11.15.0 (staged publishing: `npm stage publish/list/approve/...` and
+#     `npm trust --allow-stage-publish`); this repository pins 11.20.0, so
+#     upgrade with `npm install -g npm@11.20.0`
 #   - 2FA enabled on the npm account
 #   - npm login as an account with write access to the @yankeguo packages
 #     (npm trust does not accept bypass-2FA granular tokens)
@@ -68,10 +77,14 @@ fi
 npm_version="$(npm --version)"
 node_version="$(node --version)"
 echo "npm ${npm_version} / node ${node_version}"
-# Capability check instead of parsing versions: `npm trust` is the feature we
+# Capability checks instead of version parsing: these are the features we
 # actually need, and old npm versions print an unknown-command error.
 if ! npm trust --help >/dev/null 2>&1; then
-  echo "npm >= 11.15.0 is required for 'npm trust' (found ${npm_version}); run: npm install -g npm@latest" >&2
+  echo "npm >= 11.15.0 is required for 'npm trust --allow-stage-publish' (found ${npm_version}); run: npm install -g npm@11.20.0" >&2
+  exit 2
+fi
+if ! npm stage --help >/dev/null 2>&1; then
+  echo "npm >= 11.15.0 is required for staged publishing ('npm stage', found ${npm_version}); this repo pins 11.20.0, run: npm install -g npm@11.20.0" >&2
   exit 2
 fi
 
@@ -103,6 +116,7 @@ fi
 
 echo "repository: ${REPO}"
 echo "workflow:   ${WORKFLOW_FILE}"
+echo "capability: stage-publish (npm stage publish)"
 [[ -n "${ENVIRONMENT}" ]] && echo "environment: ${ENVIRONMENT}"
 echo "packages:   ${#PACKAGES[@]}"
 printf '  - %s\n' "${PACKAGES[@]}"
@@ -134,9 +148,15 @@ if [[ "${MODE}" == "list" ]]; then
 fi
 
 # ---- configure -------------------------------------------------------------
-TRUST_ARGS=(--file "${WORKFLOW_FILE}" --repo "${REPO}" --allow-publish --yes)
+# --allow-stage-publish is the capability the CI workflow needs: it may upload
+# a staged version, but it may not publish directly. Never use --allow-publish
+# here: a publish-only record would reject `npm stage publish` from CI.
+TRUST_ARGS=(--file "${WORKFLOW_FILE}" --repo "${REPO}" --allow-stage-publish --yes)
 [[ -n "${ENVIRONMENT}" ]] && TRUST_ARGS+=(--env "${ENVIRONMENT}")
 [[ "${MODE}" == "dry-run" ]] && TRUST_ARGS+=(--dry-run)
+
+echo ""
+echo "trust configuration: github ${REPO} // ${WORKFLOW_FILE} (--allow-stage-publish)"
 
 failed=()
 for index in "${!PACKAGES[@]}"; do
@@ -159,12 +179,22 @@ done
 echo ""
 if [[ "${#failed[@]}" -gt 0 ]]; then
   echo "FAILED: ${failed[*]}" >&2
-  echo "If a package reports an existing configuration, run:" >&2
-  echo "  npm trust list <package>          # find the id" >&2
-  echo "  npm trust revoke <package> --id=<id>" >&2
-  echo "Then rerun this script." >&2
+  echo "" >&2
+  echo "If a package reports an existing or conflicting configuration (including" >&2
+  echo "records created earlier with --allow-publish, which do NOT allow staged" >&2
+  echo "publishing), migrate it explicitly:" >&2
+  echo "  npm trust list <package>                 # note the id of the GitHub Actions record" >&2
+  echo "  npm trust revoke <package> --id=<id>     # revoke the stale/publish-only record" >&2
+  echo "  scripts/trusted-publishers.sh            # recreate it with --allow-stage-publish" >&2
+  echo "" >&2
+  echo "There may be at most 10 trusted publishers per package; revoke records that" >&2
+  echo "point at renamed workflows or repositories." >&2
   exit 1
 fi
 
-echo "All ${#PACKAGES[@]} packages configured for trusted publishing."
-echo "Next: push a v* tag; .github/workflows/${WORKFLOW_FILE} publishes with OIDC."
+echo "All ${#PACKAGES[@]} packages allow staged publishing from ${REPO} // ${WORKFLOW_FILE}."
+echo "Next steps:"
+echo "  1. push a v* tag (or run workflow_dispatch with an existing release_tag)"
+echo "     -> .github/workflows/${WORKFLOW_FILE} stages all packages, publishes nothing"
+echo "  2. a maintainer runs scripts/promote-release.mjs locally (npm login + 2FA)"
+echo "     to approve the staged versions and create the GitHub Release"

@@ -20,8 +20,9 @@
     "e2e": "node scripts/e2e-smoke.mjs",
     "install:profile": "node scripts/install-profile.mjs",
     "uninstall:profile": "node scripts/install-profile.mjs --uninstall",
-    "release:dry": "pnpm build && pnpm publish -r --dry-run --access public --no-git-checks --tag latest",
-    "release:publish": "pnpm build && pnpm publish -r --access public --no-git-checks --tag latest"
+    "release:dry": "pnpm build && node scripts/stage-release.mjs --dry-run",
+    "release:stage": "pnpm build && node scripts/stage-release.mjs",
+    "release:promote": "node scripts/promote-release.mjs"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "~4.1.0",

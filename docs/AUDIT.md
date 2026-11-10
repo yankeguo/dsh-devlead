@@ -139,6 +139,8 @@ patch 流检查（`scripts/e2e-smoke.mjs` 会断言 linked root 存在）。
 - CI：新增 `.github/workflows/verify.yml`（push/PR：frozen install → typecheck → test → build →
   check-packages）；`publish.yml` 增加发布串行化、tag 一致性门禁沿用、GitHub Release 幂等；
   `trusted-publishers.sh` 改为能力探测（`npm trust --help`）并对私有包/`--list` 失败处理。
+  （0.2.0 之后发布流程已改为 **npm staged publish**：CI 只 stage、维护者人工 approve 后才公开，
+  GitHub Release 由本地脚本创建；以 [`docs/PUBLISHING.md`](PUBLISHING.md) 当前内容为准。）
 - `tsconfig.base.json` 开启 `noUnusedLocals` / `noUnusedParameters`（先清理死代码，再启用）。
 
 ## 7. 行为变更（面向使用者）

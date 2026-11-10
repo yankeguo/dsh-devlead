@@ -135,8 +135,17 @@ host 入口把 `@deepseek-ai/*`、`@yankeguo/*` 与 `node:*` 保持为外部依�
 [command](packages/command/README.md) · [client-ui](packages/client-ui/README.md) ·
 [bundle](packages/bundle/README.md)。
 
+每个可发布包还提供 DSH 插件管理器 / 插件市场使用的**插件展示元数据**：
+`locale/en.json` 与 `locale/zh.json` 中的用户友好
+`{"meta":{"title":"…","description":"…"}}`，并通过 `files: ["locale/*.json"]` 与
+`"./locale/*.json"` export 接线。DSH 解析 `<包名>/locale/en.json`，把同目录的其它语言文件当作
+翻译；字段缺失时回落到包名 / `package.json` 的 description；bundle 额外保留 manifest `icon`。
+`pnpm check:packages` 会校验 locale 文件、打包接线以及无营销最高级词——新增可发布包必须补齐
+两个 locale 文件，否则 CI 失败。
+
 `scripts/` 提供构建（`build.mjs`）、包不变式检查（`check-packages.mjs`）、profile 安装
-（`install-profile.mjs`）、开发 overlay（`dev-patch.mjs`）与本地 E2E（`e2e-smoke.mjs`）。
+（`install-profile.mjs`）、开发 overlay（`dev-patch.mjs`）、本地 E2E（`e2e-smoke.mjs`）以及
+staged 发布辅助脚本（`stage-release.mjs`、`promote-release.mjs`、`trusted-publishers.sh`）。
 
 ## 快速开始
 
@@ -577,19 +586,33 @@ dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 PR / push 到 main 由 [`verify.yml`](.github/workflows/verify.yml) 跑
 `pnpm install --frozen-lockfile` → typecheck → test → build → `check:packages`。
 
-CI 发布采用 **npm Trusted Publishing（Keyless OIDC）**：推 `v*` tag 触发
-[`.github/workflows/publish.yml`](.github/workflows/publish.yml)，由 GitHub Actions 的
-`id-token: write` 换取 npm 短时 token，**不需要 `NPM_TOKEN` secret**，公开仓库下自动附带
-provenance。CI 还会先校验 `v*` tag 与全部 6 个可发布包与根 `package.json` 的 `version`
-完全一致，不一致直接失败，避免 tag 与 npm 版本错位。每个包需一次性配置 trusted publisher：
+发版采用 **npm staged publish（暂存发布）**，避免出现「部分包已公开」的不完整发版：推 `v*` tag
+（或修复后通过 `workflow_dispatch` 传入已存在的 `release_tag` 重新 stage）会先校验 tag 与全部
+6 个可发布包及根 `package.json` 的 `version` 一致，再依次 install / typecheck / test / build /
+`check:packages`，最后按依赖拓扑顺序对每个包执行 `npm stage publish`——由 GitHub Actions 的
+`id-token: write` 换取短时 OIDC token，**不需要 `NPM_TOKEN` secret**，公开仓库下自动附带
+provenance。stage 不会公开任何包，registry 只暂存版本；approve 只能由维护者在本地完成
+（`npm stage approve` 需要维护者本地登录并完成 2FA）。
+
+每个包需一次性配置 trusted publisher，且必须允许 staged publish（`--allow-stage-publish`）；
+旧的 `--allow-publish` 配置需先 revoke 再重建：
 
 ```sh
 npm login
 scripts/trusted-publishers.sh          # 批量配置全部 6 个包（--dry-run / --list 可选）
 ```
 
-完整发版流程（版本升级、dry-run、本地/CI 发布、GitHub Release、故障处理）见
-[`docs/PUBLISHING.md`](docs/PUBLISHING.md)。
+CI stage 完成后，维护者从终端 approve，并由脚本按 `docs/releases/v<version>.md` 创建
+GitHub Release：
+
+```sh
+npm login
+node scripts/promote-release.mjs --version 0.3.0 --list-only   # 查看已暂存的版本
+node scripts/promote-release.mjs --version 0.3.0               # approve（交互式 2FA）+ gh release
+```
+
+完整流程（一次性配置、版本升级、预检、tag 推送、已存在 tag 的重新 stage、approve、
+部分失败恢复与故障排查）见 [`docs/PUBLISHING.md`](docs/PUBLISHING.md)。
 
 ## License
 
