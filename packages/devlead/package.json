@@ -1,6 +1,6 @@
 {
   "name": "@yankeguo/dsh-devlead",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "DevLead mode core service for the DeepSeek Harness: durable per-session mode, Workspace and Session orchestration, watched-session notifications, and the `devLead` Session projection.",
   "license": "MIT",
   "type": "module",
