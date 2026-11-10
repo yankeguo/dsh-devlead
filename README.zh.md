@@ -259,17 +259,18 @@ DSH 跳过。
 | `/devlead on` | 打开当前会话的 DevLead 模式 |
 | `/devlead off` | 关闭当前会话的 DevLead 模式；fold 冻结时同时执行隐式 reset 完成恢复 |
 | `/devlead reset` | 人类专属恢复：追加 `plugin:devlead/reset` 记录，丢弃本会话的模式 / watch 集合 / 通知 digest / 冻结失败标记，回到默认 disabled 状态 |
-| `/devlead watch <session>` | 监督某个会话（完整 id 或唯一前缀） |
+| `/devlead watch <session>` | 监督某个会话（完整 id、唯一前缀，或省略 `session-` 的 uuid 第一段） |
 | `/devlead unwatch <session>` | 取消监督 |
 
-- 会话寻址支持**完整 id 或唯一 id 前缀**；前缀命中多个时返回友好错误并列出候选（带标题），
+- 会话寻址支持**完整 id、唯一 id 前缀，或省略 `session-` 前缀的 uuid 第一段**
+  （`e59ab350` 可解析到 `session-e59ab350-…`）；命中多个时返回友好错误并列出候选（带标题），
   请改用更长的前缀或完整 id。引用中不能有空格，成对引号会被剥掉一层。
 - `watch` / `unwatch` 需要当前会话已开启 DevLead 模式；不能 watch 自己；监督集合有上限
   （默认 64，见[配置](#配置)）。
 - 命令不接受 composer 附件；所有领域错误（`DEVLEAD_*` 稳定错误码）都会渲染成友好文本而不是
   抛异常。命令优先在会话列表（默认最多 200 行）与当前 watch 集合内列出候选，并在变更前用
-  core 的穷尽 resolver 确认前缀，因此列表窗口之外的匹配不会被静默遮蔽（完整 id 或唯一前缀
-  均可）。
+  core 的穷尽 resolver 确认引用，因此列表窗口之外的匹配不会被静默遮蔽（完整 id、唯一前缀
+  与裸 uuid 第一段都会经由该 resolver 解析）。
 
 ### 推荐工作流
 
@@ -321,6 +322,11 @@ DSH 跳过。
 
 工具把 core 的 `DevLeadError` 翻译成带稳定 code 的 `HarnessError`；阅读状态时请以
 `lastTurn` / `lastTransition` / `lastError` / `lastAssistant` 等字段为准，不要靠猜。
+
+每个 `session` 参数都接受**完整 Session id、唯一 id 前缀，或省略 `session-` 前缀的 uuid
+第一段**——唯一时 `e59ab350` 会解析到 `session-e59ab350-…`。两个 Session 共享同一第一段时
+不会猜，而是报歧义并列出候选 id；完全无匹配时的错误会提示 id 可能不完整/被截断，并指向
+`devlead_list_sessions`。
 
 ### 可选 worktree 隔离
 

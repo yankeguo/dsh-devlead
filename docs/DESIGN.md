@@ -344,7 +344,8 @@ DevLead 无需额外工具调用即可判断是否要介入。
   lead 的 watch 集合，以及（组合了 `sessionQuery` 时）持久化 Session。列表模式下进入候选的
   持久化 ID 窗口受 `maxListedSessions` 限制；rc.1 的 `sessionQuery.listSessions` 没有 limit
   参数，底层仍会读取完整持久语料后才截断候选（这是 API 限制，不是逐行日志读取）。
-  **身份解析**（`resolveSessionReference`）走穷尽模式，列表窗口从不是"能否寻址"的上限。
+  **身份解析**（`resolveSessionReference`）走穷尽模式，列表窗口从不是"能否寻址"的上限；解析
+  同时接受省略 `session-` 的 uuid 第一段（见 §5）。
 - 便宜排序事实：watched / `agent.status === 'running'` / header `createdAt`；按
   watched → running → createdAt 降序、id 兜底排序后**先截断**，只有保留下来的行才组装完整
   视图。`limit` 必须是正安全整数，并 cap 在 `maxListedSessions`；`watchedOnly` 列表不会截断
@@ -443,8 +444,13 @@ Session 的工作目录切到独立分支/检出，DevLead 用它**可选地**�
   `read`/`search` 类似语义），只依赖已解析参数，保持 replay 纯函数。schema 与 protocol 视图
   类型有编译期一致性约束，运行时还会用编译出的 output schema 校验每个投影值（可选字段按
   lossless JSON 规则省略）。
-- 参数里的 `session`/`workspace` 接受完整 id、路径，或（会话）唯一前缀匹配；多个前缀命中时报
-  `DEVLEAD_INVALID_INPUT` 并列出候选。除 `devlead_list_workspaces` 外的工具都要求 live 调用
+- 参数里的 `session`/`workspace` 接受完整 id、路径，或（会话）唯一前缀匹配；`session` 还接受
+  省略 `session-` 前缀的 uuid 第一段/前缀（`views.ts` 的 `matchSessionIds`：例如 `e59ab350`
+  解析到 `session-e59ab350-…`），只有在可寻址集合内唯一时才解析。同第一段的多个 Session 仍报
+  `DEVLEAD_INVALID_INPUT` 并列出候选（最多 8 个），不猜；零命中仍报 `DEVLEAD_SESSION_NOT_FOUND`，
+  但文案提示 id 可能不完整/被截断、用 `devlead_list_sessions` 查完整 id 后重试。三个
+  `devlead_*` 工具的 `session` 参数描述与 `devlead_get_session` 的工具描述同步此口径。除
+  `devlead_list_workspaces` 外的工具都要求 live 调用
   者（缺失时 `DEVLEAD_AGENT_NOT_LIVE`）；`devlead_use_workspace` 是唯一的写工具，0.2.0 起它
   转发 live lead Agent 给 core 的 `useWorkspace(agent, request, signal)`，`create` 默认
   `false`，仅当人类明确要求建目录时才传 `create: true`（工具 schema 与 policy 文案同步）。
@@ -489,7 +495,7 @@ Session 的工作目录切到独立分支/检出，DevLead 用它**可选地**�
 /devlead on               # 打开当前会话的 DevLead 模式
 /devlead off              # 关闭；fold 冻结时也会强制关闭并清理冻结状态（见下）
 /devlead reset            # 人类专属恢复：丢弃该会话的全部 DevLead 持久状态并回到默认 disabled
-/devlead watch <session>  # 监督某个会话（支持唯一前缀）
+/devlead watch <session>  # 监督某个会话（完整 id / 唯一前缀 / 省略 session- 的 uuid 前缀）
 /devlead unwatch <session>
 ```
 
@@ -502,7 +508,9 @@ Session 的工作目录切到独立分支/检出，DevLead 用它**可选地**�
   worktree 隔离能力；该行只是能力说明，不改变任何状态。
 - Session 寻址先用有界列表 + watch 集合给出带标题的候选；**前缀引用（非精确 id）** 还会再用
   core 的穷尽 resolver 确认唯一性，然后才执行 watch/unwatch，避免列表窗口外的同前缀 Session
-  被静默遮蔽（精确 id 直接命中，不走额外读取）。
+  被静默遮蔽（精确 id 直接命中，不走额外读取）。core resolver 也接受省略 `session-` 的 uuid
+  第一段，因此 `/devlead watch e59ab350` 这类截断输入会经由该回退解析到完整 id；同第一段的
+  歧义与缺失仍由 core 的错误文案转为友好提示。
 - `on` 需要当前 Agent live；`off` 立即生效（正在投递的通知保留在日志里）。
 - **损坏 fold 的恢复（0.2.0）**：`/devlead reset` 调用 core 的 `reset(agent)`，追加一条
   `plugin:devlead/reset` 记录，两个 projection 的 fold 都从空状态重新开始（模式关闭、watch
@@ -613,7 +621,10 @@ UI 分两态，避免在每个会话上显示常驻条：
   disabled、精确折叠遇损坏记录跳过 + warning、live 无 Agent 也索引、`wakeColdSession` 默认
   true 时 resume；**corpus-readiness barrier**：等待 optional persistence 绑定、stale corpus
   等到一致、永不就绪时 warning + best-effort、readiness 扫描只做一次、query engine 晚到、
-  无 projection cache 只恢复 live、persisted scan 抛错不阻加载）、Workspace 与 Session 编排、列表排序与截断、列表窗口外的身份解析、
+  无 projection cache 只恢复 live、persisted scan 抛错不阻加载）、Workspace 与 Session 编排、
+  列表排序与截断、列表窗口外的身份解析、**截断 Session 引用解析**（完整 id / `session-` 前缀
+  部分 id / 裸 uuid 第一段 / 裸完整 uuid / 首尾空白；同第一段歧义列候选且不猜、零命中给出
+  可恢复提示、subagent origin 仍不可寻址）、
   **promptSession 自动 watch 的补偿语义**（admission/resume 失败与取消时移除本次新增、
   已 watch 不受影响、`watch:false` 不变）、写路径的取消语义，以及可选 worktree 隔离的两种
   形态（fake `ctx.worktrees` 存在时按"创建→隔离→prompt"顺序调用子 Agent 的 `create`；
@@ -686,10 +697,10 @@ UI 分两态，避免在每个会话上显示常驻条：
   patch 与 installed 两条加载流都跑完整多阶段；`--no-worktree` 跳过阶段 2（只跑阶段 1 + 1b，
   调试用）。两条加载流各 **61/61**（阶段 1 27 + 阶段 1b 12 + 阶段 2 22）；跳过阶段 2 时
   **39/39**（阶段 1 + 1b）。
-- 本轮最终验证数字（工作树）：`pnpm verify` = typecheck 通过 + **23 文件 / 582 tests** +
-  7 个构建产物；`node scripts/check-packages.mjs` → `OK (6 packages)`；E2E 本轮未重跑（纯
-  模型可见文案改动、不涉及运行时行为，沿用上一轮 patch / installed 各 **61/61**（阶段 1 27 +
-  阶段 1b 12 + 阶段 2 22））。
+- 本轮最终验证数字（工作树）：`pnpm verify` = typecheck 通过 + **23 文件 / 587 tests** +
+  7 个构建产物；`node scripts/check-packages.mjs` → `OK (6 packages)`；E2E 本轮未重跑（本次为
+  只读引用解析与模型可见文案改动，解析行为已由新增 service 单测覆盖，不涉及加载/通知链路；
+  沿用上一轮 patch / installed 各 **61/61**（阶段 1 27 + 阶段 1b 12 + 阶段 2 22））。
 - 手动验收路径：开一个会话 → `/devlead on`（或点开关）→ 让模型
   `devlead_use_workspace` 注册一个仓库 → `devlead_create_session` 创建子会话并下发任务 →
   子会话跑完后 DevLead 被唤醒 → 状态条显示监督列表与通知；人类可打开子会话继续参与。

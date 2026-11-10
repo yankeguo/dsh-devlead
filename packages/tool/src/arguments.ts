@@ -104,8 +104,9 @@ export function requireAgent(agent: Agent | undefined, tool: string): Agent {
 }
 
 /**
- * Validate one Session reference. The core service resolves an exact id or a
- * unique id prefix; the tool only rejects a blank value early.
+ * Validate one Session reference. The core service resolves an exact id, a
+ * unique id prefix, or the uuid prefix with the `session-` prefix omitted; the
+ * tool only rejects a blank value early.
  * @param value - model-supplied Session reference.
  * @returns the trimmed reference.
  * @throws {@link DevLeadToolInputError} when the reference is blank.

@@ -1094,6 +1094,95 @@ describe('session listings', () => {
   })
 })
 
+describe('session reference resolution', () => {
+  /** Real-shaped Session ids: a model often passes only the uuid head. */
+  const ALPHA = 'session-e59ab350-65be-4db6-83bd-9261c5847186'
+  const ALPHA_SIBLING = 'session-e59ab350-aaaa-4db6-83bd-9261c5847186'
+  const BETA = 'session-b91f2c07-1a2b-4c3d-8e4f-5a6b7c8d9e0f'
+
+  it('resolves full ids, session- prefixed prefixes, and bare uuid heads', async () => {
+    const harness = await bootService({ enabled: true, sessionIds: [ALPHA, BETA] })
+    try {
+      // Full id, `session-`-prefixed partial id, bare uuid head, bare full
+      // uuid, and a padded bare head all address the same Session.
+      for (const reference of [
+        ALPHA,
+        'session-e59ab350',
+        'session-e59ab350-65be',
+        'e59ab350',
+        'e59ab350-65be-4db6-83bd-9261c5847186',
+        '  e59ab350  ',
+      ]) {
+        const view = await harness.service.getSession(harness.lead.agent, reference)
+        expect(view.sessionId).toBe(ALPHA)
+      }
+      // Watch mutations resolve through the same tolerance and store the full id.
+      await harness.service.watchSession(harness.lead.agent, 'b91f2c07', true)
+      expect(harness.service.view(harness.lead.agent).sessions).toEqual([BETA])
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  it('keeps a uuid head shared by two Sessions ambiguous and lists the candidates', async () => {
+    const harness = await bootService({ enabled: true, sessionIds: [ALPHA, ALPHA_SIBLING, BETA] })
+    try {
+      const error = await expectCodeAsync(
+        () => harness.service.getSession(harness.lead.agent, 'e59ab350'),
+        'DEVLEAD_INVALID_INPUT',
+      )
+      expect(error.message).toContain('ambiguous')
+      expect(error.message).toContain(ALPHA)
+      expect(error.message).toContain(ALPHA_SIBLING)
+      expect(error.message).not.toContain(BETA)
+      // A longer reference that is still unique resolves again.
+      const view = await harness.service.getSession(harness.lead.agent, 'e59ab350-65be')
+      expect(view.sessionId).toBe(ALPHA)
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  it('reports a truncated reference as recoverable instead of final', async () => {
+    const harness = await bootService({ enabled: true, sessionIds: [ALPHA] })
+    try {
+      const error = await expectCodeAsync(
+        () => harness.service.getSession(harness.lead.agent, 'deadbeef'),
+        'DEVLEAD_SESSION_NOT_FOUND',
+      )
+      expect(error.message).toContain('incomplete or truncated')
+      expect(error.message).toContain('devlead_list_sessions')
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  it('does not address a subagent-origin Session through a truncated reference', async () => {
+    const harness = await bootService({ enabled: true, sessionIds: [ALPHA] })
+    try {
+      harness.ctx.sessions.create(
+        SessionId('session-c0ffee00-1111-4222-8333-444455556666'),
+        { meta: { origin: 'subagent' } },
+      )
+      // The subagent Session is routed by the subagent runtime: neither its
+      // head nor its full id is addressable here.
+      await expectCodeAsync(
+        () => harness.service.getSession(harness.lead.agent, 'c0ffee00'),
+        'DEVLEAD_SESSION_NOT_FOUND',
+      )
+      await expectCodeAsync(
+        () => harness.service.getSession(harness.lead.agent, 'session-c0ffee00'),
+        'DEVLEAD_SESSION_NOT_FOUND',
+      )
+      // The ordinary Session on the same resolution path still resolves.
+      const view = await harness.service.getSession(harness.lead.agent, 'e59ab350')
+      expect(view.sessionId).toBe(ALPHA)
+    } finally {
+      await harness.dispose()
+    }
+  })
+})
+
 describe('prompt admission', () => {
   it('admits a relay prompt into a live watched Session', async () => {
     const harness = await bootService({ enabled: true, sessionIds: ['target'] })

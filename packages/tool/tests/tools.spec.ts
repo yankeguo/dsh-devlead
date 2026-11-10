@@ -132,6 +132,20 @@ describe('registration', () => {
     }
   })
 
+  it('documents truncated uuid Session references on every session argument', () => {
+    const harness = boot()
+    const expected = 'the full id, a unique id prefix, or the uuid prefix without the "session-" prefix '
+      + '(for example e59ab350)'
+    for (const name of ['devlead_get_session', 'devlead_prompt_session', 'devlead_watch_session'] as const) {
+      const parameters = harness.tool(name).definition.parameters as {
+        properties: { session: { description: string } }
+      }
+      expect(parameters.properties.session.description).toContain(expected)
+    }
+    expect(harness.tool('devlead_get_session').definition.description)
+      .toContain('or the uuid prefix without the "session-" prefix')
+  })
+
   it('gates every tool on the caller having DevLead mode enabled', async () => {
     const harness = boot()
     const enabledAgent = makeAgent('agent-enabled')

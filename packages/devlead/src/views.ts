@@ -1,7 +1,8 @@
 /**
  * Read-side composition of the DevLead views: Workspace rows, Session rows
  * with live Agent state and folded log facts, and reference resolution
- * (id / path / unique id prefix).
+ * (id / path / unique id prefix, including a truncated uuid head whose
+ * `session-` prefix the caller omitted).
  *
  * Every optional capability is read through `ctx.get(...)` so a composition
  * without the API Session controller, Session query engine, title service, or
@@ -486,11 +487,43 @@ async function resolveExactSession(
   }
 }
 
+/** Prefix every ordinary DSH Session id carries in front of its uuid. */
+const SESSION_ID_PREFIX = 'session-'
+
 /**
- * Resolve one Session reference: exact id, or a unique id prefix. Candidates
- * are gathered from live and persisted Sessions plus this lead's watch set.
+ * Match one trimmed Session reference against candidate ids.
+ *
+ * A full id (`session-<uuid>`) and a `session-`-prefixed partial id match as
+ * plain prefixes. A model reading a truncated log entry often passes only the
+ * uuid head (`e59ab350` or `e59ab350-65be`), which is not a prefix of the full
+ * id; a reference that omits the `session-` prefix therefore also matches the
+ * candidate with that prefix re-added. A unique match resolves and several
+ * matches stay ambiguous — this narrows truncation, it never guesses.
+ * @param candidates - addressable Session ids in collection order.
+ * @param reference - trimmed Session reference.
+ * @returns matching ids in candidate order, without duplicates.
+ */
+function matchSessionIds(candidates: readonly string[], reference: string): string[] {
+  const mayOmitPrefix = !reference.startsWith(SESSION_ID_PREFIX)
+  const matched = new Set<string>()
+  for (const id of candidates) {
+    if (id.startsWith(reference)) {
+      matched.add(id)
+      continue
+    }
+    if (mayOmitPrefix && id.startsWith(SESSION_ID_PREFIX) && id.slice(SESSION_ID_PREFIX.length).startsWith(reference)) {
+      matched.add(id)
+    }
+  }
+  return [...matched]
+}
+
+/**
+ * Resolve one Session reference: an exact id, a unique id prefix, or the uuid
+ * head of an id whose `session-` prefix the caller omitted. Candidates are
+ * gathered from live and persisted Sessions plus this lead's watch set.
  * @param deps - view dependencies.
- * @param reference - Session id or unique prefix.
+ * @param reference - Session id, unique prefix, or bare uuid prefix.
  * @returns the resolved Session and its live-Agent status.
  * @throws {@link DevLeadError} on ambiguity or a missing Session.
  */
@@ -503,11 +536,11 @@ export async function resolveSessionReference(
   const exact = await resolveExactSession(deps, trimmed)
   if (exact !== undefined) return exact
   const candidates = await collectSessionIds(deps, undefined, true)
-  const matched = candidates.filter(id => id.startsWith(trimmed))
+  const matched = matchSessionIds(candidates, trimmed)
   const resolvedId = matched.find(id => id === trimmed) ?? (matched.length === 1 ? matched[0] : undefined)
   if (resolvedId === undefined && matched.length === 0) {
     throw new DevLeadError(
-      `no Session matches "${reference}"; list the addressable Sessions with devlead_list_sessions`,
+      `no Session matches "${reference}"; the id may be incomplete or truncated, so look up the full id with devlead_list_sessions and retry`,
       'DEVLEAD_SESSION_NOT_FOUND',
     )
   }

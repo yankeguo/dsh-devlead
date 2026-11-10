@@ -283,20 +283,22 @@ the DevLead icon in the composer toolbar while off, the strip switch while on.
 | `/devlead on` | enable DevLead mode for the current session |
 | `/devlead off` | disable DevLead mode for the current session; on a frozen (damaged) fold this also performs the implicit reset and recovers the session |
 | `/devlead reset` | human-only recovery: append a `plugin:devlead/reset` record, discarding this session's mode / watch set / notification digest / frozen failure and returning to the default disabled state |
-| `/devlead watch <session>` | watch a session (full id or unique prefix) |
+| `/devlead watch <session>` | watch a session (full id, unique prefix, or bare uuid first segment) |
 | `/devlead unwatch <session>` | stop watching it |
 
-- Session addressing supports a **full id or a unique id prefix**; when a prefix matches several
-  sessions the command returns a friendly error with the candidates (titles included) — use a
-  longer prefix or the full id. References cannot contain spaces; one matching pair of
+- Session addressing supports a **full id, a unique id prefix, or the uuid first segment with the
+  `session-` prefix omitted** (`e59ab350` addresses `session-e59ab350-…`); when a reference matches
+  several sessions the command returns a friendly error with the candidates (titles included) —
+  use a longer prefix or the full id. References cannot contain spaces; one matching pair of
   surrounding quotes is stripped.
 - `watch` / `unwatch` require the current session to have DevLead mode enabled; you cannot watch
   yourself; the watch set is capped (default 64, see [Configuration](#configuration)).
 - The command does not accept composer attachments; every domain failure (stable `DEVLEAD_*`
   error code) is rendered as friendly text instead of being thrown. The command lists candidates
   from the session listing (default up to 200 rows) and the current watch set first, then confirms
-  a prefix with the core's exhaustive resolver before mutating, so a match outside the listing
-  window cannot be silently shadowed (full ids and unique prefixes both work).
+  a reference with the core's exhaustive resolver before mutating, so a match outside the listing
+  window cannot be silently shadowed (full ids, unique prefixes, and bare uuid first segments all
+  work through that resolver).
 
 ### Recommended workflow
 
@@ -361,6 +363,12 @@ DevLead session:
 
 Tools translate the core's `DevLeadError` into a `HarnessError` with a stable code. When reading
 state, trust `lastTurn` / `lastTransition` / `lastError` / `lastAssistant` instead of guessing.
+
+Every `session` argument accepts the **full Session id, a unique id prefix, or the uuid first
+segment with the `session-` prefix omitted** — `e59ab350` resolves `session-e59ab350-…` when it is
+unique. A first segment shared by two Sessions is rejected as ambiguous with the candidate ids
+instead of being guessed, and a no-match error says the id may be incomplete or truncated and
+points at `devlead_list_sessions`.
 
 ### Optional worktree isolation
 

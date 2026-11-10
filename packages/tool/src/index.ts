@@ -64,6 +64,14 @@ export const inject = ['devLead', 'tools', 'systemPrompt']
 /** Default size of the notification digest `devlead_notifications` reads. */
 const DEFAULT_NOTIFICATIONS_LIMIT = 20
 
+/**
+ * Model-facing description of every `session` argument. Resolution tolerates a
+ * truncated uuid head: the id may omit the leading `session-` prefix.
+ */
+const SESSION_ARGUMENT_DESCRIPTION =
+  'Session id: the full id, a unique id prefix, or the uuid prefix without the "session-" prefix (for example '
+  + 'e59ab350); it resolves only when unique.'
+
 const LIST_WORKSPACES_DESCRIPTION =
   'List every registered DSH Workspace: its title, canonical directory path, live directory status, and the Sessions '
   + 'the registry accounts to it. Use it first to decide which Workspace owns a request, before registering a new '
@@ -92,8 +100,8 @@ const CREATE_SESSION_DESCRIPTION =
 const GET_SESSION_DESCRIPTION =
   'Read one Session in detail: whether it is live and running, whether it is archived, and, when the Host can read '
   + 'the Session log, the latest turn number and outcome plus the latest error and assistant excerpts. Address it by '
-  + 'full id or unique id prefix. Use it to inspect state after a wake-up or when the human explicitly asks, not to '
-  + 'poll while waiting for a dispatched Session.'
+  + 'full id, a unique id prefix, or the uuid prefix without the "session-" prefix. Use it to inspect state after a '
+  + 'wake-up or when the human explicitly asks, not to poll while waiting for a dispatched Session.'
 
 const PROMPT_SESSION_DESCRIPTION =
   'Admit a follow-up prompt into an existing Session, resuming a cold Session first. The prompt is attributed to this '
@@ -271,7 +279,7 @@ export function apply(ctx: Context): void {
       session: {
         type: 'string',
         required: true,
-        description: 'Session id, or a unique Session id prefix.',
+        description: SESSION_ARGUMENT_DESCRIPTION,
       },
     },
     output: GET_SESSION_OUTPUT,
@@ -292,7 +300,7 @@ export function apply(ctx: Context): void {
       session: {
         type: 'string',
         required: true,
-        description: 'Session id, or a unique Session id prefix.',
+        description: SESSION_ARGUMENT_DESCRIPTION,
       },
       prompt: {
         type: 'string',
@@ -327,7 +335,7 @@ export function apply(ctx: Context): void {
       session: {
         type: 'string',
         required: true,
-        description: 'Session id, or a unique Session id prefix.',
+        description: SESSION_ARGUMENT_DESCRIPTION,
       },
       watching: {
         type: 'boolean',
