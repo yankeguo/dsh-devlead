@@ -369,7 +369,10 @@ export interface DevLeadWatchMutation {
 export interface DevLeadRemovedWorkspace {
   /** Workspace exactly as it looked immediately before the removal. */
   readonly workspace: DevLeadWorkspaceView
-  /** Whether a registration was actually removed. */
+  /**
+   * Whether this call removed a registration. `false` means another actor had
+   * already removed it between reference resolution and the registry write.
+   */
   readonly removed: boolean
 }
 
@@ -397,7 +400,11 @@ export interface DevLeadArchivedSession {
   readonly sessionId: string
   /** Always `true`: the Session is archived after this call. */
   readonly archived: true
-  /** Whether the Host was asked to stop the Session's running work. */
+  /**
+   * Whether the Host was asked to stop the Session's running work. Always
+   * `false` when the Session was already archived: that is a Host no-op, so no
+   * activity check runs and no stop request is issued.
+   */
   readonly stopped: boolean
 }
 

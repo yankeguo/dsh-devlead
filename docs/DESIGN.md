@@ -490,15 +490,16 @@ Session 的工作目录切到独立分支/检出，DevLead 用它**可选地**�
   与 `removed`。`devlead_archive_session` 执行 DSH **archive**：日志保留、可恢复；带运行中
   工作（turn / subagent / job / schedule）的 Session 默认报 `DEVLEAD_SESSION_ACTIVE`，
   `stop_running: true` 时先写归档、再由 Host 的 `workspace/session-stop` providers 请求停止
-  （不等待 settle），结果 `stopped: true`；已归档幂等。`devlead_unarchive_session` 幂等恢复。
+  （不等待 settle），结果 `stopped: true`；已归档是 no-op（不检查活动、不请求停止，结果
+  `stopped: false`）。`devlead_unarchive_session` 幂等恢复。
   lead 不能归档自己的 Session（`DEVLEAD_INVALID_INPUT`，提示人类在侧边栏操作），subagent
   Session 不在可寻址集合内、自然报 not found。授权口径是**判断式自主**（judgment-based
   autonomy）：合理收尾时模型可自行归档自己创建/派发且已完成的临时 Session、注销明显陈旧/
   重复/空置或由自己创建的 Workspace 注册，人类说"整理/收尾/清理"时自行定范围；边界是不关闭
-  人类正在使用/对话的对象、不用关闭掩盖失败或跳过汇报、不做无关大范围清理；归档可逆、优先
-  使用，注销影响面更大所以仅限陈旧/重复/空置/自己创建；`stop_running` 等于主动取消运行中工作；
-  每次自主关闭都要汇报关闭了什么、为什么、影响面（哪些 Session 变未分组、是否停止运行中
-  工作）与可恢复性。
+  人类正在使用/对话的对象、不用关闭掩盖失败或跳过汇报、不做无关大范围清理；清理时优先归档
+  已完成的 Session、保留其 Workspace 注册，注销影响面更大所以仅限陈旧/重复/空置/自己创建；
+  `stop_running` 等于主动取消运行中工作；每次自主关闭都要汇报关闭了什么、为什么、影响面
+  （哪些 Session 变未分组、是否停止运行中工作）与可恢复性。
 - 工具把领域失败翻译成 `HarnessError(message, code)`；需要调用者的工具在 `exec.agent` 缺失
   （条件可见性被绕过）时也走结构化错误 `DEVLEAD_AGENT_NOT_LIVE`，基础设施错误原样重抛。所有异步写调用转发
   `exec.signal`（`create_session` / `prompt_session` / `watch_session` / `remove_workspace` /

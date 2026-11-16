@@ -337,14 +337,15 @@ DSH 跳过。
 分组中消失但日志保留，`devlead_unarchive_session` 把它恢复到原来的 Workspace 位置。带运行中
 工作（turn、subagent、job 或 schedule）的 Session 会被 `DEVLEAD_SESSION_ACTIVE` 拒绝，除非传
 `stop_running: true`：先写归档，再通过和人类点停止相同的 providers 请求停止该工作，不等待其
-settle，结果里 `stopped: true`。lead 不能归档自己的 Session（`DEVLEAD_INVALID_INPUT`），需要
-人类在侧边栏关闭。关闭是**判断式自主**：模型可以在合理收尾时自行归档自己创建/派发、已完成
-的临时 Session，注销明显陈旧、重复、空置，或由自己创建的 Workspace 注册；人类说"整理/收尾/
-清理一下"时自行判断范围。保守边界：不要关闭人类正在使用/正在对话的 Session 或 Workspace；
-不要用关闭掩盖失败或跳过汇报；不做无关的大范围清理；归档可逆、优先使用，注销的影响面更大
-（重新注册会得到全新 Workspace，旧会话不自动回归）；`stop_running` 等于主动取消该会话正在
-跑的工作，只有确实要终止时才用。每次自主关闭都要汇报关闭了什么、为什么、影响面（哪些
-Session 变未分组、是否停止运行中工作），并说明归档可以 unarchive。
+settle，结果里 `stopped: true`（已归档的 Session 是 no-op，结果 `stopped: false`）。lead 不能
+归档自己的 Session（`DEVLEAD_INVALID_INPUT`），需要人类在侧边栏关闭。关闭是**判断式自主**：
+模型可以在合理收尾时自行归档自己创建/派发、已完成的临时 Session，注销明显陈旧、重复、空置，
+或由自己创建的 Workspace 注册；人类说"整理/收尾/清理一下"时自行判断范围。保守边界：不要关闭
+人类正在使用/正在对话的 Session 或 Workspace；不要用关闭掩盖失败或跳过汇报；不做无关的大范围
+清理；清理时优先归档已完成的 Session，而不是注销其 Workspace；注销的影响面更大（重新注册会
+得到全新 Workspace，旧会话不自动回归）；`stop_running` 等于主动取消该会话正在跑的工作，只有
+确实要终止时才用。每次自主关闭都要汇报关闭了什么、为什么、影响面（哪些 Session 变未分组、
+是否停止运行中工作），并说明归档可以 unarchive。
 
 每个 `session` 参数都接受**完整 Session id、唯一 id 前缀，或省略 `session-` 前缀的 uuid
 第一段**——唯一时 `e59ab350` 会解析到 `session-e59ab350-…`。两个 Session 共享同一第一段时

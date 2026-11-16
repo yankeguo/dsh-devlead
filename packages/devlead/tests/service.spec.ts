@@ -709,6 +709,8 @@ describe('workspace removal', () => {
     })
     expect(registry.deleteCalls).toEqual(['ws-1'])
     expect(registry.list()).toEqual([])
+    // The Workspace listing no longer carries the removed registration.
+    await expect(harness.service.listWorkspaces()).resolves.toEqual([])
     // Closing a Workspace is a registry operation, never a filesystem or log
     // operation: the directory, its files, and the Session log all survive.
     await expect(stat(dir).then(result => result.isDirectory())).resolves.toBe(true)
@@ -1621,6 +1623,28 @@ describe('session archival', () => {
     })
     expect(registry.archived).toEqual([])
     expect(registry.unarchiveCalls).toEqual(['session-child', 'session-child'])
+  })
+
+  it('restores a cold persisted Session through the query engine', async () => {
+    const query = new FakeSessionQuery()
+    query.seed('cold-archived', [], 'Cold Archived')
+    const registry = new FakeWorkspaceRegistry()
+    registry.archived = ['cold-archived']
+    const harness = await bootService({
+      enabled: true,
+      sessionQuery: query,
+      workspaceRegistry: registry,
+    })
+    // Resolution and the archived flag both come from the query engine and the
+    // registry: the Session has no live Agent or attached Session.
+    const view = await harness.service.getSession(harness.lead.agent, 'cold-archived')
+    expect(view).toMatchObject({ live: false, archived: true, title: 'Cold Archived' })
+    await expect(harness.service.unarchiveSession(harness.lead.agent, 'cold-archived')).resolves.toEqual({
+      sessionId: 'cold-archived',
+      archived: false,
+    })
+    expect(registry.unarchiveCalls).toEqual(['cold-archived'])
+    expect(registry.archived).toEqual([])
   })
 
   it('reports unknown Sessions and a missing registry on restore', async () => {

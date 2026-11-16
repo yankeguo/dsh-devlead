@@ -834,7 +834,8 @@ export class DevLeadService extends Service {
    * @param agent - exact live lead Agent making the removal.
    * @param workspace - Workspace id or canonical/registered path.
    * @param signal - cancellation checked before the registry write.
-   * @returns the pre-removal Workspace view and whether a registration was removed.
+   * @returns the pre-removal Workspace view and whether a registration was
+   *   removed (`false` when another actor removed it first).
    * @throws {@link DevLeadError} `DEVLEAD_NOT_ENABLED`/`DEVLEAD_AGENT_NOT_LIVE`
    *   for a disallowed caller, `DEVLEAD_WORKSPACE_NOT_FOUND` when the Host
    *   composes no registry or nothing matches the reference.
@@ -1115,7 +1116,8 @@ export class DevLeadService extends Service {
    * Archiving is the DSH `archive` action: the Session disappears from grouping
    * surfaces but its log is kept, and {@link unarchiveSession} restores it to
    * its recorded Workspace position. It is idempotent: an already archived
-   * Session resolves without writing, asking, or stopping anything.
+   * Session resolves without writing, asking, or stopping anything, and
+   * `stopped` is then `false` even when `stopRunning` is true.
    *
    * With `stopRunning` unset the Host refuses a Session whose running work was
    * reported by a `workspace/session-activity` provider; that refusal is mapped
@@ -1133,7 +1135,8 @@ export class DevLeadService extends Service {
    * @param sessionId - Session id, unique prefix, or bare uuid prefix.
    * @param options - stop-running policy (default `false`) and cancellation
    *   checked before the registry write.
-   * @returns the archived Session identity and whether a stop was requested.
+   * @returns the archived Session identity and whether the Host was asked to
+   *   stop the Session's running work (`false` when it was already archived).
    * @throws {@link DevLeadError} `DEVLEAD_NOT_ENABLED`/`DEVLEAD_AGENT_NOT_LIVE`
    *   for a disallowed caller, `DEVLEAD_INVALID_INPUT` for the lead's own
    *   Session, `DEVLEAD_SESSION_NOT_FOUND` for an unknown Session,
@@ -1152,6 +1155,8 @@ export class DevLeadService extends Service {
     const resolved = await resolveSessionReference(deps, sessionId)
     const id = String(resolved.sessionId)
     signal?.throwIfAborted()
+    // DSH gives an Agent its Session's id (Agent.id is a SessionId), so a
+    // resolved Session equal to the caller is this lead's own Session.
     if (id === String(agent.id)) {
       throw new DevLeadError(
         'a DevLead Session cannot archive itself; ask the human to close this Session from the Workspace sidebar',

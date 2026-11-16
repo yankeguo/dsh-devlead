@@ -382,13 +382,14 @@ a new Workspace that does not adopt the old Sessions. `devlead_archive_session` 
 work (a turn, subagents, jobs, or schedules) is refused as `DEVLEAD_SESSION_ACTIVE` unless
 `stop_running: true` is passed, which archives first and then asks the Host to stop that work
 through the same providers the human's own stop action uses, without waiting for it to settle; the
-result reports `stopped: true`. The lead cannot archive its own Session (`DEVLEAD_INVALID_INPUT`);
-the human closes it from the sidebar. Closing is **judgment-based**: the model may archive
-finished wrap-up Sessions it created or dispatched, or remove Workspace registrations that are
-clearly stale, duplicate, or empty or that it created, without item-by-item instructions, and may
-choose the scope when the human says "tidy up", "wrap up", or "clean up". The guardrails are:
-never close a Session or Workspace the human is using now, never use closing to hide a failure or
-skip reporting, never start an unrelated large cleanup, prefer archiving because it is reversible
+result reports `stopped: true` (an already archived Session is a no-op and reports `stopped: false`).
+The lead cannot archive its own Session (`DEVLEAD_INVALID_INPUT`); the human closes it from the
+sidebar. Closing is **judgment-based**: the model may archive finished wrap-up Sessions it created
+or dispatched, or remove Workspace registrations that are clearly stale, duplicate, or empty or
+that it created, without item-by-item instructions, and may choose the scope when the human says
+"tidy up", "wrap up", or "clean up". The guardrails are: never close a Session or Workspace the
+human is using now, never use closing to hide a failure or skip reporting, never start an
+unrelated large cleanup, archive finished Sessions rather than unregistering their Workspace
 (removal has the wider blast radius), and use `stop_running` only when the running work should
 really be cancelled. Every autonomous close is reported with its rationale and impact, so the
 human can review it and unarchive a Session if needed.

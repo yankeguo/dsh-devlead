@@ -24,6 +24,7 @@ import type {
   DevLeadWorkspaceView,
 } from '@yankeguo/dsh-devlead-protocol'
 import { createSessionRequest, DevLeadToolInputError } from '../src/arguments.ts'
+import { DEVLEAD_POLICY_BASE } from '../src/policy.ts'
 import {
   ARCHIVE_SESSION_OUTPUT,
   CREATE_SESSION_OUTPUT,
@@ -354,7 +355,7 @@ describe('policy', () => {
     expect(text).toContain('become ungrouped')
     expect(text).toContain('devlead_archive_session performs the DSH archive action')
     expect(text).toContain('devlead_unarchive_session restores it')
-    expect(text).toContain('Prefer archiving because it is reversible')
+    expect(text).toContain('When tidying up, archive finished Sessions and keep the Workspace registration')
     // The conservative boundaries survive autonomy.
     expect(text).toContain('never close a Session or Workspace the human is using or talking to now')
     expect(text).toContain('never use closing to hide a failure or skip reporting')
@@ -372,13 +373,12 @@ describe('policy', () => {
     expect(text).not.toContain('never clean up, archive, or remove anything on your own initiative')
   })
 
-  it('keeps the resident base policy within its pre-autonomy budget', () => {
-    const harness = bootEnabled()
-    const text = harness.sectionText()
-    // The policy is a resident system-prompt section. The autonomy and triage
-    // revisions may not grow the serial composition past +10% of its
-    // 8,226-character baseline (base policy plus the no-worktree paragraph).
-    expect(text.length).toBeLessThanOrEqual(9_040)
+  it('keeps the resident base policy within its +10% budget', () => {
+    // The policy is a resident system-prompt section. Its pre-autonomy (0.2.1)
+    // baseline was 7,896 characters, so a revision may add at most 10%
+    // (floor(7,896 x 1.1) = 8,685). Measuring the exported base text keeps the
+    // guard independent of the capability-conditional checkout paragraphs.
+    expect(DEVLEAD_POLICY_BASE.length).toBeLessThanOrEqual(8_685)
   })
 
   it('stays hidden without DevLead mode even when the capability exists', () => {
@@ -991,7 +991,8 @@ describe('devlead_remove_workspace', () => {
     expect(definition.description).toContain('clearly stale, duplicate, or empty')
     expect(definition.description).toContain('do not remove a Workspace the human is using')
     expect(definition.description).toContain('report what you closed and why')
-    expect(definition.description).toContain('prefer archiving where it fits')
+    expect(definition.description).toContain('prefer archiving finished Sessions over unregistering their Workspace')
+    expect(definition.description).toContain('the pre-removal snapshot, including the Session ids')
     const parameters = definition.parameters as {
       properties: { workspace: { description: string } }
     }
@@ -1035,6 +1036,7 @@ describe('devlead_archive_session', () => {
     const [, , options] = harness.devLead.callsOf('archiveSession')[0] ?? []
     expect(options).toEqual({ stopRunning: true, signal: harness.exec.signal })
     expect(value).toEqual({ sessionId: 'session-1', archived: true, stopped: true })
+    expectValidOutput(harness, 'devlead_archive_session', value)
   })
 
   it('advertises the archive semantics, autonomy, and the safety boundaries', () => {
@@ -1044,7 +1046,8 @@ describe('devlead_archive_session', () => {
     expect(definition.description).toContain('restores it')
     expect(definition.description).toContain('idempotent and reversible')
     expect(definition.description).toContain('Use your judgment to archive')
-    expect(definition.description).toContain('prefer archiving over workspace removal')
+    expect(definition.description).toContain('an already archived Session is a no-op and reports stopped false')
+    expect(definition.description).toContain('archive finished Sessions and keep the Workspace registration')
     expect(definition.description).toContain('Do not archive a Session the human is using or talking to now')
     expect(definition.description).toContain('never use closing to hide a failure')
     expect(definition.description).toContain('DEVLEAD_SESSION_ACTIVE')
