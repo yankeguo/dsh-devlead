@@ -332,6 +332,9 @@ function friendlyDevLeadError(error: DevLeadError): string {
       return `The host could not find that Session: ${error.message}`
     case 'DEVLEAD_SESSION_ARCHIVED':
       return 'That Session is archived; restore it from the Workspace sidebar before watching it.'
+    case 'DEVLEAD_SESSION_ACTIVE':
+      return `That Session is still active, so it cannot be closed: ${error.message}. `
+        + 'Stop its running work first, then retry.'
     case 'DEVLEAD_SESSION_UNAVAILABLE':
       return `That Session cannot be resumed right now: ${error.message}`
     case 'DEVLEAD_WATCH_LIMIT':

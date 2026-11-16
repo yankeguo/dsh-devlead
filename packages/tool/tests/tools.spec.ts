@@ -1,5 +1,5 @@
 /**
- * Behavior of the eight `devlead_*` tools: registration and gating, per-tool
+ * Behavior of the eleven `devlead_*` tools: registration and gating, per-tool
  * forwarding into `ctx.devLead`, input validation, canonical value projection,
  * error translation, and pure presentation.
  */
@@ -10,22 +10,28 @@ import { HarnessError } from '@deepseek-ai/dsh-llm'
 import type { GenericCallView, InferValue } from '@deepseek-ai/dsh-tools'
 import { validateJsonSchemaValue } from '@deepseek-ai/dsh-tools'
 import type {
+  DevLeadArchivedSession,
   DevLeadCreatedSession,
   DevLeadIsolation,
   DevLeadIsolationMode,
   DevLeadIsolationStatus,
   DevLeadNotification,
   DevLeadPromptedSession,
+  DevLeadRemovedWorkspace,
   DevLeadSessionView,
+  DevLeadUnarchivedSession,
   DevLeadWatchMutation,
   DevLeadWorkspaceView,
 } from '@yankeguo/dsh-devlead-protocol'
 import { createSessionRequest, DevLeadToolInputError } from '../src/arguments.ts'
 import {
+  ARCHIVE_SESSION_OUTPUT,
   CREATE_SESSION_OUTPUT,
   DEVLEAD_ISOLATION_MODES,
   DEVLEAD_ISOLATION_STATUSES,
   PROMPT_SESSION_OUTPUT,
+  REMOVE_WORKSPACE_OUTPUT,
+  UNARCHIVE_SESSION_OUTPUT,
   WATCH_SESSION_OUTPUT,
   type IsolationValue,
   type NotificationValue,
@@ -55,6 +61,15 @@ type SchemaPromptedConforms = Assert<
 type SchemaWatchedConforms = Assert<
   InferValue<typeof WATCH_SESSION_OUTPUT.schema> extends DevLeadWatchMutation ? true : false
 >
+type SchemaRemovedConforms = Assert<
+  InferValue<typeof REMOVE_WORKSPACE_OUTPUT.schema> extends DevLeadRemovedWorkspace ? true : false
+>
+type SchemaArchivedConforms = Assert<
+  InferValue<typeof ARCHIVE_SESSION_OUTPUT.schema> extends DevLeadArchivedSession ? true : false
+>
+type SchemaUnarchivedConforms = Assert<
+  InferValue<typeof UNARCHIVE_SESSION_OUTPUT.schema> extends DevLeadUnarchivedSession ? true : false
+>
 
 
 /** Exact registered surface promised by DESIGN §5. */
@@ -67,6 +82,9 @@ const TOOL_NAMES = [
   'devlead_prompt_session',
   'devlead_watch_session',
   'devlead_notifications',
+  'devlead_remove_workspace',
+  'devlead_archive_session',
+  'devlead_unarchive_session',
 ] as const
 
 /** Smallest argument object each tool's schema accepts. */
@@ -79,6 +97,9 @@ const MINIMAL_ARGS: Record<(typeof TOOL_NAMES)[number], Record<string, unknown>>
   devlead_prompt_session: { session: 'session-1', prompt: 'continue' },
   devlead_watch_session: { session: 'session-1', watching: true },
   devlead_notifications: {},
+  devlead_remove_workspace: { workspace: 'ws-1' },
+  devlead_archive_session: { session: 'session-1' },
+  devlead_unarchive_session: { session: 'session-1' },
 }
 
 /** Tools whose body requires the calling Agent carried by the Step. */
@@ -90,6 +111,9 @@ const CALLER_TOOLS = [
   'devlead_prompt_session',
   'devlead_watch_session',
   'devlead_notifications',
+  'devlead_remove_workspace',
+  'devlead_archive_session',
+  'devlead_unarchive_session',
 ] as const
 
 /**
@@ -124,7 +148,7 @@ function expectValidOutput(harness: Harness, toolName: string, value: unknown): 
 }
 
 describe('registration', () => {
-  it('registers exactly the eight documented tools', () => {
+  it('registers exactly the eleven documented tools', () => {
     const harness = boot()
     expect([...harness.tools.keys()].sort()).toEqual([...TOOL_NAMES].sort())
     for (const name of TOOL_NAMES) {
@@ -136,7 +160,13 @@ describe('registration', () => {
     const harness = boot()
     const expected = 'the full id, a unique id prefix, or the uuid prefix without the "session-" prefix '
       + '(for example e59ab350)'
-    for (const name of ['devlead_get_session', 'devlead_prompt_session', 'devlead_watch_session'] as const) {
+    for (const name of [
+      'devlead_get_session',
+      'devlead_prompt_session',
+      'devlead_watch_session',
+      'devlead_archive_session',
+      'devlead_unarchive_session',
+    ] as const) {
       const parameters = harness.tool(name).definition.parameters as {
         properties: { session: { description: string } }
       }
@@ -294,6 +324,22 @@ describe('policy', () => {
     expect(harness.sectionText()).toBe(serialText)
   })
 
+  it('documents the closing semantics and forbids unprompted cleanup', () => {
+    const harness = bootEnabled()
+    const text = harness.sectionText()
+    expect(text).toContain('Closing Workspaces and Sessions')
+    expect(text).toContain('closing never deletes work')
+    expect(text).toContain('devlead_remove_workspace performs the DSH remove action')
+    expect(text).toContain('the directory, its files, and every Session log stay untouched')
+    expect(text).toContain('become ungrouped')
+    expect(text).toContain('devlead_archive_session performs the DSH archive action')
+    expect(text).toContain('devlead_unarchive_session restores it')
+    expect(text).toContain('refused as DEVLEAD_SESSION_ACTIVE')
+    expect(text).toContain('without waiting for it to settle')
+    expect(text).toContain('never clean up, archive, or remove anything on your own initiative')
+    expect(text).toContain('re-registering its directory does not bring the old Sessions back')
+  })
+
   it('stays hidden without DevLead mode even when the capability exists', () => {
     const harness = boot()
     const agent = makeAgent('agent-capability-only')
@@ -349,7 +395,10 @@ describe('canonical values', () => {
       SchemaCreatedConforms,
       SchemaPromptedConforms,
       SchemaWatchedConforms,
-    ] = [true, true, true, true, true, true, true]
+      SchemaRemovedConforms,
+      SchemaArchivedConforms,
+      SchemaUnarchivedConforms,
+    ] = [true, true, true, true, true, true, true, true, true, true]
     expect(conformance.every(value => value)).toBe(true)
   })
 
@@ -880,6 +929,140 @@ describe('devlead_notifications', () => {
   })
 })
 
+describe('devlead_remove_workspace', () => {
+  it('forwards the caller, trimmed reference, and signal and returns the pre-removal snapshot', async () => {
+    const harness = boot()
+    const value = await harness.call('devlead_remove_workspace', { workspace: '  ws-1  ' })
+    const [agent, workspace, signal] = harness.devLead.callsOf('removeWorkspace')[0] ?? []
+    expect(agent).toBe(harness.agent)
+    expect(workspace).toBe('ws-1')
+    expect(signal).toBe(harness.exec.signal)
+    expect(value).toEqual({ workspace: WORKSPACE, removed: true })
+    expectValidOutput(harness, 'devlead_remove_workspace', value)
+  })
+
+  it('advertises the non-destructive remove semantics and the human-only trigger', () => {
+    const harness = boot()
+    const definition = harness.tool('devlead_remove_workspace').definition
+    expect(definition.description).toContain('not a deletion')
+    expect(definition.description).toContain('become ungrouped')
+    expect(definition.description).toContain('only when the human explicitly asked')
+    const parameters = definition.parameters as {
+      properties: { workspace: { description: string } }
+    }
+    expect(parameters.properties.workspace.description).toContain('registered')
+  })
+
+  it('rejects a blank or omitted reference before calling the core service', async () => {
+    const harness = boot()
+    const blank = await failureOf(harness.call('devlead_remove_workspace', { workspace: '   ' }))
+    expect(blank.code).toBe('DEVLEAD_INVALID_INPUT')
+    expect(blank.message).toContain('workspace')
+    const missing = await failureOf(harness.call('devlead_remove_workspace'))
+    expect(missing.code).toBe('INVALID_ARGS')
+    expect(harness.devLead.callsOf('removeWorkspace')).toHaveLength(0)
+  })
+
+  it('translates an unresolved Workspace', async () => {
+    const harness = boot()
+    harness.devLead.failures.set('removeWorkspace', devLeadFailure('DEVLEAD_WORKSPACE_NOT_FOUND'))
+    const error = await failureOf(harness.call('devlead_remove_workspace', { workspace: 'unknown' }))
+    expect(error.code).toBe('DEVLEAD_WORKSPACE_NOT_FOUND')
+  })
+})
+
+describe('devlead_archive_session', () => {
+  it('archives without stopping by default and returns the canonical value', async () => {
+    const harness = boot()
+    const value = await harness.call('devlead_archive_session', { session: ' session-1 ' })
+    const [agent, sessionId, options] = harness.devLead.callsOf('archiveSession')[0] ?? []
+    expect(agent).toBe(harness.agent)
+    expect(sessionId).toBe('session-1')
+    expect(options).toEqual({ stopRunning: false, signal: harness.exec.signal })
+    expect(value).toEqual({ sessionId: 'session-1', archived: true, stopped: false })
+    expectValidOutput(harness, 'devlead_archive_session', value)
+  })
+
+  it('forwards stop_running true and reports a requested stop', async () => {
+    const harness = boot()
+    harness.devLead.archived = { sessionId: 'session-1', archived: true, stopped: true }
+    const value = await harness.call('devlead_archive_session', { session: 'session-1', stop_running: true })
+    const [, , options] = harness.devLead.callsOf('archiveSession')[0] ?? []
+    expect(options).toEqual({ stopRunning: true, signal: harness.exec.signal })
+    expect(value).toEqual({ sessionId: 'session-1', archived: true, stopped: true })
+  })
+
+  it('advertises the archive semantics, the active refusal, and the self-archive guard', () => {
+    const harness = boot()
+    const definition = harness.tool('devlead_archive_session').definition
+    expect(definition.description).toContain('archive')
+    expect(definition.description).toContain('restores it')
+    expect(definition.description).toContain('DEVLEAD_SESSION_ACTIVE')
+    expect(definition.description).toContain('cannot archive itself')
+    expect(definition.description).toContain('only when the human explicitly asked')
+    const parameters = definition.parameters as {
+      properties: { stop_running: { type: string; description: string } }
+    }
+    expect(parameters.properties.stop_running.type).toBe('boolean')
+    expect(parameters.properties.stop_running.description).toContain('Defaults to false')
+  })
+
+  it('rejects a blank or omitted Session reference before calling the core', async () => {
+    const harness = boot()
+    const blank = await failureOf(harness.call('devlead_archive_session', { session: '  ' }))
+    expect(blank.code).toBe('DEVLEAD_INVALID_INPUT')
+    const missing = await failureOf(harness.call('devlead_archive_session'))
+    expect(missing.code).toBe('INVALID_ARGS')
+    expect(harness.devLead.callsOf('archiveSession')).toHaveLength(0)
+  })
+
+  it('translates the active-session refusal and the unknown-session failure', async () => {
+    const harness = boot()
+    harness.devLead.failures.set('archiveSession', devLeadFailure('DEVLEAD_SESSION_ACTIVE'))
+    const active = await failureOf(harness.call('devlead_archive_session', { session: 'session-1' }))
+    expect(active.code).toBe('DEVLEAD_SESSION_ACTIVE')
+    harness.devLead.failures.set('archiveSession', devLeadFailure('DEVLEAD_SESSION_NOT_FOUND'))
+    const missing = await failureOf(harness.call('devlead_archive_session', { session: 'session-1' }))
+    expect(missing.code).toBe('DEVLEAD_SESSION_NOT_FOUND')
+  })
+})
+
+describe('devlead_unarchive_session', () => {
+  it('restores one Session and returns the canonical value', async () => {
+    const harness = boot()
+    const value = await harness.call('devlead_unarchive_session', { session: '  session-1  ' })
+    const [agent, sessionId, signal] = harness.devLead.callsOf('unarchiveSession')[0] ?? []
+    expect(agent).toBe(harness.agent)
+    expect(sessionId).toBe('session-1')
+    expect(signal).toBe(harness.exec.signal)
+    expect(value).toEqual({ sessionId: 'session-1', archived: false })
+    expectValidOutput(harness, 'devlead_unarchive_session', value)
+  })
+
+  it('advertises the restore semantics and the human-only trigger', () => {
+    const harness = boot()
+    const description = harness.tool('devlead_unarchive_session').definition.description
+    expect(description).toContain('only when the human explicitly asked')
+    expect(description).toContain('idempotent')
+  })
+
+  it('rejects a blank or omitted Session reference before calling the core', async () => {
+    const harness = boot()
+    const blank = await failureOf(harness.call('devlead_unarchive_session', { session: '  ' }))
+    expect(blank.code).toBe('DEVLEAD_INVALID_INPUT')
+    const missing = await failureOf(harness.call('devlead_unarchive_session'))
+    expect(missing.code).toBe('INVALID_ARGS')
+    expect(harness.devLead.callsOf('unarchiveSession')).toHaveLength(0)
+  })
+
+  it('translates an unknown-session failure', async () => {
+    const harness = boot()
+    harness.devLead.failures.set('unarchiveSession', devLeadFailure('DEVLEAD_SESSION_NOT_FOUND'))
+    const error = await failureOf(harness.call('devlead_unarchive_session', { session: 'session-1' }))
+    expect(error.code).toBe('DEVLEAD_SESSION_NOT_FOUND')
+  })
+})
+
 describe('presentation', () => {
   it('gives every tool a pure generic pending card', () => {
     const harness = boot()
@@ -908,6 +1091,24 @@ describe('presentation', () => {
     expect(unwatching.title).toBe('Unwatch DevLead session')
   })
 
+  it('labels workspace removal and Session archival by direction and stop policy', () => {
+    const harness = boot()
+    const remove = harness.tool('devlead_remove_workspace').definition.presentCall
+    expect(remove?.({ workspace: '  ws-1  ' })).toMatchObject({
+      title: 'Remove DevLead workspace',
+      rawInput: 'ws-1',
+    })
+    const archive = harness.tool('devlead_archive_session').definition.presentCall
+    expect((archive?.({ session: 'session-1' }) as GenericCallView).title).toBe('Archive DevLead session')
+    expect((archive?.({ session: 'session-1', stop_running: true }) as GenericCallView).title)
+      .toBe('Archive DevLead session (stop running work)')
+    const unarchive = harness.tool('devlead_unarchive_session').definition.presentCall
+    expect(unarchive?.({ session: ' session-1 ' })).toMatchObject({
+      title: 'Restore DevLead session',
+      rawInput: 'session-1',
+    })
+  })
+
   it('shows trimmed salient text and omits blank filler arguments', () => {
     const harness = boot()
     const workspaces = harness.tool('devlead_use_workspace').definition.presentCall
@@ -934,6 +1135,10 @@ describe('presentation', () => {
     const harness = boot()
     expect(harness.tool('devlead_get_session').definition.presentCall?.({})).toBeUndefined()
     expect(harness.tool('devlead_watch_session').definition.presentCall?.({ session: 's' })).toBeUndefined()
+    expect(harness.tool('devlead_remove_workspace').definition.presentCall?.({})).toBeUndefined()
+    expect(harness.tool('devlead_archive_session').definition.presentCall?.({ session: 's', stop_running: 'yes' }))
+      .toBeUndefined()
+    expect(harness.tool('devlead_unarchive_session').definition.presentCall?.({})).toBeUndefined()
   })
 
   it('renders a Session value as lossless JSON', async () => {

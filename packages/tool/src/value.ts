@@ -15,6 +15,7 @@
 import type { InferValue, ValueSchemaSpec } from '@deepseek-ai/dsh-tools'
 import { DEVLEAD_TRANSITIONS } from '@yankeguo/dsh-devlead-protocol'
 import type {
+  DevLeadArchivedSession,
   DevLeadCreatedSession,
   DevLeadIsolation,
   DevLeadIsolationMode,
@@ -22,7 +23,9 @@ import type {
   DevLeadNotification,
   DevLeadProjection,
   DevLeadPromptedSession,
+  DevLeadRemovedWorkspace,
   DevLeadSessionView,
+  DevLeadUnarchivedSession,
   DevLeadWatchMutation,
   DevLeadWorkspaceView,
 } from '@yankeguo/dsh-devlead-protocol'
@@ -343,6 +346,50 @@ export const NOTIFICATIONS_OUTPUT = jsonOutput({
   },
 } as const)
 
+/** Canonical value of `devlead_remove_workspace`. */
+export const REMOVE_WORKSPACE_OUTPUT = jsonOutput({
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    workspace: required(WORKSPACE_VIEW_SCHEMA),
+    removed: {
+      type: 'boolean',
+      required: true,
+      description: 'Whether a Workspace registration was removed.',
+    },
+  },
+} as const)
+
+/** Canonical value of `devlead_archive_session`. */
+export const ARCHIVE_SESSION_OUTPUT = jsonOutput({
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    sessionId: { type: 'string', required: true, description: 'Archived Session identity.' },
+    archived: { type: 'boolean', required: true, const: true, description: 'Always true: the Session is archived.' },
+    stopped: {
+      type: 'boolean',
+      required: true,
+      description: 'Whether the Host was asked to stop the Session\'s running work.',
+    },
+  },
+} as const)
+
+/** Canonical value of `devlead_unarchive_session`. */
+export const UNARCHIVE_SESSION_OUTPUT = jsonOutput({
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    sessionId: { type: 'string', required: true, description: 'Restored Session identity.' },
+    archived: {
+      type: 'boolean',
+      required: true,
+      const: false,
+      description: 'Always false: the Session is no longer archived.',
+    },
+  },
+} as const)
+
 /** Project one created-Session result onto the canonical value. */
 export function createdSessionValue(created: DevLeadCreatedSession): InferValue<typeof CREATE_SESSION_OUTPUT.schema> {
   return {
@@ -368,5 +415,36 @@ export function watchMutationValue(mutation: DevLeadWatchMutation): InferValue<t
     sessionId: mutation.sessionId,
     watched: mutation.watched,
     sessions: [...mutation.sessions],
+  }
+}
+
+/** Project one Workspace removal result onto the canonical value. */
+export function removedWorkspaceValue(
+  removed: DevLeadRemovedWorkspace,
+): InferValue<typeof REMOVE_WORKSPACE_OUTPUT.schema> {
+  return {
+    workspace: workspaceValue(removed.workspace),
+    removed: removed.removed,
+  }
+}
+
+/** Project one Session archival result onto the canonical value. */
+export function archivedSessionValue(
+  archived: DevLeadArchivedSession,
+): InferValue<typeof ARCHIVE_SESSION_OUTPUT.schema> {
+  return {
+    sessionId: archived.sessionId,
+    archived: archived.archived,
+    stopped: archived.stopped,
+  }
+}
+
+/** Project one Session restoration result onto the canonical value. */
+export function unarchivedSessionValue(
+  unarchived: DevLeadUnarchivedSession,
+): InferValue<typeof UNARCHIVE_SESSION_OUTPUT.schema> {
+  return {
+    sessionId: unarchived.sessionId,
+    archived: unarchived.archived,
   }
 }

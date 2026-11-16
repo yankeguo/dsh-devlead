@@ -358,6 +358,57 @@ export interface DevLeadWatchMutation {
   readonly sessions: readonly string[]
 }
 
+/**
+ * Result of one Workspace registration removal (the DSH `remove` action).
+ *
+ * The Workspace view is the pre-removal snapshot, so the caller can report what
+ * was closed and which Sessions it accounted to. Removal is not a deletion: the
+ * directory, its files, and every Session log stay untouched, and the Sessions
+ * become ungrouped (still openable and continuable).
+ */
+export interface DevLeadRemovedWorkspace {
+  /** Workspace exactly as it looked immediately before the removal. */
+  readonly workspace: DevLeadWorkspaceView
+  /** Whether a registration was actually removed. */
+  readonly removed: boolean
+}
+
+/** Options of one Session archival through the core service. */
+export interface DevLeadArchiveSessionOptions {
+  /**
+   * Ask the Host to stop the Session's running work instead of refusing the
+   * archive. The archive is written first; the stop is then requested through
+   * the same providers the human's own stop action uses, and running work is
+   * never awaited to settlement. Defaults to `false`.
+   */
+  readonly stopRunning?: boolean
+  /** Cancellation checked before the archive write. */
+  readonly signal?: AbortSignal
+}
+
+/**
+ * Result of one Session archival (the DSH `archive` action).
+ *
+ * Archiving is reversible and idempotent; it hides the Session from grouping
+ * surfaces without touching its log.
+ */
+export interface DevLeadArchivedSession {
+  /** Archived Session identity. */
+  readonly sessionId: string
+  /** Always `true`: the Session is archived after this call. */
+  readonly archived: true
+  /** Whether the Host was asked to stop the Session's running work. */
+  readonly stopped: boolean
+}
+
+/** Result of one Session restoration. */
+export interface DevLeadUnarchivedSession {
+  /** Restored Session identity. */
+  readonly sessionId: string
+  /** Always `false`: the Session is no longer archived after this call. */
+  readonly archived: false
+}
+
 /** One admitted prompt into an existing Session. */
 export interface DevLeadPromptedSession {
   /** Addressed Session identity. */

@@ -1,6 +1,6 @@
 # @yankeguo/dsh-tool-devlead
 
-The eight model-facing `devlead_*` tools and the conditional DevLead system-prompt section.
+The eleven model-facing `devlead_*` tools and the conditional DevLead system-prompt section.
 
 The tools are registered with `when: ({ agent }) => ctx.devLead.isEnabled(agent)`, so an ordinary
 Session never sees them. They become visible only after a human enables DevLead mode with
@@ -16,6 +16,9 @@ Session never sees them. They become visible only after a human enables DevLead 
 - `devlead_prompt_session`
 - `devlead_watch_session`
 - `devlead_notifications`
+- `devlead_remove_workspace` (DSH remove: unregister only, Sessions become ungrouped)
+- `devlead_archive_session` (DSH archive; `stop_running` asks the Host to stop running work)
+- `devlead_unarchive_session` (restore to the recorded Workspace position)
 
 Every tool except `devlead_list_workspaces` requires a live calling Agent (`exec.agent`) and an
 enabled DevLead mode. Since 0.2.0 `devlead_use_workspace` forwards the live Agent to the core
@@ -24,6 +27,14 @@ directory is `DEVLEAD_DIRECTORY_MISSING`), and `create: true` is only for a huma
 to create the directory. Domain failures are translated to `HarnessError` with a stable
 `DEVLEAD_*` code. Tool outputs are canonical JSON validated against their declared output
 schemas.
+
+The closing tools are non-destructive and human-triggered: their descriptions and the policy text
+allow them only when the human explicitly asked, in the conversation, to close or restore that
+specific Workspace or Session. `devlead_remove_workspace` returns the pre-removal Workspace
+snapshot plus `removed`; `devlead_archive_session` reports `{ sessionId, archived: true, stopped }`
+and refuses a Session with running work as `DEVLEAD_SESSION_ACTIVE` unless `stop_running` is true;
+`devlead_unarchive_session` reports `{ sessionId, archived: false }`. A lead Session cannot archive
+itself (`DEVLEAD_INVALID_INPUT`).
 
 ## Install
 
@@ -43,9 +54,12 @@ supported platform.
 
 ## 中文
 
-`@yankeguo/dsh-tool-devlead` 提供 8 个模型工具 `devlead_*` 与条件 system prompt，只在 DevLead
+`@yankeguo/dsh-tool-devlead` 提供 11 个模型工具 `devlead_*` 与条件 system prompt，只在 DevLead
 模式开启时可见。除 `devlead_list_workspaces` 外都需要 live 调用者；0.2.0 起
 `devlead_use_workspace` 把 live Agent 转发给 core 的 `useWorkspace(agent, request, signal)`，
 `create` 默认 `false`（缺目录报 `DEVLEAD_DIRECTORY_MISSING`，只有人类明确要求建目录时才传
-`true`）。领域错误翻译为稳定的 `DEVLEAD_*` code。完整中文文档见[根 README.zh.md](https://github.com/yankeguo/dsh-devlead/blob/main/README.zh.md)与
+`true`）。领域错误翻译为稳定的 `DEVLEAD_*` code。关闭类工具（remove / archive / unarchive）
+都不是破坏性操作，且只在人类于本对话明确要求时调用：remove 只注销 Workspace、其 Session
+变为未分组；archive 保留日志、可恢复，运行中工作默认报 `DEVLEAD_SESSION_ACTIVE`，传
+`stop_running` 才会先归档再请求停止；lead 不能归档自己的 Session。完整中文文档见[根 README.zh.md](https://github.com/yankeguo/dsh-devlead/blob/main/README.zh.md)与
 [设计说明](https://github.com/yankeguo/dsh-devlead/blob/main/docs/DESIGN.md)。

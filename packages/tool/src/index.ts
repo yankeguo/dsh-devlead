@@ -24,32 +24,42 @@ import {
   requireAgent,
   requirePrompt,
   requireSessionRef,
+  requireWorkspaceRef,
 } from './arguments.ts'
 import { runTool } from './errors.ts'
 import { devLeadPolicy } from './policy.ts'
 import {
+  presentArchiveSessionCall,
   presentCreateSessionCall,
   presentGetSessionCall,
   presentListSessionsCall,
   presentListWorkspacesCall,
   presentNotificationsCall,
   presentPromptSessionCall,
+  presentRemoveWorkspaceCall,
+  presentUnarchiveSessionCall,
   presentUseWorkspaceCall,
   presentWatchSessionCall,
 } from './presentation.ts'
 import {
+  ARCHIVE_SESSION_OUTPUT,
   CREATE_SESSION_OUTPUT,
   GET_SESSION_OUTPUT,
   LIST_SESSIONS_OUTPUT,
   LIST_WORKSPACES_OUTPUT,
   NOTIFICATIONS_OUTPUT,
   PROMPT_SESSION_OUTPUT,
+  REMOVE_WORKSPACE_OUTPUT,
+  UNARCHIVE_SESSION_OUTPUT,
   USE_WORKSPACE_OUTPUT,
   WATCH_SESSION_OUTPUT,
+  archivedSessionValue,
   createdSessionValue,
   notificationValue,
   promptedSessionValue,
+  removedWorkspaceValue,
   sessionValue,
+  unarchivedSessionValue,
   watchMutationValue,
   watchedIds,
   workspaceValue,
@@ -117,8 +127,29 @@ const NOTIFICATIONS_DESCRIPTION =
   + 'a watched Session whose turn settled and how it ended. The digest is newest last. Read it after a wake-up or when '
   + 'the human explicitly asks, not as a polling loop while waiting for a dispatched Session.'
 
+const REMOVE_WORKSPACE_DESCRIPTION =
+  'Close (remove) a DSH Workspace registration: the DSH remove action, not a deletion. The directory, its files, and '
+  + 'every Session log stay untouched, but the Workspace\'s Sessions become ungrouped: they stay openable and '
+  + 'continuable, yet no longer appear under that Workspace, and re-registering the same directory creates a brand new '
+  + 'Workspace that does not adopt them. Address it by Workspace id or registered path. Call this only when the human '
+  + 'explicitly asked, in this conversation, to close that Workspace; never remove Workspaces on your own initiative.'
+
+const ARCHIVE_SESSION_DESCRIPTION =
+  'Close (archive) one DSH Session: it disappears from the sidebar grouping while its log is kept, and '
+  + 'devlead_unarchive_session restores it to its recorded Workspace position. Archiving is idempotent and reversible. '
+  + 'By default a Session with running work (a turn, subagents, jobs, or schedules) is refused with '
+  + 'DEVLEAD_SESSION_ACTIVE; set stop_running true to archive it first and then ask the Host to stop that work through '
+  + 'the same providers the human\'s own stop action uses, without waiting for it to settle. This lead Session cannot '
+  + 'archive itself: ask the human to close it from the sidebar. Call this only when the human explicitly asked, in '
+  + 'this conversation, to close that Session; never archive Sessions on your own initiative.'
+
+const UNARCHIVE_SESSION_DESCRIPTION =
+  'Restore (unarchive) one archived DSH Session, returning it to its recorded Workspace position. Unarchiving is '
+  + 'idempotent, and the Session log was kept while it was archived. Call this only when the human explicitly asked, in '
+  + 'this conversation, to restore that Session; never restore or reorganize Sessions on your own initiative.'
+
 /**
- * Register the eight DevLead tools and their shared policy section.
+ * Register the eleven DevLead tools and their shared policy section.
  *
  * The tools and the policy text follow the same condition: DevLead mode is
  * enabled for the assembling Agent. Because both are evaluated per step, toggling
@@ -378,6 +409,87 @@ export function apply(ctx: Context): void {
           notifications: ctx.devLead.notifications(agent, { limit }).map(notificationValue),
           watched: watchedIds(ctx.devLead.view(agent)),
         }
+      })
+    },
+  }), { when: ({ agent }) => ctx.devLead.isEnabled(agent) })
+
+  ctx.tools.register(defineTool({
+    name: 'devlead_remove_workspace',
+    description: REMOVE_WORKSPACE_DESCRIPTION,
+    parameters: {
+      workspace: {
+        type: 'string',
+        required: true,
+        description: 'Workspace id or registered canonical path of the Workspace to close (remove).',
+      },
+    },
+    output: REMOVE_WORKSPACE_OUTPUT,
+    presentCall: presentRemoveWorkspaceCall,
+    execute(args, exec) {
+      return runTool(async () => {
+        const agent = requireAgent(exec.agent, 'devlead_remove_workspace')
+        const removed = await ctx.devLead.removeWorkspace(
+          agent,
+          requireWorkspaceRef(args.workspace),
+          exec.signal,
+        )
+        return removedWorkspaceValue(removed)
+      })
+    },
+  }), { when: ({ agent }) => ctx.devLead.isEnabled(agent) })
+
+  ctx.tools.register(defineTool({
+    name: 'devlead_archive_session',
+    description: ARCHIVE_SESSION_DESCRIPTION,
+    parameters: {
+      session: {
+        type: 'string',
+        required: true,
+        description: SESSION_ARGUMENT_DESCRIPTION,
+      },
+      stop_running: {
+        type: 'boolean',
+        description: 'Defaults to false. Set true only when the human asked to close a Session with running work: '
+          + 'the Session is archived first and the Host is then asked to stop its running turn, subagents, jobs, and '
+          + 'schedules, without waiting for them to settle.',
+      },
+    },
+    output: ARCHIVE_SESSION_OUTPUT,
+    presentCall: presentArchiveSessionCall,
+    execute(args, exec) {
+      return runTool(async () => {
+        const agent = requireAgent(exec.agent, 'devlead_archive_session')
+        const archived = await ctx.devLead.archiveSession(
+          agent,
+          requireSessionRef(args.session),
+          { stopRunning: args.stop_running ?? false, signal: exec.signal },
+        )
+        return archivedSessionValue(archived)
+      })
+    },
+  }), { when: ({ agent }) => ctx.devLead.isEnabled(agent) })
+
+  ctx.tools.register(defineTool({
+    name: 'devlead_unarchive_session',
+    description: UNARCHIVE_SESSION_DESCRIPTION,
+    parameters: {
+      session: {
+        type: 'string',
+        required: true,
+        description: SESSION_ARGUMENT_DESCRIPTION,
+      },
+    },
+    output: UNARCHIVE_SESSION_OUTPUT,
+    presentCall: presentUnarchiveSessionCall,
+    execute(args, exec) {
+      return runTool(async () => {
+        const agent = requireAgent(exec.agent, 'devlead_unarchive_session')
+        const unarchived = await ctx.devLead.unarchiveSession(
+          agent,
+          requireSessionRef(args.session),
+          exec.signal,
+        )
+        return unarchivedSessionValue(unarchived)
       })
     },
   }), { when: ({ agent }) => ctx.devLead.isEnabled(agent) })

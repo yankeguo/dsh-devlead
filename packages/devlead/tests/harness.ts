@@ -19,8 +19,8 @@ import type { Session, SessionEvent, SessionHeader, TurnEndReason } from '@deeps
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import type { SessionQueryEngine } from '@deepseek-ai/dsh-session-query'
 import type { SessionTitleService, SessionTitleSnapshot } from '@deepseek-ai/dsh-session-title'
-import { WorkspaceId } from '@deepseek-ai/dsh-workspace'
-import type { Workspace, WorkspaceRegistry } from '@deepseek-ai/dsh-workspace'
+import { WorkspaceActiveSessionError, WorkspaceId, WorkspaceUnknownSessionError } from '@deepseek-ai/dsh-workspace'
+import type { SessionActivity, Workspace, WorkspaceRegistry } from '@deepseek-ai/dsh-workspace'
 import {
   DEVLEAD_MODE_RECORD_TYPE,
   DEVLEAD_NOTIFICATION_RECORD_TYPE,
@@ -278,6 +278,14 @@ export function fakeWorkspace(seed: FakeWorkspaceSeed): Workspace {
   return workspace as unknown as Workspace
 }
 
+/** One active work family a {@link FakeWorkspaceRegistry} reports for a Session. */
+export interface FakeSessionActivity {
+  /** Activity family key, for example `turn` or `job`. */
+  readonly kind: string
+  /** Active items of the family, when it carries per-item identity. */
+  readonly items?: readonly { readonly id: string; readonly label?: string }[]
+}
+
 /** Fake `ctx.workspaceRegistry`: scripted workspaces, archive set, and create calls. */
 export class FakeWorkspaceRegistry {
   /** Workspaces in registry order. */
@@ -292,6 +300,20 @@ export class FakeWorkspaceRegistry {
   readonly createErrors = new Map<string, Error>()
   /** Number of complete registry listings requested, for listing-cost assertions. */
   listCalls = 0
+  /** Session identities the fake counts as existing for archive admission. */
+  readonly knownSessions: string[] = []
+  /** Scripted activity families per Session, reported while not archived with `stopActivity` unset. */
+  readonly activity = new Map<string, readonly FakeSessionActivity[]>()
+  /** Every `delete` call, in order. */
+  readonly deleteCalls: string[] = []
+  /** Every `archiveSession` call, in order. */
+  readonly archiveCalls: Array<{ readonly sessionId: string; readonly stopActivity: boolean }> = []
+  /** Every `unarchiveSession` call, in order. */
+  readonly unarchiveCalls: string[] = []
+  /** Sessions whose stop was requested by an archive with `stopActivity`. */
+  readonly stopCalls: string[] = []
+  /** When set, every `delete` call rejects. */
+  deleteError: Error | undefined
 
   /**
    * Add one Workspace fixture.
@@ -343,6 +365,55 @@ export class FakeWorkspaceRegistry {
     const existing = this.workspaces.find(workspace => workspace.path === path)
     if (existing !== undefined) return existing
     return this.add(title === undefined ? { path } : { path, title })
+  }
+
+  /**
+   * Remove one Workspace registration, retaining its directory and logs.
+   * @param id - Workspace identity.
+   * @returns whether a registration was removed.
+   */
+  async delete(id: Workspace['id']): Promise<boolean> {
+    this.deleteCalls.push(String(id))
+    if (this.deleteError !== undefined) throw this.deleteError
+    const index = this.workspaces.findIndex(workspace => workspace.id === id)
+    if (index < 0) return false
+    this.workspaces.splice(index, 1)
+    return true
+  }
+
+  /**
+   * Archive one Session, replaying the Host's admission rules.
+   * @param sessionId - Session identity.
+   * @param options - whether running work is stopped instead of refusing.
+   * @throws {@link WorkspaceUnknownSessionError} for an unknown Session and
+   *   {@link WorkspaceActiveSessionError} for reported activity without the stop.
+   */
+  async archiveSession(sessionId: SessionId, options: { stopActivity?: boolean } = {}): Promise<void> {
+    const id = String(sessionId)
+    this.archiveCalls.push({ sessionId: id, stopActivity: options.stopActivity === true })
+    if (this.archived.includes(id)) return
+    if (!this.knownSessions.includes(id)) throw new WorkspaceUnknownSessionError(sessionId, 'archive')
+    if (options.stopActivity !== true) {
+      const activity = this.activity.get(id) ?? []
+      if (activity.length > 0) {
+        throw new WorkspaceActiveSessionError(
+          sessionId,
+          activity as unknown as readonly SessionActivity[],
+        )
+      }
+    }
+    this.archived.push(id)
+    if (options.stopActivity === true) this.stopCalls.push(id)
+  }
+
+  /**
+   * Unarchive one Session.
+   * @param sessionId - Session identity.
+   */
+  async unarchiveSession(sessionId: SessionId): Promise<void> {
+    const id = String(sessionId)
+    this.unarchiveCalls.push(id)
+    this.archived = this.archived.filter(existing => existing !== id)
   }
 
   /** Workspace-registry-shaped value for `ctx.provide`. */

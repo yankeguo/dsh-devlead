@@ -143,6 +143,7 @@ export class DevLeadService extends Service {
   // Workspace
   listWorkspaces(signal?: AbortSignal): Promise<DevLeadWorkspaceView[]>
   useWorkspace(agent: Agent, request: DevLeadUseWorkspaceRequest, signal?: AbortSignal): Promise<DevLeadWorkspaceView>
+  removeWorkspace(agent: Agent, workspace: string, signal?: AbortSignal): Promise<DevLeadRemovedWorkspace>
 
   // Session
   listSessions(agent: Agent, options?: { workspace?: string; watchedOnly?: boolean; limit?: number; signal?: AbortSignal }): Promise<DevLeadSessionView[]>
@@ -150,6 +151,8 @@ export class DevLeadService extends Service {
   createSession(agent: Agent, request: DevLeadCreateSessionRequest, signal?: AbortSignal): Promise<DevLeadCreatedSession>
   promptSession(agent: Agent, sessionId: string, prompt: string, options?: { watch?: boolean; signal?: AbortSignal }): Promise<DevLeadPromptedSession>
   watchSession(agent: Agent, sessionId: string, watching: boolean, signal?: AbortSignal): Promise<DevLeadWatchMutation>
+  archiveSession(agent: Agent, sessionId: string, options?: DevLeadArchiveSessionOptions): Promise<DevLeadArchivedSession>
+  unarchiveSession(agent: Agent, sessionId: string, signal?: AbortSignal): Promise<DevLeadUnarchivedSession>
 
   // 通知
   notifications(agent: Agent, options?: { limit?: number }): DevLeadNotification[]
@@ -160,7 +163,11 @@ export class DevLeadService extends Service {
 ```
 
 `DevLeadUseWorkspaceRequest = { path: string; title?: string; create?: boolean }`（protocol 导出）；
-`create` 缺省 `false`。
+`create` 缺省 `false`。关闭语义的 protocol 类型：
+`DevLeadRemovedWorkspace = { workspace: DevLeadWorkspaceView; removed: boolean }`、
+`DevLeadArchiveSessionOptions = { stopRunning?: boolean; signal?: AbortSignal }`、
+`DevLeadArchivedSession = { sessionId: string; archived: true; stopped: boolean }`、
+`DevLeadUnarchivedSession = { sessionId: string; archived: false }`。
 
 约束：
 
@@ -215,6 +222,24 @@ export class DevLeadService extends Service {
   `agent.followup(createUserMessage({ content, source: { kind: 'devlead', form: 'relay', senderSessionId: lead.id } }))`
   + `ctx.sessions.flush(agent.session)`。默认自动 watch。
 - `watchSession`：追加完整 watch 记录；上限 `maxWatchedSessions`；不能 watch 自己。
+- **关闭语义（remove / archive / unarchive）**：`removeWorkspace` / `archiveSession` / `unarchiveSession` 都先
+  `assertReady(agent)` 并转发 signal，Host 未组合 registry 时统一走 `requireWorkspaceRegistry`
+  的 `DEVLEAD_WORKSPACE_NOT_FOUND`。`removeWorkspace` 用 `resolveWorkspaceReference` 解析
+  id 或 canonical path，在删除前取 `devLeadWorkspaceView` 快照（返回视图即注销前状态），
+  再调 `workspaceRegistry.delete(id)`——只注销注册记录，**不删目录、文件或 Session 日志**；
+  这些 Session 变为未分组（ungrouped），仍可打开/续写，重新注册同一目录会得到全新
+  Workspace、不继承旧 Session。`archiveSession` 复用 `resolveSessionReference`（完整 id /
+  唯一前缀 / 省略 `session-` 的 uuid 前缀），拒绝归档 lead 自己的 Session
+  （`DEVLEAD_INVALID_INPUT`，提示人类从侧边栏关闭），已归档 id 直接幂等返回
+  `{ archived: true, stopped: false }`；否则调
+  `workspaceRegistry.archiveSession(id, { stopActivity: stopRunning })`。Host 的
+  `WorkspaceActiveSessionError` 映射为 `DEVLEAD_SESSION_ACTIVE`（消息列出活动种类，每个种类的
+  item 最多 3 条，其余以 `+N more` 截断），`WorkspaceUnknownSessionError` 映射为
+  `DEVLEAD_SESSION_NOT_FOUND`；两者都按 `error.name` 结构判定（dsh-workspace 是可选 peer，
+  且重复加载的模块实例仍能映射）。`stopRunning: true` 时由 Host 先写归档、再经
+  `workspace/session-stop` providers 请求停止（与人类点停止同一路径），**不等待 settle**，
+  结果 `stopped: true`。`unarchiveSession` 幂等调用 `workspaceRegistry.unarchiveSession(id)`，
+  返回 `{ archived: false }`；归档从未触碰 Workspace 账目，恢复后回到原位置。
 - `notifications`：返回本会话 projection 里保留的通知（最新 limit 条；非法 limit 退回默认 20）。
 - `ctx.sessions.flush()` 返回 `false` 只表示"没有组合任何持久化参与者"（headless / SDK
   组合），不是失败；参与者抛出的错误只记 warning，不会让已提交的内存 append 变成抛错。
@@ -436,6 +461,9 @@ Session 的工作目录切到独立分支/检出，DevLead 用它**可选地**�
 | `devlead_prompt_session` | `session`(必填), `prompt`(必填), `watch?`(默认 true) | `DevLeadPromptedSession` |
 | `devlead_watch_session` | `session`(必填), `watching`(必填 bool) | `DevLeadWatchMutation` |
 | `devlead_notifications` | `limit?`(默认 20) | `{ notifications, watched: string[] }` |
+| `devlead_remove_workspace` | `workspace`(必填，id 或已注册路径) | `{ workspace, removed }`（注销前快照） |
+| `devlead_archive_session` | `session`(必填), `stop_running?`(默认 false) | `{ sessionId, archived: true, stopped }` |
+| `devlead_unarchive_session` | `session`(必填) | `{ sessionId, archived: false }` |
 
 要点：
 
@@ -448,15 +476,28 @@ Session 的工作目录切到独立分支/检出，DevLead 用它**可选地**�
   省略 `session-` 前缀的 uuid 第一段/前缀（`views.ts` 的 `matchSessionIds`：例如 `e59ab350`
   解析到 `session-e59ab350-…`），只有在可寻址集合内唯一时才解析。同第一段的多个 Session 仍报
   `DEVLEAD_INVALID_INPUT` 并列出候选（最多 8 个），不猜；零命中仍报 `DEVLEAD_SESSION_NOT_FOUND`，
-  但文案提示 id 可能不完整/被截断、用 `devlead_list_sessions` 查完整 id 后重试。三个
+  但文案提示 id 可能不完整/被截断、用 `devlead_list_sessions` 查完整 id 后重试。五个
   `devlead_*` 工具的 `session` 参数描述与 `devlead_get_session` 的工具描述同步此口径。除
   `devlead_list_workspaces` 外的工具都要求 live 调用
-  者（缺失时 `DEVLEAD_AGENT_NOT_LIVE`）；`devlead_use_workspace` 是唯一的写工具，0.2.0 起它
-  转发 live lead Agent 给 core 的 `useWorkspace(agent, request, signal)`，`create` 默认
+  者（缺失时 `DEVLEAD_AGENT_NOT_LIVE`）；写工具（`devlead_use_workspace` /
+  `devlead_create_session` / `devlead_prompt_session` / `devlead_watch_session` 与三个关闭
+  工具）都在 core 中重新校验 live + 模式。`devlead_use_workspace` 0.2.0 起转发 live lead Agent
+  给 core 的 `useWorkspace(agent, request, signal)`，`create` 默认
   `false`，仅当人类明确要求建目录时才传 `create: true`（工具 schema 与 policy 文案同步）。
+- 关闭语义工具（共 3 个，8 → 11）：`devlead_remove_workspace` 执行 DSH **remove**：
+  只注销 Workspace 记录，目录、文件与 Session 日志保留，其 Session 变未分组；返回注销前快照
+  与 `removed`。`devlead_archive_session` 执行 DSH **archive**：日志保留、可恢复；带运行中
+  工作（turn / subagent / job / schedule）的 Session 默认报 `DEVLEAD_SESSION_ACTIVE`，
+  `stop_running: true` 时先写归档、再由 Host 的 `workspace/session-stop` providers 请求停止
+  （不等待 settle），结果 `stopped: true`；已归档幂等。`devlead_unarchive_session` 幂等恢复。
+  lead 不能归档自己的 Session（`DEVLEAD_INVALID_INPUT`，提示人类在侧边栏操作），subagent
+  Session 不在可寻址集合内、自然报 not found。三个工具的描述与 policy 都强调：仅在人类于本
+  对话明确要求时调用，不得自行批量清理/归档；汇报时说明关闭了什么、影响面（哪些 Session
+  变未分组、是否停止运行中工作）与可恢复性。
 - 工具把领域失败翻译成 `HarnessError(message, code)`；需要调用者的工具在 `exec.agent` 缺失
   （条件可见性被绕过）时也走结构化错误 `DEVLEAD_AGENT_NOT_LIVE`，基础设施错误原样重抛。所有异步写调用转发
-  `exec.signal`（`create_session` / `prompt_session` / `watch_session`），读调用同样转发。
+  `exec.signal`（`create_session` / `prompt_session` / `watch_session` / `remove_workspace` /
+  `archive_session` / `unarchive_session`），读调用同样转发。
 - `systemPrompt.section({ name: 'devlead:policy', order: TOOL_SUBAGENT, text: ({ agent }) =>
   ctx.devLead.isEnabled(agent) ? POLICY : '' })` 提供 DevLead 行为指导：依据注册元数据判定
   归属、默认调度而非亲自实现（写入归归属 Workspace 的 Session，本 Workspace 也默认派发；
@@ -599,6 +640,7 @@ UI 分两态，避免在每个会话上显示常驻条：
 | `DEVLEAD_DIRECTORY_MISSING` | 目录不存在且未显式允许创建（文案提示 retry with `create: true`），或允许创建但创建失败 |
 | `DEVLEAD_SESSION_NOT_FOUND` | 指定 Session 不存在（含 Host 侧 `session/not-found` 映射） |
 | `DEVLEAD_SESSION_ARCHIVED` | Session 已归档，不能续写 |
+| `DEVLEAD_SESSION_ACTIVE` | Session 仍有活动（turn / subagent / job / schedule），未传 `stop_running` 时拒绝归档；消息列出活动种类（item 最多 3 条） |
 | `DEVLEAD_SESSION_UNAVAILABLE` | 无法 resume / 没有 sessionController / 没有 create 能力 / followup 被拒 |
 | `DEVLEAD_WATCH_LIMIT` | 监督集合超过上限 |
 | `DEVLEAD_SELF_WATCH` | `watchSession` 试图监督自己（`promptSession` 向自己投递使用 `DEVLEAD_INVALID_INPUT`） |

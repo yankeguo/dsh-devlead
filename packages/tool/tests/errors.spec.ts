@@ -62,6 +62,17 @@ describe('translateToolError', () => {
     expect((translated as HarnessError).message).toBe('prompt must not be empty')
   })
 
+  it('keeps the active-session refusal structured with its activity message', () => {
+    const original = new DevLeadError(
+      'Session "session-1" is still active (turn); stop that work first',
+      'DEVLEAD_SESSION_ACTIVE',
+    )
+    const translated = translateToolError(original)
+    expect(translated).toBeInstanceOf(HarnessError)
+    expect((translated as HarnessError).code).toBe('DEVLEAD_SESSION_ACTIVE')
+    expect((translated as HarnessError).message).toContain('still active (turn)')
+  })
+
   it('rethrows infrastructure errors and non-Error values unchanged', () => {
     const infrastructure = new Error('socket closed')
     expect(translateToolError(infrastructure)).toBe(infrastructure)

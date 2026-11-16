@@ -11,11 +11,14 @@
 
 import type { GenericCallView, ToolCallKind } from '@deepseek-ai/dsh-tools'
 import type {
+  ArchiveSessionArgs,
   CreateSessionArgs,
   GetSessionArgs,
   ListSessionsArgs,
   NotificationsArgs,
   PromptSessionArgs,
+  RemoveWorkspaceArgs,
+  UnarchiveSessionArgs,
   UseWorkspaceArgs,
   WatchSessionArgs,
 } from './arguments.ts'
@@ -92,4 +95,22 @@ export function presentWatchSessionCall(args: WatchSessionArgs): GenericCallView
 /** Pending card of `devlead_notifications`. */
 export function presentNotificationsCall(args: NotificationsArgs): GenericCallView {
   return present('Read DevLead notifications', 'read', args.limit)
+}
+
+/** Pending card of `devlead_remove_workspace`. */
+export function presentRemoveWorkspaceCall(args: RemoveWorkspaceArgs): GenericCallView {
+  return present('Remove DevLead workspace', 'other', firstText(args.workspace))
+}
+
+/** Pending card of `devlead_archive_session`. */
+export function presentArchiveSessionCall(args: ArchiveSessionArgs): GenericCallView {
+  const title = args.stop_running === true
+    ? 'Archive DevLead session (stop running work)'
+    : 'Archive DevLead session'
+  return present(title, 'other', firstText(args.session))
+}
+
+/** Pending card of `devlead_unarchive_session`. */
+export function presentUnarchiveSessionCall(args: UnarchiveSessionArgs): GenericCallView {
+  return present('Restore DevLead session', 'other', firstText(args.session))
 }

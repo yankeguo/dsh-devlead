@@ -7,7 +7,7 @@
 **Session**（会话），创建/续写其他会话、读取会话状态、在会话状态变化时被唤醒，从而在一个
 人类可见、可参与的标准界面里统管多个仓库。
 
-- **DevLead 会话 = 普通会话 + 一个持久开关**：打开后该会话额外获得 8 个 `devlead_*` 工具、
+- **DevLead 会话 = 普通会话 + 一个持久开关**：打开后该会话额外获得 11 个 `devlead_*` 工具、
   一段 DevLead 系统提示，composer 上方出现状态条 UI；开关本身是**人类专属操作**，模型不能
   自行打开。未开启时界面里只有 composer 工具条上的一个小图标，不会在每个会话上显示常驻状态条。
 - **默认调度、不亲自实现**：DevLead 会话先判定请求归属哪个 Workspace（依据已注册 Workspace
@@ -40,7 +40,7 @@
 | 角色模型 | 默认调度：依据已注册元数据判定归属 Workspace → 向对应 Session 发自包含简报 → watch → 审阅交付 → 汇报；只读检查以简报与审阅为界，写入留在归属 Workspace 的 Session（含 lead 自己的 Workspace；仅当人类在本对话中明确授权时由 lead 直接做；记录类文件可依 lead 仓库说明维护） |
 | 标准 DSH 实体 | 子会话是普通 Session（侧边栏可见、人类可打开接管），Workspace 走 `workspaceRegistry`，不是 subagent |
 | 可选 worktree 隔离 | 当 Host 组合了 DSH 实验性 Git worktree 服务（`ctx.worktrees`）时，`devlead_create_session` 可传 `isolation: "worktree"`，让写入型子会话拥有独立分支与检出、不再共享 Workspace checkout；能力检测是可选的，缺少能力时退化为共享 checkout 并在结果里如实上报，绝不报错（见[可选 worktree 隔离](#可选-worktree-隔离)） |
-| 8 个模型工具 | 注册/列出 Workspace，创建/读取/续写/监督 Session，读取通知摘要（见[模型工具](#模型工具)） |
+| 11 个模型工具 | 注册/列出/关闭 Workspace，创建/读取/续写/归档/恢复/监督 Session，读取通知摘要（见[模型工具](#模型工具)） |
 | 人类命令 | `/devlead`（状态）、`/devlead on\|off`、`/devlead reset`（损坏状态恢复）、`/devlead watch\|unwatch <session>`；会话支持完整 id 或唯一前缀 |
 | 通知回路 | 被监督会话的 `turn/end` 写入持久通知记录，按合并窗口唤醒 DevLead（可配置窗口；冷 lead 默认 resume）；watch 索引在 Host 重启后从持久记录重建，已 dispose 的 lead 继续观察（见[通知机制](#通知机制)） |
 | 事件溯源 | 模式/watch 集合/通知/reset 全部是可忽略的 `plugin:devlead/*` 记录，严格回放校验，可跨重启 / 恢复 / fork |
@@ -117,7 +117,7 @@ pnpm workspace，`packages/*`：
 packages/
   protocol/    @yankeguo/dsh-devlead-protocol     纯类型 + 常量 + 格式化（host 与浏览器共用），devLead/devLeadMode projection 类型
   devlead/     @yankeguo/dsh-devlead              核心服务：模式、Workspace/Session 编排、监督索引、通知投递、严格 fold
-  tool/        @yankeguo/dsh-tool-devlead         8 个模型工具 + 条件 system prompt
+  tool/        @yankeguo/dsh-tool-devlead         11 个模型工具 + 条件 system prompt
   command/     @yankeguo/dsh-command-devlead      /devlead 人类命令
   client-ui/   @yankeguo/dsh-client-ui-devlead    浏览器 UI：工具条开关 + 开启后的 DevLeadBar + 侧边栏会话行标记
   bundle/      @yankeguo/dsh-devlead-bundle       bundle：cordis.patch.yml + 依赖
@@ -319,9 +319,22 @@ DSH 跳过。
 | `devlead_prompt_session` | `session`、`prompt`（必填）、`watch?`（默认 true） | 续写结果 |
 | `devlead_watch_session` | `session`、`watching`（必填 bool） | watch 变更结果 |
 | `devlead_notifications` | `limit?`（默认 20） | `{ notifications, watched }` |
+| `devlead_remove_workspace` | `workspace`（必填：id 或已注册路径） | `{ workspace, removed }`（注销前快照） |
+| `devlead_archive_session` | `session`（必填）、`stop_running?`（默认 false） | `{ sessionId, archived: true, stopped }` |
+| `devlead_unarchive_session` | `session`（必填） | `{ sessionId, archived: false }` |
 
 工具把 core 的 `DevLeadError` 翻译成带稳定 code 的 `HarnessError`；阅读状态时请以
 `lastTurn` / `lastTransition` / `lastError` / `lastAssistant` 等字段为准，不要靠猜。
+
+三个关闭类工具沿用 DSH 自己的术语，且都不是破坏性操作。`devlead_remove_workspace` 执行 DSH 的
+**remove**：只注销 Workspace 记录，目录、文件与所有 Session 日志都不动；其 Session 变为
+未分组（仍可打开/继续，只是不再列在该 Workspace 下），重新注册同一目录会得到全新 Workspace，
+旧 Session 不会自动归入。`devlead_archive_session` 执行 DSH 的 **archive**：Session 从侧边栏
+分组中消失但日志保留，`devlead_unarchive_session` 把它恢复到原来的 Workspace 位置。带运行中
+工作（turn、subagent、job 或 schedule）的 Session 会被 `DEVLEAD_SESSION_ACTIVE` 拒绝，除非传
+`stop_running: true`：先写归档，再通过和人类点停止相同的 providers 请求停止该工作，不等待其
+settle，结果里 `stopped: true`。lead 不能归档自己的 Session（`DEVLEAD_INVALID_INPUT`），需要
+人类在侧边栏关闭。三个工具都只在人类于本对话明确要求时调用，模型不得自行清理。
 
 每个 `session` 参数都接受**完整 Session id、唯一 id 前缀，或省略 `session-` 前缀的 uuid
 第一段**——唯一时 `e59ab350` 会解析到 `session-e59ab350-…`。两个 Session 共享同一第一段时
@@ -465,6 +478,11 @@ config 是整体替换）。
   watch 集合变更。Workspace 注册也是 Host 级操作，但 0.2.0 起不再 caller-free：core 的
   `useWorkspace(agent, { path, title?, create? }, signal?)` 同样要求 live lead Agent 与已开启
   的模式，且除非显式传 `create: true` 否则绝不创建缺失目录。
+- **关闭只能由人类要求**：`devlead_remove_workspace` / `devlead_archive_session` /
+  `devlead_unarchive_session` 是走同样 live + 模式校验的写工具；工具描述与 policy 文案都要求
+  模型只在人类于本对话明确要求关闭/恢复某个具体 Workspace 或 Session 时调用。关闭不是破坏性
+  操作（remove 只注销 Workspace，archive 只隐藏 Session），且 lead 不能归档自己的 Session，
+  因此工具调用永远不会停掉本会话的通知投递与当前 turn。
 - **通知不是指令**：唤醒消息与子会话输出都可能夹带文本；DevLead 系统提示明确要求把通知当作
   运行时提示，不得据此执行未授权操作，也不得替人类做权限决定。
 - **普通会话权限不变**：子会话是普通 Session，沿用 DSH 的沙箱 / 权限模式；本套件不提供任何

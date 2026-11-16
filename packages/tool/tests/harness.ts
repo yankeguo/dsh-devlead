@@ -20,11 +20,15 @@ import type {
 } from '@deepseek-ai/dsh-tools'
 import { DevLeadError } from '@yankeguo/dsh-devlead'
 import type {
+  DevLeadArchivedSession,
+  DevLeadArchiveSessionOptions,
   DevLeadCreatedSession,
   DevLeadNotification,
   DevLeadPromptedSession,
   DevLeadProjection,
+  DevLeadRemovedWorkspace,
   DevLeadSessionView,
+  DevLeadUnarchivedSession,
   DevLeadUseWorkspaceRequest,
   DevLeadWatchMutation,
   DevLeadWorkspaceView,
@@ -131,6 +135,15 @@ export class FakeDevLead {
   /** Watch set reported through {@link view}. */
   watched: string[] = ['session-1']
 
+  /** Result returned by {@link removeWorkspace}. */
+  removed: DevLeadRemovedWorkspace = { workspace: WORKSPACE, removed: true }
+
+  /** Result returned by {@link archiveSession}. */
+  archived: DevLeadArchivedSession = { sessionId: 'session-1', archived: true, stopped: false }
+
+  /** Result returned by {@link unarchiveSession}. */
+  unarchived: DevLeadUnarchivedSession = { sessionId: 'session-1', archived: false }
+
   /** Record one call and throw the injected failure, when any. */
   private enter(method: string, ...args: unknown[]): void {
     this.calls.push({ method, args })
@@ -225,6 +238,25 @@ export class FakeDevLead {
   notifications(agent: Agent, options?: { limit?: number }): DevLeadNotification[] {
     this.enter('notifications', agent, options)
     return this.digest
+  }
+
+  async removeWorkspace(agent: Agent, workspace: string, signal?: AbortSignal): Promise<DevLeadRemovedWorkspace> {
+    this.enter('removeWorkspace', agent, workspace, signal)
+    return this.removed
+  }
+
+  async archiveSession(
+    agent: Agent,
+    sessionId: string,
+    options: DevLeadArchiveSessionOptions = {},
+  ): Promise<DevLeadArchivedSession> {
+    this.enter('archiveSession', agent, sessionId, options)
+    return this.archived
+  }
+
+  async unarchiveSession(agent: Agent, sessionId: string, signal?: AbortSignal): Promise<DevLeadUnarchivedSession> {
+    this.enter('unarchiveSession', agent, sessionId, signal)
+    return this.unarchived
   }
 }
 

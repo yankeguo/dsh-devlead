@@ -9,7 +9,7 @@ interface that the human can see and interact with.
 **English** · [简体中文](README.zh.md)
 
 - **A DevLead session = an ordinary session + one durable switch.** Once enabled, that session
-  gains 8 `devlead_*` tools, a DevLead system prompt, and a status strip above the composer.
+  gains 11 `devlead_*` tools, a DevLead system prompt, and a status strip above the composer.
   The switch itself is a **human-only action**; no tool can enable it. While the mode is off,
   the UI only shows a small composer-toolbar icon — no permanent bar on every conversation.
 - **Dispatcher by default, not implementer.** The DevLead session decides which Workspace owns
@@ -49,7 +49,7 @@ Documentation: [Design notes (中文)](docs/DESIGN.md) · [Publishing guide (中
 | Role model | Dispatch-first: determine the owning Workspace from registered metadata, send a self-contained brief to a Session there, watch it, review the delivery, report; read-only inspection is bounded to the brief and the review, writes stay in the owning Workspace's Session (including the lead's own workspace; direct work only when the human explicitly authorizes it in this conversation; record-file upkeep may follow the lead's repository instructions) |
 | Standard DSH entities | Child sessions are ordinary Sessions (visible in the sidebar; humans can open and take them over); Workspaces go through `workspaceRegistry`, not subagents |
 | Optional worktree isolation | When the Host composes DSH's experimental Git worktree service (`ctx.worktrees`), `devlead_create_session` can request `isolation: "worktree"` so a writing Session gets its own branch and checkout instead of sharing the Workspace checkout; detection is optional and a missing capability degrades to the shared checkout with a reported status, never an error (see [Optional worktree isolation](#optional-worktree-isolation)) |
-| 8 model tools | Register/list Workspaces, create/read/continue/watch Sessions, read the notification digest (see [Model tools](#model-tools)) |
+| 11 model tools | Register/list/remove Workspaces, create/read/continue/archive/restore/watch Sessions, read the notification digest (see [Model tools](#model-tools)) |
 | Human commands | `/devlead` (status), `/devlead on\|off`, `/devlead reset` (damaged-state recovery), `/devlead watch\|unwatch <session>`; sessions are addressable by full id or unique prefix |
 | Notification loop | A watched session's `turn/end` writes a durable notification and wakes an indexed DevLead through a coalescing window (configurable window; cold leads are resumed by default); the watch index is rebuilt from durable records after a Host restart, and a disposed lead keeps observing (see [Notification loop](#notification-loop)) |
 | Event sourcing | Mode / watch set / notifications / reset are ignorable `plugin:devlead/*` records with strict replay validation; survive restart / resume / fork |
@@ -132,7 +132,7 @@ A pnpm workspace under `packages/*`:
 packages/
   protocol/    @yankeguo/dsh-devlead-protocol     pure types + constants + formatting (shared by host and browser), devLead/devLeadMode projection types
   devlead/     @yankeguo/dsh-devlead              core service: mode, Workspace/Session orchestration, watch index, notification delivery, strict fold
-  tool/        @yankeguo/dsh-tool-devlead         8 model tools + conditional system prompt
+  tool/        @yankeguo/dsh-tool-devlead         11 model tools + conditional system prompt
   command/     @yankeguo/dsh-command-devlead      the /devlead human command
   client-ui/   @yankeguo/dsh-client-ui-devlead    browser UI: toolbar switch + DevLeadBar strip + sidebar row mark
   bundle/      @yankeguo/dsh-devlead-bundle       bundle: cordis.patch.yml + dependencies
@@ -360,9 +360,26 @@ DevLead session:
 | `devlead_prompt_session` | `session`, `prompt` (required), `watch?` (default true) | prompt result |
 | `devlead_watch_session` | `session`, `watching` (required bool) | watch mutation result |
 | `devlead_notifications` | `limit?` (default 20) | `{ notifications, watched }` |
+| `devlead_remove_workspace` | `workspace` (required: id or registered path) | `{ workspace, removed }` (pre-removal snapshot) |
+| `devlead_archive_session` | `session` (required), `stop_running?` (default false) | `{ sessionId, archived: true, stopped }` |
+| `devlead_unarchive_session` | `session` (required) | `{ sessionId, archived: false }` |
 
 Tools translate the core's `DevLeadError` into a `HarnessError` with a stable code. When reading
 state, trust `lastTurn` / `lastTransition` / `lastError` / `lastAssistant` instead of guessing.
+
+The three closing tools use DSH's own vocabulary and are never destructive. `devlead_remove_workspace`
+performs the DSH **remove** action: it unregisters the Workspace only — the directory, its files,
+and every Session log stay untouched — and its Sessions become ungrouped (still openable and
+continuable, but no longer listed under that Workspace); re-registering the same directory creates
+a new Workspace that does not adopt the old Sessions. `devlead_archive_session` performs the DSH
+**archive** action: the Session leaves the sidebar grouping while its log is kept, and
+`devlead_unarchive_session` restores it to its recorded Workspace position. A Session with running
+work (a turn, subagents, jobs, or schedules) is refused as `DEVLEAD_SESSION_ACTIVE` unless
+`stop_running: true` is passed, which archives first and then asks the Host to stop that work
+through the same providers the human's own stop action uses, without waiting for it to settle; the
+result reports `stopped: true`. The lead cannot archive its own Session (`DEVLEAD_INVALID_INPUT`);
+the human closes it from the sidebar. All three tools must only be called when the human
+explicitly asked in the conversation — the model never cleans up on its own.
 
 Every `session` argument accepts the **full Session id, a unique id prefix, or the uuid first
 segment with the `session-` prefix omitted** — `e59ab350` resolves `session-e59ab350-…` when it is
@@ -538,6 +555,12 @@ without it keeps the default single-checkout behavior and reports `unavailable`.
   core `useWorkspace(agent, { path, title?, create? }, signal?)` requires the same live lead
   Agent and an enabled mode (`DEVLEAD_NOT_ENABLED` / `DEVLEAD_AGENT_NOT_LIVE`), and it never
   creates a missing directory unless the caller explicitly passes `create: true`.
+- **Closing is human-requested:** `devlead_remove_workspace`, `devlead_archive_session`, and
+  `devlead_unarchive_session` are write tools with the same live-mode gate, and their descriptions
+  and the policy text instruct the model to use them only when the human explicitly asked to close
+  or restore that specific Workspace or Session in the conversation. Closing is non-destructive
+  (remove unregisters the Workspace, archive hides the Session), and a lead Session cannot archive
+  itself, so its own notification delivery and turn are never stopped by a tool call.
 - **Notifications are not instructions:** both wake-up messages and child output can embed text;
   the DevLead system prompt requires treating notifications as runtime notices and never
   performing unauthorized work or making permission decisions from them.

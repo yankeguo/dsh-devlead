@@ -8,7 +8,7 @@
  * window is flushed on microtasks instead of wall-clock sleeps.
  */
 
-import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -676,6 +676,127 @@ describe('workspace orchestration', () => {
   })
 })
 
+describe('workspace removal', () => {
+  it('removes a registration by id without touching the directory, its files, or the Session log', async () => {
+    const dir = await tempDir()
+    await writeFile(join(dir, 'README.md'), 'keep me')
+    const registry = new FakeWorkspaceRegistry()
+    const workspace = registry.add({ path: dir, title: 'kept', sessionIds: ['session-child'] })
+    const harness = await bootService({
+      enabled: true,
+      sessionIds: ['session-child'],
+      workspaceRegistry: registry,
+    })
+    const child = requireSession(harness, 'session-child')
+    appendTurnStart(child, 1)
+    const logLength = child.snapshotEvents().length
+
+    const removed = await harness.service.removeWorkspace(harness.lead.agent, workspace.id)
+
+    // The view is the pre-removal snapshot: it still names the accounted Session,
+    // so the caller can report what the removal ungrouped.
+    expect(removed).toEqual({
+      workspace: {
+        workspaceId: 'ws-1',
+        title: 'kept',
+        path: dir,
+        status: 'ok',
+        sessionIds: ['session-child'],
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+      },
+      removed: true,
+    })
+    expect(registry.deleteCalls).toEqual(['ws-1'])
+    expect(registry.list()).toEqual([])
+    // Closing a Workspace is a registry operation, never a filesystem or log
+    // operation: the directory, its files, and the Session log all survive.
+    await expect(stat(dir).then(result => result.isDirectory())).resolves.toBe(true)
+    await expect(readFile(join(dir, 'README.md'), 'utf8')).resolves.toBe('keep me')
+    expect(child.snapshotEvents()).toHaveLength(logLength)
+    const sessions = await harness.service.listSessions(harness.lead.agent)
+    expect(requireView(sessions, 'session-child').live).toBe(true)
+  })
+
+  it('resolves the registration by path and leaves a re-registration without the old Sessions', async () => {
+    const dir = await tempDir()
+    const registry = new FakeWorkspaceRegistry()
+    registry.add({ id: 'ws-old', path: dir, sessionIds: ['session-child'] })
+    const harness = await bootService({
+      enabled: true,
+      sessionIds: ['session-child'],
+      workspaceRegistry: registry,
+    })
+
+    await expect(harness.service.removeWorkspace(harness.lead.agent, `  ${dir}  `)).resolves.toMatchObject({
+      workspace: { workspaceId: 'ws-old', path: dir, sessionIds: ['session-child'] },
+      removed: true,
+    })
+    // Re-registering the same directory is a new registration: it does not adopt
+    // the Sessions of the removed one, which stay addressable as ungrouped rows.
+    registry.add({ id: 'ws-new', path: dir })
+    expect(registry.list().map(entry => ({ id: entry.id, sessionIds: entry.sessionIds })))
+      .toEqual([{ id: 'ws-new', sessionIds: [] }])
+    const row = requireView(await harness.service.listSessions(harness.lead.agent), 'session-child')
+    expect(row.workspaceId).toBeUndefined()
+    await expect(harness.service.removeWorkspace(harness.lead.agent, dir)).resolves.toMatchObject({
+      workspace: { workspaceId: 'ws-new' },
+      removed: true,
+    })
+  })
+
+  it('reports an unknown reference and a missing registry with the workspace code', async () => {
+    const registry = new FakeWorkspaceRegistry()
+    registry.add({ path: '/tmp/repo-known' })
+    const harness = await bootService({ enabled: true, workspaceRegistry: registry })
+    const unknown = await expectCodeAsync(
+      () => harness.service.removeWorkspace(harness.lead.agent, '/tmp/repo-unknown'),
+      'DEVLEAD_WORKSPACE_NOT_FOUND',
+    )
+    expect(unknown.message).toContain('no Workspace matches')
+    expect(registry.deleteCalls).toEqual([])
+
+    const withoutRegistry = await bootService({ enabled: true })
+    const missing = await expectCodeAsync(
+      () => withoutRegistry.service.removeWorkspace(withoutRegistry.lead.agent, '/tmp/repo-known'),
+      'DEVLEAD_WORKSPACE_NOT_FOUND',
+    )
+    expect(missing.message).toContain('composes no Workspace registry')
+  })
+
+  it('rethrows an infrastructure registry failure unchanged', async () => {
+    const registry = new FakeWorkspaceRegistry()
+    registry.add({ path: '/tmp/repo-one' })
+    const harness = await bootService({ enabled: true, workspaceRegistry: registry })
+    const failure = new Error('registry storage offline')
+    registry.deleteError = failure
+    await expect(harness.service.removeWorkspace(harness.lead.agent, 'ws-1')).rejects.toBe(failure)
+  })
+
+  it('requires a live lead with the mode enabled and honors cancellation', async () => {
+    const registry = new FakeWorkspaceRegistry()
+    registry.add({ path: '/tmp/repo-one' })
+    const disabled = await bootService({ workspaceRegistry: registry })
+    await expectCodeAsync(
+      () => disabled.service.removeWorkspace(disabled.lead.agent, 'ws-1'),
+      'DEVLEAD_NOT_ENABLED',
+    )
+    const enabled = await bootService({ enabled: true, workspaceRegistry: registry })
+    const stale = new FakeAgent(enabled.leadSession)
+    await expectCodeAsync(
+      () => enabled.service.removeWorkspace(stale.agent, 'ws-1'),
+      'DEVLEAD_AGENT_NOT_LIVE',
+    )
+    const controller = new AbortController()
+    controller.abort()
+    await expect(
+      enabled.service.removeWorkspace(enabled.lead.agent, 'ws-1', controller.signal),
+    ).rejects.toMatchObject({ name: 'AbortError' })
+    expect(registry.deleteCalls).toEqual([])
+    expect(registry.list()).toHaveLength(1)
+  })
+})
+
 describe('session listings', () => {
   /** Boot one listing fixture with a live running child and a watched cold child. */
   async function bootListing(): Promise<{ harness: ServiceHarness; registry: FakeWorkspaceRegistry }> {
@@ -1305,6 +1426,213 @@ describe('prompt admission', () => {
     await expectCodeAsync(
       () => harness.service.promptSession(harness.lead.agent, 'target', 'work'),
       'DEVLEAD_NOT_ENABLED',
+    )
+  })
+})
+
+describe('session archival', () => {
+  /**
+   * Boot one archival fixture whose fake registry knows the booted Sessions.
+   * @param sessionIds - extra Sessions created in the store.
+   * @param options - fake registry overrides.
+   * @returns the harness and its fake registry.
+   */
+  async function bootArchive(
+    sessionIds: readonly string[] = ['session-child'],
+    options: { known?: readonly string[] } = {},
+  ): Promise<{ harness: ServiceHarness; registry: FakeWorkspaceRegistry }> {
+    const registry = new FakeWorkspaceRegistry()
+    registry.knownSessions.push(...(options.known ?? sessionIds))
+    const harness = await bootService({ enabled: true, sessionIds, workspaceRegistry: registry })
+    return { harness, registry }
+  }
+
+  it('archives one Session, marks it archived in the view, and reports no stop', async () => {
+    const { harness, registry } = await bootArchive()
+    const result = await harness.service.archiveSession(harness.lead.agent, 'session-child')
+    expect(result).toEqual({ sessionId: 'session-child', archived: true, stopped: false })
+    expect(registry.archiveCalls).toEqual([{ sessionId: 'session-child', stopActivity: false }])
+    expect(registry.archived).toEqual(['session-child'])
+    expect(registry.stopCalls).toEqual([])
+    const view = await harness.service.getSession(harness.lead.agent, 'session-child')
+    expect(view.archived).toBe(true)
+    // Archiving never touches the log.
+    expect(requireSession(harness, 'session-child').snapshotEvents()).toEqual([])
+  })
+
+  it('archives by unique prefix and by the bare uuid head', async () => {
+    const fullId = 'session-e59ab350-65be-4a90-9f3e-6a1f7f9e2b11'
+    const { harness, registry } = await bootArchive([fullId])
+    await expect(harness.service.archiveSession(harness.lead.agent, 'e59ab350')).resolves.toEqual({
+      sessionId: fullId,
+      archived: true,
+      stopped: false,
+    })
+    expect(registry.archived).toEqual([fullId])
+  })
+
+  it('keeps an already archived Session archived without writing, asking, or stopping', async () => {
+    const { harness, registry } = await bootArchive()
+    registry.archived = ['session-child']
+    await expect(harness.service.archiveSession(harness.lead.agent, 'session-child')).resolves.toEqual({
+      sessionId: 'session-child',
+      archived: true,
+      stopped: false,
+    })
+    // A stop must not be reported for an archive the Host turned into a no-op.
+    await expect(
+      harness.service.archiveSession(harness.lead.agent, 'session-child', { stopRunning: true }),
+    ).resolves.toEqual({ sessionId: 'session-child', archived: true, stopped: false })
+    expect(registry.archiveCalls).toEqual([])
+    expect(registry.stopCalls).toEqual([])
+  })
+
+  it('refuses a Session with running work and names the activity', async () => {
+    const { harness, registry } = await bootArchive()
+    registry.activity.set('session-child', [
+      { kind: 'turn' },
+      {
+        kind: 'job',
+        items: [
+          { id: 'job-1', label: 'nightly build' },
+          { id: 'job-2' },
+          { id: 'job-3' },
+          { id: 'job-4' },
+        ],
+      },
+    ])
+    const error = await expectCodeAsync(
+      () => harness.service.archiveSession(harness.lead.agent, 'session-child'),
+      'DEVLEAD_SESSION_ACTIVE',
+    )
+    expect(error.message).toContain('still active')
+    expect(error.message).toContain('turn')
+    expect(error.message).toContain('job (nightly build, job-2, job-3, +1 more)')
+    expect(error.message).toContain('stop_running: true')
+    expect(registry.archived).toEqual([])
+    expect(registry.stopCalls).toEqual([])
+  })
+
+  it('archives first and asks the Host to stop running work with stopRunning', async () => {
+    const { harness, registry } = await bootArchive()
+    registry.activity.set('session-child', [{ kind: 'turn' }])
+    const result = await harness.service.archiveSession(harness.lead.agent, 'session-child', {
+      stopRunning: true,
+    })
+    expect(result).toEqual({ sessionId: 'session-child', archived: true, stopped: true })
+    expect(registry.archiveCalls).toEqual([{ sessionId: 'session-child', stopActivity: true }])
+    expect(registry.archived).toEqual(['session-child'])
+    expect(registry.stopCalls).toEqual(['session-child'])
+  })
+
+  it('refuses to archive the lead Session itself', async () => {
+    const { harness, registry } = await bootArchive()
+    const error = await expectCodeAsync(
+      () => harness.service.archiveSession(harness.lead.agent, harness.lead.id),
+      'DEVLEAD_INVALID_INPUT',
+    )
+    expect(error.message).toContain('cannot archive itself')
+    expect(error.message).toContain('sidebar')
+    expect(registry.archiveCalls).toEqual([])
+    // stop_running cannot bypass the guard either: it would cancel this turn.
+    await expectCodeAsync(
+      () => harness.service.archiveSession(harness.lead.agent, harness.lead.id, { stopRunning: true }),
+      'DEVLEAD_INVALID_INPUT',
+    )
+    expect(registry.archiveCalls).toEqual([])
+  })
+
+  it('maps unknown Sessions and a missing registry to the stable codes', async () => {
+    const { harness } = await bootArchive()
+    const missing = await expectCodeAsync(
+      () => harness.service.archiveSession(harness.lead.agent, 'session-missing'),
+      'DEVLEAD_SESSION_NOT_FOUND',
+    )
+    expect(missing.message).toContain('devlead_list_sessions')
+
+    // Subagent Sessions are routed by the runtime and stay unaddressable, so an
+    // archive request for one is an ordinary not-found instead of a special case.
+    harness.ctx.sessions.create(SessionId('session-subagent'), { meta: { origin: 'subagent' } })
+    await expectCodeAsync(
+      () => harness.service.archiveSession(harness.lead.agent, 'session-subagent'),
+      'DEVLEAD_SESSION_NOT_FOUND',
+    )
+
+    // A Session the resolver addressed can vanish before the registry write; the
+    // registry's own unknown-Session refusal maps to the same stable code.
+    const { harness: raced } = await bootArchive(['session-child'], { known: [] })
+    const vanished = await expectCodeAsync(
+      () => raced.service.archiveSession(raced.lead.agent, 'session-child'),
+      'DEVLEAD_SESSION_NOT_FOUND',
+    )
+    expect(vanished.message).toContain('disappeared')
+
+    const withoutRegistry = await bootService({ enabled: true, sessionIds: ['session-child'] })
+    const noRegistry = await expectCodeAsync(
+      () => withoutRegistry.service.archiveSession(withoutRegistry.lead.agent, 'session-child'),
+      'DEVLEAD_WORKSPACE_NOT_FOUND',
+    )
+    expect(noRegistry.message).toContain('composes no Workspace registry')
+  })
+
+  it('requires a live lead with the mode enabled and honors cancellation', async () => {
+    const registry = new FakeWorkspaceRegistry()
+    registry.knownSessions.push('session-child')
+    const disabled = await bootService({
+      sessionIds: ['session-child'],
+      workspaceRegistry: registry,
+    })
+    await expectCodeAsync(
+      () => disabled.service.archiveSession(disabled.lead.agent, 'session-child'),
+      'DEVLEAD_NOT_ENABLED',
+    )
+    const enabled = await bootService({
+      enabled: true,
+      sessionIds: ['session-child'],
+      workspaceRegistry: registry,
+    })
+    const stale = new FakeAgent(enabled.leadSession)
+    await expectCodeAsync(
+      () => enabled.service.archiveSession(stale.agent, 'session-child'),
+      'DEVLEAD_AGENT_NOT_LIVE',
+    )
+    const controller = new AbortController()
+    controller.abort()
+    await expect(
+      enabled.service.archiveSession(enabled.lead.agent, 'session-child', { signal: controller.signal }),
+    ).rejects.toMatchObject({ name: 'AbortError' })
+    expect(registry.archiveCalls).toEqual([])
+  })
+
+  it('restores an archived Session and treats an unarchived id as an idempotent success', async () => {
+    const { harness, registry } = await bootArchive()
+    registry.archived = ['session-child']
+    await expect(harness.service.unarchiveSession(harness.lead.agent, 'session-child')).resolves.toEqual({
+      sessionId: 'session-child',
+      archived: false,
+    })
+    expect(registry.unarchiveCalls).toEqual(['session-child'])
+    expect(registry.archived).toEqual([])
+    // Calling restore on an id that is not archived is still a success: the
+    // Host's write is the no-op and the reported state is the same.
+    await expect(harness.service.unarchiveSession(harness.lead.agent, 'session-child')).resolves.toEqual({
+      sessionId: 'session-child',
+      archived: false,
+    })
+    expect(registry.archived).toEqual([])
+    expect(registry.unarchiveCalls).toEqual(['session-child', 'session-child'])
+  })
+
+  it('reports unknown Sessions and a missing registry on restore', async () => {
+    const { harness } = await bootArchive()
+    await expectCodeAsync(
+      () => harness.service.unarchiveSession(harness.lead.agent, 'session-missing'),
+      'DEVLEAD_SESSION_NOT_FOUND',
+    )
+    const withoutRegistry = await bootService({ enabled: true, sessionIds: ['session-child'] })
+    await expectCodeAsync(
+      () => withoutRegistry.service.unarchiveSession(withoutRegistry.lead.agent, 'session-child'),
+      'DEVLEAD_WORKSPACE_NOT_FOUND',
     )
   })
 })

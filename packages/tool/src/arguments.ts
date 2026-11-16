@@ -85,6 +85,22 @@ export interface NotificationsArgs {
   readonly limit?: number
 }
 
+/** Arguments of `devlead_remove_workspace`. */
+export interface RemoveWorkspaceArgs {
+  readonly workspace: string
+}
+
+/** Arguments of `devlead_archive_session`. */
+export interface ArchiveSessionArgs {
+  readonly session: string
+  readonly stop_running?: boolean
+}
+
+/** Arguments of `devlead_unarchive_session`. */
+export interface UnarchiveSessionArgs {
+  readonly session: string
+}
+
 /**
  * Recover the exact caller guaranteed by conditional tool discovery. A
  * registered DevLead tool is only visible to a step whose Agent enabled the
@@ -139,6 +155,20 @@ export function optionalText(value: string | undefined): string | undefined {
   if (value === undefined) return undefined
   const trimmed = value.trim()
   return trimmed.length === 0 ? undefined : trimmed
+}
+
+/**
+ * Validate a required Workspace reference. A blank reference is a mistake the
+ * model should see rather than a silent default, and it is rejected before the
+ * core service resolves anything.
+ * @param value - model-supplied Workspace id or path.
+ * @returns the trimmed reference.
+ * @throws {@link DevLeadToolInputError} when the reference is blank.
+ */
+export function requireWorkspaceRef(value: string): string {
+  const trimmed = value.trim()
+  if (trimmed.length === 0) throw new DevLeadToolInputError('workspace must not be empty')
+  return trimmed
 }
 
 /**

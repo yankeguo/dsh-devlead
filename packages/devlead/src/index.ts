@@ -24,9 +24,11 @@ import type { SessionQueryEngine } from '@deepseek-ai/dsh-session-query'
 import type {} from '@deepseek-ai/dsh-session-query'
 import type {} from '@deepseek-ai/dsh-session-title'
 import type {} from '@deepseek-ai/dsh-workspace'
-import type { Workspace, WorkspaceRegistry } from '@deepseek-ai/dsh-workspace'
+import type { SessionActivity, Workspace, WorkspaceRegistry } from '@deepseek-ai/dsh-workspace'
 import { DEVLEAD_DEFAULT_MAX_WATCHED } from '@yankeguo/dsh-devlead-protocol'
 import type {
+  DevLeadArchivedSession,
+  DevLeadArchiveSessionOptions,
   DevLeadCreatedSession,
   DevLeadCreateSessionRequest,
   DevLeadIsolation,
@@ -35,7 +37,9 @@ import type {
   DevLeadProjection,
   DevLeadProjectionState,
   DevLeadPromptedSession,
+  DevLeadRemovedWorkspace,
   DevLeadSessionView,
+  DevLeadUnarchivedSession,
   DevLeadUseWorkspaceRequest,
   DevLeadWatchMutation,
   DevLeadWorkspaceView,
@@ -271,6 +275,60 @@ function workspacePathFailure(error: unknown, path: string): DevLeadError {
     `could not register "${path}" as a Workspace: ${thrownMessage(error)}`,
     'DEVLEAD_INVALID_INPUT',
   )
+}
+
+/**
+ * Largest number of active items one activity family reports in an archive
+ * refusal. The message is model-facing and the families can carry unbounded
+ * lists (jobs, schedules), so the text is bounded instead of echoing them.
+ */
+const MAX_REPORTED_ACTIVITY_ITEMS = 3
+
+/**
+ * Whether a thrown value is the Workspace registry's active-Session refusal.
+ *
+ * Checked by name and payload rather than `instanceof`: `@deepseek-ai/dsh-workspace`
+ * is an optional peer, so this package must not import its runtime classes (a
+ * Host without the registry would otherwise fail to load DevLead), and a
+ * deployment that loads the package twice still maps the refusal.
+ * @param error - thrown value.
+ * @returns whether the value is a `WorkspaceActiveSessionError`.
+ */
+function isActiveSessionFailure(error: unknown): error is { activity: readonly SessionActivity[] } {
+  if (typeof error !== 'object' || error === null) return false
+  const candidate = error as { name?: unknown; activity?: unknown }
+  return candidate.name === 'WorkspaceActiveSessionError' && Array.isArray(candidate.activity)
+}
+
+/**
+ * Whether a thrown value is the Workspace registry's unknown-Session refusal,
+ * detected structurally for the same optional-peer and duplicate-instance
+ * reasons as {@link isActiveSessionFailure}.
+ * @param error - thrown value.
+ * @returns whether the value is a `WorkspaceUnknownSessionError`.
+ */
+function isUnknownSessionFailure(error: unknown): error is { sessionId: unknown } {
+  if (typeof error !== 'object' || error === null) return false
+  return (error as { name?: unknown }).name === 'WorkspaceUnknownSessionError'
+}
+
+/**
+ * Render the activity families an archive refusal reported, with a bounded item
+ * list, so the model can tell what must stop without receiving an unbounded
+ * payload.
+ * @param activity - activity families reported by the Host.
+ * @returns compact text such as `turn; job (build, +2 more)`.
+ */
+function describeSessionActivity(activity: readonly SessionActivity[]): string {
+  if (activity.length === 0) return 'unspecified activity'
+  return activity.map((entry) => {
+    const kind = String(entry.kind)
+    const items = entry.items ?? []
+    if (items.length === 0) return kind
+    const labels = items.slice(0, MAX_REPORTED_ACTIVITY_ITEMS).map(item => item.label ?? item.id)
+    const omitted = items.length - labels.length
+    return `${kind} (${labels.join(', ')}${omitted > 0 ? `, +${String(omitted)} more` : ''})`
+  }).join('; ')
 }
 
 /**
@@ -763,6 +821,42 @@ export class DevLeadService extends Service {
     return await devLeadWorkspaceView(workspace)
   }
 
+  /**
+   * Close one Workspace by removing its DSH registration.
+   *
+   * This is the registry's own `remove` action, not a deletion: the directory,
+   * its files, and every Session log stay untouched. The Workspace's Sessions
+   * become ungrouped — still openable and continuable — and re-registering the
+   * same directory creates a new registration that does not adopt them.
+   *
+   * The returned view is the pre-removal snapshot, so the caller can report
+   * what it closed and which Sessions it accounted to.
+   * @param agent - exact live lead Agent making the removal.
+   * @param workspace - Workspace id or canonical/registered path.
+   * @param signal - cancellation checked before the registry write.
+   * @returns the pre-removal Workspace view and whether a registration was removed.
+   * @throws {@link DevLeadError} `DEVLEAD_NOT_ENABLED`/`DEVLEAD_AGENT_NOT_LIVE`
+   *   for a disallowed caller, `DEVLEAD_WORKSPACE_NOT_FOUND` when the Host
+   *   composes no registry or nothing matches the reference.
+   */
+  async removeWorkspace(
+    agent: Agent,
+    workspace: string,
+    signal?: AbortSignal,
+  ): Promise<DevLeadRemovedWorkspace> {
+    this.assertReady(agent)
+    signal?.throwIfAborted()
+    const registry = this.requireWorkspaceRegistry()
+    const resolved = await resolveWorkspaceReference(this.ctx, workspace, signal)
+    signal?.throwIfAborted()
+    // The snapshot must be taken before the write: after `delete` the entity is
+    // gone from the registry and its accounted Sessions are already ungrouped.
+    const view = await devLeadWorkspaceView(resolved)
+    signal?.throwIfAborted()
+    const removed = await registry.delete(resolved.id)
+    return { workspace: view, removed }
+  }
+
   // ---------------------------------------------------------------------------
   // Sessions
   // ---------------------------------------------------------------------------
@@ -1013,6 +1107,98 @@ export class DevLeadService extends Service {
       watched: this.strictStateOf(agent.session).sessions.includes(String(resolved.sessionId)),
       resumed,
     }
+  }
+
+  /**
+   * Close one Session by archiving it in the Workspace registry.
+   *
+   * Archiving is the DSH `archive` action: the Session disappears from grouping
+   * surfaces but its log is kept, and {@link unarchiveSession} restores it to
+   * its recorded Workspace position. It is idempotent: an already archived
+   * Session resolves without writing, asking, or stopping anything.
+   *
+   * With `stopRunning` unset the Host refuses a Session whose running work was
+   * reported by a `workspace/session-activity` provider; that refusal is mapped
+   * to `DEVLEAD_SESSION_ACTIVE` with the activity families in the message.
+   * With `stopRunning: true` the archive is written first and the Host is then
+   * asked to stop that work through the same providers the human's own stop
+   * action uses; running work is never awaited to settlement, so the result
+   * reports `stopped: true` as soon as the requests were issued.
+   *
+   * A lead Session can never archive itself: that would pause its own
+   * notification delivery, and `stopRunning` would cancel the very turn making
+   * the call. The rejection is a domain error that points the human at the
+   * Workspace sidebar.
+   * @param agent - exact live lead Agent making the archival.
+   * @param sessionId - Session id, unique prefix, or bare uuid prefix.
+   * @param options - stop-running policy (default `false`) and cancellation
+   *   checked before the registry write.
+   * @returns the archived Session identity and whether a stop was requested.
+   * @throws {@link DevLeadError} `DEVLEAD_NOT_ENABLED`/`DEVLEAD_AGENT_NOT_LIVE`
+   *   for a disallowed caller, `DEVLEAD_INVALID_INPUT` for the lead's own
+   *   Session, `DEVLEAD_SESSION_NOT_FOUND` for an unknown Session,
+   *   `DEVLEAD_SESSION_ACTIVE` for running work without `stopRunning`, and
+   *   `DEVLEAD_WORKSPACE_NOT_FOUND` when the Host composes no registry.
+   */
+  async archiveSession(
+    agent: Agent,
+    sessionId: string,
+    options: DevLeadArchiveSessionOptions = {},
+  ): Promise<DevLeadArchivedSession> {
+    this.assertReady(agent)
+    const signal = options.signal
+    signal?.throwIfAborted()
+    const deps = this.viewDeps(agent, signal)
+    const resolved = await resolveSessionReference(deps, sessionId)
+    const id = String(resolved.sessionId)
+    signal?.throwIfAborted()
+    if (id === String(agent.id)) {
+      throw new DevLeadError(
+        'a DevLead Session cannot archive itself; ask the human to close this Session from the Workspace sidebar',
+        'DEVLEAD_INVALID_INPUT',
+      )
+    }
+    const registry = this.requireWorkspaceRegistry()
+    if (registry.archivedSessionIds.includes(resolved.sessionId)) {
+      // Already archived: the Host's archive is a no-op too, but reporting a
+      // stop it never requested would be a lie.
+      return { sessionId: id, archived: true, stopped: false }
+    }
+    const stopRunning = options.stopRunning ?? false
+    try {
+      await registry.archiveSession(resolved.sessionId, { stopActivity: stopRunning })
+    } catch (error: unknown) {
+      throw this.archiveFailure(id, error) ?? error
+    }
+    return { sessionId: id, archived: true, stopped: stopRunning }
+  }
+
+  /**
+   * Restore one archived Session to its recorded Workspace position.
+   *
+   * Unarchiving is idempotent: an id that is not archived resolves without
+   * writing. The Session log was never touched by the archive.
+   * @param agent - exact live lead Agent making the restore.
+   * @param sessionId - Session id, unique prefix, or bare uuid prefix.
+   * @param signal - cancellation checked before the registry write.
+   * @returns the restored Session identity.
+   * @throws {@link DevLeadError} `DEVLEAD_SESSION_NOT_FOUND` when nothing
+   *   matches the reference, `DEVLEAD_WORKSPACE_NOT_FOUND` when the Host
+   *   composes no registry, and the caller errors of {@link assertReady}.
+   */
+  async unarchiveSession(
+    agent: Agent,
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<DevLeadUnarchivedSession> {
+    this.assertReady(agent)
+    signal?.throwIfAborted()
+    const deps = this.viewDeps(agent, signal)
+    const resolved = await resolveSessionReference(deps, sessionId)
+    signal?.throwIfAborted()
+    const registry = this.requireWorkspaceRegistry()
+    await registry.unarchiveSession(resolved.sessionId)
+    return { sessionId: String(resolved.sessionId), archived: false }
   }
 
   /**
@@ -1276,12 +1462,12 @@ export class DevLeadService extends Service {
     return [...leads].map(([sessionId, watched]) => ({ sessionId, watched }))
   }
 
-  /** Require the Workspace registry capability. */
+  /** Require the Workspace registry capability (Workspaces and Session archive state). */
   private requireWorkspaceRegistry(): WorkspaceRegistry {
     const registry = this.ctx.get('workspaceRegistry')
     if (registry === undefined) {
       throw new DevLeadError(
-        'this Host composes no Workspace registry, so Workspaces cannot be managed',
+        'this Host composes no Workspace registry, so Workspaces and archived Sessions cannot be managed',
         'DEVLEAD_WORKSPACE_NOT_FOUND',
       )
     }
@@ -1450,6 +1636,31 @@ export class DevLeadService extends Service {
     const code = remoteCodeOf(error)
     if (code === 'session/not-found') return new DevLeadError(message, 'DEVLEAD_SESSION_NOT_FOUND')
     return new DevLeadError(message, 'DEVLEAD_SESSION_UNAVAILABLE')
+  }
+
+  /**
+   * Map one Workspace-registry archive failure to the stable DevLead
+   * vocabulary.
+   * @param sessionId - Session identity the archive addressed.
+   * @param error - failure thrown by `workspaceRegistry.archiveSession`.
+   * @returns the mapped domain failure, or undefined for an infrastructure
+   *   failure the caller rethrows unchanged.
+   */
+  private archiveFailure(sessionId: string, error: unknown): DevLeadError | undefined {
+    if (isActiveSessionFailure(error)) {
+      return new DevLeadError(
+        `Session "${sessionId}" is still active (${describeSessionActivity(error.activity)}); `
+        + 'stop that work first, or retry with stop_running: true to archive it and ask the Host to stop it now',
+        'DEVLEAD_SESSION_ACTIVE',
+      )
+    }
+    if (isUnknownSessionFailure(error)) {
+      return new DevLeadError(
+        `no Session matches "${sessionId}"; it may have disappeared since it was resolved`,
+        'DEVLEAD_SESSION_NOT_FOUND',
+      )
+    }
+    return undefined
   }
 
   /**
