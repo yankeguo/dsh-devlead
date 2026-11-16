@@ -189,9 +189,9 @@ client-ui 的 `index`/`client`；`bundle` 只有 patch 文件与 icon，不产�
 可选（本机，需要已安装的 DSH 桌面端）：真实 DSH 端到端冒烟：
 
 ```sh
-pnpm e2e                          # 默认组合（阶段 1 + 1b + 2，全过报 61/61）
+pnpm e2e                          # 默认组合（阶段 1 + 1b + 2 + 3，全过报 112/112）
 pnpm e2e --flow installed         # 已安装形态的安装流
-pnpm e2e --no-worktree            # 跳过实验 forge bundle 组合（报 39/39）
+pnpm e2e --no-worktree            # 跳过实验 forge bundle 组合（报 90/90，阶段 1 + 1b + 3）
 ```
 
 `release:dry` 的本地预检说明：
@@ -357,12 +357,15 @@ scripts/trusted-publishers.sh --list
 - `engines.dsh` 当前为 `>=0.2.2-rc.1 <0.3.0`，**所有插件 / bundle 包都声明**；
   DSH 升级到 0.3 时需更新该范围并回归。
 - 破坏性变更：遵循 semver；预发布版本使用 `-rc.N` / `-alpha.N` 后缀。
-- 最近一次发版为 **0.2.0**（minor，含 breaking）：`isolation` 必填字段正式声明、
+- 最近的发版：**0.2.0**（minor，含 breaking）正式声明 `isolation` 必填字段、
   `useWorkspace(agent, request)` + `create` 默认 `false`、`wakeColdSession` 默认 `true`、
   `promptSession` 的 watch 补偿、`hasQueuedNotice` 保留 batch、`/devlead reset` + 冻结恢复、
-  以及 nits（React 渲染测试、样式 refcount 等）。0.2.0 发布时已同步 README / README.zh /
-  `docs/releases/v0.2.0.md`，并复核旧 core + 新 tool 混装时 `isolation` 的防御性降级
-  （tool 对缺失字段回退 `{requested:'none',status:'none'}`）。
+  以及 nits（React 渲染测试、样式 refcount 等）；**0.2.1**（patch）改为 staged 发布并为 6 个
+  包补齐插件展示元数据，运行时行为不变；**0.2.2**（patch，本版）新增 3 个关闭工具
+  （remove / archive / unarchive）、判断式自主关闭与有界可行性判断，共 11 个模型工具，无
+  breaking。各版发布时同步 README / README.zh 与 `docs/releases/v<version>.md`；0.2.0 另复核
+  旧 core + 新 tool 混装时 `isolation` 的防御性降级（tool 对缺失字段回退
+  `{requested:'none',status:'none'}`）。
 - 每次发版前同步 README / README.zh 与 `docs/releases/v<version>.md`，并确认 6 个包与根
   `package.json` 的 `version` 已一起 bump。
 
