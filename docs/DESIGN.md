@@ -744,13 +744,23 @@ UI 分两态，避免在每个会话上显示常驻条：
   Workspace，然后停实例。probe 是私有测试资产 `scripts/e2e-probe/**`
   （`@yankeguo/dsh-devlead-e2e-probe`，0.0.0），不发布、不进 workspace/build/check-packages；
   scratch workspace 被初始化成真实 git 仓库（一次 seed commit），因此是真实 Git happy path。
-  patch 与 installed 两条加载流都跑完整多阶段；`--no-worktree` 跳过阶段 2（只跑阶段 1 + 1b，
-  调试用）。两条加载流各 **61/61**（阶段 1 27 + 阶段 1b 12 + 阶段 2 22）；跳过阶段 2 时
-  **39/39**（阶段 1 + 1b）。
-- 本轮最终验证数字（工作树）：`pnpm verify` = typecheck 通过 + **23 文件 / 587 tests** +
-  7 个构建产物；`node scripts/check-packages.mjs` → `OK (6 packages)`；E2E 本轮未重跑（本次为
-  只读引用解析与模型可见文案改动，解析行为已由新增 service 单测覆盖，不涉及加载/通知链路；
-  沿用上一轮 patch / installed 各 **61/61**（阶段 1 27 + 阶段 1b 12 + 阶段 2 22））。
+  阶段 3 停实例 → 链接同一个 probe 包并叠加 probe patch 重启（关闭工具不需要实验 bundle，
+  因此 `--no-worktree` 也会运行）→ probe 的 `devlead-e2e-inspect` 用真实
+  `ctx.tools.resolve` 报告该 Agent 一步可见的工具集（模式开启时恰好 11 个 `devlead_*`，
+  模式关闭时为 0），用 `ctx.systemPrompt.assemble` 取 `devlead:policy` section（判断式自主
+  关闭、安全边界、有限可行性判断/开放问题/深挖交接；关闭时为空文本）；`devlead-e2e-close`
+  通过 `ctx.devLead` 归档一个已 prompt 的子会话（durable archive 集合 + archived 视图/列表行、
+  重复归档幂等 `stopped:false`、unarchive 恢复且 `sessionQuery` 读到的持久日志事件数不变），
+  再用临时 `workspace/session-activity` provider 让活跃会话被 `DEVLEAD_SESSION_ACTIVE` 拒绝，
+  `stop_running` 归档并观察到 Host `workspace/session-stop` 派发，最后验证 lead 自归档报
+  `DEVLEAD_INVALID_INPUT`；随后注销 scratch Workspace（注册表移除、目录/标记文件/Session
+  日志仍在、Session 变未分组）并重新注册同一目录（新 Workspace id、不继承旧 Session）。
+  patch 与 installed 两条加载流都跑完整多阶段；`--no-worktree` 跳过阶段 2（阶段 1、1b、3 仍
+  运行，调试用）。两条加载流各 **112/112**（阶段 1 27 + 阶段 1b 12 + 阶段 2 22 + 阶段 3 51）；
+  跳过阶段 2 时 **90/90**（阶段 1 + 1b + 3）。
+- 本轮最终验证数字（工作树）：`pnpm verify` = typecheck 通过 + **23 文件 / 620 tests** +
+  7 个构建产物；`node scripts/check-packages.mjs` → `OK (6 packages)`；E2E 本轮重跑
+  patch / installed 各 **112/112**（阶段 1 27 + 阶段 1b 12 + 阶段 2 22 + 阶段 3 51）。
 - 手动验收路径：开一个会话 → `/devlead on`（或点开关）→ 让模型
   `devlead_use_workspace` 注册一个仓库 → `devlead_create_session` 创建子会话并下发任务 →
   子会话跑完后 DevLead 被唤醒 → 状态条显示监督列表与通知；人类可打开子会话继续参与。

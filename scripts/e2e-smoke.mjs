@@ -74,12 +74,38 @@
  *             branches from its `HEAD`.
  *             22 checks.
  *
- * `--no-worktree` runs phases 1 + 1b only (debugging escape hatch when the
- * experimental composition cannot boot on this machine).
+ *   phase 3 — close tools and triage policy. The same profile restarts (the
+ *             probe package is linked and its overlay applied; the worktree
+ *             bundle is not required) and drives the close lifecycle through
+ *             `ctx.devLead`:
+ *               - a real step-time tool activation (`ctx.tools.resolve`) admits
+ *                 exactly the eleven `devlead_*` tools while the mode is on and
+ *                 none while it is off, both before and after a toggle;
+ *               - the assembled `devlead:policy` section carries judgment-based
+ *                 closing, its safety boundaries, and the feasibility-triage /
+ *                 open-question handoff to the dispatched Session;
+ *               - archiving a prompted child updates the durable registry
+ *                 archive set and the archived view/listing row, a repeated
+ *                 archive is an idempotent `stopped:false` no-op, and
+ *                 unarchiving restores the Session with its log intact;
+ *               - a temporary `workspace/session-activity` provider makes an
+ *                 active Session refuse with `DEVLEAD_SESSION_ACTIVE`; the
+ *                 `stopRunning` retry archives it, reports `stopped:true`, and
+ *                 observes the Host `workspace/session-stop` dispatch;
+ *               - the lead Session cannot archive itself (`DEVLEAD_INVALID_INPUT`);
+ *               - removing the scratch Workspace drops the registry entry while
+ *                 the directory, a marker file, and the Session log survive; the
+ *                 Session becomes ungrouped, and re-registering the directory
+ *                 yields a new Workspace id that does not adopt it.
+ *             51 checks.
  *
- * Check counts: phase 1 = 27, phase 1b = 12, phase 2 = 22, so every flow
- * reports 61/61 checks when all three phases pass (`--no-worktree` stops after
- * phase 1b: 39/39). Run both flows before a release:
+ * `--no-worktree` skips phase 2 only (debugging escape hatch when the
+ * experimental composition cannot boot on this machine); phases 1, 1b, and 3
+ * still run.
+ *
+ * Check counts: phase 1 = 27, phase 1b = 12, phase 2 = 22, phase 3 = 51, so
+ * every flow reports 112/112 checks when all four phases pass (`--no-worktree`
+ * skips phase 2: 90/90). Run both flows before a release:
  *
  *   node scripts/e2e-smoke.mjs --flow patch
  *   node scripts/e2e-smoke.mjs --flow installed
@@ -146,10 +172,28 @@ const SCRATCH_MARKER = '.devlead-e2e-scratch'
 const REPO_LINK_NAME = 'devlead-repo'
 /** Official optional bundle whose layer composes the experimental Git worktree capability. */
 const WORKTREE_BUNDLE = '@deepseek-ai/dsh-experimental-forge-bundle'
-/** Private E2E probe package in `scripts/e2e-probe`, linked as a profile package in phase 2. */
+/** Private E2E probe package in `scripts/e2e-probe`, linked as a profile package in phases 2 and 3. */
 const PROBE_PACKAGE = '@yankeguo/dsh-devlead-e2e-probe'
-/** Command the probe registers; phase 2 dispatches `/${PROBE_COMMAND}`. */
+/** Worktree command the probe registers; phase 2 dispatches `/${PROBE_COMMAND}`. */
 const PROBE_COMMAND = 'devlead-e2e-worktree'
+/** Inspection command: step-visible DevLead tools + resident policy text. */
+const PROBE_INSPECT_COMMAND = 'devlead-e2e-inspect'
+/** Close command: archive/unarchive/remove through the real Host. */
+const PROBE_CLOSE_COMMAND = 'devlead-e2e-close'
+/** Exact DevLead tool surface an enabled lead step admits (8 shipped + 3 close tools). */
+const DEVLEAD_TOOL_NAMES = [
+  'devlead_archive_session',
+  'devlead_create_session',
+  'devlead_get_session',
+  'devlead_list_sessions',
+  'devlead_list_workspaces',
+  'devlead_notifications',
+  'devlead_prompt_session',
+  'devlead_remove_workspace',
+  'devlead_unarchive_session',
+  'devlead_use_workspace',
+  'devlead_watch_session',
+]
 /** Default checkout pool of the experimental worktree service, relative to the repository root. */
 const WORKTREE_DIRECTORY = '.agents/worktrees'
 /**
@@ -172,15 +216,17 @@ const TURN_TIMEOUT_MS = 60_000
 const NOTIFICATION_TIMEOUT_MS = 20_000
 /** Upper bound for a restarted Host to rehydrate, resume a cold lead, and expose its new notification. */
 const COLD_NOTIFICATION_TIMEOUT_MS = 45_000
+/** Upper bound for the phase-3 close command (it waits for one prompted child turn). */
+const CLOSE_PROBE_TIMEOUT_MS = 120_000
 
 const USAGE = `Usage: node scripts/e2e-smoke.mjs [options]
 
 Options:
   --flow <patch|installed>  loading flow to exercise (default: patch)
   --no-build                reuse the current packages/*/lib artifacts
-  --no-worktree             run phases 1 + 1b only; skip the experimental worktree
-                            composition (debugging escape hatch, the default runs
-                            all three phases)
+  --no-worktree             skip phase 2 (the experimental worktree composition);
+                            phases 1, 1b, and 3 still run (debugging escape hatch,
+                            the default runs all four phases)
   --root <dir>              scratch directory under ${tmpdir()} (default: a unique one);
                             an existing root is reused only when it carries ${SCRATCH_MARKER}
   --port <n>                Web port; 0 lets the OS pick one (default: 0)
@@ -709,9 +755,14 @@ class WebClient {
     return await this.rpc('session/create', { request: { cwd: paths.workspace } })
   }
 
-  /** Execute one `/devlead` command line for a Session Agent. */
-  async command(agentId, line) {
-    return await this.rpc('commands/execute', { agentId, line, submittedAttachments: [] })
+  /**
+   * Execute one command line for a Session Agent.
+   * @param agentId - calling Agent identity.
+   * @param line - full command line, including the leading slash.
+   * @param timeoutMs - HTTP timeout; probe commands may wait for a child turn.
+   */
+  async command(agentId, line, timeoutMs = RPC_TIMEOUT_MS) {
+    return await this.rpc('commands/execute', { agentId, line, submittedAttachments: [] }, timeoutMs)
   }
 
   /** Read the Session projection map. */
@@ -1140,6 +1191,299 @@ async function runWorktreeChecks(client, paths) {
 }
 
 /**
+ * Run one probe command and parse its JSON report.
+ * @param client - authenticated client of the running instance.
+ * @param agentId - lead Agent identity the command runs for.
+ * @param command - probe command name, without the leading slash.
+ * @param timeoutMs - HTTP timeout for the command.
+ * @returns the command execution, raw text, and parsed JSON (undefined when not JSON).
+ */
+async function runProbeCommand(client, agentId, command, timeoutMs = RPC_TIMEOUT_MS) {
+  const execution = await client.command(agentId, `/${command}`, timeoutMs)
+  const text = execution?.result?.text ?? ''
+  let report
+  try {
+    report = JSON.parse(text)
+  } catch {
+    report = undefined
+  }
+  return { execution, text, report }
+}
+
+/**
+ * Run the phase-3 close-tool checks against the real Host.
+ *
+ * The private probe drives every durable action through `ctx.devLead` and
+ * reports facts read back from the Workspace registry, the Session store, and
+ * the durable Session query engine. The harness compares those facts with
+ * independent ones (the scratch filesystem and the exact tool/policy text a
+ * real step admits), so a fake or a stale in-memory answer cannot pass.
+ * @param client - authenticated client of the phase-3 instance.
+ * @param paths - scratch paths; `paths.workspace` is the scratch Workspace.
+ * @returns the number of checks performed.
+ */
+async function runCloseChecks(client, paths) {
+  const checks = new Checks()
+  await client.login()
+
+  const lead = await client.createSession(paths)
+  const leadId = lead.sessionId
+  checks.expect('phase 3 session/create returns a lead Session', typeof leadId === 'string' && leadId.length > 0, leadId)
+
+  const commands = await client.rpc('commands/list', { agentId: leadId })
+  const inspectCommand = commands.find(command => command.name === PROBE_INSPECT_COMMAND)
+  const closeCommand = commands.find(command => command.name === PROBE_CLOSE_COMMAND)
+  checks.expect('phase 3 inspect probe command is registered', inspectCommand !== undefined, inspectCommand?.description)
+  checks.expect('phase 3 close probe command is registered', closeCommand !== undefined, closeCommand?.description)
+
+  // Mode off: the conditional registration must hide every devlead tool and
+  // resolve the policy section to empty text.
+  const inspectOff = await runProbeCommand(client, leadId, PROBE_INSPECT_COMMAND)
+  checks.expect(
+    'phase 3 mode-off inspect settles success',
+    inspectOff.execution?.result?.kind === 'success',
+    inspectOff.text.slice(0, 300),
+  )
+  checks.expect(
+    'phase 3 mode-off inspect reports disabled',
+    inspectOff.report?.enabled === false,
+    JSON.stringify(inspectOff.report?.enabled),
+  )
+  checks.expect(
+    'phase 3 mode-off hides every devlead tool',
+    Array.isArray(inspectOff.report?.devleadTools) && inspectOff.report.devleadTools?.length === 0,
+    JSON.stringify(inspectOff.report?.devleadTools),
+  )
+  checks.expect(
+    'phase 3 mode-off omits the devlead policy section',
+    inspectOff.report?.policy == null || String(inspectOff.report.policy).trim().length === 0,
+    JSON.stringify(inspectOff.report?.policy),
+  )
+
+  const on = await client.command(leadId, '/devlead on')
+  checks.expect('phase 3 /devlead on settles success', on?.result?.kind === 'success', on?.result?.text?.split('\n')[0])
+
+  // Mode on: a real tool activation and prompt assembly for this Agent.
+  const inspectOn = await runProbeCommand(client, leadId, PROBE_INSPECT_COMMAND)
+  checks.expect(
+    'phase 3 enabled inspect settles success',
+    inspectOn.execution?.result?.kind === 'success',
+    inspectOn.text.slice(0, 300),
+  )
+  checks.expect('phase 3 enabled inspect reports enabled', inspectOn.report?.enabled === true)
+  const devleadTools = inspectOn.report?.devleadTools ?? []
+  checks.expect(
+    'phase 3 enabled exposes exactly the eleven devlead tools',
+    JSON.stringify(devleadTools) === JSON.stringify(DEVLEAD_TOOL_NAMES),
+    JSON.stringify(devleadTools),
+  )
+  checks.expect(
+    'phase 3 enabled exposes the remove and archive tools',
+    ['devlead_remove_workspace', 'devlead_archive_session', 'devlead_unarchive_session']
+      .every(name => devleadTools.includes(name)),
+    JSON.stringify(devleadTools),
+  )
+
+  const policy = String(inspectOn.report?.policy ?? '')
+  checks.expect(
+    'phase 3 policy describes judgment-based closing',
+    policy.includes('Closing Workspaces and Sessions is judgment-based'),
+  )
+  checks.expect(
+    'phase 3 policy keeps the close safety boundary',
+    policy.includes('never use closing to hide a failure'),
+  )
+  checks.expect(
+    'phase 3 policy requires reporting every autonomous close',
+    policy.includes('Report every autonomous close'),
+  )
+  checks.expect(
+    'phase 3 policy bounds reconnaissance to feasibility triage',
+    policy.includes('Feasibility triage, not research'),
+  )
+  checks.expect(
+    'phase 3 policy hands open questions to the Session',
+    policy.includes('open questions') && policy.includes('the Session owns the deeper investigation'),
+  )
+  checks.expect(
+    'phase 3 policy keeps the Workspace registration when tidying up',
+    policy.includes('keep the Workspace registration'),
+  )
+  checks.expect(
+    'phase 3 policy carries none of the old hard-line close wording',
+    !policy.includes('never clean up')
+      && !policy.includes('only when the human explicitly asked, in this conversation, to close'),
+  )
+
+  // The close probe owns every durable action; the harness only reads facts.
+  const close = await runProbeCommand(client, leadId, PROBE_CLOSE_COMMAND, CLOSE_PROBE_TIMEOUT_MS)
+  checks.expect(
+    'phase 3 close probe settles success',
+    close.execution?.result?.kind === 'success',
+    close.text.slice(0, 500),
+  )
+  checks.expect(
+    'phase 3 close probe returns its JSON contract',
+    close.report !== null && typeof close.report === 'object'
+      && typeof close.report.archive === 'object' && close.report.archive !== null
+      && typeof close.report.active === 'object' && close.report.active !== null
+      && typeof close.report.remove === 'object' && close.report.remove !== null
+      && typeof close.report.selfArchive === 'object' && close.report.selfArchive !== null,
+  )
+  const report = close.report ?? {}
+  const archive = report.archive ?? {}
+  const active = report.active ?? {}
+  const removed = report.remove ?? {}
+  const archivedChild = String(archive.childId ?? '')
+  const activeChild = String(active.childId ?? '')
+
+  checks.expect(
+    'phase 3 first archive reports archived and no stop',
+    archive.first?.archived === true && archive.first?.stopped === false,
+    JSON.stringify(archive.first),
+  )
+  checks.expect(
+    'phase 3 registry archive set carries the archived Session',
+    Array.isArray(archive.archivedSetAfterFirst) && archive.archivedSetAfterFirst.includes(archivedChild),
+    JSON.stringify(archive.archivedSetAfterFirst),
+  )
+  checks.expect('phase 3 the archived Session view reports archived', archive.viewArchivedAfterFirst === true)
+  checks.expect('phase 3 the archived Session listing row reports archived', archive.rowArchivedAfterFirst === true)
+  checks.expect(
+    'phase 3 the prompted child log is durable and non-empty before archiving',
+    archive.logBefore?.readable === true && archive.logBefore?.events > 0,
+    JSON.stringify(archive.logBefore),
+  )
+  checks.expect(
+    'phase 3 a repeated archive is an idempotent no-op without a stop',
+    archive.second?.archived === true && archive.second?.stopped === false,
+    JSON.stringify(archive.second),
+  )
+  checks.expect(
+    'phase 3 a repeated archive does not duplicate the archive entry',
+    Array.isArray(archive.archivedSetAfterSecond)
+      && archive.archivedSetAfterSecond.filter(id => id === archivedChild).length === 1,
+    JSON.stringify(archive.archivedSetAfterSecond),
+  )
+  checks.expect('phase 3 unarchive reports unarchived', archive.unarchive?.archived === false, JSON.stringify(archive.unarchive))
+  checks.expect(
+    'phase 3 unarchive clears the registry archive entry',
+    Array.isArray(archive.archivedSetAfterUnarchive) && !archive.archivedSetAfterUnarchive.includes(archivedChild),
+    JSON.stringify(archive.archivedSetAfterUnarchive),
+  )
+  checks.expect('phase 3 the restored Session view reports unarchived', archive.viewArchivedAfterUnarchive === false)
+  checks.expect(
+    'phase 3 the Session log survives archive and unarchive',
+    archive.logAfterUnarchive?.readable === true
+      && archive.logAfterUnarchive?.events === archive.logBefore?.events,
+    JSON.stringify({ before: archive.logBefore, after: archive.logAfterUnarchive }),
+  )
+
+  checks.expect(
+    'phase 3 active work refuses the archive with DEVLEAD_SESSION_ACTIVE',
+    active.refusedCode === 'DEVLEAD_SESSION_ACTIVE',
+    `${String(active.refusedCode)}: ${String(active.refusedMessage).slice(0, 200)}`,
+  )
+  checks.expect(
+    'phase 3 the active refusal names the running work and the escape hatch',
+    String(active.refusedMessage).includes('turn') && String(active.refusedMessage).includes('stop_running'),
+    String(active.refusedMessage).slice(0, 240),
+  )
+  checks.expect(
+    'phase 3 the active refusal wrote no archive entry',
+    Array.isArray(active.archivedSetAfterRefusal) && !active.archivedSetAfterRefusal.includes(activeChild),
+    JSON.stringify(active.archivedSetAfterRefusal),
+  )
+  checks.expect(
+    'phase 3 stop_running archives and reports the requested stop',
+    active.stopResult?.archived === true && active.stopResult?.stopped === true,
+    active.stopError ?? JSON.stringify(active.stopResult),
+  )
+  checks.expect(
+    'phase 3 stop_running reaches the Host session-stop provider',
+    active.stopRequests >= 1,
+    String(active.stopRequests),
+  )
+  checks.expect(
+    'phase 3 the stopped Session is durably archived',
+    Array.isArray(active.archivedSetAfterStop) && active.archivedSetAfterStop.includes(activeChild),
+    JSON.stringify(active.archivedSetAfterStop),
+  )
+  checks.expect(
+    'phase 3 the lead Session cannot archive itself',
+    report.selfArchive?.code === 'DEVLEAD_INVALID_INPUT',
+    `${String(report.selfArchive?.code)}: ${String(report.selfArchive?.message).slice(0, 200)}`,
+  )
+
+  checks.expect('phase 3 remove reports the registration removed', removed.removed === true)
+  checks.expect(
+    'phase 3 the removal snapshot carries the ungrouped Session ids',
+    Array.isArray(removed.snapshotSessionIds) && removed.snapshotSessionIds.includes(archivedChild),
+    JSON.stringify(removed.snapshotSessionIds),
+  )
+  checks.expect(
+    'phase 3 the Workspace listing no longer carries the removed registration',
+    Array.isArray(removed.workspaceIdsAfter)
+      && !removed.workspaceIdsAfter.includes(report.workspace?.workspaceId),
+    JSON.stringify(removed.workspaceIdsAfter),
+  )
+  checks.expect(
+    'phase 3 removal leaves the directory and its marker file in place',
+    removed.directoryExists === true && removed.markerContent === 'devlead e2e close marker\n',
+    JSON.stringify({ directoryExists: removed.directoryExists, marker: removed.markerContent }),
+  )
+  checks.expect(
+    'phase 3 removal leaves the Session log readable and unchanged',
+    removed.logBefore?.readable === true && removed.logAfter?.readable === true
+      && removed.logBefore?.events === removed.logAfter?.events
+      && removed.logAfter?.events > 0,
+    JSON.stringify({ before: removed.logBefore, after: removed.logAfter }),
+  )
+  checks.expect(
+    'phase 3 the removed Workspace no longer accounts its Session',
+    removed.childViewWorkspaceIdAfter == null,
+    JSON.stringify(removed.childViewWorkspaceIdAfter),
+  )
+  checks.expect(
+    'phase 3 re-registering the directory yields a new Workspace identity',
+    typeof removed.reRegisteredWorkspaceId === 'string'
+      && removed.reRegisteredWorkspaceId.length > 0
+      && removed.reRegisteredWorkspaceId !== report.workspace?.workspaceId,
+    `${String(removed.reRegisteredWorkspaceId)} vs ${String(report.workspace?.workspaceId)}`,
+  )
+  checks.expect(
+    'phase 3 a new registration does not adopt the old Sessions',
+    Array.isArray(removed.reRegisteredSessionIds) && !removed.reRegisteredSessionIds.includes(archivedChild),
+    JSON.stringify(removed.reRegisteredSessionIds),
+  )
+  checks.expect(
+    'phase 3 the Session stays ungrouped after re-registering the directory',
+    removed.childViewWorkspaceIdAfterReRegister == null,
+    JSON.stringify(removed.childViewWorkspaceIdAfterReRegister),
+  )
+
+  // The mode switch still hides the surface on the same running Host.
+  const off = await client.command(leadId, '/devlead off')
+  checks.expect('phase 3 /devlead off settles success', off?.result?.kind === 'success', off?.result?.text?.split('\n')[0])
+  const inspectOffAgain = await runProbeCommand(client, leadId, PROBE_INSPECT_COMMAND)
+  checks.expect(
+    'phase 3 disabling the mode hides every devlead tool again',
+    inspectOffAgain.report?.enabled === false
+      && Array.isArray(inspectOffAgain.report?.devleadTools)
+      && inspectOffAgain.report.devleadTools?.length === 0,
+    JSON.stringify(inspectOffAgain.report?.devleadTools),
+  )
+  checks.expect(
+    'phase 3 disabling the mode removes the devlead policy text',
+    inspectOffAgain.report?.policy == null || String(inspectOffAgain.report.policy).trim().length === 0,
+    JSON.stringify(inspectOffAgain.report?.policy),
+  )
+
+  checks.summarize()
+  return checks.results.length
+}
+
+/**
  * Report one failed phase with the runtime log tail and keep the scratch root
  * for inspection.
  * @param flow - loading flow label ("patch"/"installed").
@@ -1210,51 +1554,77 @@ async function runFlow(options) {
     await stopInstance(phaseOneB.child)
     console.log(`e2e-smoke: phase 1b passed (${String(phaseOneBCount)} checks)`)
 
-    if (!options.worktree) {
-      const phaseOneTotal = phaseOneState.count + phaseOneBCount
-      console.log(`\nE2E SMOKE PASS (${options.flow})`)
-      console.log(`  phase 1 (default profile): ${String(phaseOneState.count)}/${String(phaseOneState.count)} checks`)
-      console.log(`  phase 1b (cold lead rehydration): ${String(phaseOneBCount)}/${String(phaseOneBCount)} checks`)
-      console.log(`  total: ${String(phaseOneTotal)}/${String(phaseOneTotal)} checks; phase 2 skipped (--no-worktree)`)
-      console.log(`logs: ${paths.logs}`)
-      return
+    // The probe package/patch serves phase 2 and phase 3; setting it up is
+    // idempotent, so the close phase also runs when the worktree phase is
+    // skipped (the close tools do not depend on the experimental bundle).
+    let phaseTwoCount
+    let probePatch
+    if (options.worktree) {
+      // ----------------------------------------------------------------------
+      // Phase 2: same scratch root/profile, experimental worktree composition.
+      // ----------------------------------------------------------------------
+      console.log('\n=== phase 2: experimental worktree composition ===')
+      const bundle = enableWorktreeBundle(paths)
+      const probeLink = linkProbePackage(paths)
+      probePatch = writeProbePatch(paths)
+      console.log(`e2e-smoke: selected ${bundle}; linked probe ${probeLink}`)
+      // The patch flow keeps its devlead overlay and adds the probe overlay after
+      // it; the installed flow's devlead rows come from the profile bundle list,
+      // so the probe overlay is its only `--patch`.
+      const patches = devleadOverlay === undefined ? [probePatch] : [devleadOverlay, probePatch]
+      let phaseTwo
+      try {
+        phaseTwo = await startWeb(paths, dshBinary, options, { label: 'worktree', patches })
+      } catch (error) {
+        reportPhaseFailure(options.flow, 'phase 2 boot', error, undefined, paths)
+        return
+      }
+      console.log(`e2e-smoke: phase 2 web ${redactUrl(phaseTwo.url)}`)
+      try {
+        phaseTwoCount = await runWorktreeChecks(new WebClient(phaseTwo.url), paths)
+      } catch (error) {
+        reportPhaseFailure(options.flow, 'phase 2', error, phaseTwo.logPath, paths)
+      } finally {
+        await stopInstance(phaseTwo.child)
+      }
+      if (process.exitCode === 1) return
+    } else {
+      console.log('\n=== phase 2 skipped (--no-worktree) ===')
+      linkProbePackage(paths)
+      probePatch = writeProbePatch(paths)
     }
 
     // ------------------------------------------------------------------------
-    // Phase 2: same scratch root/profile, experimental worktree composition.
+    // Phase 3: close tools and triage policy, same scratch root/profile.
     // ------------------------------------------------------------------------
-    console.log('\n=== phase 2: experimental worktree composition ===')
-    const bundle = enableWorktreeBundle(paths)
-    const probeLink = linkProbePackage(paths)
-    const probePatch = writeProbePatch(paths)
-    console.log(`e2e-smoke: selected ${bundle}; linked probe ${probeLink}`)
-    // The patch flow keeps its devlead overlay and adds the probe overlay after
-    // it; the installed flow's devlead rows come from the profile bundle list,
-    // so the probe overlay is its only `--patch`.
-    const patches = devleadOverlay === undefined ? [probePatch] : [devleadOverlay, probePatch]
-    let phaseTwo
+    console.log('\n=== phase 3: close tools and triage policy ===')
+    const closePatches = devleadOverlay === undefined ? [probePatch] : [devleadOverlay, probePatch]
+    let phaseThree
     try {
-      phaseTwo = await startWeb(paths, dshBinary, options, { label: 'worktree', patches })
+      phaseThree = await startWeb(paths, dshBinary, options, { label: 'close', patches: closePatches })
     } catch (error) {
-      reportPhaseFailure(options.flow, 'phase 2 boot', error, undefined, paths)
+      reportPhaseFailure(options.flow, 'phase 3 boot', error, undefined, paths)
       return
     }
-    console.log(`e2e-smoke: phase 2 web ${redactUrl(phaseTwo.url)}`)
-    let phaseTwoCount = 0
+    console.log(`e2e-smoke: phase 3 web ${redactUrl(phaseThree.url)}`)
+    let phaseThreeCount = 0
     try {
-      phaseTwoCount = await runWorktreeChecks(new WebClient(phaseTwo.url), paths)
+      phaseThreeCount = await runCloseChecks(new WebClient(phaseThree.url), paths)
     } catch (error) {
-      reportPhaseFailure(options.flow, 'phase 2', error, phaseTwo.logPath, paths)
+      reportPhaseFailure(options.flow, 'phase 3', error, phaseThree.logPath, paths)
     } finally {
-      await stopInstance(phaseTwo.child)
+      await stopInstance(phaseThree.child)
     }
     if (process.exitCode === 1) return
-    const total = phaseOneState.count + phaseOneBCount + phaseTwoCount
+    const total = phaseOneState.count + phaseOneBCount + (phaseTwoCount ?? 0) + phaseThreeCount
     console.log(`\nE2E SMOKE PASS (${options.flow})`)
     console.log(`  phase 1 (default profile): ${String(phaseOneState.count)}/${String(phaseOneState.count)} checks`)
     console.log(`  phase 1b (cold lead rehydration): ${String(phaseOneBCount)}/${String(phaseOneBCount)} checks`)
-    console.log(`  phase 2 (experimental worktree composition): ${String(phaseTwoCount)}/${String(phaseTwoCount)} checks`)
-    console.log(`  total: ${String(total)}/${String(total)} checks; logs: ${paths.logs}`)
+    if (phaseTwoCount !== undefined) {
+      console.log(`  phase 2 (experimental worktree composition): ${String(phaseTwoCount)}/${String(phaseTwoCount)} checks`)
+    }
+    console.log(`  phase 3 (close tools and triage policy): ${String(phaseThreeCount)}/${String(phaseThreeCount)} checks`)
+    console.log(`  total: ${String(total)}/${String(total)} checks${options.worktree ? '' : '; phase 2 skipped (--no-worktree)'}; logs: ${paths.logs}`)
   } catch (error) {
     console.error(`\nE2E SMOKE FAIL (${options.flow}): ${messageOf(error)}`)
     console.error(`--- scratch root kept at ${paths.base} ---`)

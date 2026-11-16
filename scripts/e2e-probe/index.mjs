@@ -1,34 +1,102 @@
 /**
- * Private end-to-end probe plugin for `scripts/e2e-smoke.mjs` (phase 2).
+ * Private end-to-end probe plugin for `scripts/e2e-smoke.mjs`.
  *
- * The E2E harness needs one Host-side command that drives the DevLead
- * worktree-isolation happy path through the **real** 0.2.0 core API:
+ * The E2E harness needs Host-side commands that drive DevLead through the
+ * **real** composition; the probe never invents facts, it reads every reported
+ * value from services:
  *
- *   1. register the lead Session's own directory as a Workspace
- *      (`ctx.devLead.useWorkspace(agent, request, signal?)` — the 0.2.0
- *      live-lead signature);
- *   2. create a new Session requested with `isolation: 'worktree'` and no
- *      initial prompt (`ctx.devLead.createSession(agent, request, signal?)`);
- *   3. read the created Session back from the Host store and report what the
- *      Host actually did, as one JSON document.
+ *   `devlead-e2e-worktree` (phase 2)
+ *     1. register the lead Session's own directory as a Workspace
+ *        (`ctx.devLead.useWorkspace(agent, request, signal?)`);
+ *     2. create a new Session requested with `isolation: 'worktree'` and no
+ *        initial prompt (`ctx.devLead.createSession(agent, request, signal?)`);
+ *     3. read the created Session back from the Host store.
  *
- * Everything the probe reports is read through services, never invented: the
- * E2E assertions compare `created.isolation` against Git facts and compare the
- * child Session's header/effective working directories against the checkout.
+ *   `devlead-e2e-inspect` (phase 3)
+ *     Resolve the tools a real model step would see for the calling Agent
+ *     (`ctx.tools.resolve` + the admitted `ResolvedToolSet`) and assemble the
+ *     prompt section text (`ctx.systemPrompt.assemble`), so the harness can
+ *     assert the conditional DevLead tool surface and the resident policy for
+ *     enabled and disabled modes.
+ *
+ *   `devlead-e2e-close` (phase 3)
+ *     Drive the close lifecycle through `ctx.devLead`: archive / repeat archive
+ *     / unarchive a prompted child, refuse an "active" Session through a
+ *     temporary `workspace/session-activity` listener, stop it with
+ *     `stopRunning`, exercise the self-archive guard, then remove the scratch
+ *     Workspace registration and re-register the same directory. Every fact
+ *     (registry archive set, Session views, durable log reads, filesystem
+ *     survival) is read back and returned as one JSON document.
  *
  * The probe is a linked-root package of the throwaway profile (a symlink
  * under `<profile>/node_modules/@yankeguo/` pointing at this directory), so
  * its `@deepseek-ai/*` peer dependencies resolve to the installation's own
  * runtime copies instead of a second physical module graph.
  *
- * JSON contract the harness parses from the success text:
+ * JSON contracts the harness parses from the success text:
  *
+ *   worktree:
  *   {
  *     created: DevLeadCreatedSession,        // session, workspace, prompted, isolation
  *     child: {
  *       sessionId: string,
  *       headerCwd: string | null,            // live child Session header cwd
  *       effectiveCwd: string | null           // ctx.workingDirectory.get(child Session)
+ *     }
+ *   }
+ *
+ *   inspect:
+ *   {
+ *     enabled: boolean,                      // ctx.devLead.isEnabled(caller)
+ *     tools: string[],                       // names admitted for a real step
+ *     devleadTools: string[],                // subset starting with devlead_
+ *     policy: string | null,                 // devlead:policy section text
+ *     toolError: string | null,              // activation failure, when any
+ *     policyError: string | null             // assembly failure, when any
+ *   }
+ *
+ *   close:
+ *   {
+ *     workspace: DevLeadWorkspaceView,       // registration snapshot
+ *     archive: {
+ *       childId: string,
+ *       first: { sessionId, archived, stopped },
+ *       second: { sessionId, archived, stopped },
+ *       unarchive: { sessionId, archived },
+ *       archivedSetAfterFirst: string[],
+ *       archivedSetAfterSecond: string[],
+ *       archivedSetAfterUnarchive: string[],
+ *       viewArchivedAfterFirst: boolean,
+ *       viewArchivedAfterUnarchive: boolean,
+ *       rowArchivedAfterFirst: boolean,
+ *       logBefore: { readable, events, source },
+ *       logAfterUnarchive: { readable, events, source }
+ *     },
+ *     active: {
+ *       childId: string,
+ *       refusedCode: string | null,
+ *       refusedMessage: string,
+ *       archivedSetAfterRefusal: string[],
+ *       stopResult: { sessionId, archived, stopped } | null,
+ *       stopError: string | null,
+ *       stopRequests: number,
+ *       archivedSetAfterStop: string[],
+ *       unarchiveAfterStop: { sessionId, archived } | null
+ *     },
+ *     selfArchive: { code: string | null, message: string },
+ *     remove: {
+ *       removed: boolean,
+ *       snapshotSessionIds: string[],
+ *       workspaceIdsAfter: string[],
+ *       workspacePath: string,
+ *       directoryExists: boolean,
+ *       markerContent: string | null,
+ *       childViewWorkspaceIdAfter: string | null,
+ *       logBefore: { readable, events, source },
+ *       logAfter: { readable, events, source },
+ *       reRegisteredWorkspaceId: string | null,
+ *       reRegisteredSessionIds: string[],
+ *       childViewWorkspaceIdAfterReRegister: string | null
  *     }
  *   }
  *
@@ -39,6 +107,8 @@
  * Test-only package: private, never published, and not part of the workspace.
  * @module @yankeguo/dsh-devlead-e2e-probe
  */
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { CommandDefinitionId } from '@deepseek-ai/dsh-commands/brand'
 
 /** Plugin name reported to the Cordis loader. */
@@ -48,21 +118,96 @@ export const name = 'devlead-e2e-probe'
  * Services this plugin needs.
  *
  * `commands` provides the registry; `devLead` is the service under test.
- * `sessions` is injected because the probe reads the live child Session back
- * from the Host store — a Cordis service property, so it must be declared as a
- * dependency to be readable from this plugin context.
+ * `sessions` is injected because the probe reads the live Session store;
+ * `tools` and `systemPrompt` drive the real step-time tool admission and prompt
+ * assembly the inspect command reports. `workspaceRegistry` is read through
+ * `ctx.get` (optional capability) like the core service does.
  */
-export const inject = ['commands', 'devLead', 'sessions']
+export const inject = ['commands', 'devLead', 'sessions', 'tools', 'systemPrompt']
 
 /** Stable, plugin-owned command-definition identity (mirrors the package name). */
 const DEFINITION_ID = '@yankeguo/dsh-devlead-e2e-probe'
 /** Command name; the harness dispatches `/${COMMAND_NAME}`. */
 const COMMAND_NAME = 'devlead-e2e-worktree'
+/** Inspection command: report the step-visible DevLead tool surface + policy. */
+export const INSPECT_COMMAND_NAME = 'devlead-e2e-inspect'
+/** Close-lifecycle command: archive/unarchive/remove through the real Host. */
+export const CLOSE_COMMAND_NAME = 'devlead-e2e-close'
+/** Upper bound for one prompted child turn to settle inside the close command. */
+const CHILD_TURN_TIMEOUT_MS = 45_000
+/** Poll interval of the close command's child-turn wait. */
+const CHILD_TURN_POLL_MS = 250
+/** Deterministic marker written into the scratch Workspace before removal. */
+const REMOVE_MARKER = 'devlead-e2e-close-marker.txt'
 
 /** Render an unknown thrown value as one line. */
 function messageOf(error) {
   if (error instanceof Error) return error.message
   return String(error)
+}
+
+/** Sleep for one poll interval. */
+function sleep(ms) {
+  return new Promise(resolve => {
+    setTimeout(resolve, ms)
+  })
+}
+
+/**
+ * Read the model selection a real step would capture for this Agent, with a
+ * deterministic fallback when the lead has no configured route (conditions and
+ * sections under test only read the Agent).
+ * @param agent - calling lead Agent.
+ * @returns the Agent's current selection or a probe-owned placeholder.
+ */
+function modelSelectionOf(agent) {
+  try {
+    return agent.model?.current() ?? { provider: 'e2e-probe', model: 'e2e-probe' }
+  } catch {
+    return { provider: 'e2e-probe', model: 'e2e-probe' }
+  }
+}
+
+/** Read the registry-global archive set, or null without a registry. */
+function archivedSetOf(ctx) {
+  const registry = ctx.get('workspaceRegistry')
+  return registry === undefined ? null : registry.archivedSessionIds.map(String)
+}
+
+/**
+ * Read one Session log without activating the Session. The query engine reads
+ * the persisted log; the live Session store is only a fallback for a Host that
+ * composes no durable query engine.
+ * @param ctx - owning plugin context.
+ * @param sessionId - Session identity.
+ * @returns `{ readable, events, source }`.
+ */
+async function readLog(ctx, sessionId) {
+  const query = ctx.get('sessionQuery')
+  if (query !== undefined) {
+    try {
+      const snapshot = await query.readSession(sessionId)
+      return { readable: true, events: snapshot.events.length, source: 'sessionQuery' }
+    } catch (error) {
+      return { readable: false, events: -1, source: `sessionQuery: ${messageOf(error)}` }
+    }
+  }
+  const session = ctx.sessions.get(sessionId)
+  if (session === undefined) return { readable: false, events: -1, source: 'no sessionQuery and no live Session' }
+  return { readable: true, events: session.snapshotEvents().length, source: 'sessionStore' }
+}
+
+/**
+ * Capture one falling operation as a uniform `{ value }` / `{ code, message }`.
+ * @param operation - operation to run.
+ * @returns the settled outcome.
+ */
+async function settle(operation) {
+  try {
+    return { value: await operation() }
+  } catch (error) {
+    return { code: error?.code ?? null, message: messageOf(error) }
+  }
 }
 
 /**
@@ -107,7 +252,224 @@ async function executeProbe(ctx, invocation) {
   return { kind: 'success', text: JSON.stringify({ created, child }) }
 }
 
-/** Register the probe command for every composed command adapter. */
+/**
+ * Report the tools a real model step would admit and the assembled DevLead
+ * policy section for the calling Agent, in whatever mode it is currently in.
+ * @param ctx - owning plugin context.
+ * @param invocation - the command invocation; its Agent is the lead under test.
+ * @returns a success result whose text is the inspect JSON, or an error result.
+ */
+async function executeInspect(ctx, invocation) {
+  const agent = invocation.agent
+  const modelSelection = modelSelectionOf(agent)
+  const signal = new AbortController().signal
+  let toolSet
+  let toolNames = []
+  let toolError = null
+  try {
+    toolSet = await ctx.tools.resolve({ agent, modelSelection, signal })
+    toolNames = [...toolSet.view(agent).keys()].sort()
+  } catch (error) {
+    toolError = messageOf(error)
+  }
+  let policy = null
+  let policyError = null
+  try {
+    // Mirror the real step assembly (`agent-loop` passes agent + scope + the
+    // admitted tool set), so the section text is exactly what a model step sees.
+    const assembly = await ctx.systemPrompt.assemble({
+      agent,
+      scope: agent,
+      modelSelection,
+      signal,
+      ...(toolSet === undefined ? {} : { toolSet }),
+    })
+    policy = (assembly.sections ?? []).find(section => section.name === 'devlead:policy')?.text ?? null
+  } catch (error) {
+    policyError = messageOf(error)
+  } finally {
+    toolSet?.dispose()
+  }
+  return {
+    kind: 'success',
+    text: JSON.stringify({
+      enabled: ctx.devLead.isEnabled(agent),
+      tools: toolNames,
+      devleadTools: toolNames.filter(name => name.startsWith('devlead_')),
+      policy,
+      toolError,
+      policyError,
+    }),
+  }
+}
+
+/**
+ * Wait for a prompted child turn to settle inside the real Host.
+ * @param ctx - owning plugin context.
+ * @param agent - calling lead Agent.
+ * @param sessionId - child Session identity.
+ * @returns the settled Session view.
+ * @throws when the turn does not settle before the probe's bound.
+ */
+async function awaitChildTurn(ctx, agent, sessionId) {
+  const deadline = Date.now() + CHILD_TURN_TIMEOUT_MS
+  for (;;) {
+    const view = await ctx.devLead.getSession(agent, sessionId)
+    if (view.running !== true && (view.lastTurn ?? 0) >= 1) return view
+    if (Date.now() >= deadline) {
+      throw new Error(`child Session "${sessionId}" did not settle a turn within ${String(CHILD_TURN_TIMEOUT_MS)}ms`)
+    }
+    await sleep(CHILD_TURN_POLL_MS)
+  }
+}
+
+/**
+ * Drive the close lifecycle through the real Host.
+ *
+ * The prompt carries no credentials: the child turn settles deterministically as
+ * a provider error, which gives the archived Session a real non-empty log to
+ * survive. The active-session refusal is made deterministic by a temporary
+ * `workspace/session-activity` provider; the stop path observes the real
+ * `workspace/session-stop` dispatch the Host issues for `stopRunning`.
+ * @param ctx - owning plugin context.
+ * @param invocation - the command invocation; its Agent is the lead under test.
+ * @returns a success result whose text is the close JSON, or an error result.
+ */
+async function executeClose(ctx, invocation) {
+  const agent = invocation.agent
+  const path = agent.session.header.cwd
+  if (typeof path !== 'string' || path.length === 0) {
+    return {
+      kind: 'error',
+      text: 'devlead-e2e-close: the lead Session records no header cwd, so no Workspace can be addressed',
+    }
+  }
+  const workspace = await ctx.devLead.useWorkspace(agent, { path })
+
+  // A prompted child gives the archive assertions a real, non-empty durable log.
+  const created = await ctx.devLead.createSession(agent, {
+    watch: false,
+    prompt: 'devlead e2e close: this turn is expected to settle as a provider error',
+  })
+  const childId = String(created.session.sessionId)
+  await awaitChildTurn(ctx, agent, childId)
+  const logBefore = await readLog(ctx, childId)
+
+  const first = await ctx.devLead.archiveSession(agent, childId)
+  const archivedSetAfterFirst = archivedSetOf(ctx)
+  const viewAfterFirst = await ctx.devLead.getSession(agent, childId)
+  const rowsAfterFirst = await ctx.devLead.listSessions(agent, { limit: 500 })
+  const rowAfterFirst = rowsAfterFirst.find(row => row.sessionId === childId)
+  const second = await ctx.devLead.archiveSession(agent, childId)
+  const archivedSetAfterSecond = archivedSetOf(ctx)
+  const unarchive = await ctx.devLead.unarchiveSession(agent, childId)
+  const archivedSetAfterUnarchive = archivedSetOf(ctx)
+  const viewAfterUnarchive = await ctx.devLead.getSession(agent, childId)
+  const logAfterUnarchive = await readLog(ctx, childId)
+
+  // Active refusal: a temporary activity provider makes the child "running"
+  // for the registry's archive admission, without starting a real turn.
+  const activeChild = await ctx.devLead.createSession(agent, { watch: false })
+  const activeChildId = String(activeChild.session.sessionId)
+  let stopRequests = 0
+  const disposeActivity = ctx.on('workspace/session-activity', async (request, next) => {
+    const rest = await next()
+    return String(request.sessionId) === activeChildId ? [{ kind: 'turn' }, ...rest] : rest
+  })
+  const disposeStop = ctx.on('workspace/session-stop', (request) => {
+    if (String(request.sessionId) === activeChildId) stopRequests += 1
+  })
+  let refused
+  let archivedSetAfterRefusal
+  let stopOutcome
+  let archivedSetAfterStop
+  let unarchiveAfterStop
+  try {
+    refused = await settle(() => ctx.devLead.archiveSession(agent, activeChildId))
+    archivedSetAfterRefusal = archivedSetOf(ctx)
+    stopOutcome = await settle(() => ctx.devLead.archiveSession(agent, activeChildId, { stopRunning: true }))
+    archivedSetAfterStop = archivedSetOf(ctx)
+    unarchiveAfterStop = (await settle(() => ctx.devLead.unarchiveSession(agent, activeChildId))).value ?? null
+  } finally {
+    disposeActivity()
+    disposeStop()
+  }
+
+  const selfArchive = await settle(() => ctx.devLead.archiveSession(agent, String(agent.id)))
+
+  // Removal: a marker file proves the directory survives; the prompted child
+  // (now unarchived) proves its log and ungrouped state survive too.
+  const markerPath = join(path, REMOVE_MARKER)
+  writeFileSync(markerPath, 'devlead e2e close marker\n')
+  const logBeforeRemove = await readLog(ctx, childId)
+  const removed = await ctx.devLead.removeWorkspace(agent, workspace.workspaceId)
+  const workspaceIdsAfter = (await ctx.devLead.listWorkspaces()).map(entry => entry.workspaceId)
+  const viewAfterRemove = await ctx.devLead.getSession(agent, childId)
+  const logAfterRemove = await readLog(ctx, childId)
+  const reRegistered = await ctx.devLead.useWorkspace(agent, { path })
+  const viewAfterReRegister = await ctx.devLead.getSession(agent, childId)
+  const markerContent = existsSync(markerPath) ? readFileSync(markerPath, 'utf8') : null
+
+  return {
+    kind: 'success',
+    text: JSON.stringify({
+      workspace,
+      archive: {
+        childId,
+        first,
+        second,
+        unarchive,
+        archivedSetAfterFirst,
+        archivedSetAfterSecond,
+        archivedSetAfterUnarchive,
+        viewArchivedAfterFirst: viewAfterFirst.archived === true,
+        viewArchivedAfterUnarchive: viewAfterUnarchive.archived === true,
+        rowArchivedAfterFirst: rowAfterFirst?.archived === true,
+        logBefore,
+        logAfterUnarchive,
+      },
+      active: {
+        childId: activeChildId,
+        refusedCode: refused.code ?? null,
+        refusedMessage: refused.message ?? '',
+        archivedSetAfterRefusal,
+        stopResult: stopOutcome.value ?? null,
+        stopError: stopOutcome.message ?? null,
+        stopRequests,
+        archivedSetAfterStop,
+        unarchiveAfterStop,
+      },
+      selfArchive: { code: selfArchive.code ?? null, message: selfArchive.message ?? '' },
+      remove: {
+        removed: removed.removed,
+        snapshotSessionIds: removed.workspace.sessionIds.map(String),
+        workspaceIdsAfter,
+        workspacePath: removed.workspace.path,
+        directoryExists: existsSync(path),
+        markerContent,
+        childViewWorkspaceIdAfter: viewAfterRemove.workspaceId ?? null,
+        logBefore: logBeforeRemove,
+        logAfter: logAfterRemove,
+        reRegisteredWorkspaceId: reRegistered.workspaceId ?? null,
+        reRegisteredSessionIds: reRegistered.sessionIds.map(String),
+        childViewWorkspaceIdAfterReRegister: viewAfterReRegister.workspaceId ?? null,
+      },
+    }),
+  }
+}
+
+/** Wrap one command handler so a Host failure settles as an error result. */
+function guarded(command, operation) {
+  return async invocation => {
+    try {
+      return await operation(invocation)
+    } catch (error) {
+      return { kind: 'error', text: `${command} failed: ${messageOf(error)}` }
+    }
+  }
+}
+
+/** Register the probe commands for every composed command adapter. */
 export function apply(ctx) {
   ctx.commands.register({
     definitionId: CommandDefinitionId(DEFINITION_ID),
@@ -115,12 +477,18 @@ export function apply(ctx) {
     description: 'E2E probe: create a worktree-isolated Session from this lead and report the isolation result.',
     // Text-only command: no `input.attachments` declaration, so the command
     // runtime rejects composer attachments before this handler runs.
-    handler: async invocation => {
-      try {
-        return await executeProbe(ctx, invocation)
-      } catch (error) {
-        return { kind: 'error', text: `devlead-e2e-probe failed: ${messageOf(error)}` }
-      }
-    },
+    handler: guarded(COMMAND_NAME, invocation => executeProbe(ctx, invocation)),
+  })
+  ctx.commands.register({
+    definitionId: CommandDefinitionId(`${DEFINITION_ID}#inspect`),
+    name: INSPECT_COMMAND_NAME,
+    description: 'E2E probe: report the step-visible DevLead tools and policy text for this lead.',
+    handler: guarded(INSPECT_COMMAND_NAME, invocation => executeInspect(ctx, invocation)),
+  })
+  ctx.commands.register({
+    definitionId: CommandDefinitionId(`${DEFINITION_ID}#close`),
+    name: CLOSE_COMMAND_NAME,
+    description: 'E2E probe: drive archive/unarchive/remove through the real Host and report every fact.',
+    handler: guarded(CLOSE_COMMAND_NAME, invocation => executeClose(ctx, invocation)),
   })
 }

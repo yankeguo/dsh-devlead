@@ -684,7 +684,7 @@ pnpm test           # unit tests (vitest)
 pnpm build          # esbuild artifacts (7 lib/*.js)
 pnpm check:packages # package invariants: versions / engines.dsh / peer rules / module table / path aliases / lockfile / CI pins
 pnpm verify         # typecheck + test + build
-pnpm e2e            # local E2E: isolated DSH_HOME + real DSH Web + /devlead on/watch/notification/off
+pnpm e2e            # local E2E: isolated DSH_HOME + real DSH Web + mode/watch/notification/close lifecycle
 pnpm dev:patch      # generate the overlay and register the linked root (see "Install from a local checkout")
 ```
 
@@ -703,10 +703,21 @@ profile's `dsh.profile.bundles`, restarts with a probe command, and asserts the 
 path end to end (`Worktree isolation: available`; creation result `status: 'worktree'` with
 non-empty `path`/`branch`/`baseCommit`; `git worktree list` and the branch exist; `baseCommit`
 equals the checkout `HEAD`; the child's effective cwd is the worktree path while its header cwd
-still points at the Workspace; the Session still belongs to that Workspace). Per-phase and total
-check counts are **61/61 per flow** (phase 1 = 27, phase 1b = 12, phase 2 = 22);
-`--no-worktree` skips only the experimental phase, reporting **39/39** (phases 1 + 1b) for
-debugging. The phase-2 probe is a private
+still points at the Workspace; the Session still belongs to that Workspace); phase 3 links the
+same private probe package and restarts (the worktree bundle is not required) to drive the close
+tools through the real Host: a real step-time tool activation shows exactly the eleven
+`devlead_*` tools while the mode is on and none while it is off, the assembled `devlead:policy`
+section carries judgment-based closing with its safety boundaries and the
+triage/open-question handoff, archiving a prompted child updates the durable archive set and
+reports `stopped: false`, a repeat archive is an idempotent no-op, and unarchive restores the
+Session with its log intact; a temporary activity provider makes an active Session refuse as
+`DEVLEAD_SESSION_ACTIVE`, while `stop_running` archives it, reports `stopped: true`, and reaches
+the Host stop provider; the lead cannot archive itself; removing the Workspace drops its
+registration while the directory, a marker file, and the Session log survive, the Session
+becomes ungrouped, and re-registering the directory yields a new Workspace that does not adopt
+it. Per-phase and total check counts are **112/112 per flow** (phase 1 = 27, phase 1b = 12,
+phase 2 = 22, phase 3 = 51); `--no-worktree` skips only the experimental phase, reporting
+**90/90** (phases 1 + 1b + 3) for debugging. The probe is a private
 test-only package under `scripts/e2e-probe/`, not a published or workspace package. The profile
 mutations happen only in the throwaway profile under `os.tmpdir()`; no pnpm install, network, or
 lockfile change is involved.

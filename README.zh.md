@@ -582,7 +582,7 @@ pnpm test           # 单元测试（vitest）
 pnpm build          # esbuild 产物（7 个 lib/*.js）
 pnpm check:packages # 包不变式：版本 / engines.dsh / peer 规则 / 模块表 / 路径别名 / lockfile / CI pin
 pnpm verify         # typecheck + test + build
-pnpm e2e            # 本地 E2E：隔离 DSH_HOME + 真实 DSH Web + /devlead on/watch/通知/off
+pnpm e2e            # 本地 E2E：隔离 DSH_HOME + 真实 DSH Web + 模式/watch/通知/关闭生命周期
 pnpm dev:patch      # 生成 overlay 并注册 linked root（见「安装：本地 checkout」）
 ```
 
@@ -598,8 +598,16 @@ resume 后 `/devlead status` 与 `/devlead off` 正常）；阶段 2 向**一次
 → 端到端断言 worktree happy path（`Worktree isolation: available`；创建结果 `status:
 'worktree'` 且 `path`/`branch`/`baseCommit` 非空；`git worktree list` 与分支存在；`baseCommit`
 等于 checkout 的 `HEAD`；子会话有效工作目录是 worktree 路径而 header cwd 仍指向 Workspace；
-Session 仍归属该 Workspace）。两条加载流各 **61/61**（阶段 1 27 + 阶段 1b 12 + 阶段 2 22）；
-调试时可加 `--no-worktree` 跳过阶段 2（**39/39**，阶段 1 + 1b）。阶段 2 的 probe 是
+Session 仍归属该 Workspace）；阶段 3 链接同一个私有 probe 包后重启（不需要 worktree bundle），
+通过真实 Host 驱动关闭工具：真实的一步工具激活在模式开启时恰好可见 11 个 `devlead_*`、关闭时
+为 0；组装出的 `devlead:policy` section 含判断式自主关闭、安全边界与「有限可行性判断/开放
+问题/深挖交接」；归档一个已 prompt 的子会话后 durable archive 集合与 archived 视图/列表行
+生效，重复归档是幂等 no-op，unarchive 恢复且日志保持完整；临时 activity provider 让活跃
+会话以 `DEVLEAD_SESSION_ACTIVE` 被拒绝，`stop_running` 归档并回报 `stopped: true` 且触达
+Host stop provider；lead 不能归档自己；注销 Workspace 后注册表不再包含它，目录/标记文件/
+Session 日志仍在，Session 变未分组，重新注册得到新 Workspace 且不继承旧 Session。两条加载流
+各 **112/112**（阶段 1 27 + 阶段 1b 12 + 阶段 2 22 + 阶段 3 51）；调试时可加
+`--no-worktree` 跳过阶段 2（**90/90**，阶段 1 + 1b + 3）。probe 是
 `scripts/e2e-probe/` 下的私有测试包，不发布、不属于 workspace 包；profile 变更只发生在
 `os.tmpdir()` 下的一次性 profile，不涉及 pnpm install / 网络 / lockfile。
 
@@ -620,7 +628,9 @@ Session 仍归属该 Workspace）。两条加载流各 **61/61**（阶段 1 27 +
 本地端到端验收：`pnpm verify && pnpm e2e`。分阶段 E2E 启动一个隔离 DSH：阶段 1 走完
 `/devlead on` → 真实子会话 watch → 子会话 turn 结束 → 通知进入 lead 投影；阶段 1b 重启实例验证
 冷 lead 索引重建（冷子会话被 resume、重启后产生新通知）；阶段 2 叠加实验性 forge bundle 验证
-worktree happy path；`--flow patch` 与 `--flow installed` 分别覆盖两条加载路径。
+worktree happy path；阶段 3 在真实 Host 上验证 11 个工具的条件可见性、triage/自主关闭 policy、
+archive/unarchive/remove 的 durable 行为与文档化的安全边界；`--flow patch` 与
+`--flow installed` 分别覆盖两条加载路径。
 
 ## 发布
 
