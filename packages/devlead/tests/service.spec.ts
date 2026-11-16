@@ -1980,6 +1980,7 @@ describe('dispatch model and Agent Teams settings', () => {
     expect(error.message).toContain('provider-x/model-y')
     expect(error.message).toContain('high')
     expect(error.message).toContain('no such model')
+    expect(error.message).toContain('devlead_list_models')
     expect(validator.calls).toEqual([{ provider: 'provider-x', model: 'model-y', reasoningEffort: 'high' }])
     expect(controller.createCalls).toEqual([])
     expect(harness.service.view(harness.lead.agent).sessions).toEqual([])
@@ -2010,6 +2011,7 @@ describe('dispatch model and Agent Teams settings', () => {
       'DEVLEAD_MODEL_UNAVAILABLE',
     )
     expect(error.message).toContain('no LLM registry')
+    expect(error.message).toContain('devlead_list_models')
     expect(controller.createCalls).toEqual([])
   })
 
@@ -2091,6 +2093,7 @@ describe('dispatch model and Agent Teams settings', () => {
     )
     expect(error.message).toContain('created-1')
     expect(error.message).toContain('remains')
+    expect(error.message).toContain('devlead_list_models')
     expect(harness.service.view(harness.lead.agent).sessions).toEqual([])
     // The reservation was released: the next create can still take a watch slot.
     const next = await harness.service.createSession(harness.lead.agent, { workspace: 'ws-1' })
@@ -2110,6 +2113,147 @@ describe('dispatch model and Agent Teams settings', () => {
     expect(error.message).toContain('team store offline')
     expect(harness.agents.resolve('created-1')).toBeDefined()
     expect(harness.service.view(harness.lead.agent).sessions).toEqual([])
+  })
+})
+
+describe('model catalog', () => {
+  it('maps the Host catalog onto the compact protocol view', async () => {
+    const controller = new FakeSessionController()
+    controller.modelCatalogResult = {
+      default: { provider: 'provider-a', model: 'model-a', reasoningEffort: 'medium' },
+      routableProviders: ['provider-a'],
+      groups: [
+        {
+          id: 'provider-a',
+          name: 'Provider A',
+          models: [
+            {
+              id: 'model-a',
+              name: 'Model A',
+              description: 'display-only',
+              badge: 'new',
+              reasoning: {
+                efforts: [{ id: 'low', name: 'Low', description: 'display-only' }],
+                defaultEffort: 'low',
+              },
+            },
+            { id: 'model-b' },
+          ],
+        },
+      ],
+      failures: [{ id: 'provider-b', name: 'Provider B', message: 'catalog offline' }],
+    }
+    const harness = await bootService({ enabled: true, sessionController: controller })
+    const catalog = await harness.service.listModels(harness.lead.agent)
+    expect(catalog).toEqual({
+      default: { provider: 'provider-a', model: 'model-a', reasoningEffort: 'medium' },
+      routableProviders: ['provider-a'],
+      providers: [
+        {
+          id: 'provider-a',
+          name: 'Provider A',
+          models: [
+            {
+              id: 'model-a',
+              name: 'Model A',
+              reasoning: { efforts: [{ id: 'low', name: 'Low' }], defaultEffort: 'low' },
+            },
+            { id: 'model-b', name: 'model-b' },
+          ],
+        },
+      ],
+      failures: [{ id: 'provider-b', name: 'Provider B', message: 'catalog offline' }],
+    })
+    expect(controller.modelCatalogCalls).toBe(1)
+  })
+
+  it('maps an empty catalog without inventing entries', async () => {
+    const controller = new FakeSessionController()
+    controller.modelCatalogResult = {
+      default: { provider: 'provider-a', model: 'model-a' },
+      routableProviders: [],
+      groups: [],
+      failures: [],
+    }
+    const harness = await bootService({ enabled: true, sessionController: controller })
+    const catalog = await harness.service.listModels(harness.lead.agent)
+    expect(catalog).toEqual({
+      default: { provider: 'provider-a', model: 'model-a' },
+      routableProviders: [],
+      providers: [],
+      failures: [],
+    })
+  })
+
+  it('drops malformed catalog entries instead of failing the read', async () => {
+    const controller = new FakeSessionController()
+    controller.modelCatalogResult = {
+      default: { provider: 'provider-a', model: 'model-a' },
+      routableProviders: ['provider-a', 7, ''],
+      groups: [
+        { name: 'no id' },
+        {
+          id: 'provider-a',
+          models: [
+            { name: 'no model id' },
+            { id: 'model-a', reasoning: { efforts: [{ name: 'no effort id' }, { id: 'low' }] } },
+          ],
+        },
+      ],
+      failures: [{ name: 'no failure id' }, { id: 'provider-b' }],
+    }
+    const harness = await bootService({ enabled: true, sessionController: controller })
+    const catalog = await harness.service.listModels(harness.lead.agent)
+    expect(catalog.routableProviders).toEqual(['provider-a'])
+    expect(catalog.providers).toEqual([
+      {
+        id: 'provider-a',
+        name: 'provider-a',
+        models: [
+          { id: 'model-a', name: 'model-a', reasoning: { efforts: [{ id: 'low', name: 'low' }] } },
+        ],
+      },
+    ])
+    expect(catalog.failures).toEqual([{ id: 'provider-b', name: 'provider-b', message: '' }])
+  })
+
+  it('requires a composed controller and maps read failures to the session-unavailable code', async () => {
+    const withoutController = await bootService({ enabled: true })
+    const missing = await expectCodeAsync(
+      () => withoutController.service.listModels(withoutController.lead.agent),
+      'DEVLEAD_SESSION_UNAVAILABLE',
+    )
+    expect(missing.message).toContain('cannot list models')
+
+    const controller = new FakeSessionController()
+    controller.modelCatalogError = new Error('catalog store offline')
+    const harness = await bootService({ enabled: true, sessionController: controller })
+    const failed = await expectCodeAsync(
+      () => harness.service.listModels(harness.lead.agent),
+      'DEVLEAD_SESSION_UNAVAILABLE',
+    )
+    expect(failed.message).toContain('catalog store offline')
+  })
+
+  it('requires a live lead with the mode enabled and honors cancellation', async () => {
+    const controller = new FakeSessionController()
+    const disabled = await bootService({ sessionController: controller })
+    await expectCodeAsync(
+      () => disabled.service.listModels(disabled.lead.agent),
+      'DEVLEAD_NOT_ENABLED',
+    )
+    const enabled = await bootService({ enabled: true, sessionController: controller })
+    const stale = new FakeAgent(enabled.leadSession)
+    await expectCodeAsync(
+      () => enabled.service.listModels(stale.agent),
+      'DEVLEAD_AGENT_NOT_LIVE',
+    )
+    const aborter = new AbortController()
+    aborter.abort()
+    await expect(
+      enabled.service.listModels(enabled.lead.agent, aborter.signal),
+    ).rejects.toMatchObject({ name: 'AbortError' })
+    expect(controller.modelCatalogCalls).toBe(0)
   })
 })
 

@@ -20,6 +20,7 @@ import type {
   DevLeadIsolation,
   DevLeadIsolationMode,
   DevLeadIsolationStatus,
+  DevLeadModelCatalog,
   DevLeadModelSelection,
   DevLeadNotification,
   DevLeadProjection,
@@ -188,6 +189,9 @@ export type SessionValue = InferValue<typeof SESSION_VIEW_SCHEMA>
 
 /** Canonical value of one applied model selection. */
 export type ModelSelectionValue = InferValue<typeof MODEL_SELECTION_SCHEMA>
+
+/** Canonical value of the model catalog. */
+export type ModelCatalogValue = InferValue<typeof MODEL_CATALOG_SCHEMA>
 
 /** Canonical value of one checkout-isolation outcome. */
 export type IsolationValue = InferValue<typeof ISOLATION_SCHEMA>
@@ -369,6 +373,99 @@ export const NOTIFICATIONS_OUTPUT = jsonOutput({
   },
 } as const)
 
+/** Enforced schema of one advertised reasoning effort. */
+const MODEL_EFFORT_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    id: { type: 'string', required: true, description: 'Effort id accepted by reasoning_effort.' },
+    name: { type: 'string', required: true, description: 'Human-readable effort name.' },
+  },
+} as const
+
+/** Enforced schema of one advertised model. */
+const MODEL_VIEW_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    id: { type: 'string', required: true, description: 'Model id accepted by model.' },
+    name: { type: 'string', required: true, description: 'Human-readable model name.' },
+    reasoning: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        efforts: {
+          type: 'array',
+          required: true,
+          items: MODEL_EFFORT_SCHEMA,
+          description: 'Reasoning efforts the model accepts.',
+        },
+        defaultEffort: {
+          type: 'string',
+          description: 'Effort the adapter uses when the caller omits one.',
+        },
+      },
+    },
+  },
+} as const
+
+/** Enforced schema of one provider group in the model catalog. */
+const MODEL_PROVIDER_VIEW_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    id: { type: 'string', required: true, description: 'Provider route accepted by provider.' },
+    name: { type: 'string', required: true, description: 'Human-readable provider name.' },
+    models: {
+      type: 'array',
+      required: true,
+      items: MODEL_VIEW_SCHEMA,
+      description: 'Models the provider currently advertises.',
+    },
+  },
+} as const
+
+/** Enforced schema of one provider catalog failure. */
+const MODEL_CATALOG_FAILURE_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    id: { type: 'string', required: true, description: 'Provider route whose lookup failed.' },
+    name: { type: 'string', required: true, description: 'Human-readable provider name.' },
+    message: { type: 'string', required: true, description: 'Failure detail.' },
+  },
+} as const
+
+/** Enforced schema of the model catalog. */
+export const MODEL_CATALOG_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    default: required(MODEL_SELECTION_SCHEMA),
+    routableProviders: {
+      type: 'array',
+      required: true,
+      items: { type: 'string' },
+      description: 'Provider routes with at least one available model.',
+    },
+    providers: {
+      type: 'array',
+      required: true,
+      items: MODEL_PROVIDER_VIEW_SCHEMA,
+      description: 'Provider groups and their models.',
+    },
+    failures: {
+      type: 'array',
+      required: true,
+      items: MODEL_CATALOG_FAILURE_SCHEMA,
+      description: 'Providers whose catalog lookup failed.',
+    },
+  },
+} as const
+
+/** Canonical value of `devlead_list_models`. */
+export const LIST_MODELS_OUTPUT = jsonOutput(MODEL_CATALOG_SCHEMA)
+
 /** Canonical value of `devlead_remove_workspace`. */
 export const REMOVE_WORKSPACE_OUTPUT = jsonOutput({
   type: 'object',
@@ -449,6 +546,37 @@ export function watchMutationValue(mutation: DevLeadWatchMutation): InferValue<t
     sessionId: mutation.sessionId,
     watched: mutation.watched,
     sessions: [...mutation.sessions],
+  }
+}
+
+/** Project one Host model catalog onto the canonical value. */
+export function modelCatalogValue(catalog: DevLeadModelCatalog): ModelCatalogValue {
+  return {
+    default: modelSelectionValue(catalog.default),
+    routableProviders: [...catalog.routableProviders],
+    providers: catalog.providers.map(provider => ({
+      id: provider.id,
+      name: provider.name,
+      models: provider.models.map(model => ({
+        id: model.id,
+        name: model.name,
+        ...model.reasoning === undefined
+          ? {}
+          : {
+            reasoning: {
+              efforts: model.reasoning.efforts.map(effort => ({ id: effort.id, name: effort.name })),
+              ...model.reasoning.defaultEffort === undefined
+                ? {}
+                : { defaultEffort: model.reasoning.defaultEffort },
+            },
+          },
+      })),
+    })),
+    failures: catalog.failures.map(failure => ({
+      id: failure.id,
+      name: failure.name,
+      message: failure.message,
+    })),
   }
 }
 

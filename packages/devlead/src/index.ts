@@ -34,6 +34,7 @@ import type {
   DevLeadCreateSessionRequest,
   DevLeadIsolation,
   DevLeadIsolationMode,
+  DevLeadModelCatalog,
   DevLeadModelSelection,
   DevLeadNotification,
   DevLeadProjection,
@@ -57,6 +58,8 @@ import {
 } from './domain.ts'
 import {
   agentTeamsCapabilityOf,
+  devLeadModelCatalogOf,
+  modelCatalogCapabilityOf,
   modelSelectionLabel,
   modelValidatorOf,
   normalizeModelSelection,
@@ -923,6 +926,44 @@ export class DevLeadService extends Service {
   }
 
   /**
+   * Read the Host's model catalog for dispatch-time selection.
+   *
+   * The view reports the Host default selection, routable providers, each
+   * provider's advertised models and reasoning efforts, and catalog lookup
+   * failures. It is read-only: no Session, profile default, or Team state is
+   * changed. The controller's catalog method takes no cancellation token, so
+   * the signal is checked before and after the read.
+   * @param agent - exact live lead Agent.
+   * @param signal - cancellation checked before and after the catalog read.
+   * @returns the normalized model catalog view.
+   * @throws {@link DevLeadError} `DEVLEAD_SESSION_UNAVAILABLE` when the Host
+   *   composes no Session controller with a model catalog or the read fails.
+   */
+  async listModels(agent: Agent, signal?: AbortSignal): Promise<DevLeadModelCatalog> {
+    this.assertReady(agent)
+    signal?.throwIfAborted()
+    const controller = modelCatalogCapabilityOf(this.ctx)
+    if (controller === undefined) {
+      throw new DevLeadError(
+        'this Host cannot list models: no API Session controller with a model catalog is composed',
+        'DEVLEAD_SESSION_UNAVAILABLE',
+      )
+    }
+    let catalog: unknown
+    try {
+      catalog = await controller.modelCatalog()
+    } catch (error: unknown) {
+      signal?.throwIfAborted()
+      throw new DevLeadError(
+        `could not read the model catalog: ${thrownMessage(error)}`,
+        'DEVLEAD_SESSION_UNAVAILABLE',
+      )
+    }
+    signal?.throwIfAborted()
+    return devLeadModelCatalogOf(catalog)
+  }
+
+  /**
    * Read one Session in detail, including folded turn and assistant facts.
    * @param agent - exact live lead Agent.
    * @param sessionId - Session id or unique prefix; exact ids stay addressable
@@ -1518,7 +1559,8 @@ export class DevLeadService extends Service {
     const validator = modelValidatorOf(this.ctx)
     if (validator === undefined) {
       throw new DevLeadError(
-        `cannot validate model "${modelSelectionLabel(selection)}": this Host composes no LLM registry`,
+        `cannot validate model "${modelSelectionLabel(selection)}": this Host composes no LLM registry. `
+        + 'Call devlead_list_models to see available providers, models, and reasoning efforts',
         'DEVLEAD_MODEL_UNAVAILABLE',
       )
     }
@@ -1540,7 +1582,8 @@ export class DevLeadService extends Service {
     } catch (error: unknown) {
       signal?.throwIfAborted()
       throw new DevLeadError(
-        `model "${modelSelectionLabel(selection)}" is not available: ${thrownMessage(error)}`,
+        `model "${modelSelectionLabel(selection)}" is not available: ${thrownMessage(error)}. `
+        + 'Call devlead_list_models to see available providers, models, and reasoning efforts',
         'DEVLEAD_MODEL_UNAVAILABLE',
       )
     }
@@ -1596,7 +1639,8 @@ export class DevLeadService extends Service {
         signal?.throwIfAborted()
         throw new DevLeadError(
           `Session "${sessionId}" was created but model "${modelSelectionLabel(model)}" could not be applied; `
-          + `the Session remains: ${thrownMessage(error)}`,
+          + `the Session remains: ${thrownMessage(error)}. `
+          + 'Call devlead_list_models to see available providers, models, and reasoning efforts',
           'DEVLEAD_MODEL_UNAVAILABLE',
         )
       }

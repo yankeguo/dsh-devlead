@@ -23,6 +23,7 @@ import type {
   DevLeadArchivedSession,
   DevLeadArchiveSessionOptions,
   DevLeadCreatedSession,
+  DevLeadModelCatalog,
   DevLeadNotification,
   DevLeadPromptedSession,
   DevLeadProjection,
@@ -81,6 +82,34 @@ export const NOTIFICATION: DevLeadNotification = {
   at: 1_700_000_000_000,
 }
 
+/** One model catalog fixture with a default, reasoning efforts, and a failure. */
+export const MODEL_CATALOG: DevLeadModelCatalog = {
+  default: { provider: 'provider-a', model: 'model-a', reasoningEffort: 'medium' },
+  routableProviders: ['provider-a'],
+  providers: [
+    {
+      id: 'provider-a',
+      name: 'Provider A',
+      models: [
+        {
+          id: 'model-a',
+          name: 'Model A',
+          reasoning: {
+            efforts: [
+              { id: 'low', name: 'Low' },
+              { id: 'medium', name: 'Medium' },
+              { id: 'high', name: 'High' },
+            ],
+            defaultEffort: 'medium',
+          },
+        },
+        { id: 'model-b', name: 'Model B' },
+      ],
+    },
+  ],
+  failures: [{ id: 'provider-b', name: 'Provider B', message: 'catalog lookup failed' }],
+}
+
 /** Create one live-looking Agent identity. */
 export function makeAgent(id = 'agent-lead'): Agent {
   return { id, session: { header: { cwd: '/tmp' } } } as unknown as Agent
@@ -114,6 +143,9 @@ export class FakeDevLead {
 
   /** Session row returned by {@link getSession}. */
   session: DevLeadSessionView = SESSION
+
+  /** Catalog returned by {@link listModels}. */
+  models: DevLeadModelCatalog = MODEL_CATALOG
 
   /** Result returned by {@link createSession}. */
   created: DevLeadCreatedSession = {
@@ -238,6 +270,11 @@ export class FakeDevLead {
   notifications(agent: Agent, options?: { limit?: number }): DevLeadNotification[] {
     this.enter('notifications', agent, options)
     return this.digest
+  }
+
+  async listModels(agent: Agent, signal?: AbortSignal): Promise<DevLeadModelCatalog> {
+    this.enter('listModels', agent, signal)
+    return this.models
   }
 
   async removeWorkspace(agent: Agent, workspace: string, signal?: AbortSignal): Promise<DevLeadRemovedWorkspace> {

@@ -74,12 +74,12 @@
  *             branches from its `HEAD`.
  *             22 checks.
  *
- *   phase 3 — close tools and triage policy. The same profile restarts (the
+ *   phase 3 — close tools, dispatch routing, and triage policy. The same profile restarts (the
  *             probe package is linked and its overlay applied; the worktree
  *             bundle is not required) and drives the close lifecycle through
  *             `ctx.devLead`:
  *               - a real step-time tool activation (`ctx.tools.resolve`) admits
- *                 exactly the eleven `devlead_*` tools while the mode is on and
+ *                 exactly the twelve `devlead_*` tools while the mode is on and
  *                 none while it is off, both before and after a toggle;
  *               - the assembled `devlead:policy` section carries judgment-based
  *                 closing, its safety boundaries, and the feasibility-triage /
@@ -97,6 +97,10 @@
  *                 the directory, a marker file, and the Session log survive; the
  *                 Session becomes ungrouped, and re-registering the directory
  *                 yields a new Workspace id that does not adopt it;
+ *               - `devlead_list_models` returns the Host catalog view (default
+ *                 selection, providers, failures); a credential-less Host has
+ *                 empty provider/failure arrays with a real default, reported
+ *                 as-is;
  *               - creation-time dispatch settings: a model selected from the
  *                 Host catalog (or the deployment default when the catalog is
  *                 unavailable) is recorded on the child Session and in its
@@ -107,15 +111,15 @@
  *                 before/after to prove it was never rewritten. When the Host
  *                 cannot expose a model catalog (no provider credentials), the
  *                 positive model checks are reported as SKIP, not faked.
- *             66 checks.
+ *             69 checks.
  *
  * `--no-worktree` skips phase 2 only (debugging escape hatch when the
  * experimental composition cannot boot on this machine); phases 1, 1b, and 3
  * still run.
  *
- * Check counts: phase 1 = 27, phase 1b = 12, phase 2 = 22, phase 3 = 66, so
- * every flow reports 127/127 checks when all four phases pass (`--no-worktree`
- * skips phase 2: 105/105). Run both flows before a release:
+ * Check counts: phase 1 = 27, phase 1b = 12, phase 2 = 22, phase 3 = 69, so
+ * every flow reports 130/130 checks when all four phases pass (`--no-worktree`
+ * skips phase 2: 108/108). Run both flows before a release:
  *
  *   node scripts/e2e-smoke.mjs --flow patch
  *   node scripts/e2e-smoke.mjs --flow installed
@@ -197,6 +201,7 @@ const DEVLEAD_TOOL_NAMES = [
   'devlead_archive_session',
   'devlead_create_session',
   'devlead_get_session',
+  'devlead_list_models',
   'devlead_list_sessions',
   'devlead_list_workspaces',
   'devlead_notifications',
@@ -1303,7 +1308,7 @@ async function runCloseChecks(client, paths) {
   checks.expect('phase 3 enabled inspect reports enabled', inspectOn.report?.enabled === true)
   const devleadTools = inspectOn.report?.devleadTools ?? []
   checks.expect(
-    'phase 3 enabled exposes exactly the eleven devlead tools',
+    'phase 3 enabled exposes exactly the twelve devlead tools',
     JSON.stringify(devleadTools) === JSON.stringify(DEVLEAD_TOOL_NAMES),
     JSON.stringify(devleadTools),
   )
@@ -1360,6 +1365,29 @@ async function runCloseChecks(client, paths) {
       && typeof dispatch.report.model === 'object' && dispatch.report.model !== null
       && typeof dispatch.report.teams === 'object' && dispatch.report.teams !== null
       && typeof dispatch.report.modelUnavailable === 'object' && dispatch.report.modelUnavailable !== null,
+  )
+  const dispatchListModels = dispatch.report?.listModels ?? {}
+  const listModelsView = dispatchListModels.view ?? null
+  checks.expect(
+    'phase 3 devlead_list_models returns a catalog view',
+    dispatchListModels.error === null && listModelsView !== null && typeof listModelsView === 'object',
+    JSON.stringify(dispatchListModels.error ?? listModelsView?.default),
+  )
+  checks.expect(
+    'phase 3 list_models reports the Host default selection',
+    typeof listModelsView?.default?.provider === 'string'
+      && typeof listModelsView?.default?.model === 'string',
+    JSON.stringify(listModelsView?.default),
+  )
+  checks.expect(
+    'phase 3 list_models exposes provider and failure arrays',
+    Array.isArray(listModelsView?.providers)
+      && Array.isArray(listModelsView?.failures)
+      && Array.isArray(listModelsView?.routableProviders),
+    JSON.stringify({
+      providers: listModelsView?.providers?.length,
+      failures: listModelsView?.failures?.length,
+    }),
   )
   const dispatchModel = dispatch.report?.model ?? {}
   const dispatchTeams = dispatch.report?.teams ?? {}

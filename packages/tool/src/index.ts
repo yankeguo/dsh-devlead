@@ -32,6 +32,7 @@ import {
   presentArchiveSessionCall,
   presentCreateSessionCall,
   presentGetSessionCall,
+  presentListModelsCall,
   presentListSessionsCall,
   presentListWorkspacesCall,
   presentNotificationsCall,
@@ -45,6 +46,7 @@ import {
   ARCHIVE_SESSION_OUTPUT,
   CREATE_SESSION_OUTPUT,
   GET_SESSION_OUTPUT,
+  LIST_MODELS_OUTPUT,
   LIST_SESSIONS_OUTPUT,
   LIST_WORKSPACES_OUTPUT,
   NOTIFICATIONS_OUTPUT,
@@ -55,6 +57,7 @@ import {
   WATCH_SESSION_OUTPUT,
   archivedSessionValue,
   createdSessionValue,
+  modelCatalogValue,
   notificationValue,
   promptedSessionValue,
   removedWorkspaceValue,
@@ -82,6 +85,13 @@ const SESSION_ARGUMENT_DESCRIPTION =
   'Session id: the full id, a unique id prefix, or the uuid prefix without the "session-" prefix (for example '
   + 'e59ab350); it resolves only when unique.'
 
+const LIST_MODELS_DESCRIPTION =
+  'List the model routes this Host can dispatch to: the Host default selection, routable providers, each provider\'s '
+  + 'models with their reasoning efforts and default effort, and any provider whose catalog could not be loaded. Call '
+  + 'this before pinning provider/model/reasoning_effort on devlead_create_session. Most dispatches should omit the '
+  + 'model parameters and inherit the Host default; only pin a model when the human explicitly asked, or the brief '
+  + 'needs cost/capability routing or reproducibility.'
+
 const LIST_WORKSPACES_DESCRIPTION =
   'List every registered DSH Workspace: its title, canonical directory path, live directory status, and the Sessions '
   + 'the registry accounts to it. Use it first to decide which Workspace owns a request, before registering a new '
@@ -100,10 +110,13 @@ const LIST_SESSIONS_DESCRIPTION =
   + 'waiting for a dispatched Session.'
 
 const CREATE_SESSION_DESCRIPTION =
-  'Create an ordinary DSH Session in a Workspace and optionally start it with a prompt. Pin the child to a model with '
-  + 'provider/model (plus optional reasoning_effort) for cost/capability routing or reproducibility, and enable Agent '
-  + 'Teams with agent_teams; both are creation-time only and never change the Host/profile default. The model is '
-  + 'validated before the Session is created. The Session is a real Session '
+  'Create an ordinary DSH Session in a Workspace and optionally start it with a prompt. The child inherits the Host '
+  + 'default model unless you explicitly pin provider/model (plus optional reasoning_effort); pin only when the human '
+  + 'explicitly asked, or the brief needs cost/capability routing or reproducibility, and call devlead_list_models '
+  + 'first so provider/model/effort are real. Agent Teams is your judgment: complex, multi-step, or parallel work that '
+  + 'benefits from subagent collaboration may set agent_teams true; simple linear work should omit it; obey an explicit '
+  + 'human on/off. Never change the Host/profile default, and do not upgrade or downgrade a model on your own. Both '
+  + 'settings are creation-time only; the model is validated before the Session is created. The Session is a real Session '
   + 'the human can open and take over, not a subagent. It runs independently, so after this call end the turn instead '
   + 'of waiting: never sleep, never poll devlead_get_session, devlead_list_sessions, or devlead_notifications, and '
   + 'never call wait_agent to wait for it. A watched Session is the default, and its settled turn starts a new turn '
@@ -160,7 +173,7 @@ const UNARCHIVE_SESSION_DESCRIPTION =
   + 'wrapping up, or when the human asks to restore a Session; report the restored Session.'
 
 /**
- * Register the eleven DevLead tools and their shared policy section.
+ * Register the twelve DevLead tools and their shared policy section.
  *
  * The tools and the policy text follow the same condition: DevLead mode is
  * enabled for the assembling Agent. Because both are evaluated per step, toggling
@@ -189,6 +202,20 @@ export function apply(ctx: Context): void {
       return runTool(async () => ({
         workspaces: (await ctx.devLead.listWorkspaces(exec.signal)).map(workspaceValue),
       }))
+    },
+  }), { when: ({ agent }) => ctx.devLead.isEnabled(agent) })
+
+  ctx.tools.register(defineTool({
+    name: 'devlead_list_models',
+    description: LIST_MODELS_DESCRIPTION,
+    parameters: {},
+    output: LIST_MODELS_OUTPUT,
+    presentCall: presentListModelsCall,
+    execute(_args, exec) {
+      return runTool(async () => {
+        const agent = requireAgent(exec.agent, 'devlead_list_models')
+        return modelCatalogValue(await ctx.devLead.listModels(agent, exec.signal))
+      })
     },
   }), { when: ({ agent }) => ctx.devLead.isEnabled(agent) })
 
@@ -281,7 +308,8 @@ export function apply(ctx: Context): void {
       prompt: {
         type: 'string',
         description: 'Optional self-contained prompt the new Session starts with: background, target result, open '
-          + 'questions to confirm, deliverables, verification, and boundaries. The child cannot see this conversation.',
+          + 'questions to confirm, deliverables, verification, and boundaries. The child cannot see this conversation. '
+          + 'When the prompt pins a model, call devlead_list_models first.',
       },
       title: {
         type: 'string',
@@ -305,24 +333,28 @@ export function apply(ctx: Context): void {
       },
       provider: {
         type: 'string',
-        description: 'Optional model provider route for the new Session; requires model. Validated before the Session '
-          + 'is created. Creation-time only: the Host/profile default model is never changed.',
+        description: 'Optional model provider route for the new Session; requires model. Omit to inherit the Host '
+          + 'default (recommended unless the human asked or the brief requires a specific route). Call '
+          + 'devlead_list_models first when pinning; validated before the Session is created. Creation-time only.',
       },
       model: {
         type: 'string',
-        description: 'Optional model id for the new Session; requires provider. Use it to route cheap or strong work '
-          + 'per dispatch and to keep a dispatch reproducible. Creation-time only.',
+        description: 'Optional model id for the new Session; requires provider. Omit to inherit the Host default. Use it '
+          + 'only for explicit cost/capability routing or reproducibility, and call devlead_list_models first. '
+          + 'Creation-time only; never changes the Host/profile default.',
       },
       reasoning_effort: {
         type: 'string',
-        description: 'Optional adapter reasoning effort (for example low, medium, high); only valid together with '
-          + 'provider and model.',
+        description: 'Optional adapter reasoning effort for the new Session; requires provider and model. Omit to '
+          + 'inherit the model\'s default effort (recommended unless the human asked). Call devlead_list_models for '
+          + 'the supported effort ids.',
       },
       agent_teams: {
         type: 'boolean',
-        description: 'Agent Teams mode for the new Session: true enables it, false disables it, omit to leave the Host '
-          + 'default untouched. Creation-time only; true fails with DEVLEAD_TEAM_UNAVAILABLE when the Host composes '
-          + 'no Agent Teams service.',
+        description: 'Agent Teams for the new Session: true for complex, multi-step, or parallel work that benefits from '
+          + 'subagent collaboration, false to disable, omit for simple linear work (Host default). Obey an explicit '
+          + 'human on/off. Creation-time only; true fails with DEVLEAD_TEAM_UNAVAILABLE when the Host composes no '
+          + 'Agent Teams service.',
       },
     },
     output: CREATE_SESSION_OUTPUT,

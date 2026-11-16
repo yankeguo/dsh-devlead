@@ -85,7 +85,8 @@
  *     omitted: { modelPresent, agentTeamsPresent },
  *     modelUnavailable: { code, message, sessionsBefore, sessionsAfter },
  *     teamsUnavailableChecked: false,
- *     teamsUnavailableReason: string
+ *     teamsUnavailableReason: string,
+ *     listModels: { view: DevLeadModelCatalog | null, error: { code, message } | null }
  *   }
  *
  *   close:
@@ -518,6 +519,14 @@ async function executeDispatch(ctx, invocation) {
   }
   const defaultBefore = readDefault()
 
+  let listModelsView = null
+  let listModelsError = null
+  try {
+    listModelsView = await ctx.devLead.listModels(agent)
+  } catch (error) {
+    listModelsError = { code: error?.code ?? null, message: messageOf(error) }
+  }
+
   let selection = null
   let modelReason = null
   let modelSource = null
@@ -615,6 +624,10 @@ async function executeDispatch(ctx, invocation) {
     text: JSON.stringify({
       defaultModelBefore: defaultBefore,
       defaultModelAfter: defaultAfter,
+      listModels: {
+        view: listModelsView,
+        error: listModelsError,
+      },
       model: {
         available: modelApplied,
         reason: modelReason,

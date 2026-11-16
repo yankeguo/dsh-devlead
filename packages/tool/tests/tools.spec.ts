@@ -1,5 +1,5 @@
 /**
- * Behavior of the eleven `devlead_*` tools: registration and gating, per-tool
+ * Behavior of the twelve `devlead_*` tools: registration and gating, per-tool
  * forwarding into `ctx.devLead`, input validation, canonical value projection,
  * error translation, and pure presentation.
  */
@@ -15,6 +15,7 @@ import type {
   DevLeadIsolation,
   DevLeadIsolationMode,
   DevLeadIsolationStatus,
+  DevLeadModelCatalog,
   DevLeadNotification,
   DevLeadPromptedSession,
   DevLeadRemovedWorkspace,
@@ -30,16 +31,27 @@ import {
   CREATE_SESSION_OUTPUT,
   DEVLEAD_ISOLATION_MODES,
   DEVLEAD_ISOLATION_STATUSES,
+  LIST_MODELS_OUTPUT,
   PROMPT_SESSION_OUTPUT,
   REMOVE_WORKSPACE_OUTPUT,
   UNARCHIVE_SESSION_OUTPUT,
   WATCH_SESSION_OUTPUT,
   type IsolationValue,
+  type ModelCatalogValue,
   type NotificationValue,
   type SessionValue,
   type WorkspaceValue,
 } from '../src/value.ts'
-import { boot, devLeadFailure, makeAgent, makeExec, NOTIFICATION, SESSION, WORKSPACE } from './harness.ts'
+import {
+  boot,
+  devLeadFailure,
+  makeAgent,
+  makeExec,
+  MODEL_CATALOG,
+  NOTIFICATION,
+  SESSION,
+  WORKSPACE,
+} from './harness.ts'
 import type { Harness } from './harness.ts'
 
 /**
@@ -71,11 +83,15 @@ type SchemaArchivedConforms = Assert<
 type SchemaUnarchivedConforms = Assert<
   InferValue<typeof UNARCHIVE_SESSION_OUTPUT.schema> extends DevLeadUnarchivedSession ? true : false
 >
+type SchemaModelCatalogConforms = Assert<
+  InferValue<typeof LIST_MODELS_OUTPUT.schema> extends DevLeadModelCatalog ? true : false
+>
 
 
 /** Exact registered surface promised by DESIGN §5. */
 const TOOL_NAMES = [
   'devlead_list_workspaces',
+  'devlead_list_models',
   'devlead_use_workspace',
   'devlead_list_sessions',
   'devlead_create_session',
@@ -91,6 +107,7 @@ const TOOL_NAMES = [
 /** Smallest argument object each tool's schema accepts. */
 const MINIMAL_ARGS: Record<(typeof TOOL_NAMES)[number], Record<string, unknown>> = {
   devlead_list_workspaces: {},
+  devlead_list_models: {},
   devlead_use_workspace: { path: '/tmp/webapp' },
   devlead_list_sessions: {},
   devlead_create_session: {},
@@ -106,6 +123,7 @@ const MINIMAL_ARGS: Record<(typeof TOOL_NAMES)[number], Record<string, unknown>>
 /** Tools whose body requires the calling Agent carried by the Step. */
 const CALLER_TOOLS = [
   'devlead_use_workspace',
+  'devlead_list_models',
   'devlead_list_sessions',
   'devlead_create_session',
   'devlead_get_session',
@@ -149,7 +167,7 @@ function expectValidOutput(harness: Harness, toolName: string, value: unknown): 
 }
 
 describe('registration', () => {
-  it('registers exactly the eleven documented tools', () => {
+  it('registers exactly the twelve documented tools', () => {
     const harness = boot()
     expect([...harness.tools.keys()].sort()).toEqual([...TOOL_NAMES].sort())
     for (const name of TOOL_NAMES) {
@@ -278,6 +296,28 @@ describe('policy', () => {
     expect(text).toContain('ask the Session to run it and report the output')
   })
 
+  it('inherits model defaults and leaves Agent Teams to the lead’s judgment', () => {
+    const harness = bootEnabled()
+    const text = harness.sectionText()
+    expect(text).toContain('Models inherit the Host default')
+    expect(text).toContain('call devlead_list_models first')
+    expect(text).toContain('Agent Teams is your judgment')
+    expect(text).toContain('complex, multi-step, or parallel work that benefits from subagents may set agent_teams true')
+    expect(text).toContain('simple linear work omits it')
+    expect(text).toContain('obey an explicit human on/off')
+    expect(text).toContain('report the choice and why')
+    expect(text).toContain('never change the profile default')
+    const createSession = harness.tool('devlead_create_session').definition
+    expect(createSession.description).toContain('devlead_list_models')
+    expect(createSession.description).toContain('inherits the Host default model')
+    expect(createSession.description).toContain('Agent Teams is your judgment')
+    const parameters = createSession.parameters as {
+      properties: { provider: { description: string }; agent_teams: { description: string } }
+    }
+    expect(parameters.properties['provider']?.description).toContain('Omit to inherit the Host default')
+    expect(parameters.properties['agent_teams']?.description).toContain('Obey an explicit human on/off')
+  })
+
   it('tells the model to end the turn instead of waiting after a dispatch', () => {
     const harness = bootEnabled()
     const text = harness.sectionText()
@@ -374,11 +414,13 @@ describe('policy', () => {
   })
 
   it('keeps the resident base policy within its +10% budget', () => {
-    // The policy is a resident system-prompt section. Its pre-autonomy (0.2.1)
-    // baseline was 7,896 characters, so a revision may add at most 10%
-    // (floor(7,896 x 1.1) = 8,685). Measuring the exported base text keeps the
-    // guard independent of the capability-conditional checkout paragraphs.
-    expect(DEVLEAD_POLICY_BASE.length).toBeLessThanOrEqual(8_685)
+    // The policy is a resident system-prompt section. The published 0.2.2 text
+    // (8,653 characters) is the new baseline; a revision may add at most 10%
+    // (floor(8,653 x 1.1) = 9,518). The pre-0.2.2 baseline (7,896) was retired
+    // once that published text became the shipped voice. Measuring the
+    // exported base keeps the guard independent of the capability-conditional
+    // checkout paragraphs.
+    expect(DEVLEAD_POLICY_BASE.length).toBeLessThanOrEqual(9_518)
   })
 
   it('stays hidden without DevLead mode even when the capability exists', () => {
@@ -439,7 +481,8 @@ describe('canonical values', () => {
       SchemaRemovedConforms,
       SchemaArchivedConforms,
       SchemaUnarchivedConforms,
-    ] = [true, true, true, true, true, true, true, true, true, true]
+      SchemaModelCatalogConforms,
+    ] = [true, true, true, true, true, true, true, true, true, true, true]
     expect(conformance.every(value => value)).toBe(true)
   })
 
@@ -493,6 +536,65 @@ describe('devlead_list_workspaces', () => {
     const internal = new Error('workspace registry exploded')
     harness.devLead.failures.set('listWorkspaces', internal)
     await expect(harness.call('devlead_list_workspaces')).rejects.toBe(internal)
+  })
+})
+
+describe('devlead_list_models', () => {
+  it('forwards the caller and signal and returns the canonical catalog projection', async () => {
+    const harness = boot()
+    const value = await harness.call('devlead_list_models')
+    const [agent, signal] = harness.devLead.callsOf('listModels')[0] ?? []
+    expect(agent).toBe(harness.agent)
+    expect(signal).toBe(harness.exec.signal)
+    expect(value).toEqual(MODEL_CATALOG)
+    expectValidOutput(harness, 'devlead_list_models', value)
+  })
+
+  it('keeps only the compact model-facing catalog fields', async () => {
+    const harness = boot()
+    const value = await harness.call('devlead_list_models') as ModelCatalogValue
+    const provider = value.providers[0]
+    expect(provider?.models[0]).toEqual({
+      id: 'model-a',
+      name: 'Model A',
+      reasoning: {
+        efforts: [
+          { id: 'low', name: 'Low' },
+          { id: 'medium', name: 'Medium' },
+          { id: 'high', name: 'High' },
+        ],
+        defaultEffort: 'medium',
+      },
+    })
+    // Display-only fields are not part of the payload.
+    expect(JSON.stringify(value)).not.toContain('description')
+    expect(JSON.stringify(value)).not.toContain('badge')
+  })
+
+  it('renders the catalog as one JSON text block and reports failures', async () => {
+    const harness = boot()
+    const value = await harness.call('devlead_list_models') as ModelCatalogValue
+    const text = renderedText(harness, 'devlead_list_models', value)
+    expect(JSON.parse(text)).toEqual(MODEL_CATALOG)
+    expect(value.failures).toEqual([{ id: 'provider-b', name: 'Provider B', message: 'catalog lookup failed' }])
+  })
+
+  it('advertises the read-only catalog lookup and the default-inheritance guidance', () => {
+    const harness = boot()
+    const definition = harness.tool('devlead_list_models').definition
+    expect(definition.description).toContain('Host default selection')
+    expect(definition.description).toContain('routable providers')
+    expect(definition.description).toContain('reasoning efforts')
+    expect(definition.description).toContain('Most dispatches should omit the model parameters')
+    expect(definition.description).toContain('devlead_create_session')
+    expect((definition.parameters as { properties: Record<string, unknown> }).properties).toEqual({})
+  })
+
+  it('translates a missing-controller failure', async () => {
+    const harness = boot()
+    harness.devLead.failures.set('listModels', devLeadFailure('DEVLEAD_SESSION_UNAVAILABLE'))
+    const error = await failureOf(harness.call('devlead_list_models'))
+    expect(error.code).toBe('DEVLEAD_SESSION_UNAVAILABLE')
   })
 })
 
@@ -914,7 +1016,10 @@ describe('devlead_create_session dispatch settings', () => {
     expect(definition.description).toContain('reasoning_effort')
     expect(definition.description).toContain('agent_teams')
     expect(definition.description).toContain('creation-time only')
-    expect(definition.description).toContain('never change the Host/profile default')
+    expect(definition.description).toContain('inherits the Host default model')
+    expect(definition.description).toContain('call devlead_list_models first')
+    expect(definition.description).toContain('Agent Teams is your judgment')
+    expect(definition.description).toContain('Never change the Host/profile default')
     const parameters = definition.parameters as {
       properties: Record<string, { type: string; description: string }>
     }

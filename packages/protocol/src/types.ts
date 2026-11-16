@@ -328,6 +328,66 @@ export interface DevLeadModelSelection {
   readonly reasoningEffort?: string
 }
 
+/** One reasoning effort a provider advertises for a model. */
+export interface DevLeadModelEffortView {
+  /** Adapter-owned effort id accepted by `reasoning_effort`. */
+  readonly id: string
+  /** Human-readable effort name. */
+  readonly name: string
+}
+
+/** One model a provider advertises in the Host model catalog. */
+export interface DevLeadModelView {
+  /** Provider-owned model id accepted by `model`. */
+  readonly id: string
+  /** Human-readable model name. */
+  readonly name: string
+  /** Reasoning support, present only when the model advertises efforts. */
+  readonly reasoning?: {
+    /** Efforts the model accepts, in provider order. */
+    readonly efforts: readonly DevLeadModelEffortView[]
+    /** Effort the adapter uses when the caller omits one. */
+    readonly defaultEffort?: string
+  }
+}
+
+/** One provider group in the Host model catalog. */
+export interface DevLeadModelProviderView {
+  /** Registered provider route accepted by `provider`. */
+  readonly id: string
+  /** Human-readable provider name. */
+  readonly name: string
+  /** Models the provider currently advertises. */
+  readonly models: readonly DevLeadModelView[]
+}
+
+/** One provider whose model catalog could not be loaded. */
+export interface DevLeadModelCatalogFailure {
+  /** Registered provider route that failed. */
+  readonly id: string
+  /** Human-readable provider name. */
+  readonly name: string
+  /** Failure detail, for the lead to report instead of guessing. */
+  readonly message: string
+}
+
+/**
+ * Host model catalog as the read-only `devlead_list_models` tool reports it.
+ *
+ * Display-only fields (model description, badge) are intentionally dropped to
+ * keep the tool payload small.
+ */
+export interface DevLeadModelCatalog {
+  /** Selection the Host uses when a Session does not pin a model. */
+  readonly default: DevLeadModelSelection
+  /** Provider routes with at least one currently available model. */
+  readonly routableProviders: readonly string[]
+  /** Provider groups and their models. */
+  readonly providers: readonly DevLeadModelProviderView[]
+  /** Providers whose catalog lookup failed. */
+  readonly failures: readonly DevLeadModelCatalogFailure[]
+}
+
 /**
  * Request shape of one token-less Session creation inside a Workspace.
  *

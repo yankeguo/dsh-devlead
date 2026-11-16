@@ -878,6 +878,17 @@ export class FakeSessionController {
   createHandler: ((request: SessionCreateRequest) => SessionCreateValue | Promise<SessionCreateValue>) | undefined
   /** Scripted `resolveAgent` body. */
   resolveHandler: FakeResolveHandler | undefined
+  /** Catalog value returned by {@link modelCatalog}. */
+  modelCatalogResult: unknown = {
+    default: { provider: 'provider-a', model: 'model-a' },
+    routableProviders: [],
+    groups: [],
+    failures: [],
+  }
+  /** When set, every {@link modelCatalog} call rejects. */
+  modelCatalogError: Error | undefined
+  /** Number of {@link modelCatalog} calls. */
+  modelCatalogCalls = 0
 
   /**
    * @param error - thrown by every `create` call when set.
@@ -894,6 +905,16 @@ export class FakeSessionController {
     if (this.createError !== undefined) throw this.createError
     if (this.createHandler === undefined) throw new Error('fake session controller has no create handler')
     return await this.createHandler(request)
+  }
+
+  /**
+   * Read the scripted model catalog.
+   * @returns the scripted catalog value.
+   */
+  async modelCatalog(): Promise<unknown> {
+    this.modelCatalogCalls += 1
+    if (this.modelCatalogError !== undefined) throw this.modelCatalogError
+    return this.modelCatalogResult
   }
 
   /**

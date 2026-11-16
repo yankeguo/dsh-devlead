@@ -12,7 +12,7 @@ kind: "package-bundle"
 
 ## 特性
 
-- **DevLead 模式**：每个会话一个持久开关；打开后获得 11 个 `devlead_*` 工具、DevLead 系统
+- **DevLead 模式**：每个会话一个持久开关；打开后获得 12 个 `devlead_*` 工具、DevLead 系统
   提示，以及两态 UI：未开启时只有 composer 工具条小图标，开启后才是 composer 上方的完整状态条。
   已开启的会话还会在侧边栏会话行显示 DevLead 标记，关掉会话后仍可辨识（DSH rc.1 对
   blank / 尚无 turn 的新会话行不渲染该 seat，首次 turn 后才显示）。
@@ -37,7 +37,7 @@ kind: "package-bundle"
 | entry id | 包 | 作用 |
 | --- | --- | --- |
 | `devlead` | `@yankeguo/dsh-devlead` | 核心服务 `ctx.devLead`：模式、Workspace/Session 编排、通知投递、`devLead` projection |
-| `devlead-tool` | `@yankeguo/dsh-tool-devlead` | 11 个模型工具与条件 system prompt |
+| `devlead-tool` | `@yankeguo/dsh-tool-devlead` | 12 个模型工具与条件 system prompt |
 | `devlead-command` | `@yankeguo/dsh-command-devlead` | `/devlead` 人类命令 |
 | `devlead-ui` | `@yankeguo/dsh-client-ui-devlead` | 浏览器两态 UI：工具条开关 + 开启后的 DevLeadBar + 侧边栏会话行标记 |
 
@@ -187,7 +187,7 @@ bundle 的 patch 行没有显式写配置，核心服务使用 DESIGN 默认值�
 ## English summary
 
 `@yankeguo/dsh-devlead-bundle` installs the whole DevLead suite - the core `ctx.devLead` service,
-eleven `devlead_*` tools, the `/devlead` human command, and the Web UI (composer switch/status
+twelve `devlead_*` tools, the `/devlead` human command, and the Web UI (composer switch/status
 strip plus sidebar marks). The suite targets the default DSH Web composition
 (`dsh-base` + `dsh-web-app`) and has no hard dependency on experimental plugins. Full docs:
 [README.md](https://github.com/yankeguo/dsh-devlead/blob/main/README.md) (English), [README.zh.md](https://github.com/yankeguo/dsh-devlead/blob/main/README.zh.md) (中文), and

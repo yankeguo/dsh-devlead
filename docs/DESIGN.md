@@ -148,6 +148,7 @@ export class DevLeadService extends Service {
 
   // Session
   listSessions(agent: Agent, options?: { workspace?: string; watchedOnly?: boolean; limit?: number; signal?: AbortSignal }): Promise<DevLeadSessionView[]>
+  listModels(agent: Agent, signal?: AbortSignal): Promise<DevLeadModelCatalog>
   getSession(agent: Agent, sessionId: string, signal?: AbortSignal): Promise<DevLeadSessionView>
   createSession(agent: Agent, request: DevLeadCreateSessionRequest, signal?: AbortSignal): Promise<DevLeadCreatedSession>
   promptSession(agent: Agent, sessionId: string, prompt: string, options?: { watch?: boolean; signal?: AbortSignal }): Promise<DevLeadPromptedSession>
@@ -167,7 +168,10 @@ export class DevLeadService extends Service {
 `create` 缺省 `false`。`DevLeadCreateSessionRequest` 另含
 `model?: DevLeadModelSelection = { provider: string; model: string; reasoningEffort?: string }` 与
 `agentTeams?: boolean`；`DevLeadCreatedSession` 在请求并成功应用后带上同形的 `model` 与
-`agentTeams` 字段（未请求的字段省略）。关闭语义的 protocol 类型：
+`agentTeams` 字段（未请求的字段省略）。模型目录的 protocol 类型：
+`DevLeadModelCatalog = { default: DevLeadModelSelection; routableProviders: string[];
+providers: { id; name; models: { id; name; reasoning?: { efforts: { id; name }[]; defaultEffort? } }[] }[];
+failures: { id; name; message }[] }`（省略 model description/badge 等展示字段）。关闭语义的 protocol 类型：
 `DevLeadRemovedWorkspace = { workspace: DevLeadWorkspaceView; removed: boolean }`、
 `DevLeadArchiveSessionOptions = { stopRunning?: boolean; signal?: AbortSignal }`、
 `DevLeadArchivedSession = { sessionId: string; archived: true; stopped: boolean }`、
@@ -210,6 +214,12 @@ export class DevLeadService extends Service {
   丢弃人类可能还想检查的记录）；`reset(agent)` 只 `assertLive`，追加 reset 记录后 flush。
   恢复后投影回到默认 disabled、watch 索引清空，需要重新 watch；持久日志里的旧记录保留但不再
   fold。hub 在 `session/event` 看到 reset 记录时也 `syncLead`（状态变 disabled → `removeLead`）。
+- `listModels`：`assertReady(agent)` 后取 `ctx.get('sessionController')` 的
+  `modelCatalog()`，映射为精简的 `DevLeadModelCatalog`（default / routableProviders /
+  providers+models+reasoning efforts+defaultEffort / failures），丢弃 description/badge 等
+  展示字段；provider 或 model 缺 id 的条目、非字符串 routableProviders 防御性丢弃。Host 未组合
+  controller 或读取失败 → `DEVLEAD_SESSION_UNAVAILABLE`。controller 方法不接受 signal，因此
+  只在调用前后检查取消。
 - `createSession`：先在第一个 await 之前**同步预留** watch 槽位（并发调用不会都通过预检后
   才在 setWatching 报超限；槽位在 watch 提交后立即释放，`finally` 兜底）→ 解析目标 Workspace
   （id / path / 缺省用 lead 自己的 cwd 并自动注册）→ 校验 `workspace.status() === 'ok'`
@@ -220,8 +230,9 @@ export class DevLeadService extends Service {
   → 可选 prompt。隔离失败不会让创建失败；结果里的 `isolation` 字段如实上报
   `none` / `worktree` / `unavailable` / `failed`。注意：空白 Session 在第一次 turn
   开始前不会出现在侧边栏，因此"创建+prompt"是常规用法。
-- **创建时模型与 Agent Teams**：`provider`/`model` 必须成对，`reasoning_effort`
-  只能与成对模型一起用（否则 `DEVLEAD_INVALID_INPUT`）；创建前按与 Session controller 的
+- **创建时模型与 Agent Teams**：默认继承 Host 默认模型；`provider`/`model` 必须成对，
+  `reasoning_effort` 只能与成对模型一起用（否则 `DEVLEAD_INVALID_INPUT`），并且只在人类明确
+  要求或简报需要成本/能力路由、可复现性时才应指定（policy 口径）。创建前按与 Session controller 的
   `selectModel` 相同的口径校验：provider 已注册、model 在该 provider 当前可用模型列表内、
   `ctx.llm.resolveCallConfig` 接受该 route/effort（失败 `DEVLEAD_MODEL_UNAVAILABLE`，消息含
   provider/model/effort），因此不可用配置**不会**创建出 Session。`agent_teams: true` 要求
@@ -234,7 +245,9 @@ export class DevLeadService extends Service {
   `promptSession` 不会重新指定。应用阶段失败（竞态/持久化）的错误消息必须带出已创建的
   sessionId 并说明 Session 仍存在；按既有"创建后副作用不回滚"契约不做自动归档，也不留下
   watch（watch 在其后提交，预留槽位由 `finally` 释放）。结果只带实际请求并成功的
-  `model` / `agentTeams`。
+  `model` / `agentTeams`。模型不可用错误（创建前与创建后）都提示调用
+  `devlead_list_models` 查看可用 provider/model/effort；Team 是否开启由 lead 按任务判断
+  （复杂/多步/并行可开，简单线性省略，人类明确开/关照做）。
 - `promptSession`：先校验归档与冷会话激活能力（避免"缺 controller 时先 watch 再报错"的
   半应用）→ 自动 watch 在 admission 前提交（失败/取消按上文的补偿语义撤销本次新增）→
   `sessionController.resolveAgent(sessionId)` 拿 live Agent（冷会话会被 resume）→
@@ -473,6 +486,7 @@ Session 的工作目录切到独立分支/检出，DevLead 用它**可选地**�
 | 工具 | 参数 | 返回（canonical JSON） |
 | --- | --- | --- |
 | `devlead_list_workspaces` | `{}` | `{ workspaces: DevLeadWorkspaceView[] }` |
+| `devlead_list_models` | `{}` | `DevLeadModelCatalog`（default / routableProviders / providers / failures，精简） |
 | `devlead_use_workspace` | `path`(必填，绝对路径), `title?`, `create?`(默认 false；显式 true 才 mkdir) | `{ workspace }` |
 | `devlead_list_sessions` | `workspace?`(id 或 path), `watched_only?`, `limit?` | `{ sessions, watched: string[] }` |
 | `devlead_create_session` | `workspace?`, `prompt?`, `title?`, `watch?`(默认 true), `preset?`, `isolation?`(默认 `none`；`worktree` = 尽力隔离), `provider?`+`model?`(成对；可选 `reasoning_effort?`), `agent_teams?` | `DevLeadCreatedSession`（含 `isolation`；请求时含已应用的 `model`/`agentTeams`） |
@@ -503,7 +517,7 @@ Session 的工作目录切到独立分支/检出，DevLead 用它**可选地**�
   工具）都在 core 中重新校验 live + 模式。`devlead_use_workspace` 0.2.0 起转发 live lead Agent
   给 core 的 `useWorkspace(agent, request, signal)`，`create` 默认
   `false`，仅当人类明确要求建目录时才传 `create: true`（工具 schema 与 policy 文案同步）。
-- 关闭语义工具（共 3 个，8 → 11）：`devlead_remove_workspace` 执行 DSH **remove**：
+- 关闭语义工具（共 3 个，8 → 12）：`devlead_remove_workspace` 执行 DSH **remove**：
   只注销 Workspace 记录，目录、文件与 Session 日志保留，其 Session 变未分组；返回注销前快照
   与 `removed`。`devlead_archive_session` 执行 DSH **archive**：日志保留、可恢复；带运行中
   工作（turn / subagent / job / schedule）的 Session 默认报 `DEVLEAD_SESSION_ACTIVE`，
@@ -529,7 +543,8 @@ Session 的工作目录切到独立分支/检出，DevLead 用它**可选地**�
   （归属、当前行为与目标结果的高层事实、验证方式；不读完整模块、不做完整复现/根因分析、不预先
   设计实现方案），简报允许带开放问题、进一步细化调研与实现交给 Session、已有同请求 live
   Session 时续写而不是重复创建、未注册归属先问或注册、无空会话、创建时模型/Agent Teams 的
-  简短提示（仅创建时生效、不改 profile 默认），以及工作流、通知处理、汇报格式；每次组装按
+  简短提示（默认继承 Host 模型、需要 pin 时先查 `devlead_list_models`、Team 由 lead 按任务
+  判断、仅创建时生效、不改 profile 默认），以及工作流、通知处理、汇报格式；每次组装按
   当前 Agent 重新求值，关闭模式后下一步即消失。`devlead_create_session`
   的工具描述与 `workspace`/`prompt`/模型/Agent Teams 参数说明同步强调「把工作派发到归属
   Workspace 的 Session、简报可带开放问题」，避免模型把「创建 + prompt」当成本会话的直接实现入口。
@@ -543,13 +558,15 @@ Session 的工作目录切到独立分支/检出，DevLead 用它**可选地**�
   `devlead_create_session` 描述自身回答「派发后我该等吗」，`devlead_prompt_session` /
   `devlead_list_sessions` / `devlead_get_session` / `devlead_notifications` 描述同步声明不要
   把它们当等待手段。
-- **创建时模型 / Agent Teams**：`provider`+`model` 成对、`reasoning_effort` 仅随 pair；
-  创建前用真实 provider 目录 + `resolveCallConfig` 校验，不可用报 `DEVLEAD_MODEL_UNAVAILABLE`，
-  且不创建 Session。成功后在子 Session 的 Agent 上 `model.select`（durable
-  `model/selection`），不触碰 profile 默认；`agent_teams` 显式 true/false，缺服务时 true 报
-  `DEVLEAD_TEAM_UNAVAILABLE`，false 视为已关闭，省略不动 Host 默认；Team 用
-  `agentTeams.setEnabled` 追加 durable `team/mode`。两者 creation-time only，工具描述与
-  policy 同步说明；结果只在请求时带 `model`/`agentTeams`。
+- **创建时模型 / Agent Teams**：`devlead_list_models` 暴露真实模型目录供 pin 前查询（只读、
+  精简）。默认**继承 Host 默认模型**：仅当人类明确要求或简报需要成本/能力路由、可复现性时才
+  传 `provider`+`model`+可选 `reasoning_effort`；成对/effort 规则与创建前校验同上，不可用报
+  `DEVLEAD_MODEL_UNAVAILABLE` 并提示先查 `devlead_list_models`，且不创建 Session。成功后
+  在子 Session 的 Agent 上 `model.select`（durable `model/selection`），不触碰 profile 默认；
+  `agent_teams` 由 lead 自主判断（复杂/多步/并行可开，简单线性省略，人类明确开/关照做），
+  显式 true/false，缺服务时 true 报 `DEVLEAD_TEAM_UNAVAILABLE`，false 视为已关闭，省略不动
+  Host 默认；Team 用 `agentTeams.setEnabled` 追加 durable `team/mode`。两者 creation-time
+  only，工具描述与 policy 同步说明；结果只在请求时带 `model`/`agentTeams`。
 - `isolation` 参数只接受 `'none'` / `'worktree'`（其余报 `DEVLEAD_INVALID_INPUT`），默认不发；
   结果 schema 含必填 `isolation` 对象（`requested` 必填 `none|worktree`；`status` 必填
   `none|worktree|unavailable|failed`；可选 `path`/`branch`/`baseCommit`/`reason`；0.2.0 起
@@ -774,7 +791,7 @@ UI 分两态，避免在每个会话上显示常驻条：
   scratch workspace 被初始化成真实 git 仓库（一次 seed commit），因此是真实 Git happy path。
   阶段 3 停实例 → 链接同一个 probe 包并叠加 probe patch 重启（关闭工具不需要实验 bundle，
   因此 `--no-worktree` 也会运行）→ probe 的 `devlead-e2e-inspect` 用真实
-  `ctx.tools.resolve` 报告该 Agent 一步可见的工具集（模式开启时恰好 11 个 `devlead_*`，
+  `ctx.tools.resolve` 报告该 Agent 一步可见的工具集（模式开启时恰好 12 个 `devlead_*`，
   模式关闭时为 0），用 `ctx.systemPrompt.assemble` 取 `devlead:policy` section（判断式自主
   关闭、安全边界、有限可行性判断/开放问题/深挖交接；关闭时为空文本）；`devlead-e2e-close`
   通过 `ctx.devLead` 归档一个已 prompt 的子会话（durable archive 集合 + archived 视图/列表行、
@@ -783,18 +800,19 @@ UI 分两态，避免在每个会话上显示常驻条：
   `stop_running` 归档并观察到 Host `workspace/session-stop` 派发，最后验证 lead 自归档报
   `DEVLEAD_INVALID_INPUT`；随后注销 scratch Workspace（注册表移除、目录/标记文件/Session
   日志仍在、Session 变未分组）并重新注册同一目录（新 Workspace id、不继承旧 Session）。
-  `devlead-e2e-dispatch` 读取真实 `controller.modelCatalog()`（目录为空时回退到部署默认 route
-  再尝试）与 `agentDefaultModel`：创建“模型固定 / Agent Teams / 显式关闭 / 省略设置”四类子
+  `devlead-e2e-dispatch` 读取真实 `ctx.devLead.listModels` 的精简目录（default/providers/
+  failures，无凭据时 providers 为空也如实上报）、`controller.modelCatalog()`（目录为空时回退到
+  部署默认 route 再尝试）与 `agentDefaultModel`：创建“模型固定 / Agent Teams / 显式关闭 / 省略设置”四类子
   Session，断言结果字段、子 Agent `model.current()`、durable `model/selection` 与 `team/mode`
   事件、省略时结果字段不出现、不可用 model id 在创建前报 `DEVLEAD_MODEL_UNAVAILABLE` 且不新增
   Session、profile 默认模型前后完全一致；若 Host 无 provider 凭据导致模型目录为空，正向模型
   检查记为 **SKIP** 并报告原因（不伪造），Team 与负路径仍真实校验。
   patch 与 installed 两条加载流都跑完整多阶段；`--no-worktree` 跳过阶段 2（阶段 1、1b、3 仍
-  运行，调试用）。两条加载流各 **127/127**（阶段 1 27 + 阶段 1b 12 + 阶段 2 22 + 阶段 3 66）；
-  跳过阶段 2 时 **105/105**（阶段 1 + 1b + 3）。
-- 本轮最终验证数字（工作树）：`pnpm verify` = typecheck 通过 + **23 文件 / 639 tests** +
+  运行，调试用）。两条加载流各 **130/130**（阶段 1 27 + 阶段 1b 12 + 阶段 2 22 + 阶段 3 69）；
+  跳过阶段 2 时 **108/108**（阶段 1 + 1b + 3）。
+- 本轮最终验证数字（工作树）：`pnpm verify` = typecheck 通过 + **23 文件 / 650 tests** +
   7 个构建产物；`node scripts/check-packages.mjs` → `OK (6 packages)`；E2E 本轮重跑
-  patch / installed 各 **127/127**（阶段 1 27 + 阶段 1b 12 + 阶段 2 22 + 阶段 3 66）。
+  patch / installed 各 **130/130**（阶段 1 27 + 阶段 1b 12 + 阶段 2 22 + 阶段 3 69）。
 - 手动验收路径：开一个会话 → `/devlead on`（或点开关）→ 让模型
   `devlead_use_workspace` 注册一个仓库 → `devlead_create_session` 创建子会话并下发任务 →
   子会话跑完后 DevLead 被唤醒 → 状态条显示监督列表与通知；人类可打开子会话继续参与。

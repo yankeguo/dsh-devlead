@@ -18,7 +18,13 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import type { DevLeadModelSelection } from '@yankeguo/dsh-devlead-protocol'
+import type {
+  DevLeadModelCatalog,
+  DevLeadModelCatalogFailure,
+  DevLeadModelProviderView,
+  DevLeadModelSelection,
+  DevLeadModelView,
+} from '@yankeguo/dsh-devlead-protocol'
 import { DevLeadError } from './error.ts'
 
 /** One trimmed, paired model selection ready for validation and application. */
@@ -81,6 +87,146 @@ export interface AgentTeamsCapability {
    * @returns fulfillment after the selection flushes.
    */
   setEnabled(agent: Agent, enabled: boolean, signal?: AbortSignal): Promise<void>
+}
+
+/**
+ * Structural view of the Session controller slice that exposes the model
+ * catalog. The catalog is read-only; no model or profile state is changed.
+ */
+export interface ModelCatalogCapability {
+  /**
+   * Describe every currently routable model for Host-generation selectors.
+   * @returns the Host's model catalog value.
+   */
+  modelCatalog(): Promise<unknown>
+}
+
+/**
+ * Read one string field from an unknown record, or an empty string.
+ * @param value - candidate value.
+ * @returns the string, or '' when absent.
+ */
+function stringField(value: unknown): string {
+  return typeof value === 'string' ? value : ''
+}
+
+/**
+ * Treat one unknown value as a record for defensive catalog normalization.
+ * @param value - candidate value.
+ * @returns the value when it is a non-array object, otherwise undefined.
+ */
+function recordOf(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined
+}
+
+/**
+ * Read the array items of one unknown field, dropping non-array values.
+ * @param value - candidate value.
+ * @returns an array of unknown items, or an empty array.
+ */
+function itemsOf(value: unknown): readonly unknown[] {
+  return Array.isArray(value) ? value : []
+}
+
+/**
+ * Normalize one advertised model.
+ * @param value - unknown catalog model entry.
+ * @returns the model view, or undefined when it has no usable id.
+ */
+function modelViewOf(value: unknown): DevLeadModelView | undefined {
+  const record = recordOf(value)
+  if (record === undefined) return undefined
+  const id = stringField(record.id)
+  if (id.length === 0) return undefined
+  const name = stringField(record.name)
+  const reasoningRecord = recordOf(record.reasoning)
+  if (reasoningRecord === undefined) {
+    return { id, name: name.length === 0 ? id : name }
+  }
+  const efforts = itemsOf(reasoningRecord.efforts)
+    .map((effort) => {
+      const effortRecord = recordOf(effort)
+      if (effortRecord === undefined) return undefined
+      const effortId = stringField(effortRecord.id)
+      if (effortId.length === 0) return undefined
+      const effortName = stringField(effortRecord.name)
+      return { id: effortId, name: effortName.length === 0 ? effortId : effortName }
+    })
+    .filter((effort): effort is { id: string; name: string } => effort !== undefined)
+  const defaultEffort = stringField(reasoningRecord.defaultEffort)
+  return {
+    id,
+    name: name.length === 0 ? id : name,
+    reasoning: {
+      efforts,
+      ...(defaultEffort.length === 0 ? {} : { defaultEffort }),
+    },
+  }
+}
+
+/**
+ * Map one Host `ModelCatalog` value onto the stable protocol view.
+ *
+ * The Host catalog is a live projection and may change shape; every optional
+ * or malformed field is dropped instead of failing the read. Display-only
+ * fields are intentionally not copied to keep the model-facing payload small.
+ * @param value - value returned by `sessionController.modelCatalog()`.
+ * @returns the normalized catalog view.
+ */
+export function devLeadModelCatalogOf(value: unknown): DevLeadModelCatalog {
+  const record = recordOf(value) ?? {}
+  const defaultRecord = recordOf(record.default) ?? {}
+  const defaultProvider = stringField(defaultRecord.provider)
+  const defaultModel = stringField(defaultRecord.model)
+  const defaultEffort = stringField(defaultRecord.reasoningEffort)
+  const defaultSelection: DevLeadModelSelection = {
+    provider: defaultProvider,
+    model: defaultModel,
+    ...(defaultEffort.length === 0 ? {} : { reasoningEffort: defaultEffort }),
+  }
+  const routableProviders = itemsOf(record.routableProviders)
+    .filter((provider): provider is string => typeof provider === 'string' && provider.length > 0)
+  const providers: DevLeadModelProviderView[] = []
+  for (const group of itemsOf(record.groups)) {
+    const groupRecord = recordOf(group)
+    if (groupRecord === undefined) continue
+    const id = stringField(groupRecord.id)
+    if (id.length === 0) continue
+    const name = stringField(groupRecord.name)
+    const models = itemsOf(groupRecord.models)
+      .map(modelViewOf)
+      .filter((model): model is DevLeadModelView => model !== undefined)
+    providers.push({ id, name: name.length === 0 ? id : name, models })
+  }
+  const failures: DevLeadModelCatalogFailure[] = []
+  for (const failure of itemsOf(record.failures)) {
+    const failureRecord = recordOf(failure)
+    if (failureRecord === undefined) continue
+    const id = stringField(failureRecord.id)
+    if (id.length === 0) continue
+    const name = stringField(failureRecord.name)
+    failures.push({
+      id,
+      name: name.length === 0 ? id : name,
+      message: stringField(failureRecord.message),
+    })
+  }
+  return { default: defaultSelection, routableProviders, providers, failures }
+}
+
+/**
+ * Detect the Session controller's model-catalog capability.
+ * @param ctx - context whose optional controller service is consulted.
+ * @returns the structurally narrowed capability, or undefined when absent.
+ */
+export function modelCatalogCapabilityOf(ctx: Context): ModelCatalogCapability | undefined {
+  const candidate: unknown = ctx.get('sessionController')
+  if (typeof candidate !== 'object' || candidate === null) return undefined
+  const modelCatalog = (candidate as { modelCatalog?: unknown }).modelCatalog
+  if (typeof modelCatalog !== 'function') return undefined
+  return candidate as ModelCatalogCapability
 }
 
 /**

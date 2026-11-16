@@ -1,6 +1,6 @@
 # @yankeguo/dsh-tool-devlead
 
-The eleven model-facing `devlead_*` tools and the conditional DevLead system-prompt section.
+The twelve model-facing `devlead_*` tools and the conditional DevLead system-prompt section.
 
 The tools are registered with `when: ({ agent }) => ctx.devLead.isEnabled(agent)`, so an ordinary
 Session never sees them. They become visible only after a human enables DevLead mode with
@@ -9,6 +9,7 @@ Session never sees them. They become visible only after a human enables DevLead 
 ## Tools
 
 - `devlead_list_workspaces`
+- `devlead_list_models` (compact Host model catalog for dispatch pinning)
 - `devlead_use_workspace`
 - `devlead_list_sessions`
 - `devlead_create_session` (optional `isolation: "none" | "worktree"`; creation-time
@@ -29,11 +30,15 @@ to create the directory. Domain failures are translated to `HarnessError` with a
 `DEVLEAD_*` code. Tool outputs are canonical JSON validated against their declared output
 schemas.
 
-`devlead_create_session` can also pin the new Session's model (`provider` + `model`, optional
-`reasoning_effort`) and set Agent Teams mode (`agent_teams`) at creation time. The model is
-validated against the Host's current provider catalog before the Session exists, the selection is
-recorded on the child Session only (never through the controller's profile-default-writing path),
-and an omitted setting leaves the Host default untouched; both settings are creation-time only.
+`devlead_list_models` reports the compact Host model catalog (default selection, providers,
+models, reasoning efforts, and provider failures). `devlead_create_session` inherits the Host
+default model unless the human explicitly asked for a route or the brief needs cost/capability
+routing or reproducibility; when pinning, call `devlead_list_models` first and pass `provider` +
+`model` (optional `reasoning_effort`). Agent Teams is the lead's judgment for complex, multi-step,
+or parallel work (`agent_teams: true`); simple linear work omits it, and an explicit human on/off
+is obeyed. The model is validated before the Session exists, the selection is recorded on the
+child Session only (never through the controller's profile-default-writing path), and omitted
+settings leave the Host default untouched; both settings are creation-time only.
 
 The closing tools are non-destructive and judgment-based: their descriptions and the policy text
 allow autonomous, reasonable wrap-up closes (finished Sessions the lead created or dispatched,
@@ -64,7 +69,7 @@ supported platform.
 
 ## 中文
 
-`@yankeguo/dsh-tool-devlead` 提供 11 个模型工具 `devlead_*` 与条件 system prompt，只在 DevLead
+`@yankeguo/dsh-tool-devlead` 提供 12 个模型工具 `devlead_*` 与条件 system prompt，只在 DevLead
 模式开启时可见。除 `devlead_list_workspaces` 外都需要 live 调用者；0.2.0 起
 `devlead_use_workspace` 把 live Agent 转发给 core 的 `useWorkspace(agent, request, signal)`，
 `create` 默认 `false`（缺目录报 `DEVLEAD_DIRECTORY_MISSING`，只有人类明确要求建目录时才传
