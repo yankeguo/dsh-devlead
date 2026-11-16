@@ -28,11 +28,14 @@ to create the directory. Domain failures are translated to `HarnessError` with a
 `DEVLEAD_*` code. Tool outputs are canonical JSON validated against their declared output
 schemas.
 
-The closing tools are non-destructive and human-triggered: their descriptions and the policy text
-allow them only when the human explicitly asked, in the conversation, to close or restore that
-specific Workspace or Session. `devlead_remove_workspace` returns the pre-removal Workspace
-snapshot plus `removed`; `devlead_archive_session` reports `{ sessionId, archived: true, stopped }`
-and refuses a Session with running work as `DEVLEAD_SESSION_ACTIVE` unless `stop_running` is true;
+The closing tools are non-destructive and judgment-based: their descriptions and the policy text
+allow autonomous, reasonable wrap-up closes (finished Sessions the lead created or dispatched,
+clearly stale/duplicate/empty or self-created Workspace registrations, or a human "tidy up" request),
+while forbidding closing a Session or Workspace the human is using, hiding a failure, or starting
+an unrelated large cleanup; every autonomous close is reported with its rationale and impact.
+`devlead_remove_workspace` returns the pre-removal Workspace snapshot plus `removed`;
+`devlead_archive_session` reports `{ sessionId, archived: true, stopped }` and refuses a Session
+with running work as `DEVLEAD_SESSION_ACTIVE` unless `stop_running` is true;
 `devlead_unarchive_session` reports `{ sessionId, archived: false }`. A lead Session cannot archive
 itself (`DEVLEAD_INVALID_INPUT`).
 
@@ -59,7 +62,9 @@ supported platform.
 `devlead_use_workspace` 把 live Agent 转发给 core 的 `useWorkspace(agent, request, signal)`，
 `create` 默认 `false`（缺目录报 `DEVLEAD_DIRECTORY_MISSING`，只有人类明确要求建目录时才传
 `true`）。领域错误翻译为稳定的 `DEVLEAD_*` code。关闭类工具（remove / archive / unarchive）
-都不是破坏性操作，且只在人类于本对话明确要求时调用：remove 只注销 Workspace、其 Session
-变为未分组；archive 保留日志、可恢复，运行中工作默认报 `DEVLEAD_SESSION_ACTIVE`，传
-`stop_running` 才会先归档再请求停止；lead 不能归档自己的 Session。完整中文文档见[根 README.zh.md](https://github.com/yankeguo/dsh-devlead/blob/main/README.zh.md)与
+都不是破坏性操作，且采用判断式自主：合理收尾时可自行关闭自己创建/派发且已完成的 Session、
+明显陈旧/重复/空置或由自己创建的 Workspace 注册；但不得关闭人类正在使用/对话的 Session 或
+Workspace、不得用关闭掩盖失败，并且每次自主关闭都要汇报原因与影响面。remove 只注销 Workspace、
+其 Session 变为未分组；archive 保留日志、可恢复，运行中工作默认报 `DEVLEAD_SESSION_ACTIVE`，
+传 `stop_running` 才会先归档再请求停止；lead 不能归档自己的 Session。完整中文文档见[根 README.zh.md](https://github.com/yankeguo/dsh-devlead/blob/main/README.zh.md)与
 [设计说明](https://github.com/yankeguo/dsh-devlead/blob/main/docs/DESIGN.md)。

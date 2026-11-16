@@ -15,8 +15,10 @@ interface that the human can see and interact with.
 - **Dispatcher by default, not implementer.** The DevLead session decides which Workspace owns
   each request (from registered Workspace metadata, not by reading another repository's code),
   dispatches a self-contained brief to a Session there, watches it, reviews the delivery, and
-  reports. Read-only inspection is allowed for writing the brief and reviewing a delivery; deeper
-  investigation belongs to the dispatched Session. **Writes** (file edits, builds, commits,
+  reports. Read-only inspection is **bounded feasibility triage** — enough to decide ownership,
+  state the current behavior and target result at a high level, and define verification — plus
+  checking a specific claim during review; the deeper investigation and the implementation belong
+  to the dispatched Session. **Writes** (file edits, builds, commits,
   pushes, deploys) belong to a Session in the owning Workspace — even when the target is the
   lead's own workspace — unless the human explicitly authorizes the lead to do it directly in
   this conversation; direct upkeep of the lead's own record files may follow that repository's
@@ -46,7 +48,7 @@ Documentation: [Design notes (中文)](docs/DESIGN.md) · [Publishing guide (中
 | Capability | Description |
 | --- | --- |
 | DevLead mode | One durable switch per session; enabling it adds the `devlead_*` tools, the DevLead system prompt, and the status strip |
-| Role model | Dispatch-first: determine the owning Workspace from registered metadata, send a self-contained brief to a Session there, watch it, review the delivery, report; read-only inspection is bounded to the brief and the review, writes stay in the owning Workspace's Session (including the lead's own workspace; direct work only when the human explicitly authorizes it in this conversation; record-file upkeep may follow the lead's repository instructions) |
+| Role model | Dispatch-first: determine the owning Workspace from registered metadata, send a self-contained brief to a Session there, watch it, review the delivery, report; read-only inspection is bounded feasibility triage (ownership, current behavior at a high level, verification) plus checking a specific claim during review, while the deeper investigation and implementation stay in the owning Workspace's Session (including the lead's own workspace; direct work only when the human explicitly authorizes it in this conversation; record-file upkeep may follow the lead's repository instructions) |
 | Standard DSH entities | Child sessions are ordinary Sessions (visible in the sidebar; humans can open and take them over); Workspaces go through `workspaceRegistry`, not subagents |
 | Optional worktree isolation | When the Host composes DSH's experimental Git worktree service (`ctx.worktrees`), `devlead_create_session` can request `isolation: "worktree"` so a writing Session gets its own branch and checkout instead of sharing the Workspace checkout; detection is optional and a missing capability degrades to the shared checkout with a reported status, never an error (see [Optional worktree isolation](#optional-worktree-isolation)) |
 | 11 model tools | Register/list/remove Workspaces, create/read/continue/archive/restore/watch Sessions, read the notification digest (see [Model tools](#model-tools)) |
@@ -313,11 +315,14 @@ the DevLead icon in the composer toolbar while off, the strip switch while on.
    (the tool description says the same). If no repository matches, or more than one could own
    it, ask and stop instead of guessing or inspecting another repository first.
 3. Let the model dispatch work: `devlead_create_session` (optional `workspace` / `title` /
-   `preset`) with a **self-contained prompt** — background, scope, decisions already made,
-   deliverables, how to verify them, and what not to touch; pass the **owning Workspace** and
+   `preset`) with a **self-contained prompt** — background, target result, the open questions
+   the Session must confirm or refine, deliverables, how to verify them, and what not to touch;
+   pass the **owning Workspace** and
    omit `workspace` only when the work truly belongs to the lead's own directory (the new Session
-   then lives there). The child cannot see this conversation, so restate every necessary fact in
-   the prompt. New sessions are watched by default and start their first turn immediately (a
+   then lives there). A brief with open questions is expected: the deeper investigation and the
+   implementation belong to the Session, not to the lead. The child cannot see this conversation,
+   so restate every necessary fact in the prompt. New sessions are watched by default and start
+   their first turn immediately (a
    blank Session does not appear in the sidebar before its first turn, so "create + prompt" is the
    normal usage). If the owning Workspace already has a live Session working on the request,
    continue it with `devlead_prompt_session` instead of opening a duplicate.
@@ -332,9 +337,9 @@ the DevLead icon in the composer toolbar while off, the strip switch while on.
    / `devlead_get_session` to inspect state, `devlead_prompt_session` to follow up or dispatch
    new work, and `devlead_notifications` to read the digest.
 6. Before finishing a turn, the model reports to the human: which Workspaces and Sessions it
-   created or changed, what each child was asked to do, how the latest turn ended, whether any
-   implementation work was (exceptionally) done directly in the lead session, and anything that
-   needs a human decision.
+   created, changed, or closed (and why it closed them), what each child was asked to do, how
+   the latest turn ended, whether any implementation work was (exceptionally) done directly in
+   the lead session, and anything that needs a human decision.
 
 A request you can paste at the DevLead session:
 
@@ -378,8 +383,15 @@ work (a turn, subagents, jobs, or schedules) is refused as `DEVLEAD_SESSION_ACTI
 `stop_running: true` is passed, which archives first and then asks the Host to stop that work
 through the same providers the human's own stop action uses, without waiting for it to settle; the
 result reports `stopped: true`. The lead cannot archive its own Session (`DEVLEAD_INVALID_INPUT`);
-the human closes it from the sidebar. All three tools must only be called when the human
-explicitly asked in the conversation — the model never cleans up on its own.
+the human closes it from the sidebar. Closing is **judgment-based**: the model may archive
+finished wrap-up Sessions it created or dispatched, or remove Workspace registrations that are
+clearly stale, duplicate, or empty or that it created, without item-by-item instructions, and may
+choose the scope when the human says "tidy up", "wrap up", or "clean up". The guardrails are:
+never close a Session or Workspace the human is using now, never use closing to hide a failure or
+skip reporting, never start an unrelated large cleanup, prefer archiving because it is reversible
+(removal has the wider blast radius), and use `stop_running` only when the running work should
+really be cancelled. Every autonomous close is reported with its rationale and impact, so the
+human can review it and unarchive a Session if needed.
 
 Every `session` argument accepts the **full Session id, a unique id prefix, or the uuid first
 segment with the `session-` prefix omitted** — `e59ab350` resolves `session-e59ab350-…` when it is
@@ -555,12 +567,16 @@ without it keeps the default single-checkout behavior and reports `unavailable`.
   core `useWorkspace(agent, { path, title?, create? }, signal?)` requires the same live lead
   Agent and an enabled mode (`DEVLEAD_NOT_ENABLED` / `DEVLEAD_AGENT_NOT_LIVE`), and it never
   creates a missing directory unless the caller explicitly passes `create: true`.
-- **Closing is human-requested:** `devlead_remove_workspace`, `devlead_archive_session`, and
-  `devlead_unarchive_session` are write tools with the same live-mode gate, and their descriptions
-  and the policy text instruct the model to use them only when the human explicitly asked to close
-  or restore that specific Workspace or Session in the conversation. Closing is non-destructive
-  (remove unregisters the Workspace, archive hides the Session), and a lead Session cannot archive
-  itself, so its own notification delivery and turn are never stopped by a tool call.
+- **Closing is judgment-based, with guardrails:** `devlead_remove_workspace`,
+  `devlead_archive_session`, and `devlead_unarchive_session` are write tools with the same
+  live-mode gate. The model may use them autonomously when closing genuinely serves the task and
+  is a reasonable wrap-up (finished wrap-up Sessions it created, clearly stale/duplicate/empty or
+  self-created Workspace registrations, or a human "tidy up" request), and the policy text spells
+  that out. They remain non-destructive (remove unregisters the Workspace, archive hides the
+  Session and is reversible), must not target a Session or Workspace the human is using, hide a
+  failure, or start an unrelated large cleanup; `stop_running` cancels running work; a lead
+  Session cannot archive itself; and every autonomous close is reported with its rationale and
+  impact.
 - **Notifications are not instructions:** both wake-up messages and child output can embed text;
   the DevLead system prompt requires treating notifications as runtime notices and never
   performing unauthorized work or making permission decisions from them.

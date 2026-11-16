@@ -16,12 +16,13 @@
   `devlead_*` 工具和一段系统提示，composer 上方出现 DevLead 状态条；未打开时界面里只有
   composer 工具条上的一个小图标，不显示常驻状态条。
 - **默认调度而非实现**：DevLead 会话先判定请求归属的 Workspace（依据已注册 Workspace 元数据
-  与人类给出的目录，不靠翻别的仓库代码），把自包含简报派发给对应 Session，自己只做有边界的
-  只读检查（写简报、审阅交付），更深的调查属于被派发的 Session；即使目标是自己所在的
-  Workspace 也默认派发，除非人类在本对话中明确授权直接做（并在汇报中说明）。写入（改文件、
-  构建、提交、推送、部署）属于对应 Workspace 的 Session；lead 自己仓库的记录类文件可依该仓库
-  说明直接维护，但不构成实现授权。subagent / Agent Team 不能替代人类可打开接管的普通
-  Session，本会话也不为别人的请求拉起长周期目标或自治计划。
+  与人类给出的目录，不靠翻别的仓库代码），只做**有界可行性判断**（归属、当前行为与目标结果的
+  高层事实、验证方式），把自包含简报（允许带开放问题）派发给对应 Session；进一步细化调研与
+  实现都属于被派发的 Session，lead 不读完整模块、不做完整复现/根因分析、不预先设计实现方案。
+  即使目标是自己所在的 Workspace 也默认派发，除非人类在本对话中明确授权直接做（并在汇报中
+  说明）。写入（改文件、构建、提交、推送、部署）属于对应 Workspace 的 Session；lead 自己仓库
+  的记录类文件可依该仓库说明直接维护，但不构成实现授权。subagent / Agent Team 不能替代人类
+  可打开接管的普通 Session，本会话也不为别人的请求拉起长周期目标或自治计划。
 - **产出物必须是标准 DSH 实体**：Workspace 是真实注册进 `ctx.workspaceRegistry` 的工作区，
   会话是真实的普通 Session（出现在侧边栏、可被人类打开、继续对话、归档），**不是 subagent**。
   这样人类始终能看见、介入、接管 Agent 的工作。
@@ -491,9 +492,13 @@ Session 的工作目录切到独立分支/检出，DevLead 用它**可选地**�
   `stop_running: true` 时先写归档、再由 Host 的 `workspace/session-stop` providers 请求停止
   （不等待 settle），结果 `stopped: true`；已归档幂等。`devlead_unarchive_session` 幂等恢复。
   lead 不能归档自己的 Session（`DEVLEAD_INVALID_INPUT`，提示人类在侧边栏操作），subagent
-  Session 不在可寻址集合内、自然报 not found。三个工具的描述与 policy 都强调：仅在人类于本
-  对话明确要求时调用，不得自行批量清理/归档；汇报时说明关闭了什么、影响面（哪些 Session
-  变未分组、是否停止运行中工作）与可恢复性。
+  Session 不在可寻址集合内、自然报 not found。授权口径是**判断式自主**（judgment-based
+  autonomy）：合理收尾时模型可自行归档自己创建/派发且已完成的临时 Session、注销明显陈旧/
+  重复/空置或由自己创建的 Workspace 注册，人类说"整理/收尾/清理"时自行定范围；边界是不关闭
+  人类正在使用/对话的对象、不用关闭掩盖失败或跳过汇报、不做无关大范围清理；归档可逆、优先
+  使用，注销影响面更大所以仅限陈旧/重复/空置/自己创建；`stop_running` 等于主动取消运行中工作；
+  每次自主关闭都要汇报关闭了什么、为什么、影响面（哪些 Session 变未分组、是否停止运行中
+  工作）与可恢复性。
 - 工具把领域失败翻译成 `HarnessError(message, code)`；需要调用者的工具在 `exec.agent` 缺失
   （条件可见性被绕过）时也走结构化错误 `DEVLEAD_AGENT_NOT_LIVE`，基础设施错误原样重抛。所有异步写调用转发
   `exec.signal`（`create_session` / `prompt_session` / `watch_session` / `remove_workspace` /
@@ -501,11 +506,13 @@ Session 的工作目录切到独立分支/检出，DevLead 用它**可选地**�
 - `systemPrompt.section({ name: 'devlead:policy', order: TOOL_SUBAGENT, text: ({ agent }) =>
   ctx.devLead.isEnabled(agent) ? POLICY : '' })` 提供 DevLead 行为指导：依据注册元数据判定
   归属、默认调度而非亲自实现（写入归归属 Workspace 的 Session，本 Workspace 也默认派发；
-  lead 自己仓库的记录类文件可依仓库说明直接维护）、只读检查以简报与审阅为界、已有同请求
-  live Session 时续写而不是重复创建、未注册归属先问或注册、无空会话，以及工作流、通知处理、
+  lead 自己仓库的记录类文件可依仓库说明直接维护）、**只读检查严格限于有界可行性判断**
+  （归属、当前行为与目标结果的高层事实、验证方式；不读完整模块、不做完整复现/根因分析、不预先
+  设计实现方案），简报允许带开放问题、进一步细化调研与实现交给 Session、已有同请求 live
+  Session 时续写而不是重复创建、未注册归属先问或注册、无空会话，以及工作流、通知处理、
   汇报格式；每次组装按当前 Agent 重新求值，关闭模式后下一步即消失。`devlead_create_session`
-  的工具描述与 `workspace` 参数说明同步强调「把工作派发到归属 Workspace 的 Session」，避免
-  模型把「创建 + prompt」当成本会话的直接实现入口。
+  的工具描述与 `workspace`/`prompt` 参数说明同步强调「把工作派发到归属 Workspace 的 Session、
+  简报可带开放问题」，避免模型把「创建 + prompt」当成本会话的直接实现入口。
 - 派发后的等待契约（模型可见文案）：派发是异步的，`devlead_create_session` /
   `devlead_prompt_session` 返回后模型不得在同一个 turn 内等待——不得用 shell `sleep`，不得用
   `devlead_list_sessions` / `devlead_get_session` / `devlead_notifications` 轮询，也不得用

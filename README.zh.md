@@ -12,8 +12,9 @@
   自行打开。未开启时界面里只有 composer 工具条上的一个小图标，不会在每个会话上显示常驻状态条。
 - **默认调度、不亲自实现**：DevLead 会话先判定请求归属哪个 Workspace（依据已注册 Workspace
   的元数据与人类给出的目录，而不是去翻别的仓库代码），把自包含简报派发给该 Workspace 的
-  Session，然后监督、审阅交付并汇报。只读检查（代码 / 文档 / diff）仅用于写简报与审阅交付，
-  更深的调查属于被派发的 Session；**写入**（改文件、构建、提交、推送、部署）归该 Workspace
+  Session，然后监督、审阅交付并汇报。只读检查属于**有界的可行性判断**——足以判定归属、给出
+  当前行为与目标结果的高层事实、定义验证方式——外加审阅时核对具体断言；更深的调查与实现属于
+  被派发的 Session。**写入**（改文件、构建、提交、推送、部署）归该 Workspace
   的 Session——即使目标就是 lead 自己所在的 Workspace 也一样——除非人类在本对话中明确授权
   lead 直接做；lead 自己仓库的记录类文件可依该仓库说明直接维护。subagent / Agent Team 不能
   替代把工作交给一个可被人类打开接管的普通 Session。
@@ -37,7 +38,7 @@
 | 能力 | 说明 |
 | --- | --- |
 | DevLead 模式 | 每个会话一个持久开关；开启后多出 `devlead_*` 工具、DevLead 系统提示与状态条 |
-| 角色模型 | 默认调度：依据已注册元数据判定归属 Workspace → 向对应 Session 发自包含简报 → watch → 审阅交付 → 汇报；只读检查以简报与审阅为界，写入留在归属 Workspace 的 Session（含 lead 自己的 Workspace；仅当人类在本对话中明确授权时由 lead 直接做；记录类文件可依 lead 仓库说明维护） |
+| 角色模型 | 默认调度：依据已注册元数据判定归属 Workspace → 向对应 Session 发自包含简报 → watch → 审阅交付 → 汇报；只读检查属于有界可行性判断（归属、当前行为的高层事实、验证方式）外加审阅时核对具体断言，更深的调查与实现留在归属 Workspace 的 Session（含 lead 自己的 Workspace；仅当人类在本对话中明确授权时由 lead 直接做；记录类文件可依 lead 仓库说明维护） |
 | 标准 DSH 实体 | 子会话是普通 Session（侧边栏可见、人类可打开接管），Workspace 走 `workspaceRegistry`，不是 subagent |
 | 可选 worktree 隔离 | 当 Host 组合了 DSH 实验性 Git worktree 服务（`ctx.worktrees`）时，`devlead_create_session` 可传 `isolation: "worktree"`，让写入型子会话拥有独立分支与检出、不再共享 Workspace checkout；能力检测是可选的，缺少能力时退化为共享 checkout 并在结果里如实上报，绝不报错（见[可选 worktree 隔离](#可选-worktree-隔离)） |
 | 11 个模型工具 | 注册/列出/关闭 Workspace，创建/读取/续写/归档/恢复/监督 Session，读取通知摘要（见[模型工具](#模型工具)） |
@@ -282,9 +283,11 @@ DSH 跳过。
    才传 `create: true`（工具描述同此口径）。没有任何仓库匹配、或有多个仓库都可能归属时，先问
    并停下，不要猜、也不要先去翻别的仓库。
 3. 让模型派发任务：`devlead_create_session`（可选 `workspace` / `title` / `preset`），给一个
-   **自包含的 prompt**——背景、范围、已定决策、交付物、如何验证、禁止事项；传**归属
+   **自包含的 prompt**——背景、期望结果、**留给 Session 确认/细化的开放问题**、交付物、如何
+   验证、禁止事项；传**归属
    Workspace**，只有确实属于 lead 自己目录的工作才省略 `workspace`（此时新 Session 就建在该
-   目录）。子会话看不到当前对话，所有必要事实都要在 prompt 里重述。新会话默认被 watch 并立即
+   目录）。允许"带开放问题的简报"：更深的调查与实现属于 Session，不需要 lead 先查清所有
+   细节。子会话看不到当前对话，所有必要事实都要在 prompt 里重述。新会话默认被 watch 并立即
    开始第一个 turn（空白 Session 在第一个 turn 前不会出现在侧边栏，所以 "创建 + prompt" 是
    常规用法）。若归属 Workspace 里已有处理该请求的 live Session，用 `devlead_prompt_session`
    续写它，而不是重复创建。当 Host 组合了实验性 worktree 服务、且新会话可能与同一 checkout 里
@@ -294,8 +297,9 @@ DSH 跳过。
 5. 子会话的 turn 结束（完成/失败/阻塞/取消等）后，DevLead 会话收到通知摘要并被唤醒；模型用
    `devlead_list_sessions` / `devlead_get_session` 查看状态，用 `devlead_prompt_session`
    继续追问或派发新任务，用 `devlead_notifications` 读取通知摘要。
-6. 模型在结束 turn 前向人类汇报：创建/改动了哪些 Workspace 与 Session、每个子会话被要求做
-   什么、最近一轮如何结束、是否（例外地）在 lead 会话里直接做了实现、有什么需要人类决策。
+6. 模型在结束 turn 前向人类汇报：创建/改动/关闭了哪些 Workspace 与 Session（关闭的要说
+   原因）、每个子会话被要求做什么、最近一轮如何结束、是否（例外地）在 lead 会话里直接做了
+   实现、有什么需要人类决策。
 
 一个可直接使用的请求示例（人类对 DevLead 会话说）：
 
@@ -334,7 +338,13 @@ DSH 跳过。
 工作（turn、subagent、job 或 schedule）的 Session 会被 `DEVLEAD_SESSION_ACTIVE` 拒绝，除非传
 `stop_running: true`：先写归档，再通过和人类点停止相同的 providers 请求停止该工作，不等待其
 settle，结果里 `stopped: true`。lead 不能归档自己的 Session（`DEVLEAD_INVALID_INPUT`），需要
-人类在侧边栏关闭。三个工具都只在人类于本对话明确要求时调用，模型不得自行清理。
+人类在侧边栏关闭。关闭是**判断式自主**：模型可以在合理收尾时自行归档自己创建/派发、已完成
+的临时 Session，注销明显陈旧、重复、空置，或由自己创建的 Workspace 注册；人类说"整理/收尾/
+清理一下"时自行判断范围。保守边界：不要关闭人类正在使用/正在对话的 Session 或 Workspace；
+不要用关闭掩盖失败或跳过汇报；不做无关的大范围清理；归档可逆、优先使用，注销的影响面更大
+（重新注册会得到全新 Workspace，旧会话不自动回归）；`stop_running` 等于主动取消该会话正在
+跑的工作，只有确实要终止时才用。每次自主关闭都要汇报关闭了什么、为什么、影响面（哪些
+Session 变未分组、是否停止运行中工作），并说明归档可以 unarchive。
 
 每个 `session` 参数都接受**完整 Session id、唯一 id 前缀，或省略 `session-` 前缀的 uuid
 第一段**——唯一时 `e59ab350` 会解析到 `session-e59ab350-…`。两个 Session 共享同一第一段时
@@ -478,11 +488,14 @@ config 是整体替换）。
   watch 集合变更。Workspace 注册也是 Host 级操作，但 0.2.0 起不再 caller-free：core 的
   `useWorkspace(agent, { path, title?, create? }, signal?)` 同样要求 live lead Agent 与已开启
   的模式，且除非显式传 `create: true` 否则绝不创建缺失目录。
-- **关闭只能由人类要求**：`devlead_remove_workspace` / `devlead_archive_session` /
-  `devlead_unarchive_session` 是走同样 live + 模式校验的写工具；工具描述与 policy 文案都要求
-  模型只在人类于本对话明确要求关闭/恢复某个具体 Workspace 或 Session 时调用。关闭不是破坏性
-  操作（remove 只注销 Workspace，archive 只隐藏 Session），且 lead 不能归档自己的 Session，
-  因此工具调用永远不会停掉本会话的通知投递与当前 turn。
+- **关闭是判断式自主，但有边界**：`devlead_remove_workspace` / `devlead_archive_session` /
+  `devlead_unarchive_session` 是走同样 live + 模式校验的写工具。当关闭确实服务于任务、属于
+  合理收尾时模型可自主使用（自己创建/派发且已完成的临时 Session、明显陈旧/重复/空置或由
+  自己创建的 Workspace 注册，或人类说"整理/收尾"），policy 明确写出这些场景。关闭仍不是
+  破坏性操作（remove 只注销 Workspace，archive 只隐藏 Session 且可恢复），但不得关闭人类
+  正在使用/对话的 Session 或 Workspace、不得用关闭掩盖失败或跳过汇报、不得做无关的大范围
+  清理；`stop_running` 会取消运行中的工作；lead 不能归档自己的 Session；每次自主关闭都要
+  汇报原因与影响面。
 - **通知不是指令**：唤醒消息与子会话输出都可能夹带文本；DevLead 系统提示明确要求把通知当作
   运行时提示，不得据此执行未授权操作，也不得替人类做权限决定。
 - **普通会话权限不变**：子会话是普通 Session，沿用 DSH 的沙箱 / 权限模式；本套件不提供任何

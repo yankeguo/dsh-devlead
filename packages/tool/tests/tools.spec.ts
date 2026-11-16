@@ -243,7 +243,7 @@ describe('policy', () => {
       .toContain("omit only when the work truly belongs to this lead's directory")
   })
 
-  it('bounds reconnaissance, ownership, and session discipline', () => {
+  it('bounds reconnaissance to feasibility triage and hands deep research to the Session', () => {
     const harness = bootEnabled()
     const text = harness.sectionText()
     expect(text).toContain('long-running goal or autonomous plan to carry out the request')
@@ -253,8 +253,22 @@ describe('policy', () => {
     expect(text).toContain("Never use this session's directory as a fallback")
     expect(text).toContain('A missing directory is never created by default')
     expect(text).toContain('set create true only when the human explicitly asked to create that directory')
-    expect(text).toContain('Once the brief is writable, stop reading and dispatch')
-    expect(text).toContain('deeper investigation belongs to the dispatched Session')
+    // Triage is bounded: ownership, current behavior, target result, verification.
+    expect(text).toContain('Feasibility triage, not research')
+    expect(text).toContain('then stop and dispatch')
+    expect(text).toContain('Do not read whole modules, reproduce the issue, find the root cause, or design the implementation yourself')
+    expect(text).toContain('Put what you could not confirm into the brief as open questions')
+    expect(text).toContain('Read further only when ownership, safety, a human request, or a review of a specific claim requires it')
+    // The brief hands the deeper investigation to the Session instead of pre-solving it.
+    expect(text).toContain('the open questions the Session must confirm or refine')
+    expect(text).toContain('A brief with open questions is expected: the Session owns the deeper investigation, not only the edits')
+    const createSession = harness.tool('devlead_create_session').definition
+    expect(createSession.description).toContain('the brief may carry open questions')
+    expect(createSession.description).toContain('the Session owns the deeper investigation and the implementation')
+    const parameters = createSession.parameters as {
+      properties: { prompt: { description: string } }
+    }
+    expect(parameters.properties.prompt.description).toContain('open questions to confirm')
     expect(text).toContain('continue that Session with devlead_prompt_session instead of opening a duplicate')
     expect(text).toContain('batch small related changes into one')
     expect(text).toContain('sustained investigation is dispatched too')
@@ -324,20 +338,47 @@ describe('policy', () => {
     expect(harness.sectionText()).toBe(serialText)
   })
 
-  it('documents the closing semantics and forbids unprompted cleanup', () => {
+  it('documents judgment-based closing, its safety boundaries, and the reporting duty', () => {
     const harness = bootEnabled()
     const text = harness.sectionText()
-    expect(text).toContain('Closing Workspaces and Sessions')
-    expect(text).toContain('closing never deletes work')
+    // Judgment-based autonomy: reasonable wrap-up closes do not need item-by-item instructions.
+    expect(text).toContain('Closing Workspaces and Sessions is judgment-based')
+    expect(text).toContain('close when it genuinely serves the task and is a reasonable wrap-up, not only when told item by item')
+    expect(text).toContain('archive temporary or wrap-up Sessions you created or dispatched for this task once they are done')
+    expect(text).toContain('remove Workspace registrations that are clearly stale, duplicate, or empty, or that you created')
+    expect(text).toContain('tidy up, wrap up, or clean up, decide the scope yourself')
+    // The DSH semantics stay non-destructive and reversible.
+    expect(text).toContain('Closing never deletes work')
     expect(text).toContain('devlead_remove_workspace performs the DSH remove action')
-    expect(text).toContain('the directory, its files, and every Session log stay untouched')
+    expect(text).toContain('its directory, files, and every Session log stay untouched')
     expect(text).toContain('become ungrouped')
     expect(text).toContain('devlead_archive_session performs the DSH archive action')
     expect(text).toContain('devlead_unarchive_session restores it')
+    expect(text).toContain('Prefer archiving because it is reversible')
+    // The conservative boundaries survive autonomy.
+    expect(text).toContain('never close a Session or Workspace the human is using or talking to now')
+    expect(text).toContain('never use closing to hide a failure or skip reporting')
+    expect(text).toContain('never start an unrelated large cleanup')
+    expect(text).toContain('removal has the wider blast radius')
+    expect(text).toContain("Pass stop_running true only when you mean to cancel that Session's running work")
     expect(text).toContain('refused as DEVLEAD_SESSION_ACTIVE')
-    expect(text).toContain('without waiting for it to settle')
-    expect(text).toContain('never clean up, archive, or remove anything on your own initiative')
-    expect(text).toContain('re-registering its directory does not bring the old Sessions back')
+    expect(text).toContain('You can never archive the Session you are running in')
+    // Every autonomous close is reported so the human can review or undo it.
+    expect(text).toContain('Report every autonomous close: what you closed, why')
+    expect(text).toContain('an archived Session can be unarchived')
+    expect(text).toContain('created, changed, or closed')
+    // The old hard-line authorization wording is gone.
+    expect(text).not.toContain('only when the human explicitly asked, in this conversation, to close')
+    expect(text).not.toContain('never clean up, archive, or remove anything on your own initiative')
+  })
+
+  it('keeps the resident base policy within its pre-autonomy budget', () => {
+    const harness = bootEnabled()
+    const text = harness.sectionText()
+    // The policy is a resident system-prompt section. The autonomy and triage
+    // revisions may not grow the serial composition past +10% of its
+    // 8,226-character baseline (base policy plus the no-worktree paragraph).
+    expect(text.length).toBeLessThanOrEqual(9_040)
   })
 
   it('stays hidden without DevLead mode even when the capability exists', () => {
@@ -941,12 +982,16 @@ describe('devlead_remove_workspace', () => {
     expectValidOutput(harness, 'devlead_remove_workspace', value)
   })
 
-  it('advertises the non-destructive remove semantics and the human-only trigger', () => {
+  it('advertises the non-destructive remove semantics and judgment-based autonomy', () => {
     const harness = boot()
     const definition = harness.tool('devlead_remove_workspace').definition
     expect(definition.description).toContain('not a deletion')
     expect(definition.description).toContain('become ungrouped')
-    expect(definition.description).toContain('only when the human explicitly asked')
+    expect(definition.description).toContain('Use your judgment to remove')
+    expect(definition.description).toContain('clearly stale, duplicate, or empty')
+    expect(definition.description).toContain('do not remove a Workspace the human is using')
+    expect(definition.description).toContain('report what you closed and why')
+    expect(definition.description).toContain('prefer archiving where it fits')
     const parameters = definition.parameters as {
       properties: { workspace: { description: string } }
     }
@@ -992,14 +1037,19 @@ describe('devlead_archive_session', () => {
     expect(value).toEqual({ sessionId: 'session-1', archived: true, stopped: true })
   })
 
-  it('advertises the archive semantics, the active refusal, and the self-archive guard', () => {
+  it('advertises the archive semantics, autonomy, and the safety boundaries', () => {
     const harness = boot()
     const definition = harness.tool('devlead_archive_session').definition
     expect(definition.description).toContain('archive')
     expect(definition.description).toContain('restores it')
+    expect(definition.description).toContain('idempotent and reversible')
+    expect(definition.description).toContain('Use your judgment to archive')
+    expect(definition.description).toContain('prefer archiving over workspace removal')
+    expect(definition.description).toContain('Do not archive a Session the human is using or talking to now')
+    expect(definition.description).toContain('never use closing to hide a failure')
     expect(definition.description).toContain('DEVLEAD_SESSION_ACTIVE')
     expect(definition.description).toContain('cannot archive itself')
-    expect(definition.description).toContain('only when the human explicitly asked')
+    expect(definition.description).toContain('Report what you archived and why')
     const parameters = definition.parameters as {
       properties: { stop_running: { type: string; description: string } }
     }
@@ -1039,11 +1089,12 @@ describe('devlead_unarchive_session', () => {
     expectValidOutput(harness, 'devlead_unarchive_session', value)
   })
 
-  it('advertises the restore semantics and the human-only trigger', () => {
+  it('advertises the restore semantics and autonomous reversal', () => {
     const harness = boot()
     const description = harness.tool('devlead_unarchive_session').definition.description
-    expect(description).toContain('only when the human explicitly asked')
     expect(description).toContain('idempotent')
+    expect(description).toContain('reverse an archive you made while wrapping up')
+    expect(description).toContain('report the restored Session')
   })
 
   it('rejects a blank or omitted Session reference before calling the core', async () => {

@@ -105,7 +105,8 @@ const CREATE_SESSION_DESCRIPTION =
   + 'of waiting: never sleep, never poll devlead_get_session, devlead_list_sessions, or devlead_notifications, and '
   + 'never call wait_agent to wait for it. A watched Session is the default, and its settled turn starts a new turn '
   + 'of this lead session with the wake-up message. Use it to dispatch the owning Workspace\'s work to that Session '
-  + 'instead of doing the work yourself from this lead session.'
+  + 'instead of doing the work yourself from this lead session; the brief may carry open questions, because the '
+  + 'Session owns the deeper investigation and the implementation.'
 
 const GET_SESSION_DESCRIPTION =
   'Read one Session in detail: whether it is live and running, whether it is archived, and, when the Host can read '
@@ -131,22 +132,26 @@ const REMOVE_WORKSPACE_DESCRIPTION =
   'Close (remove) a DSH Workspace registration: the DSH remove action, not a deletion. The directory, its files, and '
   + 'every Session log stay untouched, but the Workspace\'s Sessions become ungrouped: they stay openable and '
   + 'continuable, yet no longer appear under that Workspace, and re-registering the same directory creates a brand new '
-  + 'Workspace that does not adopt them. Address it by Workspace id or registered path. Call this only when the human '
-  + 'explicitly asked, in this conversation, to close that Workspace; never remove Workspaces on your own initiative.'
+  + 'Workspace that does not adopt them. Address it by Workspace id or registered path. Use your judgment to remove '
+  + 'registrations that are clearly stale, duplicate, or empty, or that you created, or when the human asks to tidy up; '
+  + 'do not remove a Workspace the human is using, report what you closed and why, and prefer archiving where it fits '
+  + 'because removal has the wider blast radius.'
 
 const ARCHIVE_SESSION_DESCRIPTION =
   'Close (archive) one DSH Session: it disappears from the sidebar grouping while its log is kept, and '
   + 'devlead_unarchive_session restores it to its recorded Workspace position. Archiving is idempotent and reversible. '
-  + 'By default a Session with running work (a turn, subagents, jobs, or schedules) is refused with '
-  + 'DEVLEAD_SESSION_ACTIVE; set stop_running true to archive it first and then ask the Host to stop that work through '
-  + 'the same providers the human\'s own stop action uses, without waiting for it to settle. This lead Session cannot '
-  + 'archive itself: ask the human to close it from the sidebar. Call this only when the human explicitly asked, in '
-  + 'this conversation, to close that Session; never archive Sessions on your own initiative.'
+  + 'Use your judgment to archive Sessions you created or dispatched for a task once they are done, or when the human '
+  + 'asks to wrap up or clean up; prefer archiving over workspace removal because it is reversible. Do not archive a '
+  + 'Session the human is using or talking to now, and never use closing to hide a failure. By default a Session with '
+  + 'running work (a turn, subagents, jobs, or schedules) is refused with DEVLEAD_SESSION_ACTIVE; set stop_running '
+  + 'true only when you mean to cancel that work: the flag archives the Session first and then asks the Host to stop '
+  + 'it through the same providers the human\'s own stop action uses, without waiting for it to settle. This lead '
+  + 'Session cannot archive itself: ask the human to close it from the sidebar. Report what you archived and why.'
 
 const UNARCHIVE_SESSION_DESCRIPTION =
   'Restore (unarchive) one archived DSH Session, returning it to its recorded Workspace position. Unarchiving is '
-  + 'idempotent, and the Session log was kept while it was archived. Call this only when the human explicitly asked, in '
-  + 'this conversation, to restore that Session; never restore or reorganize Sessions on your own initiative.'
+  + 'idempotent, and the Session log was kept while it was archived. Use it to reverse an archive you made while '
+  + 'wrapping up, or when the human asks to restore a Session; report the restored Session.'
 
 /**
  * Register the eleven DevLead tools and their shared policy section.
@@ -269,7 +274,8 @@ export function apply(ctx: Context): void {
       },
       prompt: {
         type: 'string',
-        description: 'Optional self-contained prompt the new Session starts with. The child cannot see this conversation.',
+        description: 'Optional self-contained prompt the new Session starts with: background, target result, open '
+          + 'questions to confirm, deliverables, verification, and boundaries. The child cannot see this conversation.',
       },
       title: {
         type: 'string',
