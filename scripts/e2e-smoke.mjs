@@ -111,6 +111,9 @@
  *                 before/after to prove it was never rewritten. When the Host
  *                 cannot expose a model catalog (no provider credentials), the
  *                 positive model checks are reported as SKIP, not faked.
+ *                 Agent Teams is version-adaptive: rc.2+ (default composition)
+ *                 must apply it, while an rc.1 Host must reject the explicit
+ *                 request with DEVLEAD_TEAM_UNAVAILABLE and create nothing.
  *             69 checks.
  *
  * `--no-worktree` skips phase 2 only (debugging escape hatch when the
@@ -434,6 +437,23 @@ function requireDshVersion(dshBinary) {
     throw new Error(`this suite targets DeepSeek Harness 0.2.x; the installed runtime reports ${version}`)
   }
   return version
+}
+
+/**
+ * Whether one DSH version's default composition provides Agent Teams.
+ *
+ * The `@deepseek-ai/dsh-agent-team` package first shipped in 0.2.2-rc.2 and
+ * `dsh-base` includes its two profile rows from rc.2; rc.1 has no Team service
+ * at all. Unknown versions are assumed to support it (the probe's live report
+ * remains the source of truth for a custom composition).
+ * @param version - `dsh --version` output.
+ * @returns whether Agent Teams is expected to be composed by default.
+ */
+function agentTeamsSupportedByVersion(version) {
+  const match = /^0\.2\.2(?:-rc\.(\d+))?/u.exec(version.trim())
+  if (match === null) return true
+  const rc = match[1]
+  return rc === undefined || Number(rc) >= 2
 }
 
 /** Build every plugin package so the overlay points at the current sources. */
@@ -1253,9 +1273,10 @@ async function runProbeCommand(client, agentId, command, timeoutMs = RPC_TIMEOUT
  * real step admits), so a fake or a stale in-memory answer cannot pass.
  * @param client - authenticated client of the phase-3 instance.
  * @param paths - scratch paths; `paths.workspace` is the scratch Workspace.
+ * @param dshVersion - running DSH version, used to expect Team availability by default.
  * @returns the number of checks performed.
  */
-async function runCloseChecks(client, paths) {
+async function runCloseChecks(client, paths, dshVersion) {
   const checks = new Checks()
   await client.login()
 
@@ -1426,11 +1447,12 @@ async function runCloseChecks(client, paths) {
     JSON.stringify(dispatch.report?.defaultModelBefore) === JSON.stringify(dispatch.report?.defaultModelAfter),
     JSON.stringify({ before: dispatch.report?.defaultModelBefore, after: dispatch.report?.defaultModelAfter }),
   )
+  const teamsExpected = agentTeamsSupportedByVersion(dshVersion)
   if (dispatchTeams.available === true) {
     checks.expect(
       'phase 3 agent_teams true enables Team mode on the child',
-      dispatchTeams.child?.result === true && dispatchTeams.child?.enabled === true,
-      JSON.stringify({ result: dispatchTeams.child?.result, enabled: dispatchTeams.child?.enabled }),
+      teamsExpected && dispatchTeams.child?.result === true && dispatchTeams.child?.enabled === true,
+      `DSH ${dshVersion}; ${JSON.stringify({ result: dispatchTeams.child?.result, enabled: dispatchTeams.child?.enabled })}`,
     )
     checks.expect(
       'phase 3 team/mode is durable in the child log',
@@ -1444,10 +1466,26 @@ async function runCloseChecks(client, paths) {
       JSON.stringify(dispatchTeams.off),
     )
   } else {
-    const reason = String(dispatch.report?.teamsUnavailableReason ?? 'no agentTeams service')
-    checks.skip('phase 3 agent_teams true enables Team mode on the child', reason)
-    checks.skip('phase 3 team/mode is durable in the child log', reason)
-    checks.skip('phase 3 agent_teams false explicitly disables Team mode', reason)
+    const unavailable = dispatchTeams.unavailable ?? {}
+    checks.expect(
+      'phase 3 agent_teams true is rejected on a Team-less Host (expected before DSH 0.2.2-rc.2)',
+      unavailable.code === 'DEVLEAD_TEAM_UNAVAILABLE' && teamsExpected === false,
+      `DSH ${dshVersion}; ${String(unavailable.code)}: ${String(unavailable.message).slice(0, 200)}`,
+    )
+    checks.expect(
+      'phase 3 the Team-unavailable error names the DSH 0.2.2-rc.2 requirement',
+      String(unavailable.message).includes('0.2.2-rc.2')
+        && String(unavailable.message).includes('default composition'),
+      String(unavailable.message).slice(0, 260),
+    )
+    checks.expect(
+      'phase 3 a rejected agent_teams request creates no Session and explicit false still works',
+      unavailable.sessionsAfter === unavailable.sessionsBefore && dispatchTeams.off?.result === false,
+      JSON.stringify({
+        sessions: `${String(unavailable.sessionsBefore)} -> ${String(unavailable.sessionsAfter)}`,
+        off: dispatchTeams.off,
+      }),
+    )
   }
   checks.expect(
     'phase 3 omitting the settings leaves both result fields absent',
@@ -1765,7 +1803,7 @@ async function runFlow(options) {
     console.log(`e2e-smoke: phase 3 web ${redactUrl(phaseThree.url)}`)
     let phaseThreeCount = 0
     try {
-      phaseThreeCount = await runCloseChecks(new WebClient(phaseThree.url), paths)
+      phaseThreeCount = await runCloseChecks(new WebClient(phaseThree.url), paths, dshVersion)
     } catch (error) {
       reportPhaseFailure(options.flow, 'phase 3', error, phaseThree.logPath, paths)
     } finally {

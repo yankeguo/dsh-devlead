@@ -1040,7 +1040,9 @@ export class DevLeadService extends Service {
     const teams = requestedTeams === undefined ? undefined : agentTeamsCapabilityOf(this.ctx)
     if (requestedTeams === true && teams === undefined) {
       throw new DevLeadError(
-        'this Host composes no Agent Teams service, so agent_teams cannot be enabled',
+        'this Host composes no Agent Teams service, so agent_teams cannot be enabled. '
+        + 'Agent Teams is available from DSH 0.2.2-rc.2 (and is included in the default '
+        + 'composition there); omit agent_teams or continue without Team mode',
         'DEVLEAD_TEAM_UNAVAILABLE',
       )
     }
@@ -1651,7 +1653,8 @@ export class DevLeadService extends Service {
       if (teamsRequested === true && teams === undefined) {
         throw new DevLeadError(
           `Session "${sessionId}" was created but this Host composes no Agent Teams service, `
-          + 'so agent_teams could not be enabled; the Session remains',
+          + 'so agent_teams could not be enabled; the Session remains. Agent Teams is available '
+          + 'from DSH 0.2.2-rc.2 (included in the default composition there)',
           'DEVLEAD_TEAM_UNAVAILABLE',
         )
       }

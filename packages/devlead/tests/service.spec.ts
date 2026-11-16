@@ -2067,13 +2067,15 @@ describe('dispatch model and Agent Teams settings', () => {
     expect(teams.calls).toEqual([])
   })
 
-  it('fails before creating when Agent Teams is requested without the service', async () => {
+  it('fails before creating when Agent Teams is requested on a Team-less (rc.1-shaped) Host', async () => {
     const { harness, controller } = await bootDispatch()
     const error = await expectCodeAsync(
       () => harness.service.createSession(harness.lead.agent, { workspace: 'ws-1', agentTeams: true }),
       'DEVLEAD_TEAM_UNAVAILABLE',
     )
     expect(error.message).toContain('no Agent Teams service')
+    expect(error.message).toContain('0.2.2-rc.2')
+    expect(error.message).toContain('continue without Team mode')
     expect(controller.createCalls).toEqual([])
     // An explicit `false` is already satisfied when no Team service exists.
     const off = await harness.service.createSession(harness.lead.agent, { workspace: 'ws-1', agentTeams: false })

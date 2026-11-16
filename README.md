@@ -179,6 +179,27 @@ the staged-release helpers (`stage-release.mjs`, `promote-release.mjs`, `trusted
 | Web UI | the DSH desktop app or `dsh web`; DevLead UI renders on the Web platform only |
 | Local E2E | an installed DSH desktop runtime (`dsh` on PATH, or `DSH_BIN`); `pnpm e2e` boots an isolated instance with it |
 
+### DSH version compatibility
+
+All six packages share one version and keep `engines.dsh: >=0.2.2-rc.1 <0.3.0`. Capabilities that
+depend on a Host service degrade instead of failing the plugin:
+
+| Capability | 0.2.2-rc.1 | 0.2.2-rc.2 | 0.2.2-rc.3 | Notes |
+| --- | --- | --- | --- | --- |
+| Existing tools / `/devlead` / UI | yes | yes | yes | base plugin surface |
+| Dispatch model selection + `reasoning_effort` (`agent.model.select`) | yes | yes | yes | Session-level only; never rewrites the profile default |
+| `devlead_list_models` (`sessionController.modelCatalog()`) | yes | yes | yes | read-only compact catalog |
+| `agent_teams: true` | **no** — `DEVLEAD_TEAM_UNAVAILABLE`, no Session created | yes\* | yes\* | \*Host must compose `agent-team`; `dsh-base` includes it from rc.2. `false`/omitted work on rc.1 |
+
+Basis: `@deepseek-ai/dsh-agent-team` first shipped in `0.2.2-rc.2` (there is no rc.1 version);
+`dsh-base` has no agent-team row in rc.1 and includes `agent-team` + `tool-agent-team` from rc.2;
+the rc.2 and rc.3 agent-team implementations are identical (`isEnabled(agent)`,
+`setEnabled(agent, enabled, signal?)`, durable `team/mode`). Model APIs (`modelCatalog`,
+`Agent.model.select`, `model/selection`, `llm.listProviders/listModels/resolveCallConfig`) exist in
+rc.1, which this repo's devDependencies pin. Team support is detected with duck-typed
+`ctx.get('agentTeams')`, never a static import, so rc.1 loads normally. On a Host without Team,
+omit `agent_teams` (or pass `false`) and continue dispatching; do not retry or block.
+
 ### Install from npm (recommended once published)
 
 ```sh
@@ -732,7 +753,10 @@ providers, failures). When a credential-less Host exposes no model catalog, the 
 checks are reported as SKIP with the reason instead of being faked. Per-phase and total check
 counts are **130/130 per flow** (phase 1 = 27, phase 1b = 12, phase 2 = 22, phase 3 = 69);
 `--no-worktree` skips only the experimental phase, reporting
-**108/108** (phases 1 + 1b + 3) for debugging. The probe is a private
+**108/108** (phases 1 + 1b + 3) for debugging. Compatibility runs with npm-installed
+`0.2.2-rc.1` and `0.2.2-rc.2` CLIs (`DSH_BIN`, `--no-worktree`) also report **108/108** each: on
+rc.1 the Team success checks become expected-unavailable assertions (`DEVLEAD_TEAM_UNAVAILABLE`,
+no Session created), while rc.2/rc.3 run the Team success path. The probe is a private
 test-only package under `scripts/e2e-probe/`, not a published or workspace package. The profile
 mutations happen only in the throwaway profile under `os.tmpdir()`; no pnpm install, network, or
 lockfile change is involved.

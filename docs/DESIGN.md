@@ -247,7 +247,10 @@ failures: { id; name; message }[] }`（省略 model description/badge 等展示�
   watch（watch 在其后提交，预留槽位由 `finally` 释放）。结果只带实际请求并成功的
   `model` / `agentTeams`。模型不可用错误（创建前与创建后）都提示调用
   `devlead_list_models` 查看可用 provider/model/effort；Team 是否开启由 lead 按任务判断
-  （复杂/多步/并行可开，简单线性省略，人类明确开/关照做）。
+  （复杂/多步/并行可开，简单线性省略，人类明确开/关照做）。Team 能力用
+  `ctx.get('agentTeams')` duck-typing 探测，**没有**静态 import：DSH 0.2.2-rc.1 的默认组合
+  没有该服务，`agent_teams: true` 在创建前报 `DEVLEAD_TEAM_UNAVAILABLE`（提示自 rc.2 起提供
+  并默认组合），`false`/省略照常；rc.2+ 组合了服务时按上述路径应用。
 - `promptSession`：先校验归档与冷会话激活能力（避免"缺 controller 时先 watch 再报错"的
   半应用）→ 自动 watch 在 admission 前提交（失败/取消按上文的补偿语义撤销本次新增）→
   `sessionController.resolveAgent(sessionId)` 拿 live Agent（冷会话会被 resume）→
@@ -690,7 +693,7 @@ UI 分两态，避免在每个会话上显示常驻条：
 | `DEVLEAD_WORKSPACE_NOT_FOUND` | 指定 Workspace 引用无法解析，或 Host 未组合 Workspace registry |
 | `DEVLEAD_DIRECTORY_MISSING` | 目录不存在且未显式允许创建（文案提示 retry with `create: true`），或允许创建但创建失败 |
 | `DEVLEAD_MODEL_UNAVAILABLE` | 请求的 provider/model/effort 不可用：Host 未组合 LLM registry、provider 未注册、model 不在该 provider 当前可用列表、或 `resolveCallConfig` 拒绝；消息含完整 route |
-| `DEVLEAD_TEAM_UNAVAILABLE` | 请求 `agent_teams: true` 但 Host 未组合 Agent Teams 服务，或应用 Team 模式失败；消息带出已创建的 sessionId（应用阶段） |
+| `DEVLEAD_TEAM_UNAVAILABLE` | 请求 `agent_teams: true` 但 Host 未组合 Agent Teams 服务，或应用 Team 模式失败；消息说明该能力自 DSH 0.2.2-rc.2 起提供/默认组合（rc.1 上可预期），应用阶段还带出已创建的 sessionId |
 | `DEVLEAD_SESSION_NOT_FOUND` | 指定 Session 不存在（含 Host 侧 `session/not-found` 映射） |
 | `DEVLEAD_SESSION_ARCHIVED` | Session 已归档，不能续写 |
 | `DEVLEAD_SESSION_ACTIVE` | Session 仍有活动（turn / subagent / job / schedule），未传 `stop_running` 时拒绝归档；消息列出活动种类（item 最多 3 条） |
@@ -806,13 +809,30 @@ UI 分两态，避免在每个会话上显示常驻条：
   Session，断言结果字段、子 Agent `model.current()`、durable `model/selection` 与 `team/mode`
   事件、省略时结果字段不出现、不可用 model id 在创建前报 `DEVLEAD_MODEL_UNAVAILABLE` 且不新增
   Session、profile 默认模型前后完全一致；若 Host 无 provider 凭据导致模型目录为空，正向模型
-  检查记为 **SKIP** 并报告原因（不伪造），Team 与负路径仍真实校验。
+  检查记为 **SKIP** 并报告原因（不伪造），Team 与负路径仍真实校验。Team 分支按运行时版本
+  自适应：rc.1（默认组合无 `agent-team`）断言 `agent_teams:true` 报 `DEVLEAD_TEAM_UNAVAILABLE`
+  且不创建 Session、错误文案含 rc.2 要求、显式 false 仍可用；rc.2+ 断言启用成功、durable
+  `team/mode` 与 false 关闭。版本与探测不一致会直接失败（rc.1 出现服务或 rc.2+ 缺少服务都能
+  暴露）。
   patch 与 installed 两条加载流都跑完整多阶段；`--no-worktree` 跳过阶段 2（阶段 1、1b、3 仍
   运行，调试用）。两条加载流各 **130/130**（阶段 1 27 + 阶段 1b 12 + 阶段 2 22 + 阶段 3 69）；
   跳过阶段 2 时 **108/108**（阶段 1 + 1b + 3）。
 - 本轮最终验证数字（工作树）：`pnpm verify` = typecheck 通过 + **23 文件 / 650 tests** +
   7 个构建产物；`node scripts/check-packages.mjs` → `OK (6 packages)`；E2E 本轮重跑
   patch / installed 各 **130/130**（阶段 1 27 + 阶段 1b 12 + 阶段 2 22 + 阶段 3 69）。
+- **DSH 版本兼容矩阵（本轮真实 E2E）**：
+
+  | DSH | 来源 | flow | checks | Team 分支 |
+  | --- | --- | --- | --- | --- |
+  | 0.2.2-rc.1 | `npm install --prefix <tmp> @deepseek-ai/dsh@0.2.2-rc.1`，`DSH_BIN` | patch / installed | **108/108** each（`--no-worktree`） | 预期不可用：`DEVLEAD_TEAM_UNAVAILABLE`、无 Session、文案含 rc.2 |
+  | 0.2.2-rc.2 | 同上，`@deepseek-ai/dsh@0.2.2-rc.2` | patch / installed | **108/108** each（`--no-worktree`） | 成功：child enabled、durable `team/mode`、false 关闭 |
+  | 0.2.2-rc.3 | 本机已安装桌面运行时 | patch / installed | **130/130** each（含 phase 2） | 成功（同上） |
+
+  每条版本使用独立 throwaway `DSH_HOME`，结束后清理；rc.1/rc.2 跳过 phase 2（实验组合不属于
+  该兼容矩阵），阶段 1/1b/3 全跑。所有版本均因无 provider 凭据有 3 条正向模型检查 SKIP；
+  `devlead_list_models` 在所有版本通过。依据：`agent-team` 仅 rc.2+ 发布、rc.1 的
+  `dsh-base` 无对应组合行、rc.2/rc.3 实现相同；模型 API（`modelCatalog`、
+  `Agent.model.select`、`model/selection`、`llm.*`）rc.1 已具备（devDeps 固定 rc.1）。
 - 手动验收路径：开一个会话 → `/devlead on`（或点开关）→ 让模型
   `devlead_use_workspace` 注册一个仓库 → `devlead_create_session` 创建子会话并下发任务 →
   子会话跑完后 DevLead 被唤醒 → 状态条显示监督列表与通知；人类可打开子会话继续参与。

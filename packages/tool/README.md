@@ -38,7 +38,10 @@ routing or reproducibility; when pinning, call `devlead_list_models` first and p
 or parallel work (`agent_teams: true`); simple linear work omits it, and an explicit human on/off
 is obeyed. The model is validated before the Session exists, the selection is recorded on the
 child Session only (never through the controller's profile-default-writing path), and omitted
-settings leave the Host default untouched; both settings are creation-time only.
+settings leave the Host default untouched; both settings are creation-time only. Agent Teams
+requires DSH 0.2.2-rc.2 or newer with the Agent Teams service composed; on an rc.1 or otherwise
+Team-less Host, `agent_teams: true` fails with `DEVLEAD_TEAM_UNAVAILABLE` and no Session is
+created, so omit it (or pass `false`) and continue.
 
 The closing tools are non-destructive and judgment-based: their descriptions and the policy text
 allow autonomous, reasonable wrap-up closes (finished Sessions the lead created or dispatched,

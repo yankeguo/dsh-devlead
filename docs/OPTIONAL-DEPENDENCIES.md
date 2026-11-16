@@ -544,6 +544,12 @@ remove 的 durable 行为、`DEVLEAD_SESSION_ACTIVE`/`stop_running`/自我归档
 重启重建，可选 worktree 能力一旦被组合即可端到端工作，关闭工具在真实 Host 上按文档语义工作；
 是本审计结论最强的运行时证据。
 
+**版本兼容（本轮补充）**：`@deepseek-ai/dsh-agent-team` 仅从 `0.2.2-rc.2` 起发布，rc.1 的
+`dsh-base` 也没有对应组合行；因此 rc.1 上 `agent_teams: true` 预期报
+`DEVLEAD_TEAM_UNAVAILABLE` 且不创建 Session（`false`/省略正常），rc.2/rc.3 验证成功路径。
+本轮用 npm 临时安装的 rc.1/rc.2 CLI 各跑 patch/installed（`--no-worktree`）均 108/108；
+rc.3 全量两 flow 各 130/130。模型目录与 `devlead_list_models` 在三个版本均可用。
+
 **诚实边界**：E2E 只 `fetch /` 取 `__DSH_BOOT__` 并走 HTTP RPC，**不执行浏览器 JS**，因此它
 证明的是"Host 侧全部功能 + client 条目进入 boot graph 且携带声明的 injects"，**不直接证明
 client 条目激活成功**（rc.1 的严格审计发生在浏览器里）。client 激活的证据来自：

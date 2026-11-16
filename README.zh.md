@@ -160,6 +160,26 @@ staged 发布辅助脚本（`stage-release.mjs`、`promote-release.mjs`、`trust
 | Web UI | DSH 桌面端或 `dsh web`；DevLead 界面只在 Web 端渲染 |
 | 本地 E2E | 已安装的 DSH 桌面端运行时（`dsh` 在 PATH，或设置 `DSH_BIN`）；`pnpm e2e` 用它启动隔离实例 |
 
+### DSH 版本兼容矩阵
+
+6 个包同一版本，`engines.dsh` 保持 `>=0.2.2-rc.1 <0.3.0`；依赖 Host 服务的能力在缺失时降级，
+不会导致插件加载失败：
+
+| 能力 | 0.2.2-rc.1 | 0.2.2-rc.2 | 0.2.2-rc.3 | 说明 |
+| --- | --- | --- | --- | --- |
+| 既有工具 / `/devlead` / UI | 支持 | 支持 | 支持 | 基础插件面 |
+| 派发模型选择 + `reasoning_effort`（`agent.model.select`） | 支持 | 支持 | 支持 | 仅 Session 级；不改 profile 默认 |
+| `devlead_list_models`（`sessionController.modelCatalog()`） | 支持 | 支持 | 支持 | 只读精简目录 |
+| `agent_teams: true` | **不支持** — `DEVLEAD_TEAM_UNAVAILABLE`，不创建 Session | 支持\* | 支持\* | \*Host 需组合 `agent-team`；`dsh-base` 从 rc.2 起默认包含。`false`/省略在 rc.1 正常工作 |
+
+依据：`@deepseek-ai/dsh-agent-team` 自 `0.2.2-rc.2` 才有首个版本（rc.1 不存在）；rc.1 的
+`dsh-base` 没有 agent-team 行，rc.2 起包含 `agent-team` + `tool-agent-team`；rc.2 与 rc.3 的
+agent-team 实现相同（`isEnabled(agent)`、`setEnabled(agent, enabled, signal?)`、durable
+`team/mode`）。模型 API（`modelCatalog`、`Agent.model.select`、`model/selection`、
+`llm.listProviders/listModels/resolveCallConfig`）在 rc.1 已存在（本仓库 devDeps 固定 rc.1）。
+Team 能力通过 duck-typing `ctx.get('agentTeams')` 探测，**没有**静态 import，因此 rc.1 可正常
+加载；Host 无 Team 时省略 `agent_teams`（或传 `false`）继续派发，不要重试或阻塞。
+
 ### 安装：从 npm（发布后，推荐）
 
 ```sh
@@ -617,7 +637,10 @@ dispatch 设置也走真实 Host：从 `modelCatalog()` 选模型（目录为空
 被拒且不新增 Session、profile 默认模型前后不变；无 provider 凭据时正向模型检查记为 **SKIP**
 并报告原因（不伪造）；`devlead_list_models` 返回精简 Host 目录（default/providers/failures）。
 两条加载流各 **130/130**（阶段 1 27 + 阶段 1b 12 + 阶段 2 22 + 阶段 3 69）；调试时可加
-`--no-worktree` 跳过阶段 2（**108/108**，阶段 1 + 1b + 3）。probe 是
+`--no-worktree` 跳过阶段 2（**108/108**，阶段 1 + 1b + 3）；用 npm 安装的 `0.2.2-rc.1` /
+`0.2.2-rc.2` CLI（`DSH_BIN`）跑同样 flow 也各 **108/108**：rc.1 上 Team 成功检查改为
+「预期不可用」（`DEVLEAD_TEAM_UNAVAILABLE`、不创建 Session），rc.2/rc.3 走 Team 成功路径。
+probe 是
 `scripts/e2e-probe/` 下的私有测试包，不发布、不属于 workspace 包；profile 变更只发生在
 `os.tmpdir()` 下的一次性 profile，不涉及 pnpm install / 网络 / lockfile。
 

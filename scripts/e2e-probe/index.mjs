@@ -80,7 +80,8 @@
  *     teams: {
  *       available: boolean,
  *       child: { result, enabled, teamEvents } | null,
- *       off: { result, enabled }
+ *       off: { result, enabled },
+ *       unavailable: { code, message, sessionsBefore, sessionsAfter } | null
  *     },
  *     omitted: { modelPresent, agentTeamsPresent },
  *     modelUnavailable: { code, message, sessionsBefore, sessionsAfter },
@@ -606,6 +607,20 @@ async function executeDispatch(ctx, invocation) {
     result: off.agentTeams ?? null,
     enabled: teams === undefined || offChild === undefined ? null : teams.isEnabled(offChild),
   }
+  // A Team-less Host (for example DSH 0.2.2-rc.1) must reject the explicit
+  // request before creating anything; record the real outcome for the harness.
+  let teamUnavailable = null
+  if (teams === undefined) {
+    const sessionsBefore = ctx.sessions.list().length
+    const attempt = await settle(() => ctx.devLead.createSession(agent, { watch: false, agentTeams: true }))
+    const sessionsAfter = ctx.sessions.list().length
+    teamUnavailable = {
+      code: attempt.code ?? null,
+      message: attempt.message ?? '',
+      sessionsBefore,
+      sessionsAfter,
+    }
+  }
 
   const omitted = await ctx.devLead.createSession(agent, { watch: false })
 
@@ -641,6 +656,7 @@ async function executeDispatch(ctx, invocation) {
         available: teams !== undefined,
         child: teamChild,
         off: offTeams,
+        unavailable: teamUnavailable,
       },
       omitted: {
         modelPresent: omitted.model !== undefined,

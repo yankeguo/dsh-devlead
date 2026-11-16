@@ -307,6 +307,8 @@ describe('policy', () => {
     expect(text).toContain('obey an explicit human on/off')
     expect(text).toContain('report the choice and why')
     expect(text).toContain('never change the profile default')
+    expect(text).toContain('Team availability depends on the Host composition and DSH version')
+    expect(text).toContain('continue without Team instead of retrying or blocking')
     const createSession = harness.tool('devlead_create_session').definition
     expect(createSession.description).toContain('devlead_list_models')
     expect(createSession.description).toContain('inherits the Host default model')
@@ -1032,6 +1034,7 @@ describe('devlead_create_session dispatch settings', () => {
     expect(parameters.properties['provider']?.type).toBe('string')
     expect(parameters.properties['agent_teams']?.type).toBe('boolean')
     expect(parameters.properties['agent_teams']?.description).toContain('Creation-time only')
+    expect(parameters.properties['agent_teams']?.description).toContain('DSH 0.2.2-rc.2')
   })
 })
 

@@ -115,7 +115,9 @@ const CREATE_SESSION_DESCRIPTION =
   + 'explicitly asked, or the brief needs cost/capability routing or reproducibility, and call devlead_list_models '
   + 'first so provider/model/effort are real. Agent Teams is your judgment: complex, multi-step, or parallel work that '
   + 'benefits from subagent collaboration may set agent_teams true; simple linear work should omit it; obey an explicit '
-  + 'human on/off. Never change the Host/profile default, and do not upgrade or downgrade a model on your own. Both '
+  + 'human on/off. Agent Teams requires DSH 0.2.2-rc.2 or newer with the Agent Teams service composed; when the Host '
+  + 'reports it unavailable, continue without Team mode instead of retrying or blocking. Never change the Host/profile '
+  + 'default, and do not upgrade or downgrade a model on your own. Both '
   + 'settings are creation-time only; the model is validated before the Session is created. The Session is a real Session '
   + 'the human can open and take over, not a subagent. It runs independently, so after this call end the turn instead '
   + 'of waiting: never sleep, never poll devlead_get_session, devlead_list_sessions, or devlead_notifications, and '
@@ -353,8 +355,8 @@ export function apply(ctx: Context): void {
         type: 'boolean',
         description: 'Agent Teams for the new Session: true for complex, multi-step, or parallel work that benefits from '
           + 'subagent collaboration, false to disable, omit for simple linear work (Host default). Obey an explicit '
-          + 'human on/off. Creation-time only; true fails with DEVLEAD_TEAM_UNAVAILABLE when the Host composes no '
-          + 'Agent Teams service.',
+          + 'human on/off. Creation-time only. true requires DSH 0.2.2-rc.2 or newer with the Agent Teams service '
+          + 'composed; otherwise it fails with DEVLEAD_TEAM_UNAVAILABLE—omit it and continue without Team mode.',
       },
     },
     output: CREATE_SESSION_OUTPUT,
