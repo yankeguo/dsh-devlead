@@ -41,7 +41,7 @@
 | 角色模型 | 默认调度：依据已注册元数据判定归属 Workspace → 向对应 Session 发自包含简报 → watch → 审阅交付 → 汇报；只读检查属于有界可行性判断（归属、当前行为的高层事实、验证方式）外加审阅时核对具体断言，更深的调查与实现留在归属 Workspace 的 Session（含 lead 自己的 Workspace；仅当人类在本对话中明确授权时由 lead 直接做；记录类文件可依 lead 仓库说明维护） |
 | 标准 DSH 实体 | 子会话是普通 Session（侧边栏可见、人类可打开接管），Workspace 走 `workspaceRegistry`，不是 subagent |
 | 可选 worktree 隔离 | 当 Host 组合了 DSH 实验性 Git worktree 服务（`ctx.worktrees`）时，`devlead_create_session` 可传 `isolation: "worktree"`，让写入型子会话拥有独立分支与检出、不再共享 Workspace checkout；能力检测是可选的，缺少能力时退化为共享 checkout 并在结果里如实上报，绝不报错（见[可选 worktree 隔离](#可选-worktree-隔离)） |
-| 11 个模型工具 | 注册/列出/关闭 Workspace，创建/读取/续写/归档/恢复/监督 Session，读取通知摘要（见[模型工具](#模型工具)） |
+| 11 个模型工具 | 注册/列出/关闭 Workspace，创建（可固定模型或启用 Agent Teams）/读取/续写/归档/恢复/监督 Session，读取通知摘要（见[模型工具](#模型工具)） |
 | 人类命令 | `/devlead`（状态）、`/devlead on\|off`、`/devlead reset`（损坏状态恢复）、`/devlead watch\|unwatch <session>`；会话支持完整 id 或唯一前缀 |
 | 通知回路 | 被监督会话的 `turn/end` 写入持久通知记录，按合并窗口唤醒 DevLead（可配置窗口；冷 lead 默认 resume）；watch 索引在 Host 重启后从持久记录重建，已 dispose 的 lead 继续观察（见[通知机制](#通知机制)） |
 | 事件溯源 | 模式/watch 集合/通知/reset 全部是可忽略的 `plugin:devlead/*` 记录，严格回放校验，可跨重启 / 恢复 / fork |
@@ -290,7 +290,10 @@ DSH 跳过。
    细节。子会话看不到当前对话，所有必要事实都要在 prompt 里重述。新会话默认被 watch 并立即
    开始第一个 turn（空白 Session 在第一个 turn 前不会出现在侧边栏，所以 "创建 + prompt" 是
    常规用法）。若归属 Workspace 里已有处理该请求的 live Session，用 `devlead_prompt_session`
-   续写它，而不是重复创建。当 Host 组合了实验性 worktree 服务、且新会话可能与同一 checkout 里
+   续写它，而不是重复创建。需要按成本/能力路由，或为可复现性固定某次派发的模型时，传
+   `provider` + `model`（可选 `reasoning_effort`）；需要协作模式时传 `agent_teams: true`
+   （`false` 表示显式关闭）。两者都是**仅创建时生效**，创建前校验，且不会改写 Host/profile
+   默认模型或 Team 设置。当 Host 组合了实验性 worktree 服务、且新会话可能与同一 checkout 里
    的另一个 Session 并发写入时，传 `isolation: "worktree"`（见[可选 worktree 隔离](#可选-worktree-隔离)）；
    没有该能力时，绝不要在同一 checkout 里并发运行两个写入型 Session——请串行派发。
 4. 子会话独立运行；人类可以随时在侧边栏打开它、继续对话或接管。
@@ -318,7 +321,7 @@ DSH 跳过。
 | `devlead_list_workspaces` | `{}` | `{ workspaces }` |
 | `devlead_use_workspace` | `path`（必填，绝对路径）、`title?`、`create?`（默认 false：缺目录报错；人类明确要求时传 true 才 `mkdir -p`） | `{ workspace }` |
 | `devlead_list_sessions` | `workspace?`、`watched_only?`、`limit?` | `{ sessions, watched }` |
-| `devlead_create_session` | `workspace?`、`prompt?`、`title?`、`watch?`（默认 true）、`preset?`、`isolation?`（默认 `none`；`worktree` = 尽力提供隔离检出） | 创建结果（含 `isolation` 结果） |
+| `devlead_create_session` | `workspace?`、`prompt?`、`title?`、`watch?`（默认 true）、`preset?`、`isolation?`（默认 `none`；`worktree` = 尽力提供隔离检出）、`provider?`+`model?`（成对；可选 `reasoning_effort?`）、`agent_teams?` | 创建结果（含 `isolation` 结果；请求时含已应用的 `model`/`agentTeams`） |
 | `devlead_get_session` | `session`（必填） | `{ session }` |
 | `devlead_prompt_session` | `session`、`prompt`（必填）、`watch?`（默认 true） | 续写结果 |
 | `devlead_watch_session` | `session`、`watching`（必填 bool） | watch 变更结果 |
@@ -605,9 +608,12 @@ Session 仍归属该 Workspace）；阶段 3 链接同一个私有 probe 包后�
 生效，重复归档是幂等 no-op，unarchive 恢复且日志保持完整；临时 activity provider 让活跃
 会话以 `DEVLEAD_SESSION_ACTIVE` 被拒绝，`stop_running` 归档并回报 `stopped: true` 且触达
 Host stop provider；lead 不能归档自己；注销 Workspace 后注册表不再包含它，目录/标记文件/
-Session 日志仍在，Session 变未分组，重新注册得到新 Workspace 且不继承旧 Session。两条加载流
-各 **112/112**（阶段 1 27 + 阶段 1b 12 + 阶段 2 22 + 阶段 3 51）；调试时可加
-`--no-worktree` 跳过阶段 2（**90/90**，阶段 1 + 1b + 3）。probe 是
+Session 日志仍在，Session 变未分组，重新注册得到新 Workspace 且不继承旧 Session；创建时
+dispatch 设置也走真实 Host：从 `modelCatalog()` 选模型（目录为空时回退到部署默认 route 再尝试）、
+`agent_teams` true/false 与 durable `team/mode`、省略时结果字段不出现、不可用 model 在创建前
+被拒且不新增 Session、profile 默认模型前后不变；无 provider 凭据时正向模型检查记为 **SKIP**
+并报告原因（不伪造）。两条加载流各 **127/127**（阶段 1 27 + 阶段 1b 12 + 阶段 2 22 +
+阶段 3 66）；调试时可加 `--no-worktree` 跳过阶段 2（**105/105**，阶段 1 + 1b + 3）。probe 是
 `scripts/e2e-probe/` 下的私有测试包，不发布、不属于 workspace 包；profile 变更只发生在
 `os.tmpdir()` 下的一次性 profile，不涉及 pnpm install / 网络 / lockfile。
 

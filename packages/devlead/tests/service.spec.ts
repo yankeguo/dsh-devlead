@@ -38,6 +38,9 @@ import {
 import type { Config as DevLeadConfig, DevLeadErrorCode } from '../src/index.ts'
 import {
   FakeAgent,
+  FakeAgentDefaultModel,
+  FakeAgentTeams,
+  FakeModelValidator,
   FakeProjectionCache,
   FakeSessionController,
   FakeSessionPersistence,
@@ -1892,6 +1895,221 @@ describe('session creation', () => {
       () => harness.service.createSession(harness.lead.agent, {}),
       'DEVLEAD_WORKSPACE_NOT_FOUND',
     )
+  })
+})
+
+describe('dispatch model and Agent Teams settings', () => {
+  /** Result of one dispatch-settings fixture boot. */
+  interface DispatchFixture {
+    readonly harness: ServiceHarness
+    readonly controller: FakeSessionController
+    readonly registry: FakeWorkspaceRegistry
+    readonly defaultModel: FakeAgentDefaultModel
+  }
+
+  /**
+   * Boot one creation fixture whose controller registers every created child
+   * Agent in the fake registry, so creation-time settings have a target.
+   * @param options - optional model/Team fakes.
+   * @returns the booted fixture.
+   */
+  async function bootDispatch(
+    options: {
+      readonly llm?: FakeModelValidator
+      readonly agentTeams?: FakeAgentTeams
+      readonly defaultModel?: FakeAgentDefaultModel
+      readonly failChildModel?: boolean
+    } = {},
+  ): Promise<DispatchFixture> {
+    const controller = new FakeSessionController()
+    const registry = new FakeWorkspaceRegistry()
+    registry.add({ path: '/tmp/dispatch-space', title: 'Dispatch' })
+    const defaultModel = options.defaultModel ?? new FakeAgentDefaultModel()
+    const harness = await bootService({
+      enabled: true,
+      sessionController: controller,
+      workspaceRegistry: registry,
+      ...(options.llm === undefined ? {} : { llm: options.llm }),
+      ...(options.agentTeams === undefined ? {} : { agentTeams: options.agentTeams }),
+      agentDefaultModel: defaultModel,
+    })
+    let sequence = 0
+    controller.createHandler = () => {
+      sequence += 1
+      const session = harness.ctx.sessions.create(SessionId(`created-${String(sequence)}`))
+      const agent = new FakeAgent(session)
+      if (options.failChildModel === true) agent.failModelSelect = 1
+      harness.agents.add(agent)
+      return { sessionId: session.id }
+    }
+    return { harness, controller, registry, defaultModel }
+  }
+
+  it('requires provider and model together and rejects an effort alone', async () => {
+    const validator = new FakeModelValidator()
+    const { harness, controller } = await bootDispatch({ llm: validator })
+    await expectCodeAsync(
+      () => harness.service.createSession(harness.lead.agent, {
+        workspace: 'ws-1',
+        model: { provider: 'p', model: '' },
+      }),
+      'DEVLEAD_INVALID_INPUT',
+    )
+    await expectCodeAsync(
+      () => harness.service.createSession(harness.lead.agent, {
+        workspace: 'ws-1',
+        model: { provider: '', model: '', reasoningEffort: 'high' },
+      }),
+      'DEVLEAD_INVALID_INPUT',
+    )
+    expect(controller.createCalls).toEqual([])
+    expect(validator.calls).toEqual([])
+  })
+
+  it('validates the model before creating and maps an unavailable route', async () => {
+    const validator = new FakeModelValidator().withProvider('provider-x', ['model-y'])
+    validator.routeErrors.set('provider-x/model-y', new Error('no such model'))
+    const { harness, controller } = await bootDispatch({ llm: validator })
+    const error = await expectCodeAsync(
+      () => harness.service.createSession(harness.lead.agent, {
+        workspace: 'ws-1',
+        model: { provider: 'provider-x', model: 'model-y', reasoningEffort: 'high' },
+      }),
+      'DEVLEAD_MODEL_UNAVAILABLE',
+    )
+    expect(error.message).toContain('provider-x/model-y')
+    expect(error.message).toContain('high')
+    expect(error.message).toContain('no such model')
+    expect(validator.calls).toEqual([{ provider: 'provider-x', model: 'model-y', reasoningEffort: 'high' }])
+    expect(controller.createCalls).toEqual([])
+    expect(harness.service.view(harness.lead.agent).sessions).toEqual([])
+  })
+
+  it('rejects a model the provider does not advertise', async () => {
+    const validator = new FakeModelValidator().withProvider('provider-x', ['other-model'])
+    const { harness, controller } = await bootDispatch({ llm: validator })
+    const error = await expectCodeAsync(
+      () => harness.service.createSession(harness.lead.agent, {
+        workspace: 'ws-1',
+        model: { provider: 'provider-x', model: 'model-y' },
+      }),
+      'DEVLEAD_MODEL_UNAVAILABLE',
+    )
+    expect(error.message).toContain('available model list')
+    expect(validator.calls).toEqual([])
+    expect(controller.createCalls).toEqual([])
+  })
+
+  it('reports a missing LLM registry as an unavailable model', async () => {
+    const { harness, controller } = await bootDispatch()
+    const error = await expectCodeAsync(
+      () => harness.service.createSession(harness.lead.agent, {
+        workspace: 'ws-1',
+        model: { provider: 'p', model: 'm' },
+      }),
+      'DEVLEAD_MODEL_UNAVAILABLE',
+    )
+    expect(error.message).toContain('no LLM registry')
+    expect(controller.createCalls).toEqual([])
+  })
+
+  it('applies the model to the child Agent without rewriting the profile default', async () => {
+    const validator = new FakeModelValidator().withProvider('provider-x', ['model-y'])
+    const { harness, registry, defaultModel } = await bootDispatch({ llm: validator })
+    const result = await harness.service.createSession(harness.lead.agent, {
+      workspace: 'ws-1',
+      model: { provider: 'provider-x', model: 'model-y', reasoningEffort: 'high' },
+    })
+    expect(result.model).toEqual({ provider: 'provider-x', model: 'model-y', reasoningEffort: 'high' })
+    expect(result.agentTeams).toBeUndefined()
+    expect(harness.agents.resolve('created-1')?.modelSelections).toEqual([
+      { provider: 'provider-x', model: 'model-y', reasoningEffort: 'high' },
+    ])
+    // The profile default is never touched: no `selectModel`/saveSelection path.
+    expect(defaultModel.saveCalls).toBe(0)
+    expect(defaultModel.currentSelection()).toEqual({ provider: 'default-provider', model: 'default-model' })
+    expect(result.session.watched).toBe(true)
+    expect(registry.createCalls).toEqual([])
+  })
+
+  it('applies explicit Agent Teams on and off and reports the requested mode', async () => {
+    const teams = new FakeAgentTeams()
+    const { harness } = await bootDispatch({ agentTeams: teams })
+    const enabled = await harness.service.createSession(harness.lead.agent, {
+      workspace: 'ws-1',
+      agentTeams: true,
+    })
+    expect(enabled.agentTeams).toBe(true)
+    const disabled = await harness.service.createSession(harness.lead.agent, {
+      workspace: 'ws-1',
+      agentTeams: false,
+    })
+    expect(disabled.agentTeams).toBe(false)
+    expect(teams.calls).toEqual([
+      { agentId: 'created-1', enabled: true },
+      { agentId: 'created-2', enabled: false },
+    ])
+    const created = harness.agents.resolve('created-1')
+    if (created === undefined) throw new Error('expected the created child Agent')
+    expect(teams.isEnabled(created.agent)).toBe(true)
+  })
+
+  it('leaves optional services untouched when neither setting is requested', async () => {
+    const validator = new FakeModelValidator()
+    const teams = new FakeAgentTeams()
+    const { harness } = await bootDispatch({ llm: validator, agentTeams: teams })
+    const result = await harness.service.createSession(harness.lead.agent, { workspace: 'ws-1' })
+    expect(result.model).toBeUndefined()
+    expect(result.agentTeams).toBeUndefined()
+    expect(validator.calls).toEqual([])
+    expect(teams.calls).toEqual([])
+  })
+
+  it('fails before creating when Agent Teams is requested without the service', async () => {
+    const { harness, controller } = await bootDispatch()
+    const error = await expectCodeAsync(
+      () => harness.service.createSession(harness.lead.agent, { workspace: 'ws-1', agentTeams: true }),
+      'DEVLEAD_TEAM_UNAVAILABLE',
+    )
+    expect(error.message).toContain('no Agent Teams service')
+    expect(controller.createCalls).toEqual([])
+    // An explicit `false` is already satisfied when no Team service exists.
+    const off = await harness.service.createSession(harness.lead.agent, { workspace: 'ws-1', agentTeams: false })
+    expect(off.agentTeams).toBe(false)
+    expect(controller.createCalls).toHaveLength(1)
+  })
+
+  it('names the created Session when applying the model fails and keeps watch capacity', async () => {
+    const validator = new FakeModelValidator().withProvider('provider-x', ['model-y'])
+    const { harness, controller } = await bootDispatch({ llm: validator, failChildModel: true })
+    const error = await expectCodeAsync(
+      () => harness.service.createSession(harness.lead.agent, {
+        workspace: 'ws-1',
+        model: { provider: 'provider-x', model: 'model-y' },
+      }),
+      'DEVLEAD_MODEL_UNAVAILABLE',
+    )
+    expect(error.message).toContain('created-1')
+    expect(error.message).toContain('remains')
+    expect(harness.service.view(harness.lead.agent).sessions).toEqual([])
+    // The reservation was released: the next create can still take a watch slot.
+    const next = await harness.service.createSession(harness.lead.agent, { workspace: 'ws-1' })
+    expect(next.session.watched).toBe(true)
+    expect(controller.createCalls).toHaveLength(2)
+  })
+
+  it('names the created Session when Agent Teams cannot be applied', async () => {
+    const teams = new FakeAgentTeams()
+    teams.error = new Error('team store offline')
+    const { harness } = await bootDispatch({ agentTeams: teams })
+    const error = await expectCodeAsync(
+      () => harness.service.createSession(harness.lead.agent, { workspace: 'ws-1', agentTeams: true }),
+      'DEVLEAD_TEAM_UNAVAILABLE',
+    )
+    expect(error.message).toContain('created-1')
+    expect(error.message).toContain('team store offline')
+    expect(harness.agents.resolve('created-1')).toBeDefined()
+    expect(harness.service.view(harness.lead.agent).sessions).toEqual([])
   })
 })
 

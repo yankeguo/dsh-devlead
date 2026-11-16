@@ -10,7 +10,7 @@
  */
 
 import { Context } from '@deepseek-ai/cordis'
-import type { Agent, AgentRegistry, AgentStatus, TurnBoundaryProjection } from '@deepseek-ai/dsh-agent'
+import type { Agent, AgentRegistry, AgentStatus, ModelSelection, TurnBoundaryProjection } from '@deepseek-ai/dsh-agent'
 import type { SessionController, SessionCreateRequest, SessionCreateValue } from '@deepseek-ai/dsh-api-session-controller'
 import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { TextBlock, UserMessage } from '@deepseek-ai/dsh-llm'
@@ -111,6 +111,21 @@ export class FakeAgent {
   readonly followups: UserMessage[] = []
   /** When true, the next {@link followup} throws instead of admitting. */
   failFollowups = 0
+  /** Model selections recorded by the core through `agent.model.select`. */
+  readonly modelSelections: ModelSelection[] = []
+  /** When positive, the next `agent.model.select` throws instead of recording. */
+  failModelSelect = 0
+  /** Agent-owned model accessor the core writes creation-time selections through. */
+  readonly model = {
+    current: (): Readonly<ModelSelection> | undefined => this.modelSelections.at(-1),
+    select: (selection: Readonly<ModelSelection>): void => {
+      if (this.failModelSelect > 0) {
+        this.failModelSelect -= 1
+        throw new Error('fake agent refused the model selection')
+      }
+      this.modelSelections.push({ ...selection })
+    },
+  }
 
   /**
    * @param session - real Session the fake Agent drives.
@@ -419,6 +434,139 @@ export class FakeWorkspaceRegistry {
   /** Workspace-registry-shaped value for `ctx.provide`. */
   asRegistry(): WorkspaceRegistry {
     return this as unknown as WorkspaceRegistry
+  }
+}
+
+/** Fake `ctx.llm` slice: records and validates model selections. */
+export class FakeModelValidator {
+  /** Every validated selection, in call order. */
+  readonly calls: Array<{ provider: string; model: string; reasoningEffort?: string }> = []
+  /** Advertised provider routes and their model ids. */
+  readonly providers = new Map<string, string[]>()
+  /** When set, every call-config validation rejects with this failure. */
+  error: Error | undefined
+  /** When set, every `listModels` call rejects. */
+  listError: Error | undefined
+  /** Optional per-route validation rejection, keyed by `provider/model`. */
+  readonly routeErrors = new Map<string, Error>()
+
+  /**
+   * Seed one advertised provider route.
+   * @param provider - provider id.
+   * @param models - model ids the fake advertises.
+   * @returns this fake, for chaining.
+   */
+  withProvider(provider: string, models: readonly string[]): this {
+    this.providers.set(provider, [...models])
+    return this
+  }
+
+  /** Registered providers in insertion order. */
+  listProviders(): Array<{ id: string }> {
+    return [...this.providers.keys()].map(id => ({ id }))
+  }
+
+  /**
+   * List one provider's advertised models.
+   * @param provider - provider id.
+   * @returns model descriptors.
+   */
+  async listModels(provider: string): Promise<Array<{ id: string }>> {
+    if (this.listError !== undefined) throw this.listError
+    const models = this.providers.get(provider)
+    if (models === undefined) throw new Error(`provider "${provider}" is not registered`)
+    return models.map(id => ({ id }))
+  }
+
+  /**
+   * Validate one requested model selection's capability.
+   * @param config - provider/model route and optional reasoning effort.
+   * @param signal - cancellation checked before validation.
+   * @returns the accepted config.
+   */
+  async resolveCallConfig(
+    config: { provider: string; model: string; reasoningEffort?: string },
+    signal?: AbortSignal,
+  ): Promise<{ provider: string; model: string; reasoningEffort?: string }> {
+    this.calls.push({ ...config })
+    signal?.throwIfAborted()
+    const oneShot = this.routeErrors.get(`${config.provider}/${config.model}`)
+    if (oneShot !== undefined) throw oneShot
+    if (this.error !== undefined) throw this.error
+    return { ...config }
+  }
+
+  /** LLM-service-shaped value for `ctx.provide`. */
+  asService(): object {
+    return this
+  }
+}
+
+/** Fake optional `ctx.agentTeams`: records Team-mode changes. */
+export class FakeAgentTeams {
+  /** Every `setEnabled` call, in order. */
+  readonly calls: Array<{ agentId: string; enabled: boolean }> = []
+  /** Root Agent ids whose Team mode is enabled. */
+  readonly enabled = new Set<string>()
+  /** When set, every `setEnabled` call rejects. */
+  error: Error | undefined
+
+  /**
+   * Read the fake Team mode of one Agent.
+   * @param agent - live root Agent.
+   * @returns whether Team mode is enabled for it.
+   */
+  isEnabled(agent: Agent): boolean {
+    return this.enabled.has(String(agent.id))
+  }
+
+  /**
+   * Record one Team-mode change.
+   * @param agent - live root Agent.
+   * @param enabled - requested mode.
+   * @param signal - cancellation checked before the change.
+   */
+  async setEnabled(agent: Agent, enabled: boolean, signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted()
+    this.calls.push({ agentId: String(agent.id), enabled })
+    if (this.error !== undefined) throw this.error
+    if (enabled) this.enabled.add(String(agent.id))
+    else this.enabled.delete(String(agent.id))
+  }
+
+  /** Team-service-shaped value for `ctx.provide`. */
+  asService(): object {
+    return this
+  }
+}
+
+/** Fake `ctx.agentDefaultModel`: proves the profile default is never rewritten. */
+export class FakeAgentDefaultModel {
+  /** Current profile default selection. */
+  selection: ModelSelection = { provider: 'default-provider', model: 'default-model' }
+  /** Number of `saveSelection` calls observed. */
+  saveCalls = 0
+
+  /**
+   * Read the profile default selection.
+   * @returns a detached selection.
+   */
+  currentSelection(): ModelSelection {
+    return { ...this.selection }
+  }
+
+  /**
+   * Record one saved default selection.
+   * @param selection - selection the caller wants persisted.
+   */
+  async saveSelection(selection: ModelSelection): Promise<void> {
+    this.saveCalls += 1
+    this.selection = { ...selection }
+  }
+
+  /** Default-model-service-shaped value for `ctx.provide`. */
+  asService(): object {
+    return this
   }
 }
 
@@ -993,6 +1141,12 @@ export interface BootServiceOptions {
   readonly sessionPersistence?: object
   /** Fake optional Git worktree capability to provide; omitted models a Host without it. */
   readonly worktrees?: FakeWorktreesCapability
+  /** Fake LLM registry slice used to validate dispatch-time model selections. */
+  readonly llm?: FakeModelValidator
+  /** Fake optional Agent Teams service; omitted models a Host without it. */
+  readonly agentTeams?: FakeAgentTeams
+  /** Fake profile default model; lets a spec prove selections never rewrite it. */
+  readonly agentDefaultModel?: FakeAgentDefaultModel
   /** Whether a durability participant is registered; false models an unpersisted Host. */
   readonly persistence?: boolean
   /** When set, the durability participant rejects with this failure. */
@@ -1017,6 +1171,9 @@ export interface ServiceHarness {
   readonly sessionQuery: FakeSessionQuery | undefined
   readonly projectionCache: FakeProjectionCache | undefined
   readonly worktrees: FakeWorktreesCapability | undefined
+  readonly llm: FakeModelValidator | undefined
+  readonly agentTeams: FakeAgentTeams | undefined
+  readonly agentDefaultModel: FakeAgentDefaultModel | undefined
   /** Session ids whose `session/flush` checkpoint ran, in call order. */
   readonly flushCalls: string[]
   /** Dispose this harness's context and stop tracking it. */
@@ -1069,6 +1226,9 @@ export async function bootService(options: BootServiceOptions = {}): Promise<Ser
   // Provided only when asked for: every other spec deliberately models a Host
   // that composes no experimental Git worktree service.
   if (options.worktrees !== undefined) ctx.provide('worktrees', options.worktrees)
+  if (options.llm !== undefined) ctx.provide('llm', options.llm.asService())
+  if (options.agentTeams !== undefined) ctx.provide('agentTeams', options.agentTeams.asService())
+  if (options.agentDefaultModel !== undefined) ctx.provide('agentDefaultModel', options.agentDefaultModel.asService())
   await ctx.plugin(DevLeadService, options.config ?? {})
   liveContexts.push(ctx)
   return {
@@ -1084,6 +1244,9 @@ export async function bootService(options: BootServiceOptions = {}): Promise<Ser
     sessionQuery: options.sessionQuery,
     projectionCache: options.projectionCache,
     worktrees: options.worktrees,
+    llm: options.llm,
+    agentTeams: options.agentTeams,
+    agentDefaultModel: options.agentDefaultModel,
     flushCalls,
     dispose: () => disposeContext(ctx),
   }

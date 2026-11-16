@@ -670,6 +670,8 @@ describe('devlead command friendly error mapping', () => {
     ['DEVLEAD_AGENT_NOT_LIVE', 'no longer live'],
     ['DEVLEAD_WORKSPACE_NOT_FOUND', 'Workspace could not be resolved'],
     ['DEVLEAD_DIRECTORY_MISSING', 'target directory is missing'],
+    ['DEVLEAD_MODEL_UNAVAILABLE', 'requested model is not available'],
+    ['DEVLEAD_TEAM_UNAVAILABLE', 'Agent Teams is not available'],
     ['DEVLEAD_SESSION_NOT_FOUND', 'could not find that Session'],
     ['DEVLEAD_SESSION_ARCHIVED', 'archived'],
     ['DEVLEAD_SESSION_ACTIVE', 'still active'],

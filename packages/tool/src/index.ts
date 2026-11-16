@@ -100,7 +100,10 @@ const LIST_SESSIONS_DESCRIPTION =
   + 'waiting for a dispatched Session.'
 
 const CREATE_SESSION_DESCRIPTION =
-  'Create an ordinary DSH Session in a Workspace and optionally start it with a prompt. The Session is a real Session '
+  'Create an ordinary DSH Session in a Workspace and optionally start it with a prompt. Pin the child to a model with '
+  + 'provider/model (plus optional reasoning_effort) for cost/capability routing or reproducibility, and enable Agent '
+  + 'Teams with agent_teams; both are creation-time only and never change the Host/profile default. The model is '
+  + 'validated before the Session is created. The Session is a real Session '
   + 'the human can open and take over, not a subagent. It runs independently, so after this call end the turn instead '
   + 'of waiting: never sleep, never poll devlead_get_session, devlead_list_sessions, or devlead_notifications, and '
   + 'never call wait_agent to wait for it. A watched Session is the default, and its settled turn starts a new turn '
@@ -299,6 +302,27 @@ export function apply(ctx: Context): void {
           + 'best-effort isolated Git checkout of the owning Workspace for the new Session. It is applied only when '
           + 'the Host composes the experimental Git worktree service, and a non-active outcome (unavailable or '
           + 'failed) is returned in the isolation field of the result, never as an error.',
+      },
+      provider: {
+        type: 'string',
+        description: 'Optional model provider route for the new Session; requires model. Validated before the Session '
+          + 'is created. Creation-time only: the Host/profile default model is never changed.',
+      },
+      model: {
+        type: 'string',
+        description: 'Optional model id for the new Session; requires provider. Use it to route cheap or strong work '
+          + 'per dispatch and to keep a dispatch reproducible. Creation-time only.',
+      },
+      reasoning_effort: {
+        type: 'string',
+        description: 'Optional adapter reasoning effort (for example low, medium, high); only valid together with '
+          + 'provider and model.',
+      },
+      agent_teams: {
+        type: 'boolean',
+        description: 'Agent Teams mode for the new Session: true enables it, false disables it, omit to leave the Host '
+          + 'default untouched. Creation-time only; true fails with DEVLEAD_TEAM_UNAVAILABLE when the Host composes '
+          + 'no Agent Teams service.',
       },
     },
     output: CREATE_SESSION_OUTPUT,

@@ -843,6 +843,128 @@ describe('createSessionRequest isolation validation', () => {
   })
 })
 
+describe('devlead_create_session dispatch settings', () => {
+  it('forwards a model selection and Agent Teams mode in the canonical request', async () => {
+    const harness = boot()
+    harness.devLead.created = {
+      ...harness.devLead.created,
+      model: { provider: 'provider-x', model: 'model-y', reasoningEffort: 'high' },
+      agentTeams: true,
+    }
+    const value = await harness.call('devlead_create_session', {
+      workspace: 'ws-1',
+      provider: '  provider-x  ',
+      model: '  model-y  ',
+      reasoning_effort: '  high  ',
+      agent_teams: true,
+    })
+    const [agent, request] = harness.devLead.callsOf('createSession')[0] ?? []
+    expect(agent).toBe(harness.agent)
+    expect(request).toEqual({
+      workspace: 'ws-1',
+      model: { provider: 'provider-x', model: 'model-y', reasoningEffort: 'high' },
+      agentTeams: true,
+      watch: true,
+    })
+    expect(value).toEqual({
+      session: SESSION,
+      workspace: WORKSPACE,
+      prompted: true,
+      isolation: { requested: 'none', status: 'none' },
+      model: { provider: 'provider-x', model: 'model-y', reasoningEffort: 'high' },
+      agentTeams: true,
+    })
+    expectValidOutput(harness, 'devlead_create_session', value)
+  })
+
+  it('forwards an explicit Agent Teams disable', async () => {
+    const harness = boot()
+    await harness.call('devlead_create_session', { agent_teams: false })
+    const [, request] = harness.devLead.callsOf('createSession')[0] ?? []
+    expect(request).toEqual({ agentTeams: false, watch: true })
+  })
+
+  it('omits both settings when the model passes neither', async () => {
+    const harness = boot()
+    await harness.call('devlead_create_session')
+    const [, request] = harness.devLead.callsOf('createSession')[0] ?? []
+    expect(request).toEqual({ watch: true })
+  })
+
+  it('rejects a partial model pair or a lone reasoning effort before calling the core', async () => {
+    const harness = boot()
+    const cases = [
+      { provider: 'p' },
+      { model: 'm' },
+      { reasoning_effort: 'high' },
+      { provider: 'p', reasoning_effort: 'high' },
+      { model: 'm', reasoning_effort: 'high' },
+    ]
+    for (const args of cases) {
+      const error = await failureOf(harness.call('devlead_create_session', args))
+      expect(error.code).toBe('DEVLEAD_INVALID_INPUT')
+    }
+    expect(harness.devLead.callsOf('createSession')).toHaveLength(0)
+  })
+
+  it('advertises the model/Team parameters and the creation-time/no-default contract', () => {
+    const harness = boot()
+    const definition = harness.tool('devlead_create_session').definition
+    expect(definition.description).toContain('provider/model')
+    expect(definition.description).toContain('reasoning_effort')
+    expect(definition.description).toContain('agent_teams')
+    expect(definition.description).toContain('creation-time only')
+    expect(definition.description).toContain('never change the Host/profile default')
+    const parameters = definition.parameters as {
+      properties: Record<string, { type: string; description: string }>
+    }
+    expect(Object.keys(parameters.properties)).toEqual(expect.arrayContaining([
+      'provider',
+      'model',
+      'reasoning_effort',
+      'agent_teams',
+    ]))
+    expect(parameters.properties['provider']?.type).toBe('string')
+    expect(parameters.properties['agent_teams']?.type).toBe('boolean')
+    expect(parameters.properties['agent_teams']?.description).toContain('Creation-time only')
+  })
+})
+
+describe('createSessionRequest dispatch validation', () => {
+  it('builds a trimmed model selection and forwards Agent Teams', () => {
+    expect(createSessionRequest({
+      provider: '  provider-x ',
+      model: ' model-y ',
+      reasoning_effort: ' high ',
+      agent_teams: true,
+    })).toEqual({
+      model: { provider: 'provider-x', model: 'model-y', reasoningEffort: 'high' },
+      agentTeams: true,
+      watch: true,
+    })
+  })
+
+  it('omits a blank reasoning effort but keeps the pair', () => {
+    expect(createSessionRequest({ provider: 'p', model: 'm', reasoning_effort: '   ' })).toEqual({
+      model: { provider: 'p', model: 'm' },
+      watch: true,
+    })
+  })
+
+  it('rejects incomplete model requests with the invalid-input code', () => {
+    for (const args of [
+      { provider: 'p' },
+      { model: 'm' },
+      { provider: 'p', model: '   ' },
+      { reasoning_effort: 'high' },
+      { provider: '', model: '', reasoning_effort: 'high' },
+    ]) {
+      expect(() => createSessionRequest(args)).toThrow(DevLeadToolInputError)
+      expect(() => createSessionRequest(args)).toThrow(/provider and model|reasoning_effort/)
+    }
+  })
+})
+
 describe('devlead_get_session', () => {
   it('forwards the caller, reference, and signal and returns the detailed view', async () => {
     const harness = boot()

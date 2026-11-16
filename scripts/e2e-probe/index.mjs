@@ -28,6 +28,16 @@
  *     (registry archive set, Session views, durable log reads, filesystem
  *     survival) is read back and returned as one JSON document.
  *
+ *   `devlead-e2e-dispatch` (phase 3)
+ *     Exercise creation-time dispatch settings: pick a model from the Host's
+ *     own `modelCatalog()` (falling back to the deployment default route when
+ *     the catalog is unavailable), create a model-selected child, an Agent
+ *     Teams child, an explicit-off child, and an omitted-settings child
+ *     through `ctx.devLead`, then read the child Agent and durable log back.
+ *     Also exercises an unavailable model id and reports whether a positive
+ *     selection was verifiable at all (a credential-less Host exposes no
+ *     catalog, so the harness reports SKIP instead of faking it).
+ *
  * The probe is a linked-root package of the throwaway profile (a symlink
  * under `<profile>/node_modules/@yankeguo/` pointing at this directory), so
  * its `@deepseek-ai/*` peer dependencies resolve to the installation's own
@@ -53,6 +63,29 @@
  *     policy: string | null,                 // devlead:policy section text
  *     toolError: string | null,              // activation failure, when any
  *     policyError: string | null             // assembly failure, when any
+ *   }
+ *
+ *   dispatch:
+ *   {
+ *     defaultModelBefore: ModelSelection | null,   // profile default before any create
+ *     defaultModelAfter: ModelSelection | null,    // must equal the before value
+ *     model: {
+ *       available: boolean,                        // a positive selection was applied
+ *       reason: string | null,                     // why not, when unavailable
+ *       source: 'catalog' | 'deployment-default' | null,
+ *       provider, model,                           // attempted route, when any
+ *       catalog: object | null,                    // catalog diagnostics for the report
+ *       child: { result, current, modelEvents, error } | null
+ *     },
+ *     teams: {
+ *       available: boolean,
+ *       child: { result, enabled, teamEvents } | null,
+ *       off: { result, enabled }
+ *     },
+ *     omitted: { modelPresent, agentTeamsPresent },
+ *     modelUnavailable: { code, message, sessionsBefore, sessionsAfter },
+ *     teamsUnavailableChecked: false,
+ *     teamsUnavailableReason: string
  *   }
  *
  *   close:
@@ -123,7 +156,7 @@ export const name = 'devlead-e2e-probe'
  * assembly the inspect command reports. `workspaceRegistry` is read through
  * `ctx.get` (optional capability) like the core service does.
  */
-export const inject = ['commands', 'devLead', 'sessions', 'tools', 'systemPrompt']
+export const inject = ['commands', 'devLead', 'sessions', 'agents', 'tools', 'systemPrompt']
 
 /** Stable, plugin-owned command-definition identity (mirrors the package name). */
 const DEFINITION_ID = '@yankeguo/dsh-devlead-e2e-probe'
@@ -133,6 +166,8 @@ const COMMAND_NAME = 'devlead-e2e-worktree'
 export const INSPECT_COMMAND_NAME = 'devlead-e2e-inspect'
 /** Close-lifecycle command: archive/unarchive/remove through the real Host. */
 export const CLOSE_COMMAND_NAME = 'devlead-e2e-close'
+/** Dispatch-settings command: creation-time model selection + Agent Teams. */
+export const DISPATCH_COMMAND_NAME = 'devlead-e2e-dispatch'
 /** Upper bound for one prompted child turn to settle inside the close command. */
 const CHILD_TURN_TIMEOUT_MS = 45_000
 /** Poll interval of the close command's child-turn wait. */
@@ -458,6 +493,160 @@ async function executeClose(ctx, invocation) {
   }
 }
 
+/**
+ * Drive creation-time model selection and Agent Teams through the real Host.
+ *
+ * The model route comes from the Host's own `modelCatalog()`; when the catalog
+ * is unavailable (for example a Host with no configured provider) the probe
+ * reports that fact instead of faking a selection, and the harness skips the
+ * corresponding positive checks. The profile default is read before and after
+ * every create to prove the dispatch never rewrites it.
+ * @param ctx - owning plugin context.
+ * @param invocation - the command invocation; its Agent is the lead under test.
+ * @returns a success result whose text is the dispatch JSON, or an error result.
+ */
+async function executeDispatch(ctx, invocation) {
+  const agent = invocation.agent
+  const teams = ctx.get('agentTeams')
+  const defaultModel = ctx.get('agentDefaultModel')
+  const readDefault = () => {
+    try {
+      return defaultModel?.currentSelection?.() ?? null
+    } catch {
+      return null
+    }
+  }
+  const defaultBefore = readDefault()
+
+  let selection = null
+  let modelReason = null
+  let modelSource = null
+  const controller = ctx.get('sessionController')
+  const llm = ctx.get('llm')
+  let catalogDiagnostics = null
+  try {
+    const catalog = await controller.modelCatalog()
+    catalogDiagnostics = {
+      routableProviders: catalog?.routableProviders ?? null,
+      failures: catalog?.failures ?? null,
+      default: catalog?.default ?? null,
+      providers: llm?.listProviders?.().map(provider => provider.id) ?? null,
+    }
+    const group = (catalog?.groups ?? [])[0]
+    const model = group?.models?.[0]
+    if (group !== undefined && model !== undefined) {
+      selection = { provider: group.id, model: model.id }
+      modelSource = 'catalog'
+    }
+    else modelReason = 'the Host model catalog reports no available provider/model'
+  } catch (error) {
+    modelReason = `modelCatalog failed: ${messageOf(error)}`
+  }
+  // A Host with no configured provider catalog still has a deployment default
+  // route; using it lets the E2E verify the positive path without credentials.
+  if (selection === null && typeof defaultBefore?.provider === 'string' && typeof defaultBefore?.model === 'string') {
+    selection = { provider: defaultBefore.provider, model: defaultBefore.model }
+    modelReason = null
+    modelSource = 'deployment-default'
+  }
+
+  // Model-only child, so a missing Team service cannot mask model verification.
+  let modelChild = null
+  if (selection !== null) {
+    const created = await settle(() => ctx.devLead.createSession(agent, { watch: false, model: selection }))
+    let facts = null
+    if (created.value !== undefined) {
+      const child = ctx.agents.get(created.value.session.sessionId)
+      const events = child?.session?.snapshotEvents?.() ?? []
+      facts = {
+        result: created.value.model ?? null,
+        current: child?.model?.current?.() ?? null,
+        modelEvents: events.filter(event => event.type === 'model/selection').length,
+      }
+    }
+    modelChild = {
+      created: created.value === undefined ? null : { sessionId: String(created.value.session.sessionId) },
+      result: facts?.result ?? null,
+      current: facts?.current ?? null,
+      modelEvents: facts?.modelEvents ?? 0,
+      error: created.code === undefined ? null : { code: created.code, message: created.message },
+    }
+  }
+  const modelApplied = selection !== null && modelChild?.error === null
+  if (!modelApplied && modelReason === null) {
+    modelReason = modelChild?.error?.message ?? 'the model selection could not be applied'
+  }
+
+  // Team-only child (when the Host composes the service), plus explicit off.
+  let teamChild = null
+  if (teams !== undefined) {
+    const created = await ctx.devLead.createSession(agent, { watch: false, agentTeams: true })
+    const child = ctx.agents.get(created.session.sessionId)
+    const events = child?.session?.snapshotEvents?.() ?? []
+    teamChild = {
+      result: created.agentTeams ?? null,
+      enabled: child === undefined ? null : teams.isEnabled(child),
+      teamEvents: events
+        .filter(event => event.type === 'team/mode')
+        .map(event => event.data),
+    }
+  }
+  const off = await ctx.devLead.createSession(agent, { watch: false, agentTeams: false })
+  const offChild = ctx.agents.get(off.session.sessionId)
+  const offTeams = {
+    result: off.agentTeams ?? null,
+    enabled: teams === undefined || offChild === undefined ? null : teams.isEnabled(offChild),
+  }
+
+  const omitted = await ctx.devLead.createSession(agent, { watch: false })
+
+  // Unavailable model id: the pre-create validation must reject without a Session.
+  const sessionsBefore = ctx.sessions.list().length
+  const provider = selection?.provider ?? 'e2e-probe'
+  const unavailable = await settle(() => ctx.devLead.createSession(agent, {
+    watch: false,
+    model: { provider, model: 'definitely-not-a-model' },
+  }))
+  const sessionsAfter = ctx.sessions.list().length
+
+  const defaultAfter = readDefault()
+  return {
+    kind: 'success',
+    text: JSON.stringify({
+      defaultModelBefore: defaultBefore,
+      defaultModelAfter: defaultAfter,
+      model: {
+        available: modelApplied,
+        reason: modelReason,
+        source: modelSource,
+        catalog: catalogDiagnostics,
+        provider: selection?.provider ?? null,
+        model: selection?.model ?? null,
+        child: modelChild,
+      },
+      teams: {
+        available: teams !== undefined,
+        child: teamChild,
+        off: offTeams,
+      },
+      omitted: {
+        modelPresent: omitted.model !== undefined,
+        agentTeamsPresent: omitted.agentTeams !== undefined,
+      },
+      modelUnavailable: {
+        code: unavailable.code ?? null,
+        message: unavailable.message ?? '',
+        sessionsBefore,
+        sessionsAfter,
+      },
+      teamsUnavailableChecked: false,
+      teamsUnavailableReason: teams !== undefined
+        ? 'the default composition composes agentTeams, so the missing-service path is covered by unit tests'
+        : 'the Host composes no agentTeams service; the positive Team path was skipped',
+    }),
+  }
+}
+
 /** Wrap one command handler so a Host failure settles as an error result. */
 function guarded(command, operation) {
   return async invocation => {
@@ -490,5 +679,11 @@ export function apply(ctx) {
     name: CLOSE_COMMAND_NAME,
     description: 'E2E probe: drive archive/unarchive/remove through the real Host and report every fact.',
     handler: guarded(CLOSE_COMMAND_NAME, invocation => executeClose(ctx, invocation)),
+  })
+  ctx.commands.register({
+    definitionId: CommandDefinitionId(`${DEFINITION_ID}#dispatch`),
+    name: DISPATCH_COMMAND_NAME,
+    description: 'E2E probe: create Sessions with a model selection and Agent Teams, and report the real state.',
+    handler: guarded(DISPATCH_COMMAND_NAME, invocation => executeDispatch(ctx, invocation)),
   })
 }

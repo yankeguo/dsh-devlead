@@ -62,6 +62,18 @@ describe('translateToolError', () => {
     expect((translated as HarnessError).message).toBe('prompt must not be empty')
   })
 
+  it('keeps dispatch capability failures structured', () => {
+    for (const [code, message] of [
+      ['DEVLEAD_MODEL_UNAVAILABLE', 'model "p/m" is not available'],
+      ['DEVLEAD_TEAM_UNAVAILABLE', 'this Host composes no Agent Teams service'],
+    ] as const) {
+      const translated = translateToolError(new DevLeadError(message, code))
+      expect(translated).toBeInstanceOf(HarnessError)
+      expect((translated as HarnessError).code).toBe(code)
+      expect((translated as HarnessError).message).toBe(message)
+    }
+  })
+
   it('keeps the active-session refusal structured with its activity message', () => {
     const original = new DevLeadError(
       'Session "session-1" is still active (turn); stop that work first',

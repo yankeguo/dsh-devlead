@@ -351,6 +351,12 @@ function friendlyDevLeadError(error: DevLeadError): string {
       return `The Workspace could not be resolved: ${error.message}`
     case 'DEVLEAD_DIRECTORY_MISSING':
       return `The target directory is missing: ${error.message}`
+    case 'DEVLEAD_MODEL_UNAVAILABLE':
+      return `The requested model is not available on this Host: ${error.message}. `
+        + 'Use a provider/model pair the Host advertises, or omit it to use the Host default.'
+    case 'DEVLEAD_TEAM_UNAVAILABLE':
+      return `Agent Teams is not available on this Host: ${error.message}. `
+        + 'Omit agent_teams, or use a Host composition that includes the Agent Teams service.'
     default: {
       // Keep a friendly runtime fallback for a duplicated/mismatched core
       // package while still making a newly added stable code a compile error

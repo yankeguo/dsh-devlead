@@ -96,16 +96,26 @@
  *               - removing the scratch Workspace drops the registry entry while
  *                 the directory, a marker file, and the Session log survive; the
  *                 Session becomes ungrouped, and re-registering the directory
- *                 yields a new Workspace id that does not adopt it.
- *             51 checks.
+ *                 yields a new Workspace id that does not adopt it;
+ *               - creation-time dispatch settings: a model selected from the
+ *                 Host catalog (or the deployment default when the catalog is
+ *                 unavailable) is recorded on the child Session and in its
+ *                 durable log, Agent Teams `true`/`false` is applied and its
+ *                 `team/mode` event is durable, an omitted setting leaves the
+ *                 result fields absent, an unavailable model fails before any
+ *                 Session is created, and the profile default model is read
+ *                 before/after to prove it was never rewritten. When the Host
+ *                 cannot expose a model catalog (no provider credentials), the
+ *                 positive model checks are reported as SKIP, not faked.
+ *             66 checks.
  *
  * `--no-worktree` skips phase 2 only (debugging escape hatch when the
  * experimental composition cannot boot on this machine); phases 1, 1b, and 3
  * still run.
  *
- * Check counts: phase 1 = 27, phase 1b = 12, phase 2 = 22, phase 3 = 51, so
- * every flow reports 112/112 checks when all four phases pass (`--no-worktree`
- * skips phase 2: 90/90). Run both flows before a release:
+ * Check counts: phase 1 = 27, phase 1b = 12, phase 2 = 22, phase 3 = 66, so
+ * every flow reports 127/127 checks when all four phases pass (`--no-worktree`
+ * skips phase 2: 105/105). Run both flows before a release:
  *
  *   node scripts/e2e-smoke.mjs --flow patch
  *   node scripts/e2e-smoke.mjs --flow installed
@@ -180,6 +190,8 @@ const PROBE_COMMAND = 'devlead-e2e-worktree'
 const PROBE_INSPECT_COMMAND = 'devlead-e2e-inspect'
 /** Close command: archive/unarchive/remove through the real Host. */
 const PROBE_CLOSE_COMMAND = 'devlead-e2e-close'
+/** Dispatch-settings command: creation-time model selection + Agent Teams. */
+const PROBE_DISPATCH_COMMAND = 'devlead-e2e-dispatch'
 /** Exact DevLead tool surface an enabled lead step admits (8 shipped + 3 close tools). */
 const DEVLEAD_TOOL_NAMES = [
   'devlead_archive_session',
@@ -218,6 +230,8 @@ const NOTIFICATION_TIMEOUT_MS = 20_000
 const COLD_NOTIFICATION_TIMEOUT_MS = 45_000
 /** Upper bound for the phase-3 close command (it waits for one prompted child turn). */
 const CLOSE_PROBE_TIMEOUT_MS = 120_000
+/** Upper bound for the phase-3 dispatch command (model validation + several creates). */
+const DISPATCH_PROBE_TIMEOUT_MS = 120_000
 
 const USAGE = `Usage: node scripts/e2e-smoke.mjs [options]
 
@@ -790,10 +804,24 @@ class Checks {
     return ok
   }
 
+  /**
+   * Record one check that could not be exercised in this Host composition.
+   * Skips count as passed so the phase total stays stable, but they print
+   * `SKIP` with the reason instead of pretending the assertion ran.
+   * @param name - check name.
+   * @param reason - why the check could not run.
+   */
+  skip(name, reason) {
+    this.results.push({ name, ok: true, skipped: true })
+    console.log(`SKIP ${name} :: ${reason}`)
+  }
+
   /** Fail with the collected check list when anything failed. */
   summarize() {
     const failed = this.results.filter(result => !result.ok)
-    console.log(`\n${this.results.length - failed.length}/${this.results.length} checks passed`)
+    const skipped = this.results.filter(result => result.skipped === true).length
+    const suffix = skipped === 0 ? '' : ` (${String(skipped)} skipped; see SKIP lines)`
+    console.log(`\n${this.results.length - failed.length}/${this.results.length} checks passed${suffix}`)
     if (failed.length > 0) throw new Error(`failed checks: ${failed.map(result => result.name).join(', ')}`)
   }
 }
@@ -1233,8 +1261,10 @@ async function runCloseChecks(client, paths) {
   const commands = await client.rpc('commands/list', { agentId: leadId })
   const inspectCommand = commands.find(command => command.name === PROBE_INSPECT_COMMAND)
   const closeCommand = commands.find(command => command.name === PROBE_CLOSE_COMMAND)
+  const dispatchCommand = commands.find(command => command.name === PROBE_DISPATCH_COMMAND)
   checks.expect('phase 3 inspect probe command is registered', inspectCommand !== undefined, inspectCommand?.description)
   checks.expect('phase 3 close probe command is registered', closeCommand !== undefined, closeCommand?.description)
+  checks.expect('phase 3 dispatch probe command is registered', dispatchCommand !== undefined, dispatchCommand?.description)
 
   // Mode off: the conditional registration must hide every devlead tool and
   // resolve the policy section to empty text.
@@ -1313,6 +1343,104 @@ async function runCloseChecks(client, paths) {
     'phase 3 policy carries none of the old hard-line close wording',
     !policy.includes('never clean up')
       && !policy.includes('only when the human explicitly asked, in this conversation, to close'),
+  )
+
+  // Creation-time dispatch settings: the probe creates real Sessions with a
+  // model from the Host catalog and with Agent Teams, then reads the durable
+  // child state back. The profile default must stay untouched.
+  const dispatch = await runProbeCommand(client, leadId, PROBE_DISPATCH_COMMAND, DISPATCH_PROBE_TIMEOUT_MS)
+  checks.expect(
+    'phase 3 dispatch probe settles success',
+    dispatch.execution?.result?.kind === 'success',
+    dispatch.text.slice(0, 500),
+  )
+  checks.expect(
+    'phase 3 dispatch probe returns its JSON contract',
+    dispatch.report !== null && typeof dispatch.report === 'object'
+      && typeof dispatch.report.model === 'object' && dispatch.report.model !== null
+      && typeof dispatch.report.teams === 'object' && dispatch.report.teams !== null
+      && typeof dispatch.report.modelUnavailable === 'object' && dispatch.report.modelUnavailable !== null,
+  )
+  const dispatchModel = dispatch.report?.model ?? {}
+  const dispatchTeams = dispatch.report?.teams ?? {}
+  const dispatchUnavailable = dispatch.report?.modelUnavailable ?? {}
+  checks.expect(
+    'phase 3 dispatch probe resolves a catalog model or reports why not',
+    dispatchModel.available === true
+      || (typeof dispatchModel.reason === 'string' && dispatchModel.reason.length > 0),
+    dispatchModel.reason ?? `${String(dispatchModel.provider)}/${String(dispatchModel.model)}`,
+  )
+  if (dispatchModel.available === true) {
+    const expected = { provider: dispatchModel.provider, model: dispatchModel.model }
+    checks.expect(
+      'phase 3 model selection appears in the create result',
+      JSON.stringify(dispatchModel.child?.result) === JSON.stringify(expected),
+      JSON.stringify({ expected, actual: dispatchModel.child?.result }),
+    )
+    checks.expect(
+      'phase 3 model selection is recorded on the child Agent',
+      JSON.stringify(dispatchModel.child?.current) === JSON.stringify(expected),
+      JSON.stringify(dispatchModel.child?.current),
+    )
+    checks.expect(
+      'phase 3 the model selection is durable in the child log',
+      dispatchModel.child?.modelEvents >= 1,
+      String(dispatchModel.child?.modelEvents),
+    )
+  } else {
+    const reason = String(dispatchModel.reason ?? 'no model catalog')
+    checks.skip('phase 3 model selection appears in the create result', reason)
+    checks.skip('phase 3 model selection is recorded on the child Agent', reason)
+    checks.skip('phase 3 the model selection is durable in the child log', reason)
+  }
+  checks.expect(
+    'phase 3 dispatch never rewrites the profile default model',
+    JSON.stringify(dispatch.report?.defaultModelBefore) === JSON.stringify(dispatch.report?.defaultModelAfter),
+    JSON.stringify({ before: dispatch.report?.defaultModelBefore, after: dispatch.report?.defaultModelAfter }),
+  )
+  if (dispatchTeams.available === true) {
+    checks.expect(
+      'phase 3 agent_teams true enables Team mode on the child',
+      dispatchTeams.child?.result === true && dispatchTeams.child?.enabled === true,
+      JSON.stringify({ result: dispatchTeams.child?.result, enabled: dispatchTeams.child?.enabled }),
+    )
+    checks.expect(
+      'phase 3 team/mode is durable in the child log',
+      Array.isArray(dispatchTeams.child?.teamEvents)
+        && dispatchTeams.child.teamEvents.some(event => event?.enabled === true),
+      JSON.stringify(dispatchTeams.child?.teamEvents),
+    )
+    checks.expect(
+      'phase 3 agent_teams false explicitly disables Team mode',
+      dispatchTeams.off?.result === false && dispatchTeams.off?.enabled === false,
+      JSON.stringify(dispatchTeams.off),
+    )
+  } else {
+    const reason = String(dispatch.report?.teamsUnavailableReason ?? 'no agentTeams service')
+    checks.skip('phase 3 agent_teams true enables Team mode on the child', reason)
+    checks.skip('phase 3 team/mode is durable in the child log', reason)
+    checks.skip('phase 3 agent_teams false explicitly disables Team mode', reason)
+  }
+  checks.expect(
+    'phase 3 omitting the settings leaves both result fields absent',
+    dispatch.report?.omitted?.modelPresent === false
+      && dispatch.report?.omitted?.agentTeamsPresent === false,
+    JSON.stringify(dispatch.report?.omitted),
+  )
+  checks.expect(
+    'phase 3 an unavailable model fails with DEVLEAD_MODEL_UNAVAILABLE',
+    dispatchUnavailable.code === 'DEVLEAD_MODEL_UNAVAILABLE',
+    `${String(dispatchUnavailable.code)}: ${String(dispatchUnavailable.message).slice(0, 200)}`,
+  )
+  checks.expect(
+    'phase 3 the unavailable-model failure names the route',
+    String(dispatchUnavailable.message).includes('definitely-not-a-model'),
+    String(dispatchUnavailable.message).slice(0, 240),
+  )
+  checks.expect(
+    'phase 3 the unavailable-model failure creates no Session',
+    dispatchUnavailable.sessionsAfter === dispatchUnavailable.sessionsBefore,
+    `${String(dispatchUnavailable.sessionsBefore)} -> ${String(dispatchUnavailable.sessionsAfter)}`,
   )
 
   // The close probe owns every durable action; the harness only reads facts.
@@ -1597,7 +1725,7 @@ async function runFlow(options) {
     // ------------------------------------------------------------------------
     // Phase 3: close tools and triage policy, same scratch root/profile.
     // ------------------------------------------------------------------------
-    console.log('\n=== phase 3: close tools and triage policy ===')
+    console.log('\n=== phase 3: close tools, dispatch routing, and triage policy ===')
     const closePatches = devleadOverlay === undefined ? [probePatch] : [devleadOverlay, probePatch]
     let phaseThree
     try {
@@ -1623,7 +1751,7 @@ async function runFlow(options) {
     if (phaseTwoCount !== undefined) {
       console.log(`  phase 2 (experimental worktree composition): ${String(phaseTwoCount)}/${String(phaseTwoCount)} checks`)
     }
-    console.log(`  phase 3 (close tools and triage policy): ${String(phaseThreeCount)}/${String(phaseThreeCount)} checks`)
+    console.log(`  phase 3 (close tools, dispatch routing, and triage policy): ${String(phaseThreeCount)}/${String(phaseThreeCount)} checks`)
     console.log(`  total: ${String(total)}/${String(total)} checks${options.worktree ? '' : '; phase 2 skipped (--no-worktree)'}; logs: ${paths.logs}`)
   } catch (error) {
     console.error(`\nE2E SMOKE FAIL (${options.flow}): ${messageOf(error)}`)

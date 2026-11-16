@@ -12,7 +12,11 @@
 import { isAbsolute } from 'node:path'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { HarnessError } from '@deepseek-ai/dsh-llm'
-import type { DevLeadCreateSessionRequest, DevLeadIsolationMode } from '@yankeguo/dsh-devlead-protocol'
+import type {
+  DevLeadCreateSessionRequest,
+  DevLeadIsolationMode,
+  DevLeadModelSelection,
+} from '@yankeguo/dsh-devlead-protocol'
 
 /**
  * Model input rejected before the core service is called.
@@ -60,6 +64,14 @@ export interface CreateSessionArgs {
    * hand-checks the same vocabulary before forwarding.
    */
   readonly isolation?: string
+  /** Optional model provider route; requires `model`. */
+  readonly provider?: string
+  /** Optional model id; requires `provider`. */
+  readonly model?: string
+  /** Optional adapter reasoning effort; requires the provider/model pair. */
+  readonly reasoning_effort?: string
+  /** Optional Agent Teams mode: true enables, false disables, omitted leaves untouched. */
+  readonly agent_teams?: boolean
 }
 
 /** Arguments of `devlead_get_session`. */
@@ -243,10 +255,40 @@ export function defaultedLimit(value: number | undefined, field: string, fallbac
 }
 
 /**
+ * Assemble one model selection from the flat snake_case tool arguments.
+ *
+ * The provider/model pair and the effort rule are validated here as well as in
+ * the core service, so a malformed request fails before any Host work starts.
+ * @param args - validated model arguments.
+ * @returns the model selection, or undefined when no model was requested.
+ * @throws {@link DevLeadToolInputError} for a partial pair or an effort alone.
+ */
+export function modelSelectionRequest(args: CreateSessionArgs): DevLeadModelSelection | undefined {
+  const provider = optionalText(args.provider)
+  const model = optionalText(args.model)
+  const reasoningEffort = optionalText(args.reasoning_effort)
+  if (provider === undefined && model === undefined) {
+    if (reasoningEffort !== undefined) {
+      throw new DevLeadToolInputError('reasoning_effort requires provider and model')
+    }
+    return undefined
+  }
+  if (provider === undefined || model === undefined) {
+    throw new DevLeadToolInputError('provider and model must be provided together')
+  }
+  return {
+    provider,
+    model,
+    ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
+  }
+}
+
+/**
  * Assemble the core request of `devlead_create_session`.
  * @param args - validated model arguments.
  * @returns the request handed to `ctx.devLead.createSession`.
- * @throws {@link DevLeadToolInputError} on blank prompt, title, preset, or workspace text, or an unknown isolation mode.
+ * @throws {@link DevLeadToolInputError} on blank prompt, title, preset, or workspace text, an
+ *   unknown isolation mode, or an unusable model selection.
  */
 export function createSessionRequest(args: CreateSessionArgs): DevLeadCreateSessionRequest {
   const workspace = optionalWorkspaceRef(args.workspace)
@@ -254,12 +296,15 @@ export function createSessionRequest(args: CreateSessionArgs): DevLeadCreateSess
   const title = optionalText(args.title)
   const preset = optionalText(args.preset)
   const isolation = optionalIsolationMode(args.isolation)
+  const model = modelSelectionRequest(args)
   return {
     ...workspace === undefined ? {} : { workspace },
     ...prompt === undefined ? {} : { prompt },
     ...title === undefined ? {} : { title },
     ...preset === undefined ? {} : { preset },
     ...isolation === undefined ? {} : { isolation },
+    ...model === undefined ? {} : { model },
+    ...args.agent_teams === undefined ? {} : { agentTeams: args.agent_teams },
     watch: args.watch ?? true,
   }
 }

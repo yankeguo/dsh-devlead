@@ -20,6 +20,7 @@ import type {
   DevLeadIsolation,
   DevLeadIsolationMode,
   DevLeadIsolationStatus,
+  DevLeadModelSelection,
   DevLeadNotification,
   DevLeadProjection,
   DevLeadPromptedSession,
@@ -120,6 +121,20 @@ export const SESSION_VIEW_SCHEMA = {
   },
 } as const
 
+/** Enforced schema of one applied model selection. */
+export const MODEL_SELECTION_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    provider: { type: 'string', required: true, description: 'Registered provider route.' },
+    model: { type: 'string', required: true, description: 'Provider-owned model id.' },
+    reasoningEffort: {
+      type: 'string',
+      description: 'Adapter-owned reasoning effort, present only when one was explicitly requested.',
+    },
+  },
+} as const
+
 /** Enforced schema of one checkout-isolation outcome. */
 export const ISOLATION_SCHEMA = {
   type: 'object',
@@ -170,6 +185,9 @@ export type WorkspaceValue = InferValue<typeof WORKSPACE_VIEW_SCHEMA>
 
 /** Canonical value of one Session row. */
 export type SessionValue = InferValue<typeof SESSION_VIEW_SCHEMA>
+
+/** Canonical value of one applied model selection. */
+export type ModelSelectionValue = InferValue<typeof MODEL_SELECTION_SCHEMA>
 
 /** Canonical value of one checkout-isolation outcome. */
 export type IsolationValue = InferValue<typeof ISOLATION_SCHEMA>
@@ -302,6 +320,11 @@ export const CREATE_SESSION_OUTPUT = jsonOutput({
     workspace: required(WORKSPACE_VIEW_SCHEMA),
     prompted: { type: 'boolean', required: true },
     isolation: required(ISOLATION_SCHEMA),
+    model: MODEL_SELECTION_SCHEMA,
+    agentTeams: {
+      type: 'boolean',
+      description: 'Agent Teams mode applied to the new Session, present only when explicitly requested.',
+    },
   },
 } as const)
 
@@ -390,6 +413,15 @@ export const UNARCHIVE_SESSION_OUTPUT = jsonOutput({
   },
 } as const)
 
+/** Project one applied model selection onto the canonical value. */
+export function modelSelectionValue(selection: DevLeadModelSelection): ModelSelectionValue {
+  return {
+    provider: selection.provider,
+    model: selection.model,
+    ...selection.reasoningEffort === undefined ? {} : { reasoningEffort: selection.reasoningEffort },
+  }
+}
+
 /** Project one created-Session result onto the canonical value. */
 export function createdSessionValue(created: DevLeadCreatedSession): InferValue<typeof CREATE_SESSION_OUTPUT.schema> {
   return {
@@ -397,6 +429,8 @@ export function createdSessionValue(created: DevLeadCreatedSession): InferValue<
     workspace: workspaceValue(created.workspace),
     prompted: created.prompted,
     isolation: isolationValue(created.isolation),
+    ...created.model === undefined ? {} : { model: modelSelectionValue(created.model) },
+    ...created.agentTeams === undefined ? {} : { agentTeams: created.agentTeams },
   }
 }
 

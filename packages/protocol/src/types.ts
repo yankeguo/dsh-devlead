@@ -315,7 +315,26 @@ export interface DevLeadUseWorkspaceRequest {
   readonly create?: boolean
 }
 
-/** Request shape of one token-less Session creation inside a Workspace. */
+/** One explicit model selection requested for a dispatched Session. */
+export interface DevLeadModelSelection {
+  /** Registered provider route. */
+  readonly provider: string
+  /** Provider-owned model id. */
+  readonly model: string
+  /**
+   * Adapter-owned reasoning effort. Only meaningful together with the
+   * provider/model pair; omitted follows the adapter default.
+   */
+  readonly reasoningEffort?: string
+}
+
+/**
+ * Request shape of one token-less Session creation inside a Workspace.
+ *
+ * `model` and `agentTeams` are creation-time settings: they configure the new
+ * Session only, never the Host/profile default, and are not re-appliable
+ * through a later prompt.
+ */
 export interface DevLeadCreateSessionRequest {
   /** Target Workspace id or registered path. Omitted uses the lead's own directory. */
   readonly workspace?: string
@@ -334,6 +353,18 @@ export interface DevLeadCreateSessionRequest {
    * capability or a creation failure is reported in the result, never thrown.
    */
   readonly isolation?: DevLeadIsolationMode
+  /**
+   * Optional model selection recorded on the new Session itself. Validated
+   * before the Session is created; the Host/profile default model is never
+   * changed.
+   */
+  readonly model?: DevLeadModelSelection
+  /**
+   * Optional Agent Teams mode recorded on the new Session. `true` requires the
+   * Host to compose the Agent Teams service; `false` explicitly disables it;
+   * omitted leaves the Host default untouched.
+   */
+  readonly agentTeams?: boolean
 }
 
 /** Result of one DevLead session creation. */
@@ -346,6 +377,14 @@ export interface DevLeadCreatedSession {
   readonly prompted: boolean
   /** Checkout-isolation outcome; always present, `none` unless requested. */
   readonly isolation: DevLeadIsolation
+  /** Model selection applied to the new Session, when one was requested. */
+  readonly model?: DevLeadModelSelection
+  /**
+   * Agent Teams mode applied to the new Session, when one was requested. An
+   * explicit `false` is also reported on a Host without the Team service,
+   * where no Team mode exists to enable.
+   */
+  readonly agentTeams?: boolean
 }
 
 /** One watch-set mutation result. */

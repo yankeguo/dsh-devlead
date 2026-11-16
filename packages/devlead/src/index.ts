@@ -14,6 +14,7 @@ import { Service } from '@deepseek-ai/cordis'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type { Agent } from '@deepseek-ai/dsh-agent'
+import { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-api-session-controller'
 import type { SessionCreateValue } from '@deepseek-ai/dsh-api-session-controller'
 import { appendPluginRecord } from '@deepseek-ai/dsh-session'
@@ -33,6 +34,7 @@ import type {
   DevLeadCreateSessionRequest,
   DevLeadIsolation,
   DevLeadIsolationMode,
+  DevLeadModelSelection,
   DevLeadNotification,
   DevLeadProjection,
   DevLeadProjectionState,
@@ -53,6 +55,13 @@ import {
   resetRecord,
   watchRecord,
 } from './domain.ts'
+import {
+  agentTeamsCapabilityOf,
+  modelSelectionLabel,
+  modelValidatorOf,
+  normalizeModelSelection,
+} from './dispatch.ts'
+import type { AgentTeamsCapability, NormalizedModelSelection } from './dispatch.ts'
 import { DevLeadError, thrownMessage } from './error.ts'
 import {
   applyDevLeadProjection,
@@ -946,15 +955,26 @@ export class DevLeadService extends Service {
    * next side effect, so a cancelled create may leave a watched Session behind
    * without running isolation or admitting the prompt. Session creation itself
    * is not abortable once started.
+   *
+   * A requested model selection and Agent Teams mode are creation-time
+   * settings, applied to the new Session's own Agent immediately after the
+   * Session exists and before its title/watch/isolation/prompt. The model is
+   * validated against the Host's LLM registry first, and it is recorded with
+   * `agent.model.select`, never through the Session controller's `selectModel`
+   * (which would also rewrite the profile default model). An application
+   * failure after creation reports the created Session id and leaves that
+   * Session in place, matching the service's non-rollback creation contract.
    * @param agent - exact live lead Agent.
    * @param request - Workspace, optional title, initial prompt, watch policy,
-   *   preset, and checkout isolation mode.
+   *   preset, checkout isolation mode, creation-time model selection, and
+   *   creation-time Agent Teams mode.
    * @param signal - cancellation checked between stages and threaded into the
    *   worktree creation.
-   * @returns the created Session, the Workspace it joined, and the
-   *   checkout-isolation outcome.
+   * @returns the created Session, the Workspace it joined, the
+   *   checkout-isolation outcome, and any applied model/Team settings.
    * @throws {@link DevLeadError} when the mode is off, the Host cannot create
-   *   Sessions, or the destination is not usable.
+   *   Sessions, the destination is not usable, or a requested model/Team
+   *   capability is unavailable.
    */
   async createSession(
     agent: Agent,
@@ -963,6 +983,9 @@ export class DevLeadService extends Service {
   ): Promise<DevLeadCreatedSession> {
     this.assertReady(agent)
     signal?.throwIfAborted()
+    // Request shape is validated before any Host capability or side effect.
+    const requestedModel = normalizeModelSelection(request.model)
+    const requestedTeams = request.agentTeams
     const controller = this.ctx.get('sessionController')
     if (controller === undefined) {
       throw new DevLeadError(
@@ -970,6 +993,17 @@ export class DevLeadService extends Service {
         'DEVLEAD_SESSION_UNAVAILABLE',
       )
     }
+    // A requested Team mode is an explicit opt-in: fail before creating a
+    // Session on a Host that composes no Team service. An explicit `false` is
+    // satisfied by that absence too (there is no Team mode to turn off).
+    const teams = requestedTeams === undefined ? undefined : agentTeamsCapabilityOf(this.ctx)
+    if (requestedTeams === true && teams === undefined) {
+      throw new DevLeadError(
+        'this Host composes no Agent Teams service, so agent_teams cannot be enabled',
+        'DEVLEAD_TEAM_UNAVAILABLE',
+      )
+    }
+    if (requestedModel !== undefined) await this.assertModelSelectable(requestedModel, signal)
     const watch = request.watch ?? true
     // Reserve the watch slot synchronously before the first await: a rejected
     // watch after creation would leave an orphan Session the caller was told
@@ -1001,6 +1035,7 @@ export class DevLeadService extends Service {
       }
       signal?.throwIfAborted()
       const sessionId = String(created.sessionId)
+      const applied = await this.applyDispatchSettings(created, requestedModel, requestedTeams, teams, signal)
       if (request.title !== undefined && request.title.trim().length > 0) {
         this.tryRename(created.sessionId, request.title.trim())
       }
@@ -1029,6 +1064,8 @@ export class DevLeadService extends Service {
         workspace: await devLeadWorkspaceView(workspace),
         prompted,
         isolation,
+        ...(applied.model === undefined ? {} : { model: applied.model }),
+        ...(applied.agentTeams === undefined ? {} : { agentTeams: applied.agentTeams }),
       }
     } finally {
       releaseWatch?.()
@@ -1465,6 +1502,131 @@ export class DevLeadService extends Service {
       )
     }
     return [...leads].map(([sessionId, watched]) => ({ sessionId, watched }))
+  }
+
+  /**
+   * Validate one requested model selection against the Host's LLM registry.
+   * @param selection - normalized provider/model/effort selection.
+   * @param signal - cancellation checked around the adapter lookup.
+   * @throws {@link DevLeadError} `DEVLEAD_MODEL_UNAVAILABLE` when the Host
+   *   composes no validator or the adapter rejects the route/effort.
+   */
+  private async assertModelSelectable(
+    selection: NormalizedModelSelection,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const validator = modelValidatorOf(this.ctx)
+    if (validator === undefined) {
+      throw new DevLeadError(
+        `cannot validate model "${modelSelectionLabel(selection)}": this Host composes no LLM registry`,
+        'DEVLEAD_MODEL_UNAVAILABLE',
+      )
+    }
+    try {
+      // Mirror the Session controller's selectModel validation without its
+      // profile-default side effect: the provider must be registered, the
+      // model must be in that provider's current catalog, and the effort must
+      // be supported by the resolved capability. A provider whose model list
+      // is unavailable (for example no credentials) rejects here instead of
+      // producing a Session that is pinned to an unverified route.
+      if (!validator.listProviders().some(provider => provider.id === selection.provider)) {
+        throw new Error(`provider "${selection.provider}" is not registered`)
+      }
+      const models = await validator.listModels(selection.provider)
+      if (!models.some(model => model.id === selection.model)) {
+        throw new Error(`model "${selection.model}" is not in provider "${selection.provider}"'s available model list`)
+      }
+      await validator.resolveCallConfig(selection, signal)
+    } catch (error: unknown) {
+      signal?.throwIfAborted()
+      throw new DevLeadError(
+        `model "${modelSelectionLabel(selection)}" is not available: ${thrownMessage(error)}`,
+        'DEVLEAD_MODEL_UNAVAILABLE',
+      )
+    }
+    signal?.throwIfAborted()
+  }
+
+  /**
+   * Apply creation-time dispatch settings to a freshly created Session.
+   *
+   * The settings are recorded on the child Agent itself: the model through
+   * `agent.model.select` (durable Session-level event, never the profile
+   * default), and Team mode through the optional Team service. A failure here
+   * happens after the Session exists, so the error names its id and the Session
+   * is deliberately left in place (the service's creation contract does not
+   * roll back side effects).
+   * @param created - the controller's create result.
+   * @param model - normalized model selection, when requested.
+   * @param teamsRequested - requested Team mode, when explicitly set.
+   * @param teams - detected Team capability, when one is composed.
+   * @param signal - cancellation checked between applications.
+   * @returns the settings that were actually applied.
+   * @throws {@link DevLeadError} with the created Session id in the message when
+   *   the Agent is not live or an application step fails.
+   */
+  private async applyDispatchSettings(
+    created: SessionCreateValue,
+    model: NormalizedModelSelection | undefined,
+    teamsRequested: boolean | undefined,
+    teams: AgentTeamsCapability | undefined,
+    signal?: AbortSignal,
+  ): Promise<{ model?: DevLeadModelSelection; agentTeams?: boolean }> {
+    if (model === undefined && teamsRequested === undefined) return {}
+    const sessionId = String(created.sessionId)
+    const child = this.ctx.agents.get(created.sessionId)
+    if (child === undefined) {
+      throw new DevLeadError(
+        `Session "${sessionId}" was created but its Agent is not live, so the requested dispatch settings `
+        + 'could not be applied; the Session remains and can be continued',
+        'DEVLEAD_SESSION_UNAVAILABLE',
+      )
+    }
+    const applied: { model?: DevLeadModelSelection; agentTeams?: boolean } = {}
+    if (model !== undefined) {
+      try {
+        child.model.select({
+          provider: model.provider,
+          model: model.model,
+          ...(model.reasoningEffort === undefined
+            ? {}
+            : { reasoningEffort: ReasoningEffortId(model.reasoningEffort) }),
+        })
+      } catch (error: unknown) {
+        signal?.throwIfAborted()
+        throw new DevLeadError(
+          `Session "${sessionId}" was created but model "${modelSelectionLabel(model)}" could not be applied; `
+          + `the Session remains: ${thrownMessage(error)}`,
+          'DEVLEAD_MODEL_UNAVAILABLE',
+        )
+      }
+      await this.flushDurably(child.session, `model selection for Session "${sessionId}"`)
+      applied.model = { ...model }
+    }
+    if (teamsRequested !== undefined) {
+      if (teamsRequested === true && teams === undefined) {
+        throw new DevLeadError(
+          `Session "${sessionId}" was created but this Host composes no Agent Teams service, `
+          + 'so agent_teams could not be enabled; the Session remains',
+          'DEVLEAD_TEAM_UNAVAILABLE',
+        )
+      }
+      if (teams !== undefined) {
+        try {
+          await teams.setEnabled(child, teamsRequested, signal)
+        } catch (error: unknown) {
+          signal?.throwIfAborted()
+          throw new DevLeadError(
+            `Session "${sessionId}" was created but Agent Teams could not be `
+            + `${teamsRequested ? 'enabled' : 'disabled'}; the Session remains: ${thrownMessage(error)}`,
+            'DEVLEAD_TEAM_UNAVAILABLE',
+          )
+        }
+      }
+      applied.agentTeams = teamsRequested
+    }
+    signal?.throwIfAborted()
+    return applied
   }
 
   /** Require the Workspace registry capability (Workspaces and Session archive state). */

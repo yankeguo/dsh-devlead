@@ -51,7 +51,7 @@ Documentation: [Design notes (中文)](docs/DESIGN.md) · [Publishing guide (中
 | Role model | Dispatch-first: determine the owning Workspace from registered metadata, send a self-contained brief to a Session there, watch it, review the delivery, report; read-only inspection is bounded feasibility triage (ownership, current behavior at a high level, verification) plus checking a specific claim during review, while the deeper investigation and implementation stay in the owning Workspace's Session (including the lead's own workspace; direct work only when the human explicitly authorizes it in this conversation; record-file upkeep may follow the lead's repository instructions) |
 | Standard DSH entities | Child sessions are ordinary Sessions (visible in the sidebar; humans can open and take them over); Workspaces go through `workspaceRegistry`, not subagents |
 | Optional worktree isolation | When the Host composes DSH's experimental Git worktree service (`ctx.worktrees`), `devlead_create_session` can request `isolation: "worktree"` so a writing Session gets its own branch and checkout instead of sharing the Workspace checkout; detection is optional and a missing capability degrades to the shared checkout with a reported status, never an error (see [Optional worktree isolation](#optional-worktree-isolation)) |
-| 11 model tools | Register/list/remove Workspaces, create/read/continue/archive/restore/watch Sessions, read the notification digest (see [Model tools](#model-tools)) |
+| 11 model tools | Register/list/remove Workspaces, create (with a pinned model or Agent Teams)/read/continue/archive/restore/watch Sessions, read the notification digest (see [Model tools](#model-tools)) |
 | Human commands | `/devlead` (status), `/devlead on\|off`, `/devlead reset` (damaged-state recovery), `/devlead watch\|unwatch <session>`; sessions are addressable by full id or unique prefix |
 | Notification loop | A watched session's `turn/end` writes a durable notification and wakes an indexed DevLead through a coalescing window (configurable window; cold leads are resumed by default); the watch index is rebuilt from durable records after a Host restart, and a disposed lead keeps observing (see [Notification loop](#notification-loop)) |
 | Event sourcing | Mode / watch set / notifications / reset are ignorable `plugin:devlead/*` records with strict replay validation; survive restart / resume / fork |
@@ -325,7 +325,11 @@ the DevLead icon in the composer toolbar while off, the strip switch while on.
    their first turn immediately (a
    blank Session does not appear in the sidebar before its first turn, so "create + prompt" is the
    normal usage). If the owning Workspace already has a live Session working on the request,
-   continue it with `devlead_prompt_session` instead of opening a duplicate.
+   continue it with `devlead_prompt_session` instead of opening a duplicate. To route by
+   cost/capability or pin a dispatch for reproducibility, pass `provider` + `model` (optionally
+   `reasoning_effort`); enable the collaboration board with `agent_teams: true` (or `false` to
+   explicitly disable it). These are **creation-time only**, are validated before the Session is
+   created, and never change the Host/profile default model or Team setting.
    When the Host composes the experimental worktree service and the new Session may write
    concurrently with another Session in the same checkout, pass `isolation: "worktree"` (see
    [Optional worktree isolation](#optional-worktree-isolation)); without that capability, never
@@ -360,7 +364,7 @@ DevLead session:
 | `devlead_list_workspaces` | `{}` | `{ workspaces }` |
 | `devlead_use_workspace` | `path` (required, absolute), `title?`, `create?` (default false: a missing directory is an error; `true` creates it with `mkdir -p` after the human asked) | `{ workspace }` |
 | `devlead_list_sessions` | `workspace?`, `watched_only?`, `limit?` | `{ sessions, watched }` |
-| `devlead_create_session` | `workspace?`, `prompt?`, `title?`, `watch?` (default true), `preset?`, `isolation?` (default `none`; `worktree` = best-effort isolated checkout) | creation result (including the `isolation` outcome) |
+| `devlead_create_session` | `workspace?`, `prompt?`, `title?`, `watch?` (default true), `preset?`, `isolation?` (default `none`; `worktree` = best-effort isolated checkout), `provider?`+`model?` (paired; optional `reasoning_effort?`), `agent_teams?` | creation result (including the `isolation` outcome, and the applied `model`/`agentTeams` when requested) |
 | `devlead_get_session` | `session` (required) | `{ session }` |
 | `devlead_prompt_session` | `session`, `prompt` (required), `watch?` (default true) | prompt result |
 | `devlead_watch_session` | `session`, `watching` (required bool) | watch mutation result |
@@ -715,9 +719,15 @@ Session with its log intact; a temporary activity provider makes an active Sessi
 the Host stop provider; the lead cannot archive itself; removing the Workspace drops its
 registration while the directory, a marker file, and the Session log survive, the Session
 becomes ungrouped, and re-registering the directory yields a new Workspace that does not adopt
-it. Per-phase and total check counts are **112/112 per flow** (phase 1 = 27, phase 1b = 12,
-phase 2 = 22, phase 3 = 51); `--no-worktree` skips only the experimental phase, reporting
-**90/90** (phases 1 + 1b + 3) for debugging. The probe is a private
+it; and creation-time dispatch settings are exercised through the Host's own model catalog and
+Agent Teams service (a pinned model recorded on the child and in its durable log, `agent_teams`
+true/false applied with a durable `team/mode`, omitted settings absent from the result, an
+unavailable model rejected before any Session exists, and the profile default model proven
+unchanged). When a credential-less Host exposes no model catalog, the positive model checks are
+reported as SKIP with the reason instead of being faked. Per-phase and total check counts are
+**127/127 per flow** (phase 1 = 27, phase 1b = 12, phase 2 = 22, phase 3 = 66);
+`--no-worktree` skips only the experimental phase, reporting
+**105/105** (phases 1 + 1b + 3) for debugging. The probe is a private
 test-only package under `scripts/e2e-probe/`, not a published or workspace package. The profile
 mutations happen only in the throwaway profile under `os.tmpdir()`; no pnpm install, network, or
 lockfile change is involved.

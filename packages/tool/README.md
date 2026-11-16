@@ -11,7 +11,8 @@ Session never sees them. They become visible only after a human enables DevLead 
 - `devlead_list_workspaces`
 - `devlead_use_workspace`
 - `devlead_list_sessions`
-- `devlead_create_session` (optional `isolation: "none" | "worktree"`)
+- `devlead_create_session` (optional `isolation: "none" | "worktree"`; creation-time
+  `provider`/`model`/`reasoning_effort` and `agent_teams`)
 - `devlead_get_session`
 - `devlead_prompt_session`
 - `devlead_watch_session`
@@ -27,6 +28,12 @@ directory is `DEVLEAD_DIRECTORY_MISSING`), and `create: true` is only for a huma
 to create the directory. Domain failures are translated to `HarnessError` with a stable
 `DEVLEAD_*` code. Tool outputs are canonical JSON validated against their declared output
 schemas.
+
+`devlead_create_session` can also pin the new Session's model (`provider` + `model`, optional
+`reasoning_effort`) and set Agent Teams mode (`agent_teams`) at creation time. The model is
+validated against the Host's current provider catalog before the Session exists, the selection is
+recorded on the child Session only (never through the controller's profile-default-writing path),
+and an omitted setting leaves the Host default untouched; both settings are creation-time only.
 
 The closing tools are non-destructive and judgment-based: their descriptions and the policy text
 allow autonomous, reasonable wrap-up closes (finished Sessions the lead created or dispatched,
@@ -61,7 +68,10 @@ supported platform.
 模式开启时可见。除 `devlead_list_workspaces` 外都需要 live 调用者；0.2.0 起
 `devlead_use_workspace` 把 live Agent 转发给 core 的 `useWorkspace(agent, request, signal)`，
 `create` 默认 `false`（缺目录报 `DEVLEAD_DIRECTORY_MISSING`，只有人类明确要求建目录时才传
-`true`）。领域错误翻译为稳定的 `DEVLEAD_*` code。关闭类工具（remove / archive / unarchive）
+`true`）。`devlead_create_session` 还支持创建时指定 `provider`+`model`（可选
+`reasoning_effort`）与 `agent_teams`：模型在创建前按 Host 当前 provider 目录校验，只记录在该
+子 Session 上（不走会改写 profile 默认模型的 controller 路径），省略时不动 Host 默认，且均为
+仅创建时生效。领域错误翻译为稳定的 `DEVLEAD_*` code。关闭类工具（remove / archive / unarchive）
 都不是破坏性操作，且采用判断式自主：合理收尾时可自行关闭自己创建/派发且已完成的 Session、
 明显陈旧/重复/空置或由自己创建的 Workspace 注册；但不得关闭人类正在使用/对话的 Session 或
 Workspace、不得用关闭掩盖失败，并且每次自主关闭都要汇报原因与影响面。remove 只注销 Workspace、
