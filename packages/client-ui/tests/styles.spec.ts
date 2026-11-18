@@ -295,7 +295,8 @@ describe('styles', () => {
   it('lays the labelled toggle out as an auto-width composer-tool control', () => {
     expect(styles).toMatch(/\.devlead-toggle \{[^}]*width: auto;/u)
     expect(styles).toMatch(/\.devlead-toggle \{[^}]*height: 28px;/u)
-    expect(styles).toMatch(/\.devlead-toggle \{[^}]*padding: 0 10px;/u)
+    expect(styles).toMatch(/\.devlead-toggle \{[^}]*padding: 0 9px;/u)
+    expect(styles).toMatch(/\.devlead-toggle \{[^}]*border: 1px solid transparent;/u)
     expect(styles).toMatch(/\.devlead-toggle \{[^}]*gap: 6px;/u)
     expect(styles).toMatch(/\.devlead-toggle \{[^}]*border-radius: 999px;/u)
     expect(styles).toMatch(/\.devlead-toggle-label \{[^}]*white-space: nowrap;/u)
@@ -322,9 +323,30 @@ describe('styles', () => {
     expect(styles).not.toContain('.devlead-error')
   })
 
+  it('marks the enabled toggle with the business accent border, not extra layout', () => {
+    const enabled = /\.devlead-toggle\[data-devlead-enabled="true"\] \{([^}]*)\}/u.exec(styles)?.[1] ?? ''
+    expect(enabled).toContain('border-color: var(--dsw-alias-state-business-primary')
+    expect(enabled).toContain('box-shadow: 0 0 0 2px var(--dsw-alias-state-business-tertiary')
+    // Border and halo must not change the box the toolbar lays out: the width,
+    // height, padding, and font size stay in the shared base rule only.
+    expect(enabled).not.toMatch(/(?:^|;)\s*(?:width|height|padding|font-size|margin)\s*:/u)
+    // Off state keeps the transparent base border: no accent without mode.
+    expect(styles).toMatch(/\.devlead-toggle \{[^}]*border: 1px solid transparent;/u)
+    expect(styles).not.toMatch(/\.devlead-toggle \{[^}]*border-color: var\(--dsw-alias-state-business-primary/u)
+  })
+
+  it('lets an error replace the enabled accent instead of outlining it in blue', () => {
+    const failed = /\.devlead-toggle\[data-devlead-failed="true"\] \{([^}]*)\}/u.exec(styles)?.[1] ?? ''
+    expect(failed).toContain('border-color: var(--dsw-alias-label-error')
+    expect(failed).toContain('box-shadow: none;')
+  })
+
   it('collapses the visible labels on a narrow composer without hiding the control', () => {
     expect(styles).toContain('@media (max-width: 480px)')
     expect(styles).toMatch(/@media \(max-width: 480px\)[\s\S]*\.devlead-toggle-label,[\s\S]*\.devlead-label,[\s\S]*\.devlead-missing \{[\s\S]*display: none;/u)
+    // The border is already in the base box; the narrow rule compensates the
+    // extra 1px per side to keep the old 8px outer inset.
+    expect(styles).toMatch(/@media \(max-width: 480px\)[\s\S]*\.devlead-toggle \{[^}]*padding: 0 7px;/u)
     // The icon (and its aria-label) stays: only redundant visible text is
     // removed, so the single mode switch remains reachable on a phone.
     expect(styles).not.toMatch(/@media \(max-width: 480px\)[\s\S]*\.devlead-toggle \{[^}]*display: none/u)
@@ -363,6 +385,8 @@ describe('styles', () => {
       '--dsw-alias-state-success-primary',
       '--dsw-alias-state-warn-primary',
       '--dsw-alias-label-primary-dimmed',
+      '--dsw-alias-state-business-primary',
+      '--dsw-alias-state-business-tertiary',
       '--dsh-composer-side-clearance',
       '--dsh-composer-dock-inset',
       '--dsh-composer-card-max-width',

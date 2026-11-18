@@ -10,6 +10,9 @@
  *
  * The button carries both the users icon and a visible localized `DevLead`
  * label, so the toolbar entry explains itself without relying on hover alone.
+ * While the mode is on it also gains the business-accent border and a light
+ * halo (off keeps a transparent reserved border), so the active mode is
+ * readable at a glance without changing the toolbar layout.
  *
  * State is read from the projection and never flipped optimistically. A click
  * runs the Host command through the injected face; pending disables the button

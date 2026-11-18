@@ -58,7 +58,8 @@ UI 有一个开关、两种状态。插件**不会**在每个会话上摆一条�
 
 - **始终存在**：composer 工具条里（权限下拉旁，槽位 `conversation.input.left`）有一个很小的
   用户图标 + DevLead 文本按钮。模式关闭时悬停显示「开启 DevLead 模式」，点击即发送
-  `/devlead on`；模式开启时同一个按钮留在原位，悬停显示「关闭 DevLead 模式」，点击发送
+  `/devlead on`；模式开启时同一个按钮留在原位，并出现品牌强调色边框与很轻的光晕，悬停显示
+  「关闭 DevLead 模式」，点击发送
   `/devlead off`。
 - **已开启**：composer 上方出现状态条 DevLeadBar（槽位 `conversation.input.dock`）：品牌、
   监督会话数、运行中数、最近一条通知；没有通知时显示帮助提示。状态条只做展示，不承载开关，

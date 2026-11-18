@@ -20,12 +20,16 @@ const STYLE_KEY = 'devlead'
 export const styles = `
 /* Composer-tool row control: the users glyph plus a visible DevLead label. It
    keeps the 28px control height of the toolbar and sizes horizontally from its
-   content, rather than occupying a fixed square glyph seat. */
+   content, rather than occupying a fixed square glyph seat. The transparent
+   1px border is part of the base box (with 1px less padding), so enabling the
+   accent border changes colour only, never the control's size or the toolbar
+   layout. */
 .devlead-toggle {
   flex: none;
   width: auto;
   height: 28px;
-  padding: 0 10px;
+  padding: 0 9px;
+  border: 1px solid transparent;
   border-radius: 999px;
   gap: 6px;
   color: var(--dsw-alias-label-secondary, GrayText);
@@ -44,13 +48,21 @@ export const styles = `
 }
 
 /* While the mode is on the same button stays in place and reads at full label
-   color; a failed settle overrides it and takes over the error color. */
+   color, with the business accent as a real border plus a very light halo.
+   The halo is a box-shadow so it cannot add layout width; the border was
+   already reserved (transparent) in the base rule. The failed rule below has
+   the same specificity and wins the colour, so an error never leaves a blue
+   accent behind. */
 .devlead-toggle[data-devlead-enabled="true"] {
   color: var(--dsw-alias-label-primary, CanvasText);
+  border-color: var(--dsw-alias-state-business-primary, #4176e6);
+  box-shadow: 0 0 0 2px var(--dsw-alias-state-business-tertiary, rgba(65, 118, 230, 0.12));
 }
 
 .devlead-toggle[data-devlead-failed="true"] {
   color: var(--dsw-alias-label-error, #c0392b);
+  border-color: var(--dsw-alias-label-error, #c0392b);
+  box-shadow: none;
 }
 
 /* The shell marks an active toolbar control with a subtle fill; the mode is a
@@ -64,7 +76,7 @@ export const styles = `
    accessible name and icon; the bar keeps the watched/running counts. */
 @media (max-width: 480px) {
   .devlead-toggle {
-    padding: 0 8px;
+    padding: 0 7px;
     gap: 0;
   }
 

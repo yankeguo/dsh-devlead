@@ -70,7 +70,8 @@ attention-grabbing permanent bar on every conversation:
 - **Always:** the composer toolbar (`conversation.input.left`, next to the permission dropdown)
   carries a small users-icon + `DevLead` label button. While the mode is off, hovering it shows
   "Turn on DevLead mode" and clicking sends `/devlead on`. While the mode is on, the same button
-  stays in place, shows "Turn off DevLead mode", and clicking sends `/devlead off`.
+  stays in place, gains the business-accent border and a light halo, shows "Turn off DevLead
+  mode", and clicking sends `/devlead off`.
 - **On:** the status-only DevLeadBar (`conversation.input.dock`) appears above the composer:
   the brand, the number of watched sessions, the number running, and the latest notification —
   or a help hint when there is none. The bar owns no switch, so turning the mode off can never

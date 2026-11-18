@@ -5,7 +5,8 @@ Browser half of the DevLead suite, loaded on the DSH **Web** platform.
 - **Mode switch (both states):** a compact ghost button in the composer toolbar
   (`conversation.input.left`) shows the users icon plus a visible `DevLead` label and sends
   `/devlead on` while the mode is off and `/devlead off` while it is on. The same button stays
-  mounted in both states.
+  mounted in both states; while the mode is on it gains the business-accent border and a light
+  halo, with the border reserved transparent in the off state so the toolbar never shifts.
 - **On state:** a status strip above the composer (`conversation.input.dock`) shows the brand,
   watched/running counts, and the latest retained notification (or the help hint). The strip is
   display-only and owns no switch.
