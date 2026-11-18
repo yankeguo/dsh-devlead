@@ -29,7 +29,7 @@
   残余边界见[已知限制](#已知限制)。
 
 文档导航：[设计说明](docs/DESIGN.md) · [发布指南](docs/PUBLISHING.md) ·
-[审计记录](docs/AUDIT.md) · [v0.2.4 release notes](docs/releases/v0.2.4.md) ·
+[审计记录](docs/AUDIT.md) · [v0.2.5 release notes](docs/releases/v0.2.5.md) ·
 [Bundle 说明](packages/bundle/README.md) · 包 README：[protocol](packages/protocol/README.md) ·
 [devlead](packages/devlead/README.md) · [tool](packages/tool/README.md) ·
 [command](packages/command/README.md) · [client-ui](packages/client-ui/README.md)
@@ -47,7 +47,7 @@
 | 通知回路 | 被监督会话的 `turn/end` 写入持久通知记录，按合并窗口唤醒 DevLead（可配置窗口；冷 lead 默认 resume）；watch 索引在 Host 重启后从持久记录重建，已 dispose 的 lead 继续观察（见[通知机制](#通知机制)） |
 | 事件溯源 | 模式/watch 集合/通知/reset 全部是可忽略的 `plugin:devlead/*` 记录，严格回放校验，可跨重启 / 恢复 / fork |
 | 损坏状态恢复 | 损坏的 `plugin:devlead/*` 记录会冻结 fold；人类专属 `/devlead reset`（或冻结时的 `/devlead off`）追加 `plugin:devlead/reset` 记录，让两个 projection 回到默认 disabled 状态（见[通知机制](#通知机制)） |
-| Session projection | `devLead` projection（`{ enabled, sessions, notifications }`）把状态同步到浏览器，无需自定义 Remote API；summary 级的 `devLeadMode`（`{ enabled }`）随每个 Session 列表行下发，供侧边栏渲染标记 |
+| Session projection | `devLead` projection（`{ enabled, sessions, notifications, reports }`）把状态同步到浏览器，无需自定义 Remote API；summary 级的 `devLeadMode`（`{ enabled }`）随每个 Session 列表行下发，供侧边栏渲染标记 |
 | 界面 | composer 工具条里带 DevLead 文本的图标按钮是唯一开关，两态都存在（关闭态发 `/devlead on`、开启态发 `/devlead off`）；开启后 composer 上方出现只读 DevLeadBar：监督会话数/运行中数、最近一条通知；状态条不带开关；已开启的会话在侧边栏会话列表里带标记 |
 | 权限模型 | 模式开关只能由人类命令/UI 触发；通知是运行时提示而非人类指令（见[权限模型](#权限模型)） |
 | 一键安装 | bundle 的 `cordis.patch.yml` 插入全部 4 个运行时插件行，也可单独安装某个包 |

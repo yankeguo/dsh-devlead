@@ -364,7 +364,9 @@ scripts/trusted-publishers.sh --list
   包补齐插件展示元数据，运行时行为不变；**0.2.2**（patch，本版）新增 3 个关闭工具
   （remove / archive / unarchive）、判断式自主关闭与有界可行性判断，当时共 11 个模型工具，
   无 breaking；**0.2.3**（patch）新增 `devlead_list_models`（12 个）；**0.2.4**（patch）新增
-  `devlead_list_agent_presets`（13 个主工具 + 1 个 `devlead_report`），并把 DSH 兼容面扩到 0.2.2-rc.1 – rc.4、修复审计缺陷。
+  `devlead_list_agent_presets`（13 个主工具），并把 DSH 兼容面扩到 0.2.2-rc.1 – rc.4、修复
+  审计缺陷；**0.2.5**（patch）新增全局单活、`devlead_report`（13 主工具 + 1 汇报工具）、
+  durable report outbox 与 archived 占用者非阻塞准入。
   各版发布时同步 README / README.zh 与 `docs/releases/v<version>.md`；0.2.0 另复核
   旧 core + 新 tool 混装时 `isolation` 的防御性降级（tool 对缺失字段回退
   `{requested:'none',status:'none'}`）。

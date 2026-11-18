@@ -469,7 +469,7 @@ DSH_HOME="$TMP/home" dsh devlead-audit --from-default-profile web --dump-config 
 - `tool` / `command` 测试完全不 boot DSH 运行时（`packages/tool/tests/harness.ts:282-303`、
   `packages/command/tests/fake.ts` 用结构化 fake），从测试侧确认它们只依赖注入的服务接口。
 
-### 7.4 E2E 路径（E5，0.2.0 多阶段；0.2.4 的 rc.4 patch / installed 各 143/143 通过）
+### 7.4 E2E 路径（E5，0.2.0 多阶段；0.2.5 的 rc.4 patch / installed 各 143/143 通过；0.2.4 当时为 131/131）
 
 `scripts/e2e-smoke.mjs` 的路线：
 
@@ -560,7 +560,7 @@ remove 的 durable 行为、`DEVLEAD_SESSION_ACTIVE`/`stop_running`/自我归档
 **版本兼容（本轮补充）**：`@deepseek-ai/dsh-agent-team` 仅从 `0.2.2-rc.2` 起发布，rc.1 的
 `dsh-base` 也没有对应组合行；因此 rc.1 上 `agent_teams: true` 预期报
 `DEVLEAD_TEAM_UNAVAILABLE` 且不创建 Session（`false`/省略正常），rc.2/rc.3 验证成功路径。
-0.2.4 用 npm 临时安装的 rc.1–rc.4 CLI 各跑 installed（`--no-worktree`）均 120/120；rc.4 的 patch 与 installed 全量两 flow 各 143/143。`devlead_list_models` 与 `devlead_list_agent_presets` 在四个版本均可用。
+0.2.5 用 npm 临时安装的 rc.1–rc.4 CLI 各跑 installed（`--no-worktree`）均 120/120；rc.4 的 patch 与 installed 全量两 flow 各 143/143（0.2.4 当时分别为 109/109 与 131/131）。`devlead_list_models` 与 `devlead_list_agent_presets` 在四个版本均可用。
 
 **诚实边界**：E2E 只 `fetch /` 取 `__DSH_BOOT__` 并走 HTTP RPC，**不执行浏览器 JS**，因此它
 证明的是"Host 侧全部功能 + client 条目进入 boot graph 且携带声明的 injects"，**不直接证明
