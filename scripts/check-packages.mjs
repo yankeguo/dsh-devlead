@@ -8,14 +8,15 @@
  * staged-publishing contract, and each publishable package's locale display
  * metadata (DSH plugin manager titles/descriptions).
  *
- * This is intentionally dependency-free and read-only; it is safe to run in CI
- * after `pnpm build` and is wired into both verify.yml and publish.yml. Run:
+ * This is read-only (it imports only the semver devDependency); it is safe to run
+ * in CI after `pnpm build` and is wired into both verify.yml and publish.yml. Run:
  *
  *   node scripts/check-packages.mjs
  */
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import semver from 'semver'
 import { CLIENT_EXTERNALS as CLIENT_PLATFORM_MODULES } from './client-externals.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -31,6 +32,7 @@ const DEV_INFRA = {
   '@types/node': 'tsconfig.base.json "types"',
   '@types/react': 'JSX attributes for the client sources',
   '@types/react-test-renderer': 'types for the client component/hook render tests',
+  semver: 'peer-range satisfaction in this check',
 }
 
 /** Expected pinned toolchain used by every workflow. */
@@ -184,8 +186,15 @@ for (const { dir, dirPath, manifest } of manifests) {
     const rootSpec = rootManifest.devDependencies?.[name]
     if (rootSpec === undefined) {
       fail(`${label}: peer ${name} is not installed at the root for type checking; add it to devDependencies`)
-    } else if (rootSpec !== spec) {
-      fail(`${label}: peer ${name}@${spec} must match the root devDependency ${name}@${rootSpec}`)
+    } else {
+      // The root devDependency is what tsc resolves. It must lie inside the peer
+      // range (a peer range may span every supported DSH rc), so check
+      // satisfaction rather than string equality; the installed minimum is the
+      // version the types actually come from.
+      const installed = semver.minVersion(rootSpec)
+      if (installed === null || !semver.satisfies(installed.version, spec, { includePrerelease: true })) {
+        fail(`${label}: peer ${name}@${spec} is not satisfied by the root devDependency ${name}@${rootSpec} (installed ${installed?.version ?? 'unknown'})`)
+      }
     }
   }
   // Host runtime imports must be peers (linked-root routing), and no DSH

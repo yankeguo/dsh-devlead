@@ -1,6 +1,6 @@
 {
   "name": "@yankeguo/dsh-devlead-protocol",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Pure shared protocol of the devlead plugin suite: durable mode, watched-session and notification types, plus the pure fold and formatting rules used by both Host and browser.",
   "license": "MIT",
   "type": "module",
@@ -21,7 +21,7 @@
     "dsh": ">=0.2.2-rc.1 <0.3.0"
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh-session-projection": "0.2.2-rc.1"
+    "@deepseek-ai/dsh-session-projection": ">=0.2.2-rc.1 <0.3.0"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/dsh-session-projection": {
