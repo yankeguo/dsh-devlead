@@ -4,7 +4,7 @@ The twelve model-facing `devlead_*` tools and the conditional DevLead system-pro
 
 The tools are registered with `when: ({ agent }) => ctx.devLead.isEnabled(agent)`, so an ordinary
 Session never sees them. They become visible only after a human enables DevLead mode with
-`/devlead on` or the UI switch.
+`/devlead on` or the composer-toolbar toggle (shown in both states).
 
 ## Tools
 

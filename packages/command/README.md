@@ -1,6 +1,6 @@
 # @yankeguo/dsh-command-devlead
 
-The human-facing `/devlead` command behind the UI mode switch; it also owns watch-set changes,
+The human-facing `/devlead` command behind the composer-toolbar toggle; it also owns watch-set changes,
 damage recovery, and the human-readable status view. The status output includes
 `Worktree isolation: available|unavailable` so a human can see whether the optional
 checkout-isolation capability is composed.
@@ -41,7 +41,7 @@ dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 
 ## 中文
 
-`@yankeguo/dsh-command-devlead` 提供人类 `/devlead` 命令：状态、开关、reset、watch/unwatch。
+`@yankeguo/dsh-command-devlead` 提供人类 `/devlead` 命令：模式状态、reset、watch/unwatch。
 0.2.0 起 `/devlead reset`（以及冻结时 `/devlead off`）追加 `plugin:devlead/reset` 记录并解冻
 损坏的 fold；reset 会丢弃该会话的 watch 集合与通知 digest。命令按 DSH `rawInput` 契约解析，
 不接受附件，前缀引用在变更前由 core 穷尽验证，变更后的标题与正文来自同一 post-mutation 快照。完整中文文档见

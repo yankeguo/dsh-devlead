@@ -13,10 +13,11 @@ kind: "package-bundle"
 ## 特性
 
 - **DevLead 模式**：每个会话一个持久开关；打开后获得 12 个 `devlead_*` 工具、DevLead 系统
-  提示，以及两态 UI：未开启时只有 composer 工具条小图标，开启后才是 composer 上方的完整状态条。
+  提示，以及两态 UI：composer 工具条里的小图标在两种状态下都常驻并负责开启/关闭，开启后
+  composer 上方才出现只读状态条。
   已开启的会话还会在侧边栏会话行显示 DevLead 标记，关掉会话后仍可辨识（DSH rc.1 对
   blank / 尚无 turn 的新会话行不渲染该 seat，首次 turn 后才显示）。
-  开关是**人类专属操作**（`/devlead on|off` 或界面开关），模型无法自行打开。
+  开关是**人类专属操作**（`/devlead on|off` 或 composer 工具条开关），模型无法自行打开。
 - **产出物是标准 DSH 实体**：Workspace 真实注册进 `ctx.workspaceRegistry`，子会话是真实普通
   Session（侧边栏可见、可被人类打开接管），**不是 subagent**。
 - **监督与唤醒**：被 watch 的会话每个 `turn/end` 都写入 DevLead 会话的持久通知记录；Agent
@@ -28,9 +29,9 @@ kind: "package-bundle"
   随每个会话列表行下发，供侧边栏标记使用。
 - **人类命令**：`/devlead`、`/devlead on|off`、`/devlead reset`（损坏状态恢复）、
   `/devlead watch|unwatch <session>`。
-- **两态 UI**：未开启时 composer 工具条里只有一个 ghost 图标（点击 `/devlead on`）；开启后
-  composer 上方出现 DevLeadBar，显示开关、监督会话数 / 运行中数与最近通知；侧边栏会话行
-  同时带 DevLead 标记。
+- **两态 UI**：composer 工具条里的 ghost 图标在两种状态下都显示——关闭态点击
+  `/devlead on`，开启态点击 `/devlead off`；开启后 composer 上方出现只读 DevLeadBar，
+  显示监督会话数 / 运行中数与最近通知；侧边栏会话行同时带 DevLead 标记。
 
 ## 本 bundle 包含的插件行
 
@@ -39,7 +40,7 @@ kind: "package-bundle"
 | `devlead` | `@yankeguo/dsh-devlead` | 核心服务 `ctx.devLead`：模式、Workspace/Session 编排、通知投递、`devLead` projection |
 | `devlead-tool` | `@yankeguo/dsh-tool-devlead` | 12 个模型工具与条件 system prompt |
 | `devlead-command` | `@yankeguo/dsh-command-devlead` | `/devlead` 人类命令 |
-| `devlead-ui` | `@yankeguo/dsh-client-ui-devlead` | 浏览器两态 UI：工具条开关 + 开启后的 DevLeadBar + 侧边栏会话行标记 |
+| `devlead-ui` | `@yankeguo/dsh-client-ui-devlead` | 浏览器两态 UI：常驻工具条开关 + 开启后的只读 DevLeadBar + 侧边栏会话行标记 |
 
 依赖方向：`protocol ← devlead ← {tool, command}`；`client-ui` 只依赖 `protocol`（浏览器侧）。
 
@@ -118,7 +119,7 @@ profile，且 `desktop` profile 已启用本 bundle（重复插入相同 row id 
 ## 使用
 
 ```
-/devlead                        # 状态：开关、监督会话、最近通知、帮助
+/devlead                        # 状态：模式状态、监督会话、最近通知、帮助
 /devlead on                     # 打开当前会话的 DevLead 模式（人类专属）
 /devlead off                    # 关闭（fold 冻结时同时完成隐式 reset 恢复）
 /devlead reset                  # 人类专属恢复：丢弃本会话的 DevLead 状态（模式/watch/digest）
@@ -187,8 +188,8 @@ bundle 的 patch 行没有显式写配置，核心服务使用 DESIGN 默认值�
 ## English summary
 
 `@yankeguo/dsh-devlead-bundle` installs the whole DevLead suite - the core `ctx.devLead` service,
-twelve `devlead_*` tools, the `/devlead` human command, and the Web UI (composer switch/status
-strip plus sidebar marks). The suite targets the default DSH Web composition
+twelve `devlead_*` tools, the `/devlead` human command, and the Web UI (composer-toolbar toggle
+plus a status-only strip and sidebar marks). The suite targets the default DSH Web composition
 (`dsh-base` + `dsh-web-app`) and has no hard dependency on experimental plugins. Full docs:
 [README.md](https://github.com/yankeguo/dsh-devlead/blob/main/README.md) (English), [README.zh.md](https://github.com/yankeguo/dsh-devlead/blob/main/README.zh.md) (中文), and
 [DESIGN.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/DESIGN.md).

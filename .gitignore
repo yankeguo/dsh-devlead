@@ -4,3 +4,4 @@ packages/*/lib/
 .DS_Store
 coverage/
 .tmp/
+/.dsh/

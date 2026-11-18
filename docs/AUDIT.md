@@ -105,6 +105,10 @@ patch 流检查（`scripts/e2e-smoke.mjs` 会断言 linked root 存在）。
 
 ## 5. 客户端 UI 与协议（`packages/client-ui`、`packages/protocol`）
 
+> 0.2.4 变更：模式开关已统一到 composer toolbar 的 `DevLeadIconToggle`（两态常驻）；
+> `DevLeadBar` 只读且不再导入 `Switch`。以下 §5 记录的是 0.2.0 审计时点，实现以
+> `docs/DESIGN.md` §7 为准。
+
 - 浏览器 API 逐项对照 DSH 0.2.2-rc.1：slot 均为 `list`/`session`、标准 props 含
   `useProjection`/`useSessions`/`useSessionStatus`；`ctx.slots.inject` 本身有 fiber 级 effect，
   直接调用正确；`Switch`/`Button`/`Tooltip`/locale/icon props 与官方一致；浏览器 bundle 对

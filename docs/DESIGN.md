@@ -586,7 +586,7 @@ Session 的工作目录切到独立分支/检出，DevLead 用它**可选地**�
 `/devlead` 语法：
 
 ```
-/devlead                  # 状态：开关、worktree 能力、监督的会话（标题/状态）、最近通知、帮助
+/devlead                  # 状态：模式状态、worktree 能力、监督的会话（标题/状态）、最近通知、帮助
 /devlead on               # 打开当前会话的 DevLead 模式
 /devlead off              # 关闭；fold 冻结时也会强制关闭并清理冻结状态（见下）
 /devlead reset            # 人类专属恢复：丢弃该会话的全部 DevLead 持久状态并回到默认 disabled

@@ -56,7 +56,7 @@ Waiting after dispatch: dispatch is asynchronous, so never wait for a child Sess
 
 Reporting: before you finish a turn, tell the human which Workspaces and Sessions you created, changed, or closed (and why you closed them), what each child was asked to do, how its latest turn ended (completed, failed, blocked, cancelled), whether you did any implementation work directly in this session and under what human authorization, and anything that needs their decision. Review each delivery by reading the actual diff or commits and the verification output, not only the child's summary; if a further acceptance run is needed, ask the Session to run it and report the output. Never claim a child finished or succeeded without reading it first. Report tool error codes and what you attempted instead of hiding failures.
 
-Only the human can turn DevLead mode on or off (with /devlead on or /devlead off, or the status strip switch); no tool can enable it, so never try to.`
+Only the human can turn DevLead mode on or off (with /devlead on or /devlead off, or the composer-toolbar toggle shown in both states); no tool can enable it, so never try to.`
 
 /**
  * Checkout-isolation guidance appended when the Host composes the experimental

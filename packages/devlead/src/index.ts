@@ -687,7 +687,7 @@ export class DevLeadService extends Service {
 
   /**
    * Save one Session's DevLead selection. Human-entry points own this call: the
-   * `/devlead` command and the browser switch, never a model tool.
+   * `/devlead` command and the composer-toolbar toggle, never a model tool.
    * @param agent - exact live Session Agent receiving the selection.
    * @param enabled - selected mode.
    * @param signal - cancellation checked before the write.

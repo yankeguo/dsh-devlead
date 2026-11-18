@@ -268,7 +268,7 @@ DSH 跳过。
 /devlead on        # 打开当前会话的 DevLead 模式（需要 Agent live）
 /devlead off       # 关闭；立即停止通知投递，已保留的通知记录仍在 Session 日志里；fold 冻结时隐式 reset
 /devlead reset     # 人类专属恢复：丢弃本会话的 DevLead 状态（也用于解冻损坏的 fold）
-/devlead           # 查看状态：开关、worktree 隔离能力、监督会话（标题/状态）、最近通知、帮助
+/devlead           # 查看状态：模式状态、worktree 隔离能力、监督会话（标题/状态）、最近通知、帮助
 /devlead status    # 上一条的显式别名
 ```
 

@@ -15,6 +15,10 @@ plugin-market 等）。审计对象是本仓库的 6 个包（`protocol`、`devl
 > 在一次性 profile 里显式追加官方实验 forge bundle 以验证 worktree happy path，这不是产品
 > 依赖；阶段 3 在真实 Host 上验证 12 个工具的条件可见性、只读模型目录、triage/自主关闭 policy、
 > archive/unarchive/remove 与创建时模型/Agent Teams 的 durable 行为）。最新验证计数见 §7.6。
+>
+> **后续 UI 变更（0.2.4）**：DevLead 模式开关已统一到 composer toolbar 的
+> `DevLeadIconToggle`（两态常驻）；`DevLeadBar` 只读且不再导入 `Switch`。下表 §4.3 的
+> `Switch` 是审计时点的引入形态，当前实现见 `docs/DESIGN.md` §7。
 
 ## 1. 结论摘要
 
@@ -219,7 +223,7 @@ module table 里。E1 佐证：安装运行时 `dsh/node_modules/@deepseek-ai/` 
 | --- | --- | --- | --- | --- | --- | --- |
 | `react`（含 `react/jsx-runtime`） | 第三方库，**浏览器平台单例**（壳内打包，profile 无关） | 根 devDep；client 值导入 hooks/JSX；构建 external | 是（平台单例） | 浏览器 bundle 无法 require（壳不可能缺） | 根 `package.json:51`；`scripts/client-externals.mjs:13-24`；`DSH:platform.ts:9`；`DSH:seed.ts:9,31` | 保持（devDep 足够） |
 | `@deepseek-ai/dsh-client-ui-slots` | 平台单例（**不是** profile 行） | 根 devDep；浏览器 type-only（SlotMap 类型） | 否 | 无（仅类型/槽位契约） | 根 `package.json:36`；`DSH:platform.ts:12`；`DSH:seed.ts:39`；E1 无该 host 包 | 保持 |
-| `@deepseek-ai/dsh-client-ui-primitives` | 平台单例（**不是** profile 行） | 根 devDep；client 值导入（Button/Switch/Tooltip/图标） | 是（平台单例，壳保证） | 浏览器 bundle 无法 require（壳不可能缺） | 根 `package.json:33`；`DSH:platform.ts:13`；`DSH:seed.ts:40`；E1 前端产物内联 | 保持 |
+| `@deepseek-ai/dsh-client-ui-primitives` | 平台单例（**不是** profile 行） | 根 devDep；client 值导入（Button/Tooltip/图标；审计时点另含 Switch） | 是（平台单例，壳保证） | 浏览器 bundle 无法 require（壳不可能缺） | 根 `package.json:33`；`DSH:platform.ts:13`；`DSH:seed.ts:40`；E1 前端产物内联 | 保持（历史审计；Switch 已于 0.2.4 移除，见 DESIGN §7） |
 | `@deepseek-ai/dsh-api-remotes` | 默认组合（web-app:244） | client `dsh.client.inject` id；浏览器 type-only | 否（informational 边）；其 client 半边提供 `remote.commands` | 若连行都缺失：client 条目 pending（§5） | `client-ui/package.json:21`；根 `package.json:29`；`DSH:web-app:244`；`DSH:packages/api/remotes/src/client/index.ts:192` | 保持 |
 | `@deepseek-ai/dsh-api-session-controller` | 默认组合 Web（web-app:117） | client `dsh.client.inject` id；浏览器 type-only | 否；其 client 半边提供 `sessions` | 同上 | `client-ui/package.json:22`；`DSH:web-app:117` | 保持 |
 | `@deepseek-ai/dsh-client-locale` | 默认组合（web-app:253） | client `dsh.client.inject` id；浏览器 type-only | 否；提供 `locale` | 同上 | `client-ui/package.json:23`；`DSH:web-app:253`；`DSH:packages/client/locale/src/client/index.ts:588` | 保持 |

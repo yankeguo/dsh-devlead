@@ -101,14 +101,15 @@ reports):
 | --- | --- | --- |
 | `devLead` projection not loaded yet | nothing renders | — |
 | Mode off | the small toolbar icon button | click sends `/devlead on`; the surface re-renders from the projection |
-| Mode on, no watched sessions | DevLeadBar: switch + watched 0 + help hint | flipping the switch sends `/devlead off` |
-| Mode on | DevLeadBar: switch + watched N / running M + latest notification excerpt | same; the switch is disabled while a command is in flight |
-| A command settles with a logical error | on: an inline error row in the strip; off: the error text in the icon tooltip | fix and retry |
+| Mode on, no watched sessions | DevLeadBar: watched 0 + help hint (status only) | the toolbar toggle sends `/devlead off` |
+| Mode on | DevLeadBar: watched N / running M + latest notification excerpt (status only) | same; the toggle is disabled while a command is in flight |
+| A command settles with a logical error | the error text in the toggle's tooltip, aria-label, and live region | fix and retry |
 
-- The strip and the icon only read `useProjection('devLead')` and the standard Session list —
+- The strip only reads `useProjection('devLead')` and the standard Session list —
   **no custom Remote API**; the sidebar mark and its hover-card line read the Session-list
-  summary only. Both call the injected `executeCommand('/devlead on'|'/devlead off')`,
-  never flip optimistically, and always follow the projection.
+  summary only. The composer-toolbar toggle is the only surface that calls the injected
+  `executeCommand('/devlead on'|'/devlead off')`; it never flips optimistically and always
+  follows the projection.
 - The browser half only renders on the Web platform; the i18n namespace is `devlead` with `zh`
   and `en` dictionaries.
 
@@ -296,7 +297,7 @@ is off and `/devlead off` while it is on.
 /devlead on        # enable DevLead mode for the current session (requires a live Agent)
 /devlead off       # disable; stops notification delivery immediately, retained records stay in the Session log
 /devlead reset     # human-only recovery: discard this session's DevLead state (also recovers a frozen fold)
-/devlead           # show status: switch, watched sessions (title/state), latest notifications, help
+/devlead           # show status: mode state, watched sessions (title/state), latest notifications, help
 /devlead status    # explicit alias of the above
 ```
 
@@ -684,7 +685,7 @@ without it keeps the default single-checkout behavior and reports `unavailable`.
 | `/devlead watch` reports ambiguity | the prefix matches several sessions; use a longer prefix or the full id from the candidates in the error |
 | `/devlead watch` reports the mode is off | run `/devlead on` first; watch-set changes require the mode |
 | A child's turn settled but the DevLead was not woken | the mode is off, the session is not watched, the lead is cold and `wakeColdSession: false` (queues wait for the Session to be opened), the Host composes no Session activator to resume it, the notification is still inside the coalescing window, or the wake is waiting for an undelivered notice to leave the inbox (retried within 1 s) |
-| The DevLead switch seems to do nothing | the command may still be running (the switch is disabled); when enabling fails, the error shows inline in the strip or in the icon tooltip |
+| The DevLead switch seems to do nothing | the command may still be running (the toggle is disabled); when enabling or disabling fails, the error shows in the toggle's tooltip, aria-label, and live region |
 | The strip's counts disagree with the sidebar | the strip computes from the projection's watch set and the standard Session list; a just-changed value can lag briefly — reload the page to re-read |
 | Cannot find the switch | it is the user icon in the composer toolbar (next to the permission dropdown) and is shown in both states; hover shows "Turn on DevLead mode" while off or "Turn off DevLead mode" while on; `/devlead on|off` also works |
 | DevLead state survives a restart | expected: mode / watch set / notifications are durable records; run `/devlead off` when no longer needed |
