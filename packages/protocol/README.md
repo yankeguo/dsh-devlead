@@ -25,10 +25,11 @@ Only install this package directly when you are composing the suite yourself.
 | `@yankeguo/dsh-devlead-protocol/client` | Browser-safe constants, types, and pure formatting helpers |
 | `@yankeguo/dsh-devlead-protocol/package.json` | Package manifest |
 
-The public contract includes the `devLead` / `devLeadMode` projection keys and types, durable
-`plugin:devlead/*` record types and their version (mode / watch / notification / **report** / **reset**;
-`DevLeadResetRecord` discards every earlier DevLead record of a Session and restarts both
-projections from their empty state), the watched-child `DevLeadReport` receipt
+The public contract includes the `devLead` / `devLeadMode` / `devLeadWatch` projection keys and
+types, durable `plugin:devlead/*` record types and their version (mode / watch / notification /
+**report** / **reset**; `DevLeadResetRecord` discards every earlier DevLead record of a Session and
+restarts all three projections from their empty state), the summary-sized `DevLeadWatchProjection`
+(`{ sessions }`, used by the sidebar to mark watched rows), the watched-child `DevLeadReport` receipt
 (`kind`, `message`, `summary?`, sender/lead ids, turn; bounded message/summary), retention/excerpt/
 instant constants, transition/report-kind vocabulary, `devLeadReportId`, `reportLine`,
 `notificationLine` / `excerptLine` / `formatInstant`, the `DevLeadUseWorkspaceRequest` shape
@@ -44,6 +45,6 @@ carried by the required `DevLeadCreatedSession.isolation` field.
 ## 中文
 
 `@yankeguo/dsh-devlead-protocol` 是 DevLead 套件的纯协议包：host 与浏览器共用的类型、常量、
-projection 键、`plugin:devlead/*` 持久记录类型（mode / watch / notification / report / reset）与格式化
+projection 键（`devLead` / `devLeadMode` / `devLeadWatch`）、`plugin:devlead/*` 持久记录类型（mode / watch / notification / report / reset）与格式化
 函数，以及 `DevLeadUseWorkspaceRequest`、必填的 `DevLeadCreatedSession.isolation` 等请求/结果
 形状。它没有运行时 DSH 依赖，通常随 bundle 安装。完整中文文档见[根 README.zh.md](https://github.com/yankeguo/dsh-devlead/blob/main/README.zh.md)与[设计说明](https://github.com/yankeguo/dsh-devlead/blob/main/docs/DESIGN.md)。

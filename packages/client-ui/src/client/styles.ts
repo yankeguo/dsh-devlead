@@ -309,6 +309,27 @@ export const styles = `
   color: var(--dsw-alias-label-secondary, GrayText);
 }
 
+/* The active lead row gets the same business accent as the toolbar toggle,
+   painted as a ring so the 32px row box, padding, and title lane never move.
+   The row owns a stable data-row-key; :has scopes the decoration to exactly
+   the row that mounted the active mark and leaves every other list row alone.
+   The mark itself stays mounted while the shell hides the resting seat on
+   hover, so the ring survives hover/focus. */
+[data-row-key^="session:"]:has(.devlead-row-mark-active) {
+  border-color: var(--dsw-alias-state-business-primary, #4176e6);
+  box-shadow:
+    inset 0 0 0 1px var(--dsw-alias-state-business-primary, #4176e6),
+    0 0 0 2px var(--dsw-alias-state-business-tertiary, rgba(65, 118, 230, 0.12));
+}
+
+/* A watched row uses a quieter shield than the active lead's mark: secondary
+   ink at reduced opacity stays legible in both palettes without competing with
+   the active ring. */
+.devlead-row-mark-watched {
+  color: var(--dsw-alias-label-secondary, GrayText);
+  opacity: 0.62;
+}
+
 /* Hover-card line explaining the mark; mirrors the shell's hover status rows
    (12px text on a 20px line) so the card keeps one rhythm. */
 .devlead-row-hover {

@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "DevLead 界面",
-    "description": "DevLead 模式的 Web 界面：输入框工具条的 DevLead 开关（两态均可切换）、模式开启后显示的状态条，以及侧边栏中已开启会话的 DevLead 标记。"
+    "description": "DevLead 模式的 Web 界面：输入框工具条的 DevLead 开关（两态均可切换）、模式开启后显示的状态条，以及侧边栏中激活 DevLead 行与已关注会话的标记。"
   }
 }

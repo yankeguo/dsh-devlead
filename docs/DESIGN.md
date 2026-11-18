@@ -60,8 +60,8 @@ pnpm workspace，`packages/*`：
 
 | 目录 | 包名 | 角色 |
 | --- | --- | --- |
-| `protocol` | `@yankeguo/dsh-devlead-protocol` | 纯类型 + 常量 + 格式化（host 与浏览器共用），并声明 `devLead` / `devLeadMode` projection 的类型 |
-| `devlead` | `@yankeguo/dsh-devlead` | 核心 Service `ctx.devLead`：模式状态、Workspace/Session 编排、关注关系索引、通知投递、`devLead` 与 summary 级 `devLeadMode` 两个 projection fold |
+| `protocol` | `@yankeguo/dsh-devlead-protocol` | 纯类型 + 常量 + 格式化（host 与浏览器共用），并声明 `devLead` / `devLeadMode` / `devLeadWatch` projection 的类型 |
+| `devlead` | `@yankeguo/dsh-devlead` | 核心 Service `ctx.devLead`：模式状态、Workspace/Session 编排、关注关系索引、通知投递、`devLead` 与两个 summary 级 projection（`devLeadMode` / `devLeadWatch`）的 fold |
 | `tool` | `@yankeguo/dsh-tool-devlead` | 模型工具 `devlead_*` + 条件系统提示 |
 | `command` | `@yankeguo/dsh-command-devlead` | 人类命令 `/devlead` |
 | `client-ui` | `@yankeguo/dsh-client-ui-devlead` | 浏览器 UI：两态都显示的图标 + 文本工具条开关 + 开启后的只读 DevLead 状态条 + 侧边栏会话行标记 |
@@ -153,6 +153,23 @@ DSH 的所有读取路径会保留并重放这些记录，但不会把它们投�
   cached block（`summaryKeys()` 天然包含本 key，由 projection cache 的 checkpoint 行恢复）。
   页面刷新 / Host 重启后由投影缓存行恢复。升级前已处于开启状态的会话在 cache 出现本 key
   之前不会显示标记（打开该会话一次，或再做一次开/关即可回填）。
+
+### `devLeadWatch` Session projection（summary 级）
+
+- key：`devLeadWatch`（`DEVLEAD_WATCH_PROJECTION_KEY`），wire 值 `DevLeadWatchProjection =
+  { sessions: string[] }`，同样不声明 `wire.summary: false`，每个 Session summary 都携带。
+- 为什么需要第三个 unit：watch 关系记录在 **lead** 的日志里，而不在 watched Session 的日志里；
+  侧边栏行标记只有每一行的 summary，不能写被关注会话的日志，也不能依赖被排除的 `devLead` digest。
+  把 lead 的完整 watch 集合做成 summary 级小 unit 后，任何一行都可以从当前 enabled lead 的
+  `devLeadWatch.sessions` 判断自己是否被关注；对 cold 行、列表分页和重启后的 cache 行都成立。
+  搜索态使用另一套搜索结果行（不挂载 `sidebar.session.row.trailing`），因此搜索时不显示行
+  标记；清空搜索回到普通列表后恢复。
+- fold 与 `devLead` 同样严格解码 mode/watch/notification/report 记录，首条损坏记录冻结；
+  reset 清空。wire view 返回 state 自己的 `sessions` 数组，未变化时复用。
+- 更新路径与 `devLeadMode` 相同：live 会话走 projection frame，cold 会话走 cached summary；
+  watch/unwatch/off/reset 都从 lead 自己的 durable 记录自动 fold，客户端不需要轮询或额外 Remote。
+- 单活约束保证最多一个 enabled lead；客户端在多个历史 enabled 摘要中按“任一 enabled 且包含本行”
+  处理，服务端仍负责恢复时消除重复。
 
 ## 4. 核心 Service `ctx.devLead`
 
@@ -803,15 +820,23 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   - `role=status` live region 覆盖状态条提示 / 最新通知，以及工具条开关的开启/关闭失败文本，
     保证屏幕阅读器能听到通知与错误；`aria-busy` / label 与 pending 状态一致。
   - 开关不随状态条出现/消失而消失；同一时刻只有一个模式开关。
-- **侧边栏会话行标记**：开启 DevLead 的会话在 Session 列表行尾部显示一个盾形标记
-  （`sidebar.session.row.trailing`；非交互、不绑定/不激活 Session，只按 `sessionId` 读
-  summary 级 `devLeadMode`）。rc.1 对 blank（尚无 turn）行不渲染 trailing seat，因此在空白
-  新会话上开启模式后要等第一次 turn 才显示标记；该限制无法在插件侧补 seat。DSH 0.2.2-rc.1
-  没有“始终可见”的行 seat：`leading` seat 在运行中 / 有未读 / 有待处理交互时会被状态点替换，
-  因此不用它；`trailing` seat 在桌面端
-  行被悬停 / 聚焦 / 菜单打开时被 shell 隐藏，所以 `sidebar.session.row.hover` 再提供一行
-  「DevLead 模式已启用」说明（i18n key `row.mark.aria` / `row.hover.enabled`），标记的
-  `aria-label` 让屏幕阅读器同样能听到。图标与说明均不改变行高、不压缩标题截断宽度。
+- **侧边栏会话行标记**：
+  - **当前激活的 lead** 行使用 business-accent ring（`border-color` + inset/outer
+    `box-shadow`，颜色与 composer 工具栏开关一致），不增加 padding/margin/height，因此 32px
+    行盒、标题省略和布局不位移。实现只能走 CSS：shell 的行是
+    `<div data-row-key="session:<id>">`，没有行级装饰 slot；插件用
+    `[data-row-key^="session:"]:has(.devlead-row-mark-active)` 限定在会话行，不靠哈希类名。
+  - **被当前 lead 关注的普通 Session** 在行尾显示弱化盾牌（`sidebar.session.row.trailing`；
+    非交互、不绑定/不激活 Session），谓词读 lead 的 summary 级 `devLeadWatch`，不读被排除的
+    digest，也不给被关注会话写日志；cold 行/重启 cache 行同样成立。未 watched 不渲染。
+  - `:has` 依赖 shell 的稳定 `data-row-key` 属性（`Rows.tsx` 明确写入）；`:has` 在目标 Web
+    浏览器可用。trailing seat 在悬停/聚焦时被 shell 隐藏，但 mark 仍挂载在 DOM 中，所以
+    `:has` 的 active ring 不会在 hover 时消失；`sidebar.session.row.hover` 另提供
+    「已关注/激活 DevLead」说明（i18n `row.watched.aria` / `row.hover.watched` /
+    `row.mark.aria` / `row.hover.enabled`），屏幕阅读器不依赖边框。
+  - rc.1 对 blank（尚无 turn）行不渲染 trailing seat：空白新会话上的标记/hover 说明要等第一次
+    turn；active ring 也随 mark 无法显示，这是 shell seat 限制。搜索视图复用另一套结果行，同
+    样不挂载该 seat；搜索期间不显示 active/watched 标识。
 - i18n：namespace `devlead`，`zh`/`en` 词典；`locale/zh.json`、`locale/en.json` 提供
   `meta.title`/`meta.description`（插件市场展示）。
 - 客户端 bundle 构建：esbuild CJS + `window.__ModuleLoader__.load({ id, factory })` 包装；
@@ -972,7 +997,7 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   patch 与 installed 两条加载流都跑完整多阶段；`--no-worktree` 跳过阶段 2（阶段 1、1b、3 仍
   运行，调试用）。两条加载流各 **143/143**（阶段 1 27 + 阶段 1b 12 + 阶段 2 23 + 阶段 3 81，
   阶段 3 新增 agent preset roster 检查）；跳过阶段 2 时 **120/120**（阶段 1 + 1b + 3）。
-- 本轮最终验证数字（工作树）：`pnpm verify` = typecheck 通过 + **25 文件 / 740 tests** +
+- 本轮最终验证数字（工作树）：`pnpm verify` = typecheck 通过 + **26 文件 / 755 tests** +
   7 个构建产物；`node scripts/check-packages.mjs` → `OK (6 packages)`；E2E 本轮重跑
   patch / installed 各 **143/143**（阶段 1 27 + 阶段 1b 12 + 阶段 2 23 + 阶段 3 81）。
 - **DSH 版本兼容矩阵（本轮真实 E2E，npm 临时安装 CLI + `DSH_BIN`）**：

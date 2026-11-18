@@ -2,14 +2,15 @@
  * DevLeadSessionMark: the sidebar's DevLead marker for one Session row
  * (`sidebar.session.row.trailing`).
  *
- * The mark makes DevLead Sessions recognizable in the Session list instead of
- * only inside the open conversation. It renders only while the row's summary
- * reports DevLead mode enabled, reads the summary-sized `devLeadMode`
- * projection (never the digest), and activates, retains, or opens nothing: the
- * enclosing row keeps every cell as its activation area. The trailing seat is
- * hidden by the shell while the row is hovered or focused on hover-capable
- * devices; the same fact is restated in the row's hover card by
- * `DevLeadSessionHoverMark`.
+ * The mark makes both row roles recognizable in the Session list instead of
+ * only inside the open conversation: an enabled row gets the active-lead mark
+ * (which also scopes the CSS row ring), and a row watched by the active lead
+ * gets a quieter shield. It reads the summary-sized `devLeadMode` and
+ * `devLeadWatch` projections (never the digest), and activates, retains, or
+ * opens nothing: the enclosing row keeps every cell as its activation area.
+ * The trailing seat is hidden by the shell while the row is hovered or focused
+ * on hover-capable devices; the same fact is restated in the row's hover card
+ * by `DevLeadSessionHoverMark`.
  */
 
 import { IconShieldOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
@@ -17,7 +18,7 @@ import type { SessionListState } from '@deepseek-ai/dsh-api-session-controller/c
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 // Type-only: pulls the ui-workspace SlotMap merge (the sidebar Session-row seats).
 import type {} from '@deepseek-ai/dsh-client-ui-workspace/client'
-import { devLeadRowEnabled } from './sessionMark.ts'
+import { devLeadRowEnabled, devLeadRowWatched } from './sessionMark.ts'
 
 /** Full props of the row mark: row identity + runtime hooks + copy. */
 export type DevLeadSessionMarkProps =
@@ -25,25 +26,39 @@ export type DevLeadSessionMarkProps =
   & PropsLocale<'devlead'>
 
 /**
- * Render the DevLead mark for an enabled Session row.
+ * Render the DevLead mark for an enabled or watched Session row.
  * @param props.sessionId - Session this row shows.
  * @param props.useSessions - selector hook over the Session list store.
  * @param props.t - DevLead surface copy.
- * @returns the mark, or nothing while the row reports mode disabled.
+ * @returns the active/watched mark, or nothing for a plain row.
  */
 export function DevLeadSessionMark({ sessionId, useSessions, t }: DevLeadSessionMarkProps) {
   // The explicit parameter type keeps this component typed even in a workspace
   // that does not install the shell store package that declares the hook shape.
   const enabled = useSessions((state: SessionListState) => devLeadRowEnabled(state.byId[sessionId]))
-  if (!enabled) return null
+  const watched = useSessions((state: SessionListState) => devLeadRowWatched(sessionId, state.byId))
+  if (enabled) {
+    return (
+      <span
+        className="devlead-row-mark devlead-row-mark-active"
+        role="img"
+        aria-label={t('row.mark.aria')}
+        data-devlead-row-mark="true"
+        data-devlead-active-mark="true"
+      >
+        <IconShieldOutlineRegular size={13} />
+      </span>
+    )
+  }
+  if (!watched) return null
   return (
     <span
-      className="devlead-row-mark"
+      className="devlead-row-mark devlead-row-mark-watched"
       role="img"
-      aria-label={t('row.mark.aria')}
-      data-devlead-row-mark="true"
+      aria-label={t('row.watched.aria')}
+      data-devlead-row-mark="watched"
     >
-      <IconShieldOutlineRegular size={13} />
+      <IconShieldOutlineRegular size={12} />
     </span>
   )
 }

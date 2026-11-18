@@ -15,7 +15,7 @@ kind: "package-bundle"
 - **DevLead 模式**：每个会话一个持久开关；打开后获得 13 个主 `devlead_*` 工具（已关注会话另有 1 个 `devlead_report`）、DevLead 系统
   提示，以及两态 UI：composer 工具条里的 DevLead 图标 + 文本按钮在两种状态下都常驻并负责
   开启/关闭，开启后 composer 上方才出现只读状态条。
-  已开启的会话还会在侧边栏会话行显示 DevLead 标记，关掉会话后仍可辨识（DSH rc.1 对
+  当前激活的 DevLead 行会显示强调色边框 ring，被关注 Session 行显示弱化盾牌，关掉会话后仍可辨识（DSH rc.1 对
   blank / 尚无 turn 的新会话行不渲染该 seat，首次 turn 后才显示）。
   开关是**人类专属操作**（`/devlead on|off` 或 composer 工具条开关），模型无法自行打开。
 - **产出物是标准 DSH 实体**：Workspace 真实注册进 `ctx.workspaceRegistry`，子会话是真实普通
@@ -25,13 +25,13 @@ kind: "package-bundle"
   （cold lead rehydration），已 dispose 的 lead 继续观察；冷 lead 默认 resume 投递
   （`wakeColdSession: true`）。
 - **事件溯源**：模式 / 关注集合 / 通知以可忽略的 `plugin:devlead/*` 记录持久化，可跨重启 /
-  恢复 / fork；`devLead` Session projection 把状态同步到浏览器，summary 级 `devLeadMode`
-  随每个会话列表行下发，供侧边栏标记使用。
+  恢复 / fork；`devLead` Session projection 把状态同步到浏览器，summary 级 `devLeadMode` 与
+  `devLeadWatch`（关注集合）随每个会话列表行下发，供侧边栏激活/已关注标记使用。
 - **人类命令**：`/devlead`、`/devlead on|off`、`/devlead reset`（损坏状态恢复）、
   `/devlead watch|unwatch <session>`。
 - **两态 UI**：composer 工具条里的 ghost 图标 + DevLead 文本按钮在两种状态下都显示——关闭态
   点击 `/devlead on`，开启态点击 `/devlead off`；开启后 composer 上方出现只读 DevLeadBar，
-  显示已关注会话数 / 运行中数与最近通知；侧边栏会话行同时带 DevLead 标记。
+  显示已关注会话数 / 运行中数与最近通知；侧边栏同时标识激活 lead 与已关注会话。
 
 ## 本 bundle 包含的插件行
 
@@ -40,7 +40,7 @@ kind: "package-bundle"
 | `devlead` | `@yankeguo/dsh-devlead` | 核心服务 `ctx.devLead`：模式、Workspace/Session 编排、通知投递、`devLead` projection |
 | `devlead-tool` | `@yankeguo/dsh-tool-devlead` | 13 个主工具 + 1 个汇报工具与条件 system prompt |
 | `devlead-command` | `@yankeguo/dsh-command-devlead` | `/devlead` 人类命令 |
-| `devlead-ui` | `@yankeguo/dsh-client-ui-devlead` | 浏览器两态 UI：常驻工具条开关（图标 + 文本）+ 开启后的只读 DevLeadBar + 侧边栏会话行标记 |
+| `devlead-ui` | `@yankeguo/dsh-client-ui-devlead` | 浏览器两态 UI：常驻工具条开关（图标 + 文本）+ 开启后的只读 DevLeadBar + 侧边栏激活/已关注标记 |
 
 依赖方向：`protocol ← devlead ← {tool, command}`；`client-ui` 只依赖 `protocol`（浏览器侧）。
 

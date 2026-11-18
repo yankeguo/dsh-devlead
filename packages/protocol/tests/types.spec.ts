@@ -15,8 +15,16 @@ import type {
   SessionProjectionSummaryValues,
   SessionProjectionViewValue,
 } from '@deepseek-ai/dsh-session-projection/types'
-import { DEVLEAD_MODE_PROJECTION_KEY, DEVLEAD_PROJECTION_KEY } from '../src/index.ts'
-import type { DevLeadModeProjection, DevLeadProjection } from '../src/index.ts'
+import {
+  DEVLEAD_MODE_PROJECTION_KEY,
+  DEVLEAD_PROJECTION_KEY,
+  DEVLEAD_WATCH_PROJECTION_KEY,
+} from '../src/index.ts'
+import type {
+  DevLeadModeProjection,
+  DevLeadProjection,
+  DevLeadWatchProjection,
+} from '../src/index.ts'
 
 /** One wire value of the digest projection the protocol merges into the shared table. */
 const wire: SessionProjectionViewValue<SessionProjectionMap['devLead']> = {
@@ -35,12 +43,20 @@ const wire: SessionProjectionViewValue<SessionProjectionMap['devLead']> = {
 /** One wire value of the summary-sized mode projection. */
 const modeWire: SessionProjectionViewValue<SessionProjectionMap['devLeadMode']> = { enabled: true }
 
+/** One wire value of the summary-sized watch projection. */
+const watchWire: SessionProjectionViewValue<SessionProjectionMap['devLeadWatch']> = {
+  sessions: ['session-alpha'],
+}
+
 /** The Session-summary value table must not carry the devLead digest. */
 type SummaryKeys = keyof SessionProjectionSummaryValues
 const devLeadRidesASummary: Extract<SummaryKeys, typeof DEVLEAD_PROJECTION_KEY> extends never ? false : true = false
 
 /** The Session-summary value table must carry the summary-sized mode projection. */
 const modeRidesASummary: Extract<SummaryKeys, typeof DEVLEAD_MODE_PROJECTION_KEY> extends never ? false : true = true
+
+/** The Session-summary value table must carry the summary-sized watch projection. */
+const watchRidesASummary: Extract<SummaryKeys, typeof DEVLEAD_WATCH_PROJECTION_KEY> extends never ? false : true = true
 
 describe('SessionProjectionMap augmentation', () => {
   it('merges the devLead wire value under the projection key', () => {
@@ -61,5 +77,15 @@ describe('SessionProjectionMap augmentation', () => {
 
   it('publishes the mode selection in Session summaries', () => {
     expect(modeRidesASummary).toBe(true)
+  })
+
+  it('merges the summary-sized watch wire value under its own key', () => {
+    const projection: DevLeadWatchProjection = watchWire
+    expect(DEVLEAD_WATCH_PROJECTION_KEY).toBe('devLeadWatch')
+    expect(projection).toEqual({ sessions: ['session-alpha'] })
+  })
+
+  it('publishes the watch set in Session summaries', () => {
+    expect(watchRidesASummary).toBe(true)
   })
 })

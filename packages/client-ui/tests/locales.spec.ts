@@ -42,7 +42,11 @@ describe('dictionaries', () => {
     expect(zh['count.watched']).toBe('已关注 {count} 个会话')
     expect(zh['hint.enabled']).toContain('已关注会话')
     expect(zh['row.hover.enabled']).toContain('关注')
+    expect(zh['row.watched.aria']).toBe('被当前 DevLead 关注')
+    expect(zh['row.hover.watched']).toContain('关注')
     for (const message of Object.values(zh)) expect(message).not.toContain('监督')
+    expect(en['row.watched.aria']).toContain('Watched')
+    expect(en['row.hover.watched']).toContain('Watched')
   })
 
   it('labels the toolbar toggle with the brand name in both locales', () => {

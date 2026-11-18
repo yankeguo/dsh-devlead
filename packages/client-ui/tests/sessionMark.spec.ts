@@ -8,8 +8,11 @@
  */
 
 import { describe, expect, it } from 'vitest'
-import { DEVLEAD_MODE_PROJECTION_KEY } from '@yankeguo/dsh-devlead-protocol/client'
-import { devLeadRowEnabled } from '../src/client/sessionMark.ts'
+import {
+  DEVLEAD_MODE_PROJECTION_KEY,
+  DEVLEAD_WATCH_PROJECTION_KEY,
+} from '@yankeguo/dsh-devlead-protocol/client'
+import { devLeadRowEnabled, devLeadRowWatched } from '../src/client/sessionMark.ts'
 import type { DevLeadRowSummary } from '../src/client/sessionMark.ts'
 
 /** Build one row summary around the projection values under test. */
@@ -41,5 +44,43 @@ describe('devLeadRowEnabled', () => {
       projectionValues: { devLead: { enabled: true, sessions: [], notifications: [] } },
     } as DevLeadRowSummary
     expect(devLeadRowEnabled(attachedOnly)).toBe(false)
+  })
+})
+
+describe('devLeadRowWatched', () => {
+  /** A lead row summary with the given watch set. */
+  function lead(sessions: readonly string[]): DevLeadRowSummary {
+    return summary({
+      [DEVLEAD_MODE_PROJECTION_KEY]: { enabled: true },
+      [DEVLEAD_WATCH_PROJECTION_KEY]: { sessions },
+    })
+  }
+
+  it('is true only when an enabled lead summary lists this Session', () => {
+    const rows = { 'lead-1': lead(['session-1', 'session-2']), 'session-1': summary(undefined) }
+    expect(devLeadRowWatched('session-1', rows)).toBe(true)
+    expect(devLeadRowWatched('session-2', rows)).toBe(true)
+    expect(devLeadRowWatched('session-3', rows)).toBe(false)
+  })
+
+  it('never marks the lead itself or a row with no enabled lead', () => {
+    const enabledLead = lead(['lead-1', 'session-1'])
+    expect(devLeadRowWatched('lead-1', { 'lead-1': enabledLead })).toBe(false)
+    const disabledLead = summary({
+      [DEVLEAD_MODE_PROJECTION_KEY]: { enabled: false },
+      [DEVLEAD_WATCH_PROJECTION_KEY]: { sessions: ['session-1'] },
+    })
+    expect(devLeadRowWatched('session-1', { 'lead-1': disabledLead })).toBe(false)
+    expect(devLeadRowWatched('session-1', {})).toBe(false)
+  })
+
+  it('fails closed on missing or drifting values', () => {
+    const noSet: DevLeadRowSummary = summary({ [DEVLEAD_MODE_PROJECTION_KEY]: { enabled: true } })
+    const badSet: DevLeadRowSummary = summary({
+      [DEVLEAD_MODE_PROJECTION_KEY]: { enabled: true },
+      [DEVLEAD_WATCH_PROJECTION_KEY]: { sessions: 'session-1' as never },
+    })
+    expect(devLeadRowWatched('session-1', { lead: noSet })).toBe(false)
+    expect(devLeadRowWatched('session-1', { lead: badSet })).toBe(false)
   })
 })

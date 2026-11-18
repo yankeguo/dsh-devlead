@@ -3,7 +3,7 @@
 Core Host service of the DevLead suite (`ctx.devLead`): the durable mode switch, damage-recovery
 `reset()`, Workspace and Session orchestration (including `useWorkspace(agent, request, signal?)`
 with directory creation opt-in), the watched-session notification hub with cold-lead rehydration, the mid-turn report channel for watched Sessions,
-and the `devLead` / `devLeadMode` Session projections.
+and the `devLead` / `devLeadMode` / `devLeadWatch` Session projections.
 
 DevLead mode is **globally single-active**: at most one Session (across every Workspace) may be
 enabled. `setEnabled(agent, true)` throws `DEVLEAD_ALREADY_ACTIVE` naming the occupant when another
@@ -70,7 +70,7 @@ validated at both the Loader and direct-construction boundaries.
 
 `@yankeguo/dsh-devlead` 是套件的 Host 核心服务 `ctx.devLead`：模式开关、损坏状态恢复
 `reset()`、Workspace/Session 编排（`useWorkspace(agent, request, signal?)`，目录创建 opt-in）、
-带冷 lead 索引重建的关注关系索引与通知投递，以及 `devLead` / `devLeadMode` projection。
+带冷 lead 索引重建的关注关系索引与通知投递，以及 `devLead` / `devLeadMode` / `devLeadWatch` projection。
 `agents`、`sessions`、`sessionProjections` 为必需 peer；Workspace registry、Session controller、
 标题/查询服务、projection cache、`sessionPersistence`（冷重建就绪屏障）与实验性 worktree 能力
 均为可选探测。完整中文文档见[根 README.zh.md](https://github.com/yankeguo/dsh-devlead/blob/main/README.zh.md)与

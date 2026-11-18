@@ -25,6 +25,7 @@ import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'rea
 import type { SessionListState } from '@deepseek-ai/dsh-api-session-controller/client'
 import {
   DEVLEAD_MODE_PROJECTION_KEY,
+  DEVLEAD_WATCH_PROJECTION_KEY,
   notificationLine,
   reportLine,
 } from '@yankeguo/dsh-devlead-protocol/client'
@@ -625,6 +626,34 @@ describe('DevLeadSessionMark', () => {
     const mark = renderer.root.findByProps({ 'data-devlead-row-mark': 'true' })
     expect(mark.props['role']).toBe('img')
     expect(mark.props['aria-label']).toBe(zh['row.mark.aria'])
+    expect(mark.props.className).toContain('devlead-row-mark-active')
+    expect(mark.props['data-devlead-active-mark']).toBe('true')
+  })
+
+  it('renders a quieter watched mark for a row listed by the active lead', async () => {
+    const rows: TestRows = {
+      'lead-1': {
+        projectionValues: {
+          [DEVLEAD_MODE_PROJECTION_KEY]: { enabled: true },
+          [DEVLEAD_WATCH_PROJECTION_KEY]: { sessions: ['session-1'] },
+        },
+      },
+      'session-1': { projectionValues: { [DEVLEAD_MODE_PROJECTION_KEY]: { enabled: false } } },
+    }
+    const renderer = await mount(<DevLeadSessionMark {...markProps({ rows })} />)
+    const mark = renderer.root.findByProps({ 'data-devlead-row-mark': 'watched' })
+    expect(mark.props['role']).toBe('img')
+    expect(mark.props['aria-label']).toBe(zh['row.watched.aria'])
+    expect(mark.props.className).toContain('devlead-row-mark-watched')
+    expect(renderer.root.findAllByProps({ 'data-devlead-active-mark': 'true' })).toHaveLength(0)
+  })
+
+  it('does not mark a plain unwatched row', async () => {
+    const rows: TestRows = {
+      'session-1': { projectionValues: { [DEVLEAD_MODE_PROJECTION_KEY]: { enabled: false } } },
+    }
+    const renderer = await mount(<DevLeadSessionMark {...markProps({ rows })} />)
+    expect(renderer.toJSON()).toBeNull()
   })
 
   it('renders nothing while the row summary says mode is disabled', async () => {
@@ -649,6 +678,21 @@ describe('DevLeadSessionHoverMark', () => {
     const renderer = await mount(<DevLeadSessionHoverMark {...hoverMarkProps({ rows })} />)
     const line = renderer.root.findByProps({ 'data-devlead-row-hover': 'true' })
     expect(textOf(line)).toBe(zh['row.hover.enabled'])
+  })
+
+  it('renders the watched explanation line for a watched non-lead row', async () => {
+    const rows: TestRows = {
+      'lead-1': {
+        projectionValues: {
+          [DEVLEAD_MODE_PROJECTION_KEY]: { enabled: true },
+          [DEVLEAD_WATCH_PROJECTION_KEY]: { sessions: ['session-1'] },
+        },
+      },
+    }
+    const renderer = await mount(<DevLeadSessionHoverMark {...hoverMarkProps({ rows })} />)
+    const line = renderer.root.findByProps({ 'data-devlead-row-hover': 'true' })
+    expect(line.props['data-devlead-row-watched']).toBe('true')
+    expect(textOf(line)).toBe(zh['row.hover.watched'])
   })
 
   it('renders nothing while the row summary says mode is disabled', async () => {

@@ -54,6 +54,13 @@ export const DEVLEAD_PROJECTION_KEY = 'devLead'
  */
 export const DEVLEAD_MODE_PROJECTION_KEY = 'devLeadMode'
 
+/**
+ * Session projection key carrying a Session's watch set. Summary-sized so every
+ * list row can resolve which rows the current lead watches without loading the
+ * digest-bearing `devLead` value.
+ */
+export const DEVLEAD_WATCH_PROJECTION_KEY = 'devLeadWatch'
+
 /** Human command that toggles and inspects DevLead mode. */
 export const DEVLEAD_COMMAND_NAME = 'devlead'
 
@@ -262,6 +269,12 @@ export interface DevLeadProjection {
 export interface DevLeadModeProjection {
   /** Whether DevLead mode is selected for this Session. */
   readonly enabled: boolean
+}
+
+/** Client view published through the summary-sized `devLeadWatch` projection. */
+export interface DevLeadWatchProjection {
+  /** Sessions the lead currently watches, in add order. */
+  readonly sessions: readonly string[]
 }
 
 /** One registered DSH Workspace as the model tool reports it. */
@@ -638,5 +651,10 @@ declare module '@deepseek-ai/dsh-session-projection/types' {
      * `wire.summary: false`, so every Session summary carries this key.
      */
     devLeadMode: DevLeadModeProjection
+    /**
+     * The Session's watch set. Summary-sized and carried by every Session
+     * summary so the sidebar can mark watched rows without the excluded digest.
+     */
+    devLeadWatch: DevLeadWatchProjection
   }
 }

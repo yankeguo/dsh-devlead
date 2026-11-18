@@ -47,8 +47,8 @@
 | 通知回路 | 已关注会话的 `turn/end` 写入持久通知记录，按合并窗口唤醒 DevLead（可配置窗口；冷 lead 默认 resume）；关注关系索引在 Host 重启后从持久记录重建，已 dispose 的 lead 继续观察（见[通知机制](#通知机制)） |
 | 事件溯源 | 模式/关注集合/通知/reset 全部是可忽略的 `plugin:devlead/*` 记录，严格回放校验，可跨重启 / 恢复 / fork |
 | 损坏状态恢复 | 损坏的 `plugin:devlead/*` 记录会冻结 fold；人类专属 `/devlead reset`（或冻结时的 `/devlead off`）追加 `plugin:devlead/reset` 记录，让两个 projection 回到默认 disabled 状态（见[通知机制](#通知机制)） |
-| Session projection | `devLead` projection（`{ enabled, sessions, notifications, reports }`）把状态同步到浏览器，无需自定义 Remote API；summary 级的 `devLeadMode`（`{ enabled }`）随每个 Session 列表行下发，供侧边栏渲染标记 |
-| 界面 | composer 工具条里带 DevLead 文本的图标按钮是唯一开关，两态都存在（关闭态发 `/devlead on`、开启态发 `/devlead off`）；开启后 composer 上方出现只读 DevLeadBar：已关注会话数/运行中数、最近一条通知；状态条不带开关；已开启的会话在侧边栏会话列表里带标记 |
+| Session projection | `devLead` projection（`{ enabled, sessions, notifications, reports }`）把状态同步到浏览器，无需自定义 Remote API；summary 级的 `devLeadMode`（`{ enabled }`）与 `devLeadWatch`（`{ sessions }`）随每个 Session 列表行下发，供侧边栏渲染激活 lead 与已关注标记 |
+| 界面 | composer 工具条里带 DevLead 文本的图标按钮是唯一开关，两态都存在（关闭态发 `/devlead on`、开启态发 `/devlead off`）；开启后 composer 上方出现只读 DevLeadBar：已关注会话数/运行中数、最近一条通知；状态条不带开关；激活 lead 行有强调色 ring，已关注行有弱化盾牌 |
 | 权限模型 | 模式开关只能由人类命令/UI 触发；通知是运行时提示而非人类指令（见[权限模型](#权限模型)） |
 | 一键安装 | bundle 的 `cordis.patch.yml` 插入全部 4 个运行时插件行，也可单独安装某个包 |
 
@@ -64,12 +64,15 @@ UI 有一个开关、两种状态。插件**不会**在每个会话上摆一条�
 - **已开启**：composer 上方出现状态条 DevLeadBar（槽位 `conversation.input.dock`）：品牌、
   已关注会话数、运行中数、最近一条通知；没有通知时显示帮助提示。状态条只做展示，不承载开关，
   因此关闭模式时不会把执行关闭的控件一起藏掉。模式关闭时没有状态条。
-- **侧边栏标记**：每个列出的、开启 DevLead 的会话在侧边栏会话列表里带一个小标记（行尾时间
-  之后，槽位 `sidebar.session.row.trailing`），会话关掉后仍然可辨识。标记读 summary 级
-  `devLeadMode` projection，因此 cold 会话也能渲染，且不产生每行额外 Host 读取。DSH
-  0.2.2-rc.1 对**空白** Session（尚未开始 turn）不渲染 trailing seat，因此在全新会话上
-  开启模式后，要等第一次 turn 才显示标记；桌面端悬停行时 shell 会隐藏行尾 resting 标记，
-  此时该行 hover card 另行说明「DevLead 模式已启用」（槽位 `sidebar.session.row.hover`）。
+- **侧边栏标记**：当前激活的 DevLead 行使用与工具条开关一致的 business 强调色 ring
+  （`border-color` + `box-shadow`，不加 padding/margin/height，32px 行高不位移）；被当前
+  lead 关注的普通 Session 行尾显示弱化盾牌（`sidebar.session.row.trailing`）。两者都读 summary
+  projection（`devLeadMode` / `devLeadWatch`），因此 cold 行与重启后的 cache 行也能渲染，
+  无每行额外 Host 读取；未 watched 不显示。active ring 通过 shell 稳定的
+  `data-row-key` 属性 + `:has` 限定在会话行，不依赖哈希类名。DSH 0.2.2-rc.1 对**空白**
+  Session（尚未开始 turn）不渲染 trailing seat，因此全新会话要等第一次 turn 才显示标记；
+  桌面端悬停时 shell 隐藏行尾 resting 标记，但 active ring 仍保留，hover card 另说明
+  「激活 DevLead / 已关注」关系（槽位 `sidebar.session.row.hover`）。
 
 未开启（工具条按钮是唯一控件）：
 
@@ -119,11 +122,11 @@ pnpm workspace，`packages/*`：
 
 ```
 packages/
-  protocol/    @yankeguo/dsh-devlead-protocol     纯类型 + 常量 + 格式化（host 与浏览器共用），devLead/devLeadMode projection 类型
+  protocol/    @yankeguo/dsh-devlead-protocol     纯类型 + 常量 + 格式化（host 与浏览器共用），devLead/devLeadMode/devLeadWatch projection 类型
   devlead/     @yankeguo/dsh-devlead              核心服务：模式、Workspace/Session 编排、关注关系索引、通知投递、严格 fold
   tool/        @yankeguo/dsh-tool-devlead         13 个主工具 + 1 个汇报工具 + 条件 prompt
   command/     @yankeguo/dsh-command-devlead      /devlead 人类命令
-  client-ui/   @yankeguo/dsh-client-ui-devlead    浏览器 UI：工具条开关 + 开启后的只读 DevLeadBar + 侧边栏会话行标记
+  client-ui/   @yankeguo/dsh-client-ui-devlead    浏览器 UI：工具条开关 + 开启后的只读 DevLeadBar + 侧边栏激活/已关注标记
   bundle/      @yankeguo/dsh-devlead-bundle       bundle：cordis.patch.yml + 依赖
 ```
 
@@ -632,10 +635,12 @@ config 是整体替换）。
 - **不跨进程 / 跨 DSH 实例编排**；不新增 Remote API；UI 只读 projection + 走命令。
 - **只有一个很小的开关**：为了不在每个会话上显示常驻状态条，唯一开关是 composer 工具条
   里的 DevLead 图标 + 文本按钮，状态条只做展示；不习惯的话记 `/devlead on|off` 命令即可。
-- **侧边栏标记的回填与空白行**：标记来自 summary 级 `devLeadMode` projection。本特性发布前
-  就已开启 DevLead 的会话，要等它的投影 cache 出现该 key 后才显示标记（打开该会话一次，或
-  再开关一次模式即可回填）；v1 不在 Host 启动时做回填。DSH rc.1 对空白（尚无 turn）的
-  Session 行不渲染 trailing seat，所以在全新会话上刚开启模式时要等第一次 turn 才显示标记。
+- **侧边栏标记的回填、空白行与搜索**：active ring 与 watched 盾牌来自 summary 级
+  `devLeadMode` / `devLeadWatch` projection。本特性发布前就已开启 DevLead 或已有 watch 集合
+  的会话，要等它的投影 cache 出现对应 key 后才显示标记（打开该会话一次，或再变更一次模式 /
+  关注集合即可回填）；Host 启动时不做回填。DSH rc.1 对空白（尚无 turn）的 Session 行不渲染
+  trailing seat，所以全新会话要等第一次 turn 才显示标记。搜索态使用另一套结果行，不挂载该
+  seat，因此搜索期间不显示 active/watched 标识。
 - **子会话是普通会话**：会出现在侧边栏并正常消耗模型额度，不是隐藏 subagent。
 - **损坏的 DevLead 记录按 fail-closed 处理，但可恢复**：replay 在首条损坏的
   `plugin:devlead/*` 记录处冻结，工具/状态读写报 `DEVLEAD_PROJECTION_INVALID`。人类专属的

@@ -81,6 +81,7 @@ import {
   applyDevLeadProjection,
   devLeadModeProjectionDefinition,
   devLeadProjectionDefinition,
+  devLeadWatchProjectionDefinition,
   devLeadProjectionView,
   emptyDevLeadProjectionState,
 } from './fold.ts'
@@ -120,18 +121,24 @@ export type { DevLeadErrorCode } from './error.ts'
 export {
   applyDevLeadModeProjection,
   applyDevLeadProjection,
+  applyDevLeadWatchProjection,
   devLeadModeProjectionDefinition,
   devLeadModeProjectionSchema,
   devLeadModeProjectionStateSchema,
   devLeadModeProjectionView,
+  devLeadWatchProjectionDefinition,
+  devLeadWatchProjectionSchema,
+  devLeadWatchProjectionStateSchema,
+  devLeadWatchProjectionView,
   devLeadProjectionDefinition,
   devLeadProjectionSchema,
   devLeadProjectionStateSchema,
   devLeadProjectionView,
   emptyDevLeadModeProjectionState,
   emptyDevLeadProjectionState,
+  emptyDevLeadWatchProjectionState,
 } from './fold.ts'
-export type { DevLeadModeProjectionState } from './fold.ts'
+export type { DevLeadModeProjectionState, DevLeadWatchProjectionState } from './fold.ts'
 export { renderDevLeadNotice } from './notification.ts'
 export type { DevLeadNotificationConfig, DevLeadPersistedLead } from './notification.ts'
 
@@ -510,6 +517,9 @@ export class DevLeadService extends Service {
     // mode selection without the retained notifications. No handle is needed:
     // only the digest unit folds directly (`stateOf`) for the notification hub.
     await this.ctx.sessionProjections.register(devLeadModeProjectionDefinition)
+    // Summary-sized watch set for the sidebar: row marks can resolve watched
+    // Sessions from the lead's summary without the excluded digest.
+    await this.ctx.sessionProjections.register(devLeadWatchProjectionDefinition)
     this.hub = new DevLeadNotificationHub(
       this.ctx,
       session => this.projectionHandle.stateOf(session),

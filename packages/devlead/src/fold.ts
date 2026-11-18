@@ -29,6 +29,7 @@ import {
   DEVLEAD_REPORT_SUMMARY_MAX,
   DEVLEAD_RESET_RECORD_TYPE,
   DEVLEAD_TRANSITIONS,
+  DEVLEAD_WATCH_PROJECTION_KEY,
   DEVLEAD_WATCH_RECORD_TYPE,
   devLeadReportId,
   notificationId,
@@ -41,6 +42,7 @@ import type {
   DevLeadReport,
   DevLeadReportKind,
   DevLeadTransition,
+  DevLeadWatchProjection,
 } from '@yankeguo/dsh-devlead-protocol'
 import {
   decodeModeRecord,
@@ -333,6 +335,126 @@ export const devLeadProjectionDefinition = {
   // are discarded and refolded from the durable log.
   stateVersion: 2,
 } satisfies ProjectionDefinition<'devLead', DevLeadProjectionState>
+
+/**
+ * Host-only fold state of the summary-sized `devLeadWatch` projection: the
+ * lead's current watch set. It mirrors the digest unit's freeze semantics for
+ * owned records, so a corrupt watch/mode log never paints watched rows from a
+ * stale set.
+ */
+export interface DevLeadWatchProjectionState {
+  /** Sessions this lead watches, in add order. */
+  readonly sessions: readonly string[]
+  /** First rejected persisted record, or null while the state is valid. */
+  readonly failure: string | null
+}
+
+/** Empty watch-projection state: no watched Sessions, no failure. */
+export function emptyDevLeadWatchProjectionState(): DevLeadWatchProjectionState {
+  return { sessions: [], failure: null }
+}
+
+/** Persisted watch-projection state schema; seeds a fold and validates cached rows. */
+export const devLeadWatchProjectionStateSchema: ZodType<DevLeadWatchProjectionState> = zod.object({
+  sessions: zod.array(zod.string().min(1)).refine(
+    sessions => new Set(sessions).size === sessions.length,
+    { message: 'watch sessions must be unique' },
+  ),
+  failure: zod.string().min(1).nullable(),
+}).strict() as ZodType<DevLeadWatchProjectionState>
+
+/** Client wire schema of the `devLeadWatch` projection value. */
+export const devLeadWatchProjectionSchema: ZodType<DevLeadWatchProjection> = zod.object({
+  sessions: zod.array(zod.string().min(1)).refine(
+    sessions => new Set(sessions).size === sessions.length,
+    { message: 'watch sessions must be unique' },
+  ),
+}).strict() as ZodType<DevLeadWatchProjection>
+
+/**
+ * Project one client view from watch fold state. Returning the state's own
+ * immutable array keeps the registry's Object.is suppression effective for
+ * records that do not change the watch set.
+ * @param state - current watch fold state.
+ * @returns the watch-set wire view.
+ */
+export function devLeadWatchProjectionView(state: DevLeadWatchProjectionState): DevLeadWatchProjection {
+  return { sessions: state.sessions }
+}
+
+/**
+ * Fold one committed Session event into the summary-sized watch projection.
+ *
+ * The fold follows the digest/mode units' freeze policy: a legal reset restarts
+ * it, and every owned record is decoded strictly so a corrupt log freezes the
+ * last valid watch set. Mode/notification/report records do not change this
+ * unit's value, but decoding them keeps the units' failure boundaries aligned.
+ * @param state - the projection covering all prior events.
+ * @param event - the next committed Session event.
+ * @returns the next watch projection state.
+ */
+export function applyDevLeadWatchProjection(
+  state: DevLeadWatchProjectionState,
+  event: SessionEvent,
+): DevLeadWatchProjectionState {
+  const record = pluginRecordOf(event)
+  if (record === undefined) return state
+  if (record.type === DEVLEAD_RESET_RECORD_TYPE) {
+    try {
+      decodeResetRecord(record.data)
+      return emptyDevLeadWatchProjectionState()
+    } catch (error: unknown) {
+      if (state.failure !== null) return state
+      const message = error instanceof Error ? error.message : String(error)
+      return {
+        ...state,
+        failure: `devlead watch replay failed at session event ${event.seq} (${record.type}): ${message}`,
+      }
+    }
+  }
+  if (state.failure !== null) return state
+  try {
+    switch (record.type) {
+      case DEVLEAD_WATCH_RECORD_TYPE: {
+        const watch = decodeWatchRecord(record.data)
+        return sameSessionIds(state.sessions, watch.sessions)
+          ? state
+          : { sessions: watch.sessions, failure: null }
+      }
+      case DEVLEAD_MODE_RECORD_TYPE:
+        decodeModeRecord(record.data)
+        return state
+      case DEVLEAD_NOTIFICATION_RECORD_TYPE:
+        decodeNotificationRecord(record.data)
+        return state
+      case DEVLEAD_REPORT_RECORD_TYPE:
+        decodeReportRecord(record.data)
+        return state
+      default:
+        return state
+    }
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error)
+    return {
+      ...state,
+      failure: `devlead watch replay failed at session event ${event.seq} (${record.type}): ${message}`,
+    }
+  }
+}
+
+/** Registered projection unit serving the summary-sized `devLeadWatch` value. */
+export const devLeadWatchProjectionDefinition = {
+  key: DEVLEAD_WATCH_PROJECTION_KEY,
+  stateSchema: devLeadWatchProjectionStateSchema,
+  init: emptyDevLeadWatchProjectionState,
+  apply: applyDevLeadWatchProjection,
+  wire: {
+    viewSchema: devLeadWatchProjectionSchema,
+    view: devLeadWatchProjectionView,
+  },
+  // 1: the initial summary representation of the watch set.
+  stateVersion: 1,
+} satisfies ProjectionDefinition<'devLeadWatch', DevLeadWatchProjectionState>
 
 /**
  * Host-only fold state of the summary-sized `devLeadMode` projection. The
