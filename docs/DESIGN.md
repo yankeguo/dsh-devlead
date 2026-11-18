@@ -99,13 +99,13 @@ DSH 的所有读取路径会保留并重放这些记录，但不会把它们投�
 | `plugin:devlead/watch` | `DevLeadWatchRecord` | **完整**关注集合（`{ sessions: string[] }`，whole-value 替换） |
 | `plugin:devlead/notification` | `DevLeadNotificationRecord` | 追加一条通知（`{ notification }`） |
 | `plugin:devlead/report` | `DevLeadReportRecord` | 追加一条已关注会话的中途汇报（`{ report }`） |
-| `plugin:devlead/reset` | `DevLeadResetRecord` | 丢弃该会话**更早**的全部 DevLead 记录，两个 projection 回到空状态（`{ kind, version:1, at }`；见下） |
+| `plugin:devlead/reset` | `DevLeadResetRecord` | 丢弃该会话**更早**的全部 DevLead 记录，三个 projection 回到空状态（`{ kind, version:1, at }`；见下） |
 
 - 记录 payload 必须 JSON-safe、带 `kind` + `version`；fold 对未知 `kind`/`version` **以及
   多余/缺失字段**一律拒绝（严格字段集解码，见 `domain.ts`）。持久插件记录是折叠的唯一信任
   边界：手工编辑 / 迁移后的日志必须让 replay 失败（`failure`），而不是被静默丢弃或强制转换。
-- **`reset` 是唯一在冻结检查之前应用的记录**：合法 reset 让两个 projection（`devLead` 与
-  `devLeadMode`）都从 `init` 重新开始（`enabled:false`、空关注集合、空 digest、`failure:null`），
+- **`reset` 是唯一在冻结检查之前应用的记录**：合法 reset 让三个 projection（`devLead`、
+  `devLeadMode`、`devLeadWatch`）都从 `init` 重新开始（`enabled:false`、空关注集合、空 digest、`failure:null`），
   因此一条先前损坏的 `plugin:devlead/*` 记录不再永久锁死该会话。reset 自身也做同样严格的
   字段集解码：**坏 reset 不能解冻任何状态**（否则一条损坏的 marker 就能丢弃可修复的状态），
   冻结状态保持冻结。reset 由人类命令 `/devlead reset`（以及 `/devlead off` 在折叠冻结时的
@@ -382,7 +382,7 @@ default: boolean; broken? }[]; reason? }`；`default` 是 Host 有效默认（`s
 
 启动与监听：
 
-0. `[Service.init]`：注册两个 projection unit → 创建 hub → `hub.start()`（安装监听器并对当前
+0. `[Service.init]`：注册三个 projection unit → 创建 hub → `hub.start()`（安装监听器并对当前
    live Agent 做一次 `bootstrap`）→ 冷扫描 `await hub.rehydrate(await persistedLeadRecords(...))`
    （就绪条件与重试见 §4.1.1）。rehydrate 的任何异常只记 warning，**绝不让插件加载失败**。
 1. `ctx.on('agent/created')`：若新 Agent 的 session projection `enabled` 为真，把它的 watch
@@ -759,7 +759,7 @@ Session 的工作目录切到独立分支/检出，DevLead 用它**可选地**�
   歧义与缺失仍由 core 的错误文案转为友好提示。
 - `on` 需要当前 Agent live；`off` 立即生效（正在投递的通知保留在日志里）。
 - **损坏 fold 的恢复（0.2.0）**：`/devlead reset` 调用 core 的 `reset(agent)`，追加一条
-  `plugin:devlead/reset` 记录，两个 projection 的 fold 都从空状态重新开始（模式关闭、watch
+  `plugin:devlead/reset` 记录，三个 projection 的 fold 都从空状态重新开始（模式关闭、watch
   集合与通知 digest 丢弃、`failure` 清除）；它不要求模式开启，是冻结状态下唯一能写日志的
   命令，也就是人工修复坏记录的路径。`/devlead off` 在折叠冻结时也会成功：handler 先读
   view，若抛 `DEVLEAD_PROJECTION_INVALID` 且请求是 off，直接调
@@ -821,19 +821,28 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
     保证屏幕阅读器能听到通知与错误；`aria-busy` / label 与 pending 状态一致。
   - 开关不随状态条出现/消失而消失；同一时刻只有一个模式开关。
 - **侧边栏会话行标记**：
-  - **当前激活的 lead** 行使用 business-accent ring（`border-color` + inset/outer
-    `box-shadow`，颜色与 composer 工具栏开关一致），不增加 padding/margin/height，因此 32px
-    行盒、标题省略和布局不位移。实现只能走 CSS：shell 的行是
-    `<div data-row-key="session:<id>">`，没有行级装饰 slot；插件用
-    `[data-row-key^="session:"]:has(.devlead-row-mark-active)` 限定在会话行，不靠哈希类名。
-  - **被当前 lead 关注的普通 Session** 在行尾显示弱化盾牌（`sidebar.session.row.trailing`；
-    非交互、不绑定/不激活 Session），谓词读 lead 的 summary 级 `devLeadWatch`，不读被排除的
-    digest，也不给被关注会话写日志；cold 行/重启 cache 行同样成立。未 watched 不渲染。
+  - **当前激活的 lead** 行用 `::after` overlay 画 business-accent ring（1px border + 轻
+    outer halo），颜色与 composer 工具栏开关一致，不增加 padding/margin/height，因此 32px
+    行盒、标题省略和布局不位移；**不再显示行尾图标**，active 事实由 ring + hover 文案 +
+    视觉隐藏的 aria status 表达。
+    根因：shell 行只有 `border-inline: 3px solid transparent`（`--dsh-sidebar-paint-inset`，
+    上下 border 为 0）。给行加 `border-color` 会让左右多出 3px 色条；`inset box-shadow` 又被
+    裁到 padding box，左右同样内缩 3px、上下不缩，二者都会造成左右/上下视觉不一致。因此
+    overlay 用 `inset: 0 calc(-1 * var(--dsh-sidebar-paint-inset))` 对齐**border box**，四边
+    同宽、`border-radius: inherit`，绝不改 row 的 border/padding/height。实现只能走 CSS：shell
+    的行是 `<div data-row-key="session:<id>">`，没有行级装饰 slot；插件用
+    `[data-row-key^="session:"]:has([data-devlead-active-mark="true"])` 限定在会话行，不靠
+    哈希类名。
+  - **被当前 lead 关注的普通 Session** 在行尾显示弱化准星图标
+    （`IconGoalOutlineRegular`，13px；`sidebar.session.row.trailing`；非交互、不绑定/不激活
+    Session），谓词读 lead 的 summary 级 `devLeadWatch`，不读被排除的 digest，也不给被关注
+    会话写日志；cold 行/重启 cache 行同样成立。未 watched 不渲染。
   - `:has` 依赖 shell 的稳定 `data-row-key` 属性（`Rows.tsx` 明确写入）；`:has` 在目标 Web
     浏览器可用。trailing seat 在悬停/聚焦时被 shell 隐藏，但 mark 仍挂载在 DOM 中，所以
     `:has` 的 active ring 不会在 hover 时消失；`sidebar.session.row.hover` 另提供
     「已关注/激活 DevLead」说明（i18n `row.watched.aria` / `row.hover.watched` /
-    `row.mark.aria` / `row.hover.enabled`），屏幕阅读器不依赖边框。
+    `row.mark.aria` / `row.hover.enabled`）。active 行视觉隐藏的 status 仍带
+    `aria-label`，屏幕阅读器不依赖边框或颜色。
   - rc.1 对 blank（尚无 turn）行不渲染 trailing seat：空白新会话上的标记/hover 说明要等第一次
     turn；active ring 也随 mark 无法显示，这是 shell seat 限制。搜索视图复用另一套结果行，同
     样不挂载该 seat；搜索期间不显示 active/watched 标识。

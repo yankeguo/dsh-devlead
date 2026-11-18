@@ -87,7 +87,7 @@ vi.mock('@deepseek-ai/dsh-client-ui-primitives', () => {
   return {
     Button,
     Tooltip,
-    IconShieldOutlineRegular: Icon,
+    IconGoalOutlineRegular: Icon,
     IconUsersOutlineRegular: Icon,
   }
 })
@@ -618,16 +618,17 @@ describe('DevLeadIconToggle', () => {
 })
 
 describe('DevLeadSessionMark', () => {
-  it('renders the labelled mark while the row summary says mode is enabled', async () => {
+  it('renders only the accessible active status hook, with no trailing glyph', async () => {
     const rows: TestRows = {
       'session-1': { projectionValues: { [DEVLEAD_MODE_PROJECTION_KEY]: { enabled: true } } },
     }
     const renderer = await mount(<DevLeadSessionMark {...markProps({ rows })} />)
-    const mark = renderer.root.findByProps({ 'data-devlead-row-mark': 'true' })
-    expect(mark.props['role']).toBe('img')
-    expect(mark.props['aria-label']).toBe(zh['row.mark.aria'])
-    expect(mark.props.className).toContain('devlead-row-mark-active')
-    expect(mark.props['data-devlead-active-mark']).toBe('true')
+    const status = renderer.root.findByProps({ 'data-devlead-active-mark': 'true' })
+    expect(status.props['role']).toBe('img')
+    expect(status.props['aria-label']).toBe(zh['row.mark.aria'])
+    expect(status.props.className).toContain('devlead-sr-only')
+    expect(renderer.root.findAllByProps({ 'data-mock-icon': 'true' })).toHaveLength(0)
+    expect(renderer.root.findAllByProps({ 'data-devlead-row-mark': 'watched' })).toHaveLength(0)
   })
 
   it('renders a quieter watched mark for a row listed by the active lead', async () => {
@@ -646,6 +647,7 @@ describe('DevLeadSessionMark', () => {
     expect(mark.props['aria-label']).toBe(zh['row.watched.aria'])
     expect(mark.props.className).toContain('devlead-row-mark-watched')
     expect(renderer.root.findAllByProps({ 'data-devlead-active-mark': 'true' })).toHaveLength(0)
+    expect(renderer.root.findAllByProps({ 'data-mock-icon': 'true' })).toHaveLength(1)
   })
 
   it('does not mark a plain unwatched row', async () => {
@@ -677,6 +679,8 @@ describe('DevLeadSessionHoverMark', () => {
     }
     const renderer = await mount(<DevLeadSessionHoverMark {...hoverMarkProps({ rows })} />)
     const line = renderer.root.findByProps({ 'data-devlead-row-hover': 'true' })
+    expect(line.findAllByProps({ 'data-mock-icon': 'true' })).toHaveLength(0)
+    expect(line.findAllByProps({ className: 'devlead-row-hover-active-dot' })).toHaveLength(1)
     expect(textOf(line)).toBe(zh['row.hover.enabled'])
   })
 
@@ -692,6 +696,7 @@ describe('DevLeadSessionHoverMark', () => {
     const renderer = await mount(<DevLeadSessionHoverMark {...hoverMarkProps({ rows })} />)
     const line = renderer.root.findByProps({ 'data-devlead-row-hover': 'true' })
     expect(line.props['data-devlead-row-watched']).toBe('true')
+    expect(line.findAllByProps({ 'data-mock-icon': 'true' })).toHaveLength(1)
     expect(textOf(line)).toBe(zh['row.hover.watched'])
   })
 

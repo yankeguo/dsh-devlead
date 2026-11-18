@@ -310,16 +310,28 @@ export const styles = `
 }
 
 /* The active lead row gets the same business accent as the toolbar toggle,
-   painted as a ring so the 32px row box, padding, and title lane never move.
-   The row owns a stable data-row-key; :has scopes the decoration to exactly
-   the row that mounted the active mark and leaves every other list row alone.
-   The mark itself stays mounted while the shell hides the resting seat on
-   hover, so the ring survives hover/focus. */
-[data-row-key^="session:"]:has(.devlead-row-mark-active) {
-  border-color: var(--dsw-alias-state-business-primary, #4176e6);
-  box-shadow:
-    inset 0 0 0 1px var(--dsw-alias-state-business-primary, #4176e6),
-    0 0 0 2px var(--dsw-alias-state-business-tertiary, rgba(65, 118, 230, 0.12));
+   painted as an overlay ring so the 32px row box, padding, and title lane never
+   move. Do not color or resize the shell row's border: it has a 3px transparent
+   border-inline (paint inset) but no top/bottom border, and an inset box-shadow
+   is clipped to the padding box, so either would look thicker/deeper on the
+   left/right than on top/bottom. The ::after overlay is positioned against the
+   row's border box (negative inline offsets cancel the transparent paint inset)
+   and draws one 1px border plus a light outer halo on all four sides at the
+   row's own radius. The row owns a stable data-row-key; :has scopes the
+   decoration to exactly the active row. The status hook stays mounted while the
+   shell hides the resting seat on hover, so the overlay survives hover/focus. */
+[data-row-key^="session:"]:has([data-devlead-active-mark="true"]) {
+  position: relative;
+}
+
+[data-row-key^="session:"]:has([data-devlead-active-mark="true"])::after {
+  content: '';
+  position: absolute;
+  inset: 0 calc(-1 * var(--dsh-sidebar-paint-inset));
+  border: 1px solid var(--dsw-alias-state-business-primary, #4176e6);
+  border-radius: inherit;
+  box-shadow: 0 0 0 2px var(--dsw-alias-state-business-tertiary, rgba(65, 118, 230, 0.12));
+  pointer-events: none;
 }
 
 /* A watched row uses a quieter shield than the active lead's mark: secondary
@@ -332,6 +344,16 @@ export const styles = `
 
 /* Hover-card line explaining the mark; mirrors the shell's hover status rows
    (12px text on a 20px line) so the card keeps one rhythm. */
+.devlead-row-hover-active-dot {
+  display: inline-block;
+  flex: none;
+  box-sizing: border-box;
+  width: 8px;
+  height: 8px;
+  border: 1px solid var(--dsw-alias-state-business-primary, #4176e6);
+  border-radius: 999px;
+}
+
 .devlead-row-hover {
   display: flex;
   align-items: center;

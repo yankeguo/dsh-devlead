@@ -58,9 +58,9 @@ Documentation: [Design notes (中文)](docs/DESIGN.md) · [Publishing guide (中
 | Human commands | `/devlead` (status), `/devlead on\|off`, `/devlead reset` (damaged-state recovery), `/devlead watch\|unwatch <session>`; sessions are addressable by full id or unique prefix |
 | Notification loop | A watched session's `turn/end` writes a durable notification and wakes an indexed DevLead through a coalescing window (configurable window; cold leads are resumed by default); the watch index is rebuilt from durable records after a Host restart, and a disposed lead keeps observing (see [Notification loop](#notification-loop)) |
 | Event sourcing | Mode / watch set / notifications / reset are ignorable `plugin:devlead/*` records with strict replay validation; survive restart / resume / fork |
-| Damaged-state recovery | A corrupt `plugin:devlead/*` record freezes the fold, but the human-only `/devlead reset` (or `/devlead off` on a frozen fold) appends a `plugin:devlead/reset` record that restarts both projections from the default disabled state (see [Notification loop](#notification-loop)) |
+| Damaged-state recovery | A corrupt `plugin:devlead/*` record freezes the fold, but the human-only `/devlead reset` (or `/devlead off` on a frozen fold) appends a `plugin:devlead/reset` record that restarts all three projections from the default disabled state (see [Notification loop](#notification-loop)) |
 | Session projection | The `devLead` projection (`{ enabled, sessions, notifications }`) syncs state to the browser without a custom Remote API; summary-sized companions `devLeadMode` (`{ enabled }`) and `devLeadWatch` (`{ sessions }`) ride every Session-list summary so sidebar rows can render the active lead and watched marks |
-| UI | A labelled composer-toolbar DevLead toggle (icon + text) is present in both states and sends `/devlead on` or `/devlead off`. On: a status-only DevLeadBar above the composer shows the watched/running counts and the latest notification; the bar has no switch, so turning the mode off never hides the control that did it. The active lead row gets an accent ring, and watched Session rows get a quiet shield |
+| UI | A labelled composer-toolbar DevLead toggle (icon + text) is present in both states and sends `/devlead on` or `/devlead off`. On: a status-only DevLeadBar above the composer shows the watched/running counts and the latest notification; the bar has no switch, so turning the mode off never hides the control that did it. The active lead row gets an accent ring (no trailing glyph), and watched Session rows get a quiet target glyph |
 | Permission model | The mode switch can only be triggered by human commands/UI; notifications are runtime notices, not human instructions (see [Permission model](#permission-model)) |
 | One-command install | The bundle's `cordis.patch.yml` inserts all 4 runtime plugin rows; individual packages can also be installed separately |
 
@@ -79,11 +79,12 @@ attention-grabbing permanent bar on every conversation:
   or a help hint when there is none. The bar owns no switch, so turning the mode off can never
   hide the control that did it. There is no status strip while the mode is off.
 - **Sidebar marks:** the active DevLead row gets a business-accent ring matching the enabled
-  toolbar toggle; watched, non-lead Session rows get a quieter shield in the trailing seat
+  toolbar toggle; watched, non-lead Session rows get a quieter target glyph in the trailing seat
   (`sidebar.session.row.trailing`). Both read summary projections (`devLeadMode`, `devLeadWatch`),
   so they render for cold rows and after a restart without per-row Host reads. The ring uses a
-  `:has` rule on the shell's stable `data-row-key` row attribute and only paints; it adds no
-  padding/margin/height. DSH 0.2.2-rc.1 omits the trailing seat for a *blank* Session (no turn
+  `:has` rule on the shell's stable `data-row-key` row attribute plus a non-layout `::after`
+  overlay; it adds no padding/margin/height and never colors the shell's inline-only transparent
+  border. DSH 0.2.2-rc.1 omits the trailing seat for a *blank* Session (no turn
   yet), so a brand-new Session shows no mark until its first turn; the row hover card restates
   active/watched (`sidebar.session.row.hover`). On hover-capable devices the shell hides the
   resting marks while the row is hovered, but the active ring remains and the hover card explains
@@ -757,7 +758,7 @@ without it keeps the default single-checkout behavior and reports `unavailable`.
 - **One small switch:** to avoid a permanent strip on every conversation, the only mode switch
   is the composer-toolbar DevLead button (icon + label); the status strip is display-only.
   Remember `/devlead on|off` if the button is not obvious enough.
-- **Sidebar mark backfill, blank rows, and search:** the active ring and the watched shield render from
+- **Sidebar mark backfill, blank rows, and search:** the active ring and the watched target render from
   the summary-sized `devLeadMode` / `devLeadWatch` projections. A lead enabled or watch list
   written before this feature shipped shows the marks only once its projection cache carries the
   keys (open that Session once, or change the mode/watch set again); Host startup does not

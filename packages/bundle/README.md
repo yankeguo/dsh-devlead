@@ -15,7 +15,7 @@ kind: "package-bundle"
 - **DevLead 模式**：每个会话一个持久开关；打开后获得 13 个主 `devlead_*` 工具（已关注会话另有 1 个 `devlead_report`）、DevLead 系统
   提示，以及两态 UI：composer 工具条里的 DevLead 图标 + 文本按钮在两种状态下都常驻并负责
   开启/关闭，开启后 composer 上方才出现只读状态条。
-  当前激活的 DevLead 行会显示强调色边框 ring，被关注 Session 行显示弱化盾牌，关掉会话后仍可辨识（DSH rc.1 对
+  当前激活的 DevLead 行会显示强调色 ring（无行尾图标），被关注 Session 行显示弱化准星，关掉会话后仍可辨识（DSH rc.1 对
   blank / 尚无 turn 的新会话行不渲染该 seat，首次 turn 后才显示）。
   开关是**人类专属操作**（`/devlead on|off` 或 composer 工具条开关），模型无法自行打开。
 - **产出物是标准 DSH 实体**：Workspace 真实注册进 `ctx.workspaceRegistry`，子会话是真实普通

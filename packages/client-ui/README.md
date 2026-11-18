@@ -12,10 +12,10 @@ Browser half of the DevLead suite, loaded on the DSH **Web** platform.
   hint). Reports show sender, localized kind, and summary/message; the strip is display-only and
   owns no switch.
 - **Sidebar marks:** the active DevLead row gets a business-accent ring (scoped by the shell's
-  stable `data-row-key` row attribute through `:has`), and watched non-lead rows get a quieter
-  shield (`sidebar.session.row.trailing`). The mark predicates read the summary-sized
-  `devLeadMode` / `devLeadWatch` projections; the row hover card (`sidebar.session.row.hover`)
-  restates active/watched for accessibility.
+  stable `data-row-key` row attribute through `:has`) and deliberately no trailing glyph; watched
+  non-lead rows get a quieter target glyph (`IconGoalOutlineRegular`, `sidebar.session.row.trailing`).
+  The mark predicates read the summary-sized `devLeadMode` / `devLeadWatch` projections; the row
+  hover card (`sidebar.session.row.hover`) restates active/watched for accessibility.
 
 The browser bundle only registers into DSH client slots and sends `/devlead` commands from the
 toolbar toggle. It has no custom Remote API, no optimistic state flips, and no direct Host access;
@@ -50,7 +50,7 @@ dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 
 `@yankeguo/dsh-client-ui-devlead` 是浏览器半边：composer 工具条里两态都存在的 DevLead
 图标 + 文本开关（关闭态发 `/devlead on`、开启态发 `/devlead off`）、开启后的只读 DevLeadBar 状态条、
-侧边栏激活 lead 的强调色行环与已关注会话的弱化盾牌；只读 `devLead`/`devLeadMode`/
+侧边栏激活 lead 的强调色行环（无行尾图标）与已关注会话的弱化准星；只读 `devLead`/`devLeadMode`/
 `devLeadWatch` projection 并发送 `/devlead` 命令。
 0.2.0 起样式注入用跨模块实例引用计数（HMR 新旧实例交替不误删标签），组件与准入 hook 用
 `react-test-renderer` 做渲染测试。已知 mark 回填与 blank 行限制见根 README。完整中文文档见

@@ -41,7 +41,7 @@ second enabled lead is not left behind.
 
 `/devlead reset` appends a `plugin:devlead/reset` durable record: replay applies it before the
 corruption freeze check, so a Session whose earlier `plugin:devlead/*` record is corrupt becomes
-usable again (both projections restart from the default disabled state). `/devlead off` runs the
+usable again (all three projections restart from the default disabled state). `/devlead off` runs the
 same recovery when the fold is frozen; `/devlead on` refuses and asks for the explicit reset.
 
 ## Install

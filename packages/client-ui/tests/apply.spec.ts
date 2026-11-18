@@ -20,7 +20,7 @@ vi.mock('@deepseek-ai/dsh-client-ui-primitives', () => {
   return {
     Button: Placeholder,
     Tooltip: Placeholder,
-    IconShieldOutlineRegular: Placeholder,
+    IconGoalOutlineRegular: Placeholder,
     IconUsersOutlineRegular: Placeholder,
   }
 })

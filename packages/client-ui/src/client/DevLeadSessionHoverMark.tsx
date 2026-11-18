@@ -8,7 +8,7 @@
  * or watched role. A plain row renders nothing.
  */
 
-import { IconShieldOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
+import { IconGoalOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { SessionListState } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 // Type-only: pulls the ui-workspace SlotMap merge (the sidebar Session-row seats).
@@ -36,7 +36,7 @@ export function DevLeadSessionHoverMark({ sessionId, useSessions, t }: DevLeadSe
     return (
       <div className="devlead-row-hover" data-devlead-row-hover="true">
         <span className="devlead-row-hover-glyph" aria-hidden="true">
-          <IconShieldOutlineRegular size={14} />
+          <span className="devlead-row-hover-active-dot" />
         </span>
         <span>{t('row.hover.enabled')}</span>
       </div>
@@ -46,7 +46,7 @@ export function DevLeadSessionHoverMark({ sessionId, useSessions, t }: DevLeadSe
   return (
     <div className="devlead-row-hover" data-devlead-row-hover="true" data-devlead-row-watched="true">
       <span className="devlead-row-hover-glyph" aria-hidden="true">
-        <IconShieldOutlineRegular size={14} />
+        <IconGoalOutlineRegular size={14} />
       </span>
       <span>{t('row.hover.watched')}</span>
     </div>

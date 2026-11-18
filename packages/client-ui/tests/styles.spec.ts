@@ -312,17 +312,24 @@ describe('styles', () => {
     expect(styles).toContain('.devlead-row-mark {')
     expect(styles).toMatch(/\.devlead-row-mark \{[^}]*flex: none;/u)
     expect(styles).toContain('.devlead-row-mark-watched {')
+    expect(styles).toContain('.devlead-row-hover-active-dot {')
     expect(styles).toContain('.devlead-row-hover {')
     expect(styles).toMatch(/\.devlead-row-hover \{[^}]*font-size: 12px;/u)
   })
 
-  it('rings the active lead row without changing its box or title lane', () => {
-    expect(styles).toContain('[data-row-key^="session:"]:has(.devlead-row-mark-active)')
-    expect(styles).toContain('inset 0 0 0 1px var(--dsw-alias-state-business-primary')
-    expect(styles).toContain('0 0 0 2px var(--dsw-alias-state-business-tertiary')
-    // The selector only paints the row; it must not add border width, padding,
-    // margin, or height to the shell's 32px row.
-    const activeRule = /\[data-row-key\^="session:"\]:has\(\.devlead-row-mark-active\) \{([^}]*)\}/u.exec(styles)?.[1] ?? ''
+  it('rings the active lead row symmetrically with a non-layout overlay', () => {
+    expect(styles).toContain('[data-row-key^="session:"]:has([data-devlead-active-mark="true"])::after')
+    expect(styles).toContain('border: 1px solid var(--dsw-alias-state-business-primary')
+    expect(styles).toContain('border-radius: inherit')
+    expect(styles).toContain('inset: 0 calc(-1 * var(--dsh-sidebar-paint-inset))')
+    expect(styles).toContain('box-shadow: 0 0 0 2px var(--dsw-alias-state-business-tertiary')
+    // The shell row has a 3px transparent border-inline but no top/bottom
+    // border. Colouring or resizing it would be asymmetric; the ring must be an
+    // absolutely positioned overlay covering all four sides instead.
+    const activeRule = /\[data-row-key\^="session:"\]:has\(\[data-devlead-active-mark="true"\]\)::after \{([^}]*)\}/u.exec(styles)?.[1] ?? ''
+    expect(activeRule).toContain('position: absolute')
+    expect(activeRule).toContain('pointer-events: none')
+    expect(activeRule).not.toContain('border-color')
     expect(activeRule).not.toContain('padding')
     expect(activeRule).not.toContain('margin')
     expect(activeRule).not.toContain('height')
@@ -403,6 +410,7 @@ describe('styles', () => {
       '--dsh-composer-side-clearance',
       '--dsh-composer-dock-inset',
       '--dsh-composer-card-max-width',
+      '--dsh-sidebar-paint-inset',
     ]))
   })
 })
