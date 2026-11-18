@@ -11,7 +11,7 @@ DSH 端到端验证。
 > 25/25 checks）记录的是当时的工作树。此后工作树新增了可选 worktree 隔离与依赖姿态审计
 > （0.1.1），并完成了 **0.2.0** 的六个决策项与 nits（见 §10.2）。最新验证数字与结论见
 > [`DESIGN.md`](DESIGN.md) §12 与 [`OPTIONAL-DEPENDENCIES.md`](OPTIONAL-DEPENDENCIES.md)
-> （当前：23 文件 / 587 tests；E2E 各 61/61）。
+> （本文件 §1–§9 是历史快照；当前为 23 文件 / 669 tests，E2E rc.4 installed/patch 各 131/131，rc.1–rc.3 `--no-worktree` 各 109/109）。
 
 ## 1. 结论摘要
 
@@ -292,3 +292,34 @@ nits（D8）：
 DESIGN 更新 §3 记录表（reset）、§4 API/约束/promptSession 补偿、§4.1/§4.1.1 冷 lead 重建、
 §6 命令与恢复、§8 错误码、§9 测试策略、§10 多阶段验收、§11 非目标；AUDIT §10 即本节；
 PUBLISHING / OPTIONAL-DEPENDENCIES 与各包 README 同步；`docs/releases/v0.2.0.md` 为发布说明。
+
+## 11. 0.2.4 全量审计与 rc.1–rc.4 兼容轮（本轮）
+
+本轮以 npm 临时安装的 DSH `0.2.2-rc.1` / `rc.2` / `rc.3` / `rc.4` CLI 为真实运行时复核，
+并对 6 个包做代码审计。结论：**rc.1–rc.4 全部支持，无降级项**。关键事实与修复：
+
+- **rc.4 差异极小**：`dsh-base` / `dsh-web-app` 的 `cordis.patch.yml` 与 rc.3 逐字节一致；
+  唯一 upgrade-guide 条目是 DeepSeek 流式拒答错误码 `MALFORMED_RESPONSE` →
+  `CONTENT_REFUSED`，DevLead 不分类 LLM 错误码。`dsh-agent`、`dsh-session`、`dsh-tools`、
+  `dsh-commands`、`dsh-workspace`、`dsh-session-projection`、`dsh-session-query`、
+  `dsh-api-session-controller`、`dsh-agent-preset-registry`、`dsh-agent-team` 的 `.d.ts`
+  在 rc.3→rc.4 无变化；rc.2→rc.3 的 UI 槽位变化是新增（`workspace.picker` Factory），
+  DevLead 用到的 4 个槽位在 rc.1 已存在。
+- **peer 依赖姿态**：`@deepseek-ai/dsh-*` 与 `zod` 的 peer 从精确 pin 改为
+  `>=0.2.2-rc.1 <0.3.0` / `^4.4.3`。DSH 加载器只按 `engines.dsh` 判定兼容（有
+  `engines.dsh` 时忽略 peers），但 profile 的 pnpm peer 检查会因精确 pin 在 rc.2+ 上报
+  unmet peer；范围修复了该噪声。`scripts/check-packages.mjs` 改为「root devDependency
+  必须落在 peer 范围内」，并新增 `semver` devDependency。devDependencies 仍固定 rc.1，
+  以最旧 API 做类型检查。
+- **E2E 矩阵**：rc.1–rc.3 `--no-worktree` 各 109/109；rc.4 installed 与 patch 各 131/131
+  （阶段 3 新增 agent preset roster 检查：rc.1–rc.4 都返回 `standard` 为默认的真实 roster）。
+- **审计修复**（详见 release notes 0.2.4）：cold-lead 扫描先 rank 后读标题（避免为截断前
+  的每个冷 Session 读完整日志）；corpus readiness 双重限时且 dispose 可唤醒；冷 lead
+  resume 失败有界重试；通知 append 失败进入 `unsaved` 而不是当作已 durable；归档但运行中的
+  Session 状态行不再自相矛盾；`/devlead` 支持中文 IME 弯引号并正确诊断闭合引号后的多余文本；
+  工具错误保留 `cause`；`lastTurn: 0` 哨兵不再泄漏；exhaustive 身份解析在 query 失败时
+  报 `DEVLEAD_SESSION_UNAVAILABLE` 而不是静默退化为 live-only；模式/watch/reset 后主动
+  checkpoint projection cache，缩小 stale-negative 窗口。
+- **UI**：失败 tooltip 可点击固定阅读（触屏可达），移除与 Tooltip 冲突的原生 `title`，
+  失败态 hover 不再覆盖错误色，窄屏隐藏冗余标签/过期计数，文字对比度改用 label token，
+  pressed 态增加背景，圆角与相邻 composer 卡片统一。

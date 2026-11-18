@@ -13,12 +13,17 @@ plugin-market 等）。审计对象是本仓库的 6 个包（`protocol`、`devl
 > 探测，仍然零声明）、`/devlead reset` 持久记录、`useWorkspace(agent, request)` 与
 > `wakeColdSession` 默认 `true`；E2E 扩为多阶段（阶段 1b 重启验证冷 lead 索引重建；阶段 2
 > 在一次性 profile 里显式追加官方实验 forge bundle 以验证 worktree happy path，这不是产品
-> 依赖；阶段 3 在真实 Host 上验证 12 个工具的条件可见性、只读模型目录、triage/自主关闭 policy、
+> 依赖；阶段 3 在真实 Host 上验证 13 个工具的条件可见性、只读模型目录、triage/自主关闭 policy、
 > archive/unarchive/remove 与创建时模型/Agent Teams 的 durable 行为）。最新验证计数见 §7.6。
 >
-> **后续变更（本轮）**：DevLead 模式开关已统一到 composer toolbar 的
+> **后续变更（0.2.4 复盘）**：本审计的基准仍为 `0.2.2-rc.1`，但 0.2.4 已把 rc.1–rc.4
+> 全部纳入验证：`engines.dsh` 仍是 `>=0.2.2-rc.1 <0.3.0`；`@deepseek-ai/dsh-*` 与 `zod` 的
+> peer 改为范围（精确 pin 会让 rc.2+ profile 的 pnpm peer 检查报 unmet peer，但这个检查不
+> 影响 DSH 加载——DSH 只按 `engines.dsh` 判定）。DevLead 模式开关统一到 composer toolbar 的
 > `DevLeadIconToggle`（两态常驻）；`DevLeadBar` 只读且不再导入 `Switch`。工具面新增
-> `devlead_list_agent_presets`，DevLead 工具数为 13；§7 中的 12 个工具是 0.2.0 审计时点计数。
+> `devlead_list_agent_presets`，DevLead 工具数为 13。0.2.4 的 E2E：rc.4 installed / patch 各
+> **131/131**（阶段 3 = 70），rc.1–rc.3 installed `--no-worktree` 各 **109/109**；§7 中较早的
+> 12 工具 / 130 / 108 计数均为 0.2.0–0.2.3 审计时点快照。
 > 下表 §4.3 的 `Switch` 是审计时点的引入形态，当前实现见 `docs/DESIGN.md` §7。
 
 ## 1. 结论摘要
@@ -41,7 +46,7 @@ plugin-market 等）。审计对象是本仓库的 6 个包（`protocol`、`devl
 
 运行证据（本轮工作树，由 Lead 执行）：在一次性 `DSH_HOME` + `--from-default-profile web`
 生成的默认 Web 组合上，`node scripts/e2e-smoke.mjs --no-build --flow patch` 与
-`--flow installed` 均 **130/130**（0.2.0 起多阶段：阶段 1 的默认组合断言、阶段 1b 的重启冷
+`--flow installed` 均 **131/131**（0.2.0 起多阶段：阶段 1 的默认组合断言、阶段 1b 的重启冷
 lead 索引重建断言、阶段 2 的 experimental forge 组合断言、阶段 3 的关闭工具/dispatch 路由/
 triage policy 断言），阶段 1 包含断言
 `default profile reports no optional worktree isolation` → `Worktree isolation: unavailable`，
@@ -77,7 +82,7 @@ triage policy 断言），阶段 1 包含断言
 | E2 | DSH 官方源码 **tag `dsh-v0.2.2-rc.1`（commit 66491b05e3）**：组合 patch 文件、入口语义、服务定义 | `git show dsh-v0.2.2-rc.1:<path>`。`dsh-base`/`dsh-web-app` 的 `cordis.patch.yml` 与 E1 安装包内文件**逐字节一致**（`package.json` 仅 `workspace:*` 被发布归一化为版本号） |
 | E3 | 默认组合的**运行时 dump**：在临时 `DSH_HOME` 用 `--from-default-profile web --dump-config` 生成的组合树 | §7.1 的可复现命令；291 个 `@deepseek-ai/*` 名字行，0 个实验/可选 bundle 包，`~/.dsh` 未改 |
 | E4 | 仓库单元测试：真实 cordis `Context` + 真实 `SessionStore`/`SessionProjectionRegistry`，可选服务用内存 fake，实验性服务缺席 | `packages/devlead/tests/harness.ts`（`bootService`）；`packages/devlead/tests/service.spec.ts`、`isolation.spec.ts` |
-| E5 | `scripts/e2e-smoke.mjs`：一次性 profile 走默认 Web 组合并在真实 Web 运行时上做产品断言。**0.2.0 起多阶段：阶段 1（默认组合）+ 阶段 1b（同一加载流/scratch home 重启，验证冷 lead 索引重建）+ 阶段 2（一次性 scratch profile 显式追加官方实验 forge bundle、验证 worktree happy path）+ 阶段 3（同一 profile 重启 probe，验证 12 个工具的条件可见性与 policy，只读 `devlead_list_models` 目录，archive/unarchive/remove 的 durable 行为、活跃拒绝/stop_running、自我归档守卫，创建时模型选择与 Agent Teams 的 durable 行为/默认模型不变/不可用 model 拒绝），每条加载流 130/130**（含默认 profile 无 worktree 隔离、summary 不携带 `devLead` digest 的断言；`--no-worktree` 只跳过阶段 2 = 108/108） | `scripts/e2e-smoke.mjs`（`runChecks()` / `runRehydrationChecks()` / `runWorktreeChecks()` / `runCloseChecks()`、`enableWorktreeBundle()`、`linkProbePackage()`；probe 为私有测试包 `scripts/e2e-probe/**`，不进入 workspace/build/check-packages） |
+| E5 | `scripts/e2e-smoke.mjs`：一次性 profile 走默认 Web 组合并在真实 Web 运行时上做产品断言。**0.2.0 起多阶段：阶段 1（默认组合）+ 阶段 1b（同一加载流/scratch home 重启，验证冷 lead 索引重建）+ 阶段 2（一次性 scratch profile 显式追加官方实验 forge bundle、验证 worktree happy path）+ 阶段 3（同一 profile 重启 probe，验证 13 个工具的条件可见性与 policy，只读 `devlead_list_models` 目录，archive/unarchive/remove 的 durable 行为、活跃拒绝/stop_running、自我归档守卫，创建时模型选择与 Agent Teams 的 durable 行为/默认模型不变/不可用 model 拒绝），每条加载流 131/131**（含默认 profile 无 worktree 隔离、summary 不携带 `devLead` digest 的断言；`--no-worktree` 只跳过阶段 2 = 109/109） | `scripts/e2e-smoke.mjs`（`runChecks()` / `runRehydrationChecks()` / `runWorktreeChecks()` / `runCloseChecks()`、`enableWorktreeBundle()`、`linkProbePackage()`；probe 为私有测试包 `scripts/e2e-probe/**`，不进入 workspace/build/check-packages） |
 | E6 | 打包不变式检查：host 运行期 `@deepseek-ai/*` 导入必须是 peer、DSH 包不得作为直接/optional 依赖、不得声明实验包、浏览器 `@deepseek-ai/*` 导入必须落在 module table、`dsh.client.inject` 与 root devDeps / module table 一致 | `scripts/check-packages.mjs`（import scan / dependency placement / client inject 三组检查）；本次运行 `node scripts/check-packages.mjs` → `OK (6 packages)` |
 | E7 | **0.2.0 冷重建就绪证据**：E2E 阶段 1b 在真实 Host 重启后暴露了 `sessionQuery` 已定义但持久语料仍 live-only 的竞态；最终实现为有界 corpus-readiness barrier（`packages/devlead/src/persistence.ts` 的只读探针 + `awaitCorpusReady`），单元测试与 E2E 阶段 1b 双重覆盖 | `docs/DESIGN.md` §4.1.1；`packages/devlead/tests/service.spec.ts`（cold lead rehydration 用例组）；`scripts/e2e-smoke.mjs` 阶段 1b |
 
@@ -405,7 +410,7 @@ Web/Desktop 完整支持"，见 §9 R5。
   worktree happy path（见 §7.4）。阶段 1b 用同一 scratch home 重启同一加载流验证冷 lead
   索引重建（D2 的端到端证据）。阶段 3 用同一 probe 包（不要求实验 bundle）验证工具条件可见性、
   triage/自主关闭 policy 与 archive/unarchive/remove 的真实 Host 行为（见 §7.4）。两条加载流各
-  **130/130**（27 + 12 + 22 + 69）；`--no-worktree` 只跳过阶段 2（108/108，阶段 1 + 1b + 3）。probe 包
+  **131/131**（27 + 12 + 22 + 70）；`--no-worktree` 只跳过阶段 2（109/109，阶段 1 + 1b + 3）。probe 包
   `@yankeguo/dsh-devlead-e2e-probe`（0.0.0）是私有测试资产，不发布、
   不进 workspace/build/check-packages。文档承诺见 README 的 Notification loop / Development
   and verification 与 `docs/DESIGN.md` §10（行号随并行开发漂移，引用按小节）。
@@ -461,7 +466,7 @@ DSH_HOME="$TMP/home" dsh devlead-audit --from-default-profile web --dump-config 
 - `tool` / `command` 测试完全不 boot DSH 运行时（`packages/tool/tests/harness.ts:282-303`、
   `packages/command/tests/fake.ts` 用结构化 fake），从测试侧确认它们只依赖注入的服务接口。
 
-### 7.4 E2E 路径（E5，0.2.0 多阶段；patch / installed 各 130/130 通过）
+### 7.4 E2E 路径（E5，0.2.0 多阶段；0.2.4 的 rc.4 patch / installed 各 131/131 通过）
 
 `scripts/e2e-smoke.mjs` 的路线：
 
@@ -517,7 +522,7 @@ DSH_HOME="$TMP/home" dsh devlead-audit --from-default-profile web --dump-config 
    overlay，用**同一加载流**重启；
 3. probe 的 `devlead-e2e-inspect` 用真实 `ctx.tools.resolve`（step-time 条件求值）与
    `ctx.systemPrompt.assemble` 报告该 Agent 一步可见的工具集与 `devlead:policy` 文本：模式关闭
-   时 0 个 `devlead_*`、policy 为空；`/devlead on` 后恰好 12 个、policy 含判断式自主关闭/边界/
+   时 0 个 `devlead_*`、policy 为空；`/devlead on` 后恰好 13 个、policy 含判断式自主关闭/边界/
    有限可行性判断与开放问题；`/devlead off` 后再次为 0；
 4. `devlead-e2e-close` 通过 `ctx.devLead` 创建一个带 prompt 的子会话（provider error 稳定
    settle，产生真实非空持久日志）→ 归档（durable archive 集合、archived 视图/列表行、日志
@@ -538,11 +543,11 @@ DSH_HOME="$TMP/home" dsh devlead-audit --from-default-profile web --dump-config 
 9. 停实例。
 
 **实际结果（本轮工作树）**：`node scripts/e2e-smoke.mjs --no-build --flow patch`
-与 `--flow installed` 均 → **130/130 checks PASS**（阶段 1 27 + 阶段 1b 12 + 阶段 2 22 + 阶段 3 69），阶段 1 含
+与 `--flow installed` 均 → **131/131 checks PASS**（阶段 1 27 + 阶段 1b 12 + 阶段 2 22 + 阶段 3 70），阶段 1 含
 `Session-list summary excludes the digest-bearing devLead projection` 与 `default profile
 reports no optional worktree isolation :: Worktree isolation: unavailable`，阶段 1b 验证
 Host 重启后的冷 lead 索引重建，阶段 2 含 `Worktree isolation: available` 与 worktree happy
-path 断言，阶段 3 含 12 个工具的条件可见性、只读 `devlead_list_models` 目录、triage/自主关闭 policy、archive/unarchive 与
+path 断言，阶段 3 含 13 个工具的条件可见性、只读 `devlead_list_models` 目录、triage/自主关闭 policy、archive/unarchive 与
 remove 的 durable 行为、`DEVLEAD_SESSION_ACTIVE`/`stop_running`/自我归档守卫，以及创建时模型
 选择/Agent Teams 的真实 Host 行为与默认模型不变。这证明「默认 Web
 组合（base+web-app，无任何实验 bundle）可安装、可启动、可产出全部产品行为」，持久状态可跨
@@ -552,8 +557,7 @@ remove 的 durable 行为、`DEVLEAD_SESSION_ACTIVE`/`stop_running`/自我归档
 **版本兼容（本轮补充）**：`@deepseek-ai/dsh-agent-team` 仅从 `0.2.2-rc.2` 起发布，rc.1 的
 `dsh-base` 也没有对应组合行；因此 rc.1 上 `agent_teams: true` 预期报
 `DEVLEAD_TEAM_UNAVAILABLE` 且不创建 Session（`false`/省略正常），rc.2/rc.3 验证成功路径。
-本轮用 npm 临时安装的 rc.1/rc.2 CLI 各跑 patch/installed（`--no-worktree`）均 108/108；
-rc.3 全量两 flow 各 130/130。模型目录与 `devlead_list_models` 在三个版本均可用。
+0.2.4 用 npm 临时安装的 rc.1–rc.4 CLI 各跑 installed（`--no-worktree`）均 109/109；rc.4 的 patch 与 installed 全量两 flow 各 131/131。`devlead_list_models` 与 `devlead_list_agent_presets` 在四个版本均可用。
 
 **诚实边界**：E2E 只 `fetch /` 取 `__DSH_BOOT__` 并走 HTTP RPC，**不执行浏览器 JS**，因此它
 证明的是"Host 侧全部功能 + client 条目进入 boot graph 且携带声明的 injects"，**不直接证明
@@ -591,7 +595,7 @@ DSH 包不得作为直接/optional 依赖、不得声明 `dsh-experimental`；�
 - Lead 在 0.2.0 工作树执行并通过（最终值）：`pnpm verify`（typecheck + `pnpm test`：
   22 文件 / 558 tests + 7 个构建产物）、`node scripts/check-packages.mjs`
   （`OK (6 packages)`）、`node scripts/e2e-smoke.mjs --no-build --flow patch` 与
-  `--flow installed`（各 **130/130**：阶段 1 27 + 阶段 1b 12 + 阶段 2 22 + 阶段 3 69），含默认组合
+  `--flow installed`（各 **131/131**：阶段 1 27 + 阶段 1b 12 + 阶段 2 22 + 阶段 3 70），含默认组合
   `Worktree isolation: unavailable`、Host 重启后冷 lead 索引重建、可选 worktree 组合
   `available`、summary 不携带 digest 的断言、真实 Git worktree happy path，以及关闭工具的
   条件可见性、policy、archive/unarchive/remove 与活跃拒绝/自我归档守卫。
@@ -631,7 +635,7 @@ DSH 包不得作为直接/optional 依赖、不得声明 `dsh-experimental`；�
 | R5 | headless/acp/sdk 组合可安装本套件但 dispatch 不可用（§6.4），当前只有 README 一句"面向默认 Web 组合" | 低-中 | 决策：是否在详细文档/插件描述中显式标注"Web/Desktop 完整支持；headless/ACP 仅模式与只读可用"？代码侧不建议加硬限制（会妨碍未来组合） |
 | R6 | `dsh.client.inject` 里有非 client row 的名字（`dsh-client-ui-primitives`）；rc.1 loader 忽略之，保留作文档（`docs/AUDIT.md` 遗留限制） | 低 | 观察：若未来 DSH 改为严格校验 inject 名字，需移除该项；当前不动 |
 | R7 | `dsh-api-gateway`（提供 client `remote` 服务）未在本套件任何清单中出现 | 低 | 它是默认组合的传递依赖，且我们的代码没有直接 import/peer；保持不声明（声明反而会误导安装） |
-| R8 | ~~worktree 隔离 happy path 未在真实实验组合上实测~~：**0.2.0 已解决**。本地 E2E 阶段 2 在一次性 profile 里显式追加官方 `@deepseek-ai/dsh-experimental-forge-bundle`，通过私有 probe 命令走 `useWorkspace(agent, request)` + `createSession({ isolation: 'worktree' })`，对真实 git 仓库端到端断言 isolation 结果、worktree/分支存在、baseCommit、子会话有效 cwd 与 header cwd、Workspace 归属 | 已关闭 | 保留为本地验收的一部分（每流 130/130）；无需再手动验收 |
+| R8 | ~~worktree 隔离 happy path 未在真实实验组合上实测~~：**0.2.0 已解决**。本地 E2E 阶段 2 在一次性 profile 里显式追加官方 `@deepseek-ai/dsh-experimental-forge-bundle`，通过私有 probe 命令走 `useWorkspace(agent, request)` + `createSession({ isolation: 'worktree' })`，对真实 git 仓库端到端断言 isolation 结果、worktree/分支存在、baseCommit、子会话有效 cwd 与 header cwd、Workspace 归属 | 已关闭 | 保留为本地验收的一部分（每流 131/131）；无需再手动验收 |
 
 ## 10. 附录：复现命令
 

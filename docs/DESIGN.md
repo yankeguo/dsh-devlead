@@ -5,10 +5,12 @@
 **Session**（会话），创建/续写其他会话、读取会话状态、在会话状态变化时被唤醒，从而在一个
 人类可见、可参与的标准界面里统管多个仓库。
 
-设计与实现的**唯一强信源**是官方 DeepSeek Harness `0.2.2-rc.1` 源码
-（`/Users/guoyk/Workspace/src/deepseek-harness`，与本套件安装的 `@deepseek-ai/*` 同一版本）。
-任何第三方插件——包括早期参考过的 `dsh-infini-goal`——只算线索，不作为依据；每条 DSH API
-行为都以官方源码或已安装的 `@deepseek-ai/*` 声明为准。
+设计与实现的**唯一强信源**是官方 DeepSeek Harness 源码
+（`/Users/guoyk/Workspace/src/deepseek-harness`，以及 npm 上 `0.2.2-rc.1` – `0.2.2-rc.4`
+的已安装 `@deepseek-ai/*` 声明）。类型检查以 rc.1 devDependencies 为准（最旧支持面），
+运行验证覆盖 rc.1–rc.4（见 §12.3）。任何第三方插件——包括早期参考过的
+`dsh-infini-goal`——只算线索，不作为依据；每条 DSH API 行为都以官方源码或已安装的
+`@deepseek-ai/*` 声明为准。
 
 ## 1. 产品定位
 
@@ -647,10 +649,11 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   图标 + 可见 DevLead 文本按钮 `DevLeadIconToggle`。它只读 projection，projection 未加载时
   不渲染；`enabled=false` 时点击发送 `/devlead on`，`enabled=true` 时点击发送
   `/devlead off`。按钮在两种状态下保持同一位置、28px 内容高度与自适应宽度（本地化
-  `DevLead` 文本来自 locale，不占用固定方形 seat），`aria-label`/title/tooltip 随状态切换；
+  `DevLead` 文本来自 locale，不占用固定方形 seat），`aria-label`/tooltip 随状态切换；
   pending 时禁用并置 `aria-busy`，
   失败时按钮保留原位，错误文本进入 tooltip、aria-label 和隐藏的 `role=status` live region
-  （toolbar 没有内联错误位）。按钮不会自行翻转状态。
+  （toolbar 没有内联错误位）；失败态 tooltip 点击/触摸可固定阅读，便于无 hover 设备。
+  按钮不会自行翻转状态。
 - **已开启**：`conversation.input.dock`（composer 上方）里的只读 `DevLeadBar`。
   - `useProjection('devLead')`：`undefined`（加载中）或 `enabled=false` → 不渲染；
     `enabled=true` → 监督会话数/运行中数（标准 props `useSessions`/`useSessionStatus` 与
@@ -834,24 +837,29 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   `team/mode` 与 false 关闭。版本与探测不一致会直接失败（rc.1 出现服务或 rc.2+ 缺少服务都能
   暴露）。
   patch 与 installed 两条加载流都跑完整多阶段；`--no-worktree` 跳过阶段 2（阶段 1、1b、3 仍
-  运行，调试用）。两条加载流各 **130/130**（阶段 1 27 + 阶段 1b 12 + 阶段 2 22 + 阶段 3 69）；
-  跳过阶段 2 时 **108/108**（阶段 1 + 1b + 3）。
-- 本轮最终验证数字（工作树）：`pnpm verify` = typecheck 通过 + **23 文件 / 650 tests** +
+  运行，调试用）。两条加载流各 **131/131**（阶段 1 27 + 阶段 1b 12 + 阶段 2 22 + 阶段 3 70，
+  阶段 3 新增 agent preset roster 检查）；跳过阶段 2 时 **109/109**（阶段 1 + 1b + 3）。
+- 本轮最终验证数字（工作树）：`pnpm verify` = typecheck 通过 + **23 文件 / 669 tests** +
   7 个构建产物；`node scripts/check-packages.mjs` → `OK (6 packages)`；E2E 本轮重跑
-  patch / installed 各 **130/130**（阶段 1 27 + 阶段 1b 12 + 阶段 2 22 + 阶段 3 69）。
-- **DSH 版本兼容矩阵（本轮真实 E2E）**：
+  patch / installed 各 **131/131**（阶段 1 27 + 阶段 1b 12 + 阶段 2 22 + 阶段 3 70）。
+- **DSH 版本兼容矩阵（本轮真实 E2E，npm 临时安装 CLI + `DSH_BIN`）**：
 
-  | DSH | 来源 | flow | checks | Team 分支 |
-  | --- | --- | --- | --- | --- |
-  | 0.2.2-rc.1 | `npm install --prefix <tmp> @deepseek-ai/dsh@0.2.2-rc.1`，`DSH_BIN` | patch / installed | **108/108** each（`--no-worktree`） | 预期不可用：`DEVLEAD_TEAM_UNAVAILABLE`、无 Session、文案含 rc.2 |
-  | 0.2.2-rc.2 | 同上，`@deepseek-ai/dsh@0.2.2-rc.2` | patch / installed | **108/108** each（`--no-worktree`） | 成功：child enabled、durable `team/mode`、false 关闭 |
-  | 0.2.2-rc.3 | 本机已安装桌面运行时 | patch / installed | **130/130** each（含 phase 2） | 成功（同上） |
+  | DSH | flow | checks | Team 分支 / 其他 |
+  | --- | --- | --- | --- |
+  | 0.2.2-rc.1 | installed（`--no-worktree`） | **109/109** | 预期不可用：`DEVLEAD_TEAM_UNAVAILABLE`、无 Session、文案含 rc.2 |
+  | 0.2.2-rc.2 | installed（`--no-worktree`） | **109/109** | 成功：child enabled、durable `team/mode`、false 关闭 |
+  | 0.2.2-rc.3 | installed（`--no-worktree`） | **109/109** | 成功（同上） |
+  | 0.2.2-rc.4 | installed（完整） | **131/131** | 成功；含实验 worktree 阶段 22/22 |
+  | 0.2.2-rc.4 | patch（完整） | **131/131** | 成功；含实验 worktree 阶段 22/22 |
 
-  每条版本使用独立 throwaway `DSH_HOME`，结束后清理；rc.1/rc.2 跳过 phase 2（实验组合不属于
-  该兼容矩阵），阶段 1/1b/3 全跑。所有版本均因无 provider 凭据有 3 条正向模型检查 SKIP；
-  `devlead_list_models` 在所有版本通过。依据：`agent-team` 仅 rc.2+ 发布、rc.1 的
-  `dsh-base` 无对应组合行、rc.2/rc.3 实现相同；模型 API（`modelCatalog`、
-  `Agent.model.select`、`model/selection`、`llm.*`）rc.1 已具备（devDeps 固定 rc.1）。
+  每条版本使用独立 throwaway `DSH_HOME`，结束后清理；rc.1–rc.3 跳过 phase 2（实验组合不与
+  内置 worktree bundle 绑定，阶段 1/1b/3 全跑），rc.4 两条加载流都跑完整四个阶段。所有版本
+  均因无 provider 凭据有 3 条正向模型检查 SKIP；`devlead_list_models` 与
+  `devlead_list_agent_presets` 在所有版本通过。rc.3→rc.4 的 `dsh-base` / `dsh-web-app`
+  组合文件逐字节一致，唯一 upgrade-guide 条目是 LLM 错误码 `CONTENT_REFUSED`（DevLead 不
+  分类该码），因此 rc.4 无降级项。依据：`agent-team` 仅 rc.2+ 发布、rc.1 的 `dsh-base`
+  无对应组合行、rc.2–rc.4 实现相同；模型 API（`modelCatalog`、`Agent.model.select`、
+  `model/selection`、`llm.*`）rc.1 已具备（devDeps 固定 rc.1，按最旧类型检查）。
 - 手动验收路径：开一个会话 → `/devlead on`（或点开关）→ 让模型
   `devlead_use_workspace` 注册一个仓库 → `devlead_create_session` 创建子会话并下发任务 →
   子会话跑完后 DevLead 被唤醒 → 状态条显示监督列表与通知；人类可打开子会话继续参与。

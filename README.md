@@ -9,7 +9,7 @@ interface that the human can see and interact with.
 **English** · [简体中文](README.zh.md)
 
 - **A DevLead session = an ordinary session + one durable switch.** Once enabled, that session
-  gains 11 `devlead_*` tools, a DevLead system prompt, and a status strip above the composer.
+  gains 13 `devlead_*` tools, a DevLead system prompt, and a status strip above the composer.
   The switch itself is a **human-only action**; no tool can enable it. While the mode is off,
   the UI only shows a small composer-toolbar DevLead button (users icon + label) — no permanent
   bar on every conversation.
@@ -38,7 +38,7 @@ interface that the human can see and interact with.
   for the cold-lead policy and [Known limitations](#known-limitations) for the residual cases.
 
 Documentation: [Design notes (中文)](docs/DESIGN.md) · [Publishing guide (中文)](docs/PUBLISHING.md) ·
-[Audit record (中文)](docs/AUDIT.md) · [v0.2.0 release notes (中文)](docs/releases/v0.2.0.md) ·
+[Audit record (中文)](docs/AUDIT.md) · [v0.2.4 release notes (中文)](docs/releases/v0.2.4.md) ·
 [Bundle package (中文)](packages/bundle/README.md) · Package READMEs:
 [protocol](packages/protocol/README.md) · [devlead](packages/devlead/README.md) ·
 [tool](packages/tool/README.md) · [command](packages/command/README.md) ·
@@ -177,7 +177,7 @@ the staged-release helpers (`stage-release.mjs`, `promote-release.mjs`, `trusted
 
 | Item | Requirement |
 | --- | --- |
-| DSH | `0.2.2-rc.1` (plugin / bundle packages declare `engines.dsh: >=0.2.2-rc.1 <0.3.0`) |
+| DSH | `0.2.2-rc.1` – `0.2.2-rc.4` (plugin / bundle packages declare `engines.dsh: >=0.2.2-rc.1 <0.3.0`) |
 | Node.js | ≥ 24.9 (local build / publish only; installing from npm needs no local Node) |
 | pnpm | 12.x (CI pins `pnpm@12.16.1`) |
 | Web UI | the DSH desktop app or `dsh web`; DevLead UI renders on the Web platform only |
@@ -185,24 +185,54 @@ the staged-release helpers (`stage-release.mjs`, `promote-release.mjs`, `trusted
 
 ### DSH version compatibility
 
-All six packages share one version and keep `engines.dsh: >=0.2.2-rc.1 <0.3.0`. Capabilities that
-depend on a Host service degrade instead of failing the plugin:
+All six packages share one version, keep `engines.dsh: >=0.2.2-rc.1 <0.3.0`, and declare every
+`@deepseek-ai/dsh-*` peer as the same range. DSH's loader decides compatibility from `engines.dsh`
+alone, and the range (rather than an exact `0.2.2-rc.1` pin) lets a profile's pnpm peer check
+accept every 0.2.2 release candidate instead of reporting unmet peers on rc.2+.
 
-| Capability | 0.2.2-rc.1 | 0.2.2-rc.2 | 0.2.2-rc.3 | Notes |
-| --- | --- | --- | --- | --- |
-| Existing tools / `/devlead` / UI | yes | yes | yes | base plugin surface |
-| Dispatch model selection + `reasoning_effort` (`agent.model.select`) | yes | yes | yes | Session-level only; never rewrites the profile default |
-| `devlead_list_models` (`sessionController.modelCatalog()`) | yes | yes | yes | read-only compact catalog |
-| `agent_teams: true` | **no** — `DEVLEAD_TEAM_UNAVAILABLE`, no Session created | yes\* | yes\* | \*Host must compose `agent-team`; `dsh-base` includes it from rc.2. `false`/omitted work on rc.1 |
+| Capability | rc.1 | rc.2 | rc.3 | rc.4 | Notes |
+| --- | --- | --- | --- | --- | --- |
+| Plugin load, 13 `devlead_*` tools, `/devlead`, Web UI | yes | yes | yes | yes | base plugin surface |
+| `devlead_list_agent_presets` | yes | yes | yes | yes | `dsh-web-app` composes `agent-presets` from rc.1; tested through the real roster (`standard` default) on every version |
+| Dispatch model selection + `reasoning_effort` (`agent.model.select`) | yes | yes | yes | yes | Session-level only; never rewrites the profile default |
+| `devlead_list_models` (`sessionController.modelCatalog()`) | yes | yes | yes | yes | read-only compact catalog |
+| Optional worktree isolation | optional bundle | optional bundle | optional bundle | optional bundle | E2E phase 2 verifies the happy path with the official experimental forge bundle on rc.4 |
+| `agent_teams: true` | **no** — `DEVLEAD_TEAM_UNAVAILABLE`, no Session created | yes\* | yes\* | yes\* | \*Host must compose `agent-team`; `dsh-base` includes it from rc.2. `false`/omitted work on rc.1 |
 
-Basis: `@deepseek-ai/dsh-agent-team` first shipped in `0.2.2-rc.2` (there is no rc.1 version);
-`dsh-base` has no agent-team row in rc.1 and includes `agent-team` + `tool-agent-team` from rc.2;
-the rc.2 and rc.3 agent-team implementations are identical (`isEnabled(agent)`,
-`setEnabled(agent, enabled, signal?)`, durable `team/mode`). Model APIs (`modelCatalog`,
-`Agent.model.select`, `model/selection`, `llm.listProviders/listModels/resolveCallConfig`) exist in
-rc.1, which this repo's devDependencies pin. Team support is detected with duck-typed
-`ctx.get('agentTeams')`, never a static import, so rc.1 loads normally. On a Host without Team,
-omit `agent_teams` (or pass `false`) and continue dispatching; do not retry or block.
+rc.4 exists on npm as every `@deepseek-ai/*` package for that release (npm's `latest` dist-tag
+still points at `0.2.2-rc.1`; rc.4 is the `next` tag and is available by exact version). It is a
+small fix release: its only upgrade-guide entry changes the DeepSeek streamed-refusal LLM error
+code from `MALFORMED_RESPONSE` to `CONTENT_REFUSED`; DevLead does not classify LLM error codes. The `dsh-base` and `dsh-web-app` `cordis.patch.yml` files are byte-identical between
+rc.3 and rc.4, and every `@deepseek-ai/*` package DevLead imports is unchanged except that
+additive `dsh-llm` code. No version-specific branch or degradation is needed.
+
+Basis for the Team row: `@deepseek-ai/dsh-agent-team` first shipped in `0.2.2-rc.2` (there is no
+rc.1 version); `dsh-base` has no agent-team row in rc.1 and includes `agent-team` +
+`tool-agent-team` from rc.2; the rc.2–rc.4 agent-team implementations are identical
+(`isEnabled(agent)`, `setEnabled(agent, enabled, signal?)`, durable `team/mode`). Model APIs
+(`modelCatalog`, `Agent.model.select`, `model/selection`,
+`llm.listProviders/listModels/resolveCallConfig`) exist in rc.1, which this repo's
+devDependencies pin for backward-compatible type checking. Team support is detected with
+duck-typed `ctx.get('agentTeams')`, never a static import, so rc.1 loads normally. On a Host
+without Team, omit `agent_teams` (or pass `false`) and continue dispatching; do not retry or
+block.
+
+Verified with npm-installed CLIs under throwaway `DSH_HOME`s (Node 26 on this machine; DSH itself
+requires Node ≥ 24.9):
+
+| DSH CLI | Command | Result |
+| --- | --- | --- |
+| `0.2.2-rc.1` | `DSH_BIN=<tmp>/rc.1/node_modules/.bin/dsh node scripts/e2e-smoke.mjs --flow installed --no-worktree` | **109/109** (Team-unavailable branch) |
+| `0.2.2-rc.2` | same, `rc.2` | **109/109** (Team success branch) |
+| `0.2.2-rc.3` | same, `rc.3` | **109/109** (Team success branch) |
+| `0.2.2-rc.4` | same, `rc.4` | **109/109** (Team success branch) |
+| `0.2.2-rc.4` | `DSH_BIN=<tmp>/rc.4/node_modules/.bin/dsh node scripts/e2e-smoke.mjs --flow installed` | **131/131** (includes the experimental worktree phase) |
+| `0.2.2-rc.4` | same, `--flow patch` | **131/131** |
+
+Three positive model-selection checks per flow are reported as SKIP on this credential-less
+Host (the real reason is printed); the negative model path and `devlead_list_models` run on every
+version. Unit tests run against the rc.1 devDependencies, so the type surface stays compatible
+with the oldest supported release.
 
 ### Install from npm (recommended once published)
 
@@ -767,12 +797,13 @@ unavailable model rejected before any Session exists, and the profile default mo
 unchanged), and `devlead_list_models` returns the compact Host catalog view (default,
 providers, failures). When a credential-less Host exposes no model catalog, the positive model
 checks are reported as SKIP with the reason instead of being faked. Per-phase and total check
-counts are **130/130 per flow** (phase 1 = 27, phase 1b = 12, phase 2 = 22, phase 3 = 69);
+counts are **131/131 per flow** (phase 1 = 27, phase 1b = 12, phase 2 = 22, phase 3 = 70);
 `--no-worktree` skips only the experimental phase, reporting
-**108/108** (phases 1 + 1b + 3) for debugging. Compatibility runs with npm-installed
-`0.2.2-rc.1` and `0.2.2-rc.2` CLIs (`DSH_BIN`, `--no-worktree`) also report **108/108** each: on
+**109/109** (phases 1 + 1b + 3) for debugging. Compatibility runs with npm-installed
+`0.2.2-rc.1` through `0.2.2-rc.4` CLIs (`DSH_BIN`, `--no-worktree`) report **109/109** each: on
 rc.1 the Team success checks become expected-unavailable assertions (`DEVLEAD_TEAM_UNAVAILABLE`,
-no Session created), while rc.2/rc.3 run the Team success path. The probe is a private
+no Session created), while rc.2–rc.4 run the Team success path; the rc.4 installed and patch
+flows also pass **131/131** with the worktree phase. The probe is a private
 test-only package under `scripts/e2e-probe/`, not a published or workspace package. The profile
 mutations happen only in the throwaway profile under `os.tmpdir()`; no pnpm install, network, or
 lockfile change is involved.
