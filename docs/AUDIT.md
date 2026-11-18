@@ -11,7 +11,7 @@ DSH 端到端验证。
 > 25/25 checks）记录的是当时的工作树。此后工作树新增了可选 worktree 隔离与依赖姿态审计
 > （0.1.1），并完成了 **0.2.0** 的六个决策项与 nits（见 §10.2）。最新验证数字与结论见
 > [`DESIGN.md`](DESIGN.md) §12 与 [`OPTIONAL-DEPENDENCIES.md`](OPTIONAL-DEPENDENCIES.md)
-> （本文件 §1–§9 是历史快照；当前为 23 文件 / 669 tests，E2E rc.4 installed/patch 各 131/131，rc.1–rc.3 `--no-worktree` 各 109/109）。
+> （本文件 §1–§9 是历史快照；当前为 24 文件 / 689 tests，E2E rc.4 installed/patch 各 132/132，rc.1–rc.3 `--no-worktree` 各 109/109）。
 
 ## 1. 结论摘要
 
@@ -311,7 +311,7 @@ PUBLISHING / OPTIONAL-DEPENDENCIES 与各包 README 同步；`docs/releases/v0.2
   unmet peer；范围修复了该噪声。`scripts/check-packages.mjs` 改为「root devDependency
   必须落在 peer 范围内」，并新增 `semver` devDependency。devDependencies 仍固定 rc.1，
   以最旧 API 做类型检查。
-- **E2E 矩阵**：rc.1–rc.3 `--no-worktree` 各 109/109；rc.4 installed 与 patch 各 131/131
+- **E2E 矩阵**：rc.1–rc.3 `--no-worktree` 各 109/109；rc.4 installed 与 patch 各 132/132
   （阶段 3 新增 agent preset roster 检查：rc.1–rc.4 都返回 `standard` 为默认的真实 roster）。
 - **审计修复**（详见 release notes 0.2.4）：cold-lead 扫描先 rank 后读标题（避免为截断前
   的每个冷 Session 读完整日志）；corpus readiness 双重限时且 dispose 可唤醒；冷 lead

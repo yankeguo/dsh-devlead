@@ -136,6 +136,22 @@ describe('failureMessage', () => {
     expect(failureMessage({ kind: 'unexpected', message: 'boom' }, t)).toBe('boom')
   })
 
+  it('localizes the core single-active refusal with its occupant label', () => {
+    const message = (session: string): string => 'Another Session is already in DevLead mode: '
+      + `${session}. Run /devlead off there first, then enable this Session.`
+    const translate: DevLeadTranslate = (key, params) => `${key}|${String(params?.session)}`
+    expect(failureMessage({ kind: 'rejected', message: message('Webapp (session-1)') }, translate))
+      .toBe('error.alreadyActive|Webapp (session-1)')
+    const archived = 'Another Session is already in DevLead mode: session-1. That Session is archived and '
+      + 'could not be released automatically; open it, run /devlead off, then retry.'
+    expect(failureMessage({ kind: 'rejected', message: archived }, translate))
+      .toBe('error.alreadyActive.archived|session-1')
+    // A prefix-shaped message without our instruction stays verbatim rather
+    // than losing text to an over-eager match.
+    const foreign = 'Another Session is already in DevLead mode: session-1 (host detail).'
+    expect(failureMessage({ kind: 'rejected', message: foreign }, translate)).toBe(foreign)
+  })
+
   it('localizes every client-owned fallback', () => {
     expect(failureMessage({ kind: 'transport', code: 'x' }, t)).toBe('command failed')
     expect(failureMessage({ kind: 'rejected' }, t)).toBe('command rejected')

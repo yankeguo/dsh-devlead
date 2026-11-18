@@ -38,7 +38,7 @@
 
 | 能力 | 说明 |
 | --- | --- |
-| DevLead 模式 | 每个会话一个持久开关；开启后多出 `devlead_*` 工具、DevLead 系统提示与状态条 |
+| DevLead 模式 | 全局单活：同一时刻最多一个会话开启；开关仍由人类命令/UI 控制。开启后多出 `devlead_*` 工具、DevLead 系统提示与状态条 |
 | 角色模型 | 默认调度：依据已注册元数据判定归属 Workspace → 向对应 Session 发自包含简报 → watch → 审阅交付 → 汇报；只读检查属于有界可行性判断（归属、当前行为的高层事实、验证方式）外加审阅时核对具体断言，更深的调查与实现留在归属 Workspace 的 Session（含 lead 自己的 Workspace；仅当人类在本对话中明确授权时由 lead 直接做；记录类文件可依 lead 仓库说明维护） |
 | 标准 DSH 实体 | 子会话是普通 Session（侧边栏可见、人类可打开接管），Workspace 走 `workspaceRegistry`，不是 subagent |
 | 可选 worktree 隔离 | 当 Host 组合了 DSH 实验性 Git worktree 服务（`ctx.worktrees`）时，`devlead_create_session` 可传 `isolation: "worktree"`，让写入型子会话拥有独立分支与检出、不再共享 Workspace checkout；能力检测是可选的，缺少能力时退化为共享 checkout 并在结果里如实上报，绝不报错（见[可选 worktree 隔离](#可选-worktree-隔离)） |
@@ -202,8 +202,8 @@ durable `team/mode`）。模型 API（`modelCatalog`、`Agent.model.select`、`m
 | `0.2.2-rc.2` | 同上，`rc.2` | **109/109**（Team 成功分支） |
 | `0.2.2-rc.3` | 同上，`rc.3` | **109/109**（Team 成功分支） |
 | `0.2.2-rc.4` | 同上，`rc.4` | **109/109**（Team 成功分支） |
-| `0.2.2-rc.4` | `DSH_BIN=<tmp>/rc.4/node_modules/.bin/dsh node scripts/e2e-smoke.mjs --flow installed` | **131/131**（含实验 worktree 阶段） |
-| `0.2.2-rc.4` | 同上，`--flow patch` | **131/131** |
+| `0.2.2-rc.4` | `DSH_BIN=<tmp>/rc.4/node_modules/.bin/dsh node scripts/e2e-smoke.mjs --flow installed` | **132/132**（含实验 worktree 阶段） |
+| `0.2.2-rc.4` | 同上，`--flow patch` | **132/132** |
 
 每条 flow 有 3 条正向模型选择检查因本机无 provider 凭据记为 SKIP（打印真实原因）；负向
 model 路径与 `devlead_list_models` 在每个版本都真实运行。单元测试使用 rc.1 devDependencies，
@@ -301,14 +301,34 @@ DSH 跳过。
 /devlead status    # 上一条的显式别名
 ```
 
-### 命令
+**全局单活约束。** DevLead 模式是 Host 级资源：无论跨多少 Workspace，同一时刻只能有一个
+Session 开启。第二个 Session 执行 `/devlead on` 会以 `DEVLEAD_ALREADY_ACTIVE` 被拒绝，错误
+信息给出当前占用者的标题与 id，并提示先在那里执行 `/devlead off`。被拒绝的 Session 自身
+projection 保持 `enabled: false`，工具条按钮保持 off、状态条不出现；失败原因通过 composer
+工具条的失败通道（tooltip / live region）展示。
+
+释放与恢复语义：
+
+- `/devlead off`（以及 `/devlead reset`）立即释放全局槽位。
+- **占用者被归档时释放**：归档后它不再参与准入；下一次开启/启动时 DevLead 会尽力追加
+  mode-off 记录。若归档占用者是冷的且无法 resume 去写记录，新的 `on` 会被拒绝并给出可操作
+  提示，而不是打开第二个 active 窗口。
+- **永久删除占用者**自然释放：扫描只看仍存在于 live store 或持久语料里的 Session。
+- turn 结束、冷 detach、Agent dispose **不释放**：Session 及其持久模式仍存在，会继续占用，
+  直到人类关闭、归档或删除它。
+- Host 重启时重读 live projection 与持久语料，保留一个 enabled Session（优先现有占用者/
+  live/最近开启者），对其余自动追加 mode-off 并记录 warning；若额外的冷 Session 无法 resume
+  去持久化关闭记录，则如实告警并继续阻止新的开启，绝不放行第二个 active。
+
+运行期准入在 Host 服务内串行化，并同时核对 live 与持久状态，因此两个并发 `on` 不会都成功；
+被拒绝的开启不会改变调用方的 projection。
 
 | 命令 | 作用 |
 | --- | --- |
 | `/devlead` | 状态：模式、可选 worktree 隔离是否可用、监督会话（标题 / live / running / 最近 turn）、最近通知、帮助行 |
 | `/devlead status` | 同 `/devlead` |
-| `/devlead on` | 打开当前会话的 DevLead 模式 |
-| `/devlead off` | 关闭当前会话的 DevLead 模式；fold 冻结时同时执行隐式 reset 完成恢复 |
+| `/devlead on` | 打开当前会话的 DevLead 模式；若其他 Session 已占用则报 `DEVLEAD_ALREADY_ACTIVE` |
+| `/devlead off` | 关闭当前会话的 DevLead 模式并释放全局槽位；fold 冻结时同时执行隐式 reset 完成恢复 |
 | `/devlead reset` | 人类专属恢复：追加 `plugin:devlead/reset` 记录，丢弃本会话的模式 / watch 集合 / 通知 digest / 冻结失败标记，回到默认 disabled 状态 |
 | `/devlead watch <session>` | 监督某个会话（完整 id、唯一前缀，或省略 `session-` 的 uuid 第一段） |
 | `/devlead unwatch <session>` | 取消监督 |
@@ -572,8 +592,8 @@ config 是整体替换）。
 
 ## 已知限制
 
-- **每个 Session 一个持久模式**：打开后 DSH 重启 / 会话恢复仍然打开，需要人类手动
-  `/devlead off`。
+- **全局最多一个开启者**：模式持久，DSH 重启 / 会话恢复后仍占用；人类必须先在占用者上
+  `/devlead off`（或归档/删除它）才能开启另一个 Session。
 - **冷 lead 默认会被 resume**：Host 重启 / 插件重载后 watch 索引从持久记录重建，排队通知
   默认 resume 冷 lead 投递；显式设 `wakeColdSession: false` 时队列只留在内存，等人类打开 lead。
   resume 需要 Host 组合 Session activator；没有时记录仍持久化，等会话被打开后投递。
@@ -625,6 +645,7 @@ config 是整体替换）。
 | 开发 overlay 下 `/devlead on` 报 `gateway/internal: Receiver must be an instance of class Session` | overlay 缺少 linked root（旧版生成物、手写 patch，或 profile 被换过）。重新执行 `pnpm dev:patch --profile <dev>`，确认 `<profile>/node_modules/devlead-repo` 存在后重启；或用 `pnpm e2e` 复现正确流程 |
 | `pnpm dev:patch` 报 profile not found / already enables bundle | 需要专用 dev profile：`dsh devlead --from-default-profile web --dump-config`；已启用本 bundle 的 profile 不能再插入同 id 的 loader row |
 | 对已注册 Workspace 再传 `title` 不生效 | 预期行为：`title` 只用于新注册的 Workspace 记录；已存在的记录保留原标题 |
+| `/devlead on` 报 `DEVLEAD_ALREADY_ACTIVE` | 另一个 Session 已占用 Host 级 DevLead 模式。错误会点名占用者；先在那个 Session 执行 `/devlead off`（或归档/删除它），再开启当前 Session。 |
 | `/devlead` / 工具报 `DEVLEAD_PROJECTION_INVALID` | 本会话日志里有一条损坏的 `plugin:devlead/*` 记录，replay 已冻结。运行 `/devlead reset`（人类专属；会丢弃模式 / watch 集合 / 通知 digest）——`/devlead off` 也会隐式 reset，`/devlead on` 在 reset 前会拒绝。旧版本插件无法恢复。 |
 | `devlead_use_workspace` 报 `DEVLEAD_DIRECTORY_MISSING` | 目录不存在且默认不允许创建。先创建目录，或在人类明确要求建该目录后带 `create: true` 重试 |
 | 重启后冷 lead 被自动 resume | 0.2.0 起的预期默认行为：`wakeColdSession` 为 `true`；不希望后台 resume 就设为 `false`，队列会留在内存等人类打开 lead Session |
@@ -676,11 +697,11 @@ dispatch 设置也走真实 Host：从 `modelCatalog()` 选模型（目录为空
 `agent_teams` true/false 与 durable `team/mode`、省略时结果字段不出现、不可用 model 在创建前
 被拒且不新增 Session、profile 默认模型前后不变；无 provider 凭据时正向模型检查记为 **SKIP**
 并报告原因（不伪造）；`devlead_list_models` 返回精简 Host 目录（default/providers/failures）。
-两条加载流各 **131/131**（阶段 1 27 + 阶段 1b 12 + 阶段 2 22 + 阶段 3 70）；调试时可加
+两条加载流各 **132/132**（阶段 1 27 + 阶段 1b 12 + 阶段 2 23 + 阶段 3 70）；调试时可加
 `--no-worktree` 跳过阶段 2（**109/109**，阶段 1 + 1b + 3）；用 npm 安装的 `0.2.2-rc.1` –
 `0.2.2-rc.4` CLI（`DSH_BIN`）跑同样 flow 也各 **109/109**：rc.1 上 Team 成功检查改为
 「预期不可用」（`DEVLEAD_TEAM_UNAVAILABLE`、不创建 Session），rc.2–rc.4 走 Team 成功路径；
-rc.4 的 installed / patch 完整 flow 各 **131/131**。probe 是
+rc.4 的 installed / patch 完整 flow 各 **132/132**。probe 是
 `scripts/e2e-probe/` 下的私有测试包，不发布、不属于 workspace 包；profile 变更只发生在
 `os.tmpdir()` 下的一次性 profile，不涉及 pnpm install / 网络 / lockfile。
 

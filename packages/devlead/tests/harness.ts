@@ -645,6 +645,10 @@ export class FakeSessionQuery {
   readTitleSnapshotsCalls = 0
   /** Number of single title reads requested. */
   readTitleCalls = 0
+  /** Remove one persisted Session, as a permanent deletion would. */
+  delete(sessionId: string): boolean {
+    return this.rows.delete(sessionId)
+  }
   /**
    * Number of upcoming corpus listings that report an empty result (one-shot),
    * emulating a persistence backend whose index is still warming up.

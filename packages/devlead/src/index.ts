@@ -74,13 +74,22 @@ import {
   devLeadProjectionView,
   emptyDevLeadProjectionState,
 } from './fold.ts'
+import {
+  alreadyActiveMessage,
+  lastEnabledAt,
+  rankActiveSessions,
+  type DevLeadActiveSession,
+} from './active.ts'
 import { worktreeCapabilityOf, worktreeCheckoutOf } from './isolation.ts'
 import { DevLeadNotificationHub } from './notification.ts'
 import type { DevLeadPersistedLead } from './notification.ts'
 import { persistedSessionsOf } from './persistence.ts'
 import type { PersistedSessionsProbe } from './persistence.ts'
 import { agentPresetRosterCapabilityOf, devLeadAgentPresetsOf } from './presets.ts'
-import { devLeadPrefilterOf, projectionCacheOf } from './projection-cache.ts'
+import {
+  devLeadActivePrefilterOf,
+  projectionCacheOf,
+} from './projection-cache.ts'
 import {
   collectSessionIds,
   devLeadSessionView,
@@ -157,6 +166,15 @@ const MAX_TIMER_DELAY_MS = 2_147_483_647
  * reported with one warning.
  */
 const MAX_COLD_LEAD_LOG_READS = 64
+
+/**
+ * Largest number of unclassified persisted Session logs one global single-active
+ * scan reads in full. Positively cached active rows are always read; this cap
+ * only bounds an arbitrarily large history whose cache has no verdict yet. A
+ * capped scan warns and leaves admission conservative for every occupant it
+ * did find.
+ */
+const MAX_ACTIVE_SCAN_UNKNOWN_READS = 64
 
 /**
  * Bound on the boot-time corpus-readiness barrier. The real Session query
@@ -396,6 +414,23 @@ export class DevLeadService extends Service {
   /** Timer of the active readiness sleep, so disposal can clear it. */
   private readinessTimer: ReturnType<typeof setTimeout> | undefined
 
+  /** Serializes global-mode admission so two concurrent enables cannot both pass. */
+  private admissionTail: Promise<void> = Promise.resolve()
+
+  /**
+   * Last known global DevLead occupant, used only as a recovery preference.
+   * Every admission still re-derives occupancy from durable/live projections;
+   * this hint merely keeps an incumbent from being displaced by a Session
+   * resumed later.
+   */
+  private activeSessionId: string | undefined
+
+  /** Cold enabled Sessions discovered by the boot rehydration scan. */
+  private recoveredActive: DevLeadActiveSession[] = []
+
+  /** Whether the service finished its first activation-phase reconciliation. */
+  private initialized = false
+
   /**
    * Disposers of the armed readiness retry: the optional-service injection fiber
    * and, while the query engine itself is missing, the lifecycle listeners.
@@ -432,7 +467,27 @@ export class DevLeadService extends Service {
         this.disposeRehydrationRetry()
       }
     }.bind(this), 'devlead: cold rehydration')
+    // A resumed Session can carry an old enabled mode. Reconcile before the
+    // service becomes ready, and again whenever a later boot-phase resume adds
+    // a live index, so a historical duplicate never stays the visible winner.
+    this.ctx.effect(function* (this: DevLeadService) {
+      const dispose = this.ctx.on('agent/created', ({ agent }) => {
+        if (this.disposed) return undefined
+        const state = this.projectionHandle.stateOf(agent.session)
+        if (state.failure !== null || !state.enabled) return undefined
+        if (this.activeSessionId === undefined || this.activeSessionId === String(agent.id)) return undefined
+        void this.reconcileActiveSessions(this.activeSessionId)
+        return undefined
+      })
+      yield dispose
+    }.bind(this), 'devlead: single active')
     await this.rehydrateFromPersistence()
+    await this.reconcileActiveSessions(undefined, {
+      includePersisted: false,
+      knownActive: this.recoveredActive,
+    })
+    this.recoveredActive = []
+    this.initialized = true
   }
 
   /**
@@ -510,12 +565,13 @@ export class DevLeadService extends Service {
     await this.awaitCorpusReady()
     if (this.rehydrated || this.disposed) return
     try {
-      const records = await this.persistedLeadRecords(true)
+      const scan = await this.persistedLeadRecords(true)
+      this.recoveredActive = [...scan.active]
       // A lead resumed while the scan was in flight already has an
       // authoritative live index (`agent/created` → `syncLead`); replaying the
       // older scan snapshot over it would revert a watch change and drop its
       // queued notifications. Only cold leads are rehydrated.
-      this.hub.rehydrate(records.filter(record => this.ctx.agents.get(toSessionId(record.sessionId)) === undefined))
+      this.hub.rehydrate(scan.leads.filter(record => this.ctx.agents.get(toSessionId(record.sessionId)) === undefined))
     } catch (error: unknown) {
       this.ctx.logger.warn(`devlead: cold lead rehydration failed: ${thrownMessage(error)}`)
     }
@@ -678,6 +734,14 @@ export class DevLeadService extends Service {
   private finalizeRehydration(): void {
     this.rehydrated = true
     this.disposeRehydrationRetry()
+    // The corpus may have become ready after the first live-only scan; a
+    // best-effort follow-up recovers cold duplicates without blocking load.
+    if (this.initialized && !this.disposed) {
+      void this.reconcileActiveSessions(this.activeSessionId, {
+        includePersisted: false,
+        knownActive: this.recoveredActive,
+      })
+    }
   }
 
   /** Dispose every armed readiness-retry hook. */
@@ -788,30 +852,52 @@ export class DevLeadService extends Service {
    * @throws {@link DevLeadError} when the Agent is not live or the replay failed.
    */
   async setEnabled(agent: Agent, enabled: boolean, signal?: AbortSignal): Promise<void> {
-    this.assertLive(agent)
-    signal?.throwIfAborted()
-    const current = this.projectionHandle.stateOf(agent.session)
-    if (current.failure !== null) {
-      // The frozen fold cannot accept a normal mode record: reading it back would
-      // keep serving the damaged state. Turning the mode off is the recovery
-      // path (it discards the damaged watch set and digest via a reset record);
-      // turning it on must point the human at the explicit reset first.
-      if (enabled) {
-        throw new DevLeadError(
-          `DevLead state for Session "${agent.id}" is damaged (${current.failure}); `
-          + 'run /devlead reset first to discard the damaged watch set and notification digest',
-          'DEVLEAD_PROJECTION_INVALID',
-        )
+    // Global admission is serialized: the occupancy scan and the mode append
+    // must be one critical section, otherwise two Sessions enabling at the same
+    // instant could both observe an empty Host. The durable scan inside makes
+    // the check authoritative across restarts; the queue only closes the
+    // in-process race.
+    await this.withAdmission(async () => {
+      this.assertLive(agent)
+      signal?.throwIfAborted()
+      const current = this.projectionHandle.stateOf(agent.session)
+      if (current.failure !== null) {
+        // The frozen fold cannot accept a normal mode record: reading it back would
+        // keep serving the damaged state. Turning the mode off is the recovery
+        // path (it discards the damaged watch set and digest via a reset record);
+        // turning it on must point the human at the explicit reset first.
+        if (enabled) {
+          throw new DevLeadError(
+            `DevLead state for Session "${agent.id}" is damaged (${current.failure}); `
+            + 'run /devlead reset first to discard the damaged watch set and notification digest',
+            'DEVLEAD_PROJECTION_INVALID',
+          )
+        }
+        this.appendResetRecord(agent.session)
+        await this.flushDurably(agent.session, `DevLead reset for Session "${agent.id}"`)
+        await this.checkpointProjectionCache(agent.session, `DevLead reset for Session "${agent.id}"`)
+        if (this.activeSessionId === String(agent.id)) this.activeSessionId = undefined
+        return
       }
-      this.appendResetRecord(agent.session)
-      await this.flushDurably(agent.session, `DevLead reset for Session "${agent.id}"`)
-      await this.checkpointProjectionCache(agent.session, `DevLead reset for Session "${agent.id}"`)
-      return
-    }
-    if (current.enabled === enabled) return
-    appendPluginRecord(agent.session, DEVLEAD_MODE_RECORD_TYPE, modeRecord(enabled, Date.now()))
-    await this.flushDurably(agent.session, `DevLead mode for Session "${agent.id}"`)
-    await this.checkpointProjectionCache(agent.session, `DevLead mode for Session "${agent.id}"`)
+      if (current.enabled === enabled) {
+        if (enabled) this.activeSessionId = String(agent.id)
+        return
+      }
+      if (enabled) {
+        const blocker = await this.blockingOccupant(agent, signal)
+        if (blocker !== undefined) {
+          throw new DevLeadError(
+            alreadyActiveMessage(blocker.occupant, blocker.archivedUnreleased),
+            'DEVLEAD_ALREADY_ACTIVE',
+          )
+        }
+      }
+      appendPluginRecord(agent.session, DEVLEAD_MODE_RECORD_TYPE, modeRecord(enabled, Date.now()))
+      await this.flushDurably(agent.session, `DevLead mode for Session "${agent.id}"`)
+      await this.checkpointProjectionCache(agent.session, `DevLead mode for Session "${agent.id}"`)
+      if (enabled) this.activeSessionId = String(agent.id)
+      else if (this.activeSessionId === String(agent.id)) this.activeSessionId = undefined
+    })
   }
 
   /**
@@ -828,11 +914,14 @@ export class DevLeadService extends Service {
    * @throws {@link DevLeadError} when the Agent is not live.
    */
   async reset(agent: Agent, signal?: AbortSignal): Promise<void> {
-    this.assertLive(agent)
-    signal?.throwIfAborted()
-    this.appendResetRecord(agent.session)
-    await this.flushDurably(agent.session, `DevLead reset for Session "${agent.id}"`)
-    await this.checkpointProjectionCache(agent.session, `DevLead reset for Session "${agent.id}"`)
+    await this.withAdmission(async () => {
+      this.assertLive(agent)
+      signal?.throwIfAborted()
+      this.appendResetRecord(agent.session)
+      await this.flushDurably(agent.session, `DevLead reset for Session "${agent.id}"`)
+      await this.checkpointProjectionCache(agent.session, `DevLead reset for Session "${agent.id}"`)
+      if (this.activeSessionId === String(agent.id)) this.activeSessionId = undefined
+    })
   }
 
   /**
@@ -1574,6 +1663,309 @@ export class DevLeadService extends Service {
     }
   }
 
+  /**
+   * Serialize one global-mode critical section. Every admission waits for the
+   * previous one, so two concurrent enables cannot both scan an empty Host and
+   * then both append. The tail promise is released in `finally`, including on
+   * a rejected admission.
+   * @param body - critical section to run exclusively.
+   * @returns the body result.
+   */
+  private async withAdmission<T>(body: () => Promise<T>): Promise<T> {
+    const previous = this.admissionTail
+    let release!: () => void
+    this.admissionTail = new Promise<void>((resolve) => { release = resolve })
+    await previous
+    try {
+      return await body()
+    } finally {
+      release()
+    }
+  }
+
+  /**
+   * Find an enabled Session other than `agent`, releasing archived holders
+   * first. This is the admission check under the global mutex.
+   * @param agent - Session requesting the mode.
+   * @param signal - caller cancellation checked around the scan and releases.
+   * @returns the blocking occupant, or undefined when the mode is free.
+   */
+  private async blockingOccupant(
+    agent: Agent,
+    signal?: AbortSignal,
+  ): Promise<{ readonly occupant: DevLeadActiveSession; readonly archivedUnreleased: boolean } | undefined> {
+    const active = await this.scanActiveSessions(signal)
+    const blockers: DevLeadActiveSession[] = []
+    for (const occupant of active) {
+      if (occupant.sessionId === String(agent.id)) continue
+      if (occupant.archived) {
+        signal?.throwIfAborted()
+        if (await this.releaseActiveOccupant(occupant, 'archived')) continue
+      }
+      blockers.push(occupant)
+    }
+    signal?.throwIfAborted()
+    if (blockers.length === 0) return undefined
+    const occupant = rankActiveSessions(blockers, this.activeSessionId)[0]
+    if (occupant === undefined) return undefined
+    return { occupant, archivedUnreleased: occupant.archived }
+  }
+
+  /**
+   * Scan every live and persisted Session for an enabled DevLead mode.
+   *
+   * Live Sessions are authoritative directly from the projection handle. Cold
+   * Sessions use the projection cache as a zero-I/O pre-filter: `active` rows
+   * are folded exactly, `inactive` rows are skipped, and rows the cache cannot
+   * classify (including a Host with no cache) are folded up to a bounded read
+   * budget. The budget only limits an arbitrarily large unknown history and is
+   * reported; positively active rows are never skipped.
+   * @param signal - caller cancellation threaded through query reads.
+   * @returns every enabled Session, deduplicated by id.
+   */
+  private async scanActiveSessions(
+    signal?: AbortSignal,
+    includePersisted = true,
+  ): Promise<DevLeadActiveSession[]> {
+    const active = new Map<string, DevLeadActiveSession>()
+    const seen = new Set<string>()
+    const archived = new Set(
+      (this.ctx.get('workspaceRegistry')?.archivedSessionIds ?? []).map(id => String(id)),
+    )
+    /** Fold one live Session directly from its projection handle. */
+    const addLive = (session: Session): void => {
+      const sessionId = String(session.id)
+      if (seen.has(sessionId)) return
+      seen.add(sessionId)
+      const state = this.projectionHandle.stateOf(session)
+      if (state.failure !== null || !state.enabled) return
+      const title = this.ctx.get('sessionTitle')?.get(session)?.title
+      const agent = this.ctx.agents.get(session.id)
+      active.set(sessionId, {
+        sessionId,
+        ...(title === undefined || title.trim().length === 0 ? {} : { title }),
+        live: true,
+        archived: archived.has(sessionId),
+        running: agent?.status === 'running',
+        createdAt: session.header.createdAt,
+        enabledAt: 0,
+      })
+    }
+    for (const agent of this.ctx.agents.list()) addLive(agent.session)
+    for (const session of this.ctx.sessions.list()) addLive(session)
+    signal?.throwIfAborted()
+    if (!includePersisted) return [...active.values()]
+
+    const query = this.ctx.get('sessionQuery')
+    if (query === undefined) return [...active.values()]
+    let records: readonly PersistedSessionRecord[]
+    try {
+      records = await query.listSessions(signal)
+    } catch (error: unknown) {
+      if (signal?.aborted === true) throw error
+      this.ctx.logger.warn(`devlead: could not list persisted Sessions for global DevLead admission: ${thrownMessage(error)}`)
+      return [...active.values()]
+    }
+    const cache = projectionCacheOf(this.ctx)
+    let unknownReads = 0
+    let capped = false
+    let warnedRead = false
+    for (const record of records) {
+      signal?.throwIfAborted()
+      const sessionId = String(record.header.id)
+      if (seen.has(sessionId)) continue
+      const prefilter = cache === undefined
+        ? 'unknown'
+        : devLeadActivePrefilterOf(cache, record.header)
+      if (prefilter === 'inactive') {
+        seen.add(sessionId)
+        continue
+      }
+      if (prefilter === 'unknown') {
+        if (unknownReads >= MAX_ACTIVE_SCAN_UNKNOWN_READS) {
+          capped = true
+          continue
+        }
+        unknownReads += 1
+      }
+      seen.add(sessionId)
+      let events: readonly SessionEvent[]
+      try {
+        events = (await query.readSession(record.header.id)).events
+      } catch (error: unknown) {
+        if (signal?.aborted === true) throw error
+        if (!warnedRead) {
+          warnedRead = true
+          this.ctx.logger.warn(`devlead: could not read a persisted Session log for global DevLead admission: ${thrownMessage(error)}`)
+        }
+        continue
+      }
+      let state = emptyDevLeadProjectionState()
+      for (const event of events) {
+        state = applyDevLeadProjection(state, event)
+        if (state.failure !== null) break
+      }
+      if (state.failure !== null || !state.enabled) continue
+      active.set(sessionId, {
+        sessionId,
+        live: false,
+        archived: archived.has(sessionId),
+        running: false,
+        createdAt: record.header.createdAt,
+        enabledAt: lastEnabledAt(events) ?? 0,
+      })
+    }
+    if (capped) {
+      this.ctx.logger.warn(
+        `devlead: global DevLead admission scanned only ${MAX_ACTIVE_SCAN_UNKNOWN_READS} unclassified persisted Session logs; `
+        + 'compose projection cache rows to make the single-active check exhaustive',
+      )
+    }
+    return [...active.values()]
+  }
+
+  /**
+   * Durably disable one active occupant so the global slot becomes free.
+   *
+   * A live Session (or Agent-owned Session) is appended directly. A cold
+   * Session is resumed through the optional Session controller first; without
+   * that capability the release fails softly and the caller reports the
+   * occupant, rather than clearing a durable mode the Host cannot rewrite.
+   * @param occupant - active Session to disable.
+   * @param reason - `archived` or `duplicate`, recorded in the warning.
+   * @returns whether the durable mode is now off (or already was).
+   */
+  private async releaseActiveOccupant(
+    occupant: DevLeadActiveSession,
+    reason: 'archived' | 'duplicate',
+  ): Promise<boolean> {
+    let session = this.ctx.sessions.get(toSessionId(occupant.sessionId))
+    if (session === undefined) {
+      const controller = this.ctx.get('sessionController')
+      if (controller === undefined) {
+        this.ctx.logger.warn(
+          `devlead: Session "${occupant.sessionId}" still holds DevLead mode but is cold and no Session controller can resume it to release the slot`,
+        )
+        return false
+      }
+      try {
+        const resolved = await controller.resolveAgent(toSessionId(occupant.sessionId))
+        if ('error' in resolved) {
+          this.ctx.logger.warn(
+            `devlead: could not resume DevLead occupant "${occupant.sessionId}" to release the slot: ${resolved.error.message}`,
+          )
+          return false
+        }
+        session = resolved.agent.session
+      } catch (error: unknown) {
+        this.ctx.logger.warn(
+          `devlead: could not resume DevLead occupant "${occupant.sessionId}" to release the slot: ${thrownMessage(error)}`,
+        )
+        return false
+      }
+    }
+    try {
+      const state = this.projectionHandle.stateOf(session)
+      if (state.failure !== null) {
+        this.ctx.logger.warn(
+          `devlead: cannot release DevLead occupant "${occupant.sessionId}": its projection is damaged (${state.failure})`,
+        )
+        return false
+      }
+      if (state.enabled) {
+        appendPluginRecord(session, DEVLEAD_MODE_RECORD_TYPE, modeRecord(false, Date.now()))
+        await this.flushDurably(session, `DevLead release for Session "${occupant.sessionId}"`)
+        await this.checkpointProjectionCache(session, `DevLead release for Session "${occupant.sessionId}"`)
+      }
+    } catch (error: unknown) {
+      this.ctx.logger.warn(
+        `devlead: could not release DevLead occupant "${occupant.sessionId}": ${thrownMessage(error)}`,
+      )
+      return false
+    }
+    if (this.activeSessionId === occupant.sessionId) this.activeSessionId = undefined
+    this.ctx.logger.warn(
+      `devlead: disabled DevLead mode for Session "${occupant.sessionId}" (${reason}); `
+      + 'only one Session may hold DevLead mode at a time',
+    )
+    return true
+  }
+
+  /**
+   * Reconcile a Host that already has (or has recovered) multiple enabled
+   * Sessions.
+   *
+   * Archived holders are released first. The remaining occupants are ranked
+   * deterministically; the preferred/live/newest one stays enabled and every
+   * other is durably disabled with a warning. If a cold holder cannot be
+   * resumed, it is left enabled and keeps blocking new admissions, which is
+   * safer than silently creating a second active Session.
+   * @param preferredSessionId - incumbent to keep when it is still active.
+   */
+  private async reconcileActiveSessions(
+    preferredSessionId?: string,
+    options: {
+      readonly includePersisted?: boolean
+      readonly knownActive?: readonly DevLeadActiveSession[]
+    } = {},
+  ): Promise<void> {
+    if (this.disposed) return
+    try {
+      await this.withAdmission(async () => {
+        if (this.disposed) return
+        const scanned = await this.scanActiveSessions(undefined, options.includePersisted !== false)
+        // Merge the cold Sessions the rehydration scan already read (no second
+        // query/cache pass) with the live projection pass. A live Session is
+        // authoritative even when it is now disabled, so its known-cold entry
+        // is dropped rather than resurrected from the earlier snapshot.
+        const merged = new Map<string, DevLeadActiveSession>()
+        for (const occupant of options.knownActive ?? []) merged.set(occupant.sessionId, occupant)
+        for (const occupant of scanned) merged.set(occupant.sessionId, occupant)
+        const liveIds = new Set<string>()
+        for (const agent of this.ctx.agents.list()) liveIds.add(String(agent.id))
+        for (const session of this.ctx.sessions.list()) liveIds.add(String(session.id))
+        for (const sessionId of liveIds) {
+          if (!scanned.some(occupant => occupant.sessionId === sessionId)) merged.delete(sessionId)
+        }
+        const active = [...merged.values()]
+        if (active.length === 0) {
+          this.activeSessionId = undefined
+          return
+        }
+        const remaining: DevLeadActiveSession[] = []
+        for (const occupant of active) {
+          if (!occupant.archived) {
+            remaining.push(occupant)
+            continue
+          }
+          if (!(await this.releaseActiveOccupant(occupant, 'archived'))) remaining.push(occupant)
+        }
+        if (remaining.length === 0) {
+          this.activeSessionId = undefined
+          return
+        }
+        const ranked = rankActiveSessions(remaining, preferredSessionId ?? this.activeSessionId)
+        const keeper = ranked[0]
+        if (keeper === undefined) return
+        this.activeSessionId = keeper.sessionId
+        let failed = 0
+        for (const extra of ranked.slice(1)) {
+          if (!(await this.releaseActiveOccupant(extra, 'duplicate'))) failed += 1
+        }
+        if (ranked.length > 1) {
+          this.ctx.logger.warn(
+            `devlead: found ${ranked.length} enabled Sessions after recovery; keeping "${keeper.sessionId}"`
+            + (failed > 0 ? ` and could not disable ${failed}` : ''),
+          )
+        }
+      })
+    } catch (error: unknown) {
+      if (!this.disposed) {
+        this.ctx.logger.warn(`devlead: global DevLead admission reconciliation failed: ${thrownMessage(error)}`)
+      }
+    }
+  }
+
   /** Reject any use of a tool surface while DevLead mode is off. */
   private assertReady(agent: Agent): void {
     this.assertLive(agent)
@@ -1629,12 +2021,22 @@ export class DevLeadService extends Service {
    * the scan, and it must never make the plugin fail to load.
    * @returns one persisted lead record per recovered lead Session.
    */
-  private async persistedLeadRecords(scanPersisted: boolean): Promise<DevLeadPersistedLead[]> {
+  private async persistedLeadRecords(
+    scanPersisted: boolean,
+  ): Promise<{ readonly leads: DevLeadPersistedLead[]; readonly active: DevLeadActiveSession[] }> {
     const leads = new Map<string, readonly string[]>()
+    const active: DevLeadActiveSession[] = []
+    const archived = new Set(
+      (this.ctx.get('workspaceRegistry')?.archivedSessionIds ?? []).map(id => String(id)),
+    )
     const remember = (sessionId: string, sessions: readonly string[]): void => {
       if (sessionId.length === 0 || sessions.length === 0) return
       leads.set(sessionId, [...sessions])
     }
+    const result = (): { readonly leads: DevLeadPersistedLead[]; readonly active: DevLeadActiveSession[] } => ({
+      leads: [...leads].map(([sessionId, watched]) => ({ sessionId, watched })),
+      active,
+    })
     for (const lead of this.liveAttachLeads()) remember(lead.sessionId, lead.watched)
     if (!scanPersisted) {
       // Live-attach fallback only: without the optional persistence binding the
@@ -1648,24 +2050,24 @@ export class DevLeadService extends Service {
           'devlead: the Session persistence binding is not composed yet; cold lead rehydration scans live Sessions only',
         )
       }
-      return [...leads].map(([sessionId, watched]) => ({ sessionId, watched }))
+      return result()
     }
     const query = this.ctx.get('sessionQuery')
-    if (query === undefined) return [...leads].map(([sessionId, watched]) => ({ sessionId, watched }))
+    if (query === undefined) return result()
     const cache = projectionCacheOf(this.ctx)
     if (cache === undefined) {
       this.ctx.logger.warn(
         'devlead: this Host composes no Session projection cache, so cold lead rehydration reads no persisted logs; '
         + 'only live lead Sessions are rehydrated',
       )
-      return [...leads].map(([sessionId, watched]) => ({ sessionId, watched }))
+      return result()
     }
     let records: PersistedSessionRecord[]
     try {
       records = await query.listSessions()
     } catch (error: unknown) {
       this.ctx.logger.warn(`devlead: could not list persisted Sessions for cold lead rehydration: ${thrownMessage(error)}`)
-      return [...leads].map(([sessionId, watched]) => ({ sessionId, watched }))
+      return result()
     }
     let unknownReads = 0
     let capped = false
@@ -1675,8 +2077,10 @@ export class DevLeadService extends Service {
       const sessionId = String(record.header.id)
       if (leads.has(sessionId) || record.live) continue
       if (record.header.origin === 'subagent') continue
-      const prefilter = devLeadPrefilterOf(cache, record.header)
-      if (prefilter === 'not-lead') continue
+      // Occupancy needs enabled-with-empty-watch too, so use the active
+      // verdict rather than the lead-indexing one that deliberately skips it.
+      const prefilter = devLeadActivePrefilterOf(cache, record.header)
+      if (prefilter === 'inactive') continue
       if (prefilter === 'unknown') {
         if (unknownReads >= MAX_COLD_LEAD_LOG_READS) {
           capped = true
@@ -1706,7 +2110,16 @@ export class DevLeadService extends Service {
         }
         continue
       }
-      if (state.enabled) remember(sessionId, state.sessions)
+      if (!state.enabled) continue
+      active.push({
+        sessionId,
+        live: false,
+        archived: archived.has(sessionId),
+        running: false,
+        createdAt: record.header.createdAt,
+        enabledAt: lastEnabledAt(events) ?? 0,
+      })
+      remember(sessionId, state.sessions)
     }
     if (capped) {
       this.ctx.logger.warn(
@@ -1714,7 +2127,7 @@ export class DevLeadService extends Service {
         + 'compose projection cache rows to restore leads beyond that bound',
       )
     }
-    return [...leads].map(([sessionId, watched]) => ({ sessionId, watched }))
+    return result()
   }
 
   /**

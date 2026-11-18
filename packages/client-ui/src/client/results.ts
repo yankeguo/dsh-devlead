@@ -125,18 +125,53 @@ const FAILURE_FALLBACK_KEYS = {
   unexpected: 'error.fallback.unknown',
 } as const satisfies Record<'transport' | 'rejected' | 'unexpected', DevLeadKey>
 
+/** Stable English prefix the core single-active refusal uses. */
+const ALREADY_ACTIVE_PREFIX = 'Another Session is already in DevLead mode: '
+
+/** Suffix separating the occupant label from the actionable instruction. */
+const ALREADY_ACTIVE_INSTRUCTION = '. Run /devlead off there first'
+
+/** Suffix of the archived-unreleased variant. */
+const ALREADY_ACTIVE_ARCHIVED_INSTRUCTION = '. That Session is archived and could not be released automatically;'
+
+/**
+ * Recognize the core's single-active refusal so the browser can render it in
+ * the user's locale. The command transport carries plain text (no error code),
+ * so the refusal's stable prefix/instruction pair is the seam; a message that
+ * does not match exactly is returned verbatim below.
+ * @param message - Host rejection text.
+ * @returns the occupant label and whether the archived variant applies.
+ */
+function alreadyActiveDetails(message: string): { readonly session: string; readonly archived: boolean } | undefined {
+  if (!message.startsWith(ALREADY_ACTIVE_PREFIX)) return undefined
+  const rest = message.slice(ALREADY_ACTIVE_PREFIX.length)
+  const archived = rest.includes(ALREADY_ACTIVE_ARCHIVED_INSTRUCTION)
+  const marker = archived ? ALREADY_ACTIVE_ARCHIVED_INSTRUCTION : ALREADY_ACTIVE_INSTRUCTION
+  const end = rest.indexOf(marker)
+  if (end <= 0) return undefined
+  const session = rest.slice(0, end).trim()
+  return session.length === 0 ? undefined : { session, archived }
+}
+
 /**
  * One-line human text of a classified failure, for surfaces that report
  * through a tooltip instead of an inline row (the composer-toolbar toggle has
  * no inline error seat, in either mode state). All client-authored fallbacks
  * go through the locale dictionary; a Host message is used verbatim when
- * present.
+ * present, except the recognized single-active refusal, which carries enough
+ * structure to localize its occupant line.
  * @param failure - classified command failure.
  * @param t - namespace-bound translate function.
  * @returns the failure text.
  */
 export function failureMessage(failure: DevLeadCommandFailure, t: DevLeadTranslate): string {
   if (failure.kind === 'unresolved') return t('error.fallback.unresolved')
+  if (failure.kind === 'rejected' && failure.message !== undefined) {
+    const active = alreadyActiveDetails(failure.message)
+    if (active !== undefined) {
+      return t(active.archived ? 'error.alreadyActive.archived' : 'error.alreadyActive', { session: active.session })
+    }
+  }
   return failure.message ?? t(FAILURE_FALLBACK_KEYS[failure.kind])
 }
 

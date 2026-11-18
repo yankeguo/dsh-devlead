@@ -1,13 +1,13 @@
 /**
  * Optional Session projection-cache capability.
  *
- * Cold lead rehydration must not read the complete log of every Session a Host
- * ever persisted: on a long-lived deployment that corpus is unbounded. The
- * projection cache keeps the last published projection row per Session, so its
- * cached `devLead` value is a cheap pre-filter: a row that clearly says
- * "disabled" or "watching nothing" is skipped without touching the log, an
- * "enabled" row is a real lead candidate, and only rows the cache cannot
- * classify pay for an exact fold.
+ * Cold lead rehydration and global single-active admission must not read the
+ * complete log of every Session a Host ever persisted: on a long-lived
+ * deployment that corpus is unbounded. The projection cache keeps the last
+ * published projection row per Session, so its cached `devLead` value is a
+ * cheap pre-filter: a disabled row is skipped without touching the log, an
+ * enabled row is a real candidate, and only rows the cache cannot classify pay
+ * for an exact fold.
  *
  * The negative verdict is safe only because the service eagerly checkpoints
  * this cache after every durable mode/watch/reset write, and DSH's cache
@@ -47,18 +47,6 @@ export interface SessionProjectionCacheLike {
 }
 
 /**
- * Pre-filter verdict of one cached projection row, derived from the cached
- * `devLead` digest value.
- *
- * - `lead`: the row says the mode is enabled and the watch set is non-empty;
- * - `not-lead`: the row says the mode is disabled or the watch set is empty, so
- *   the log does not need to be read;
- * - `unknown`: no row, no `devLead` key, or a value this Host cannot classify;
- *   an exact fold is required and the unknown-read budget applies.
- */
-export type DevLeadPrefilter = 'lead' | 'not-lead' | 'unknown'
-
-/**
  * Detect one context's optional Session projection-cache service.
  *
  * The service is read from the Cordis context at call time (it is not an
@@ -85,23 +73,30 @@ export function projectionCacheOf(ctx: Context): SessionProjectionCacheLike | un
   }
 }
 
+/** Occupancy pre-filter verdict of one cached projection row. */
+export type DevLeadActivePrefilter = 'active' | 'inactive' | 'unknown'
+
 /**
- * Classify one cached projection row without reading the Session log.
+ * Classify one cached projection row for global single-active admission.
  *
- * The cached value is the `devLead` projection state (the digest unit stays in
- * the projection checkpoint even though it is excluded from Session summaries),
- * merged into `{ values }` by the cache row format.
+ * An enabled row is always `active`, even with an empty watch set: the mode
+ * itself is the global resource. A disabled row is `inactive`; a
+ * missing/malformed row is `unknown` and the caller must
+ * read the exact log. The same eager-checkpoint invariant documented on the
+ * module keeps a negative row from hiding a just-enabled Session beyond the
+ * one durable write.
  * @param cache - composed projection cache.
  * @param header - persisted Session header from the query listing.
- * @returns the pre-filter verdict.
+ * @returns the occupancy verdict.
  */
-export function devLeadPrefilterOf(cache: SessionProjectionCacheLike, header: unknown): DevLeadPrefilter {
+export function devLeadActivePrefilterOf(
+  cache: SessionProjectionCacheLike,
+  header: unknown,
+): DevLeadActivePrefilter {
   let snapshot: unknown
   try {
     snapshot = cache.cachedSnapshot(header)
   } catch {
-    // A cache that cannot answer is not a reason to skip a real lead: fall back
-    // to the exact fold (bounded by the unknown-read budget).
     return 'unknown'
   }
   if (typeof snapshot !== 'object' || snapshot === null) return 'unknown'
@@ -109,15 +104,7 @@ export function devLeadPrefilterOf(cache: SessionProjectionCacheLike, header: un
   if (typeof values !== 'object' || values === null) return 'unknown'
   const devLead = (values as Record<string, unknown>).devLead
   if (typeof devLead !== 'object' || devLead === null) return 'unknown'
-  const record = devLead as { enabled?: unknown; sessions?: unknown }
-  if (record.enabled !== true) {
-    // A disabled row is trusted as a negative only under the eager-checkpoint
-    // invariant documented on this module; a malformed value stays unknown.
-    return record.enabled === false ? 'not-lead' : 'unknown'
-  }
-  if (!Array.isArray(record.sessions)) return 'unknown'
-  // Enabled but watching nothing is still not a lead worth waking: matching the
-  // hub's own "enabled && watch set non-empty" indexing rule keeps the two
-  // rebuild paths consistent.
-  return record.sessions.length > 0 ? 'lead' : 'not-lead'
+  const enabled = (devLead as { enabled?: unknown }).enabled
+  if (enabled === true) return 'active'
+  return enabled === false ? 'inactive' : 'unknown'
 }

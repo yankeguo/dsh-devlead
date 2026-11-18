@@ -69,10 +69,11 @@
  *             branch ref exists, `baseCommit` equals the workspace `HEAD`, the
  *             child Session's effective working directory is the checkout, its
  *             header cwd stays the Workspace path, and the Session belongs to
- *             the registered Workspace. The scratch workspace is a real Git
- *             repository (one seed commit) because the worktree service
- *             branches from its `HEAD`.
- *             22 checks.
+ *             the registered Workspace; the phase then releases its DevLead
+ *             slot so the single-active phase 3 can enable its own lead. The
+ *             scratch workspace is a real Git repository (one seed commit)
+ *             because the worktree service branches from its `HEAD`.
+ *             23 checks.
  *
  *   phase 3 — close tools, dispatch routing, and triage policy. The same profile restarts (the
  *             probe package is linked and its overlay applied; the worktree
@@ -120,8 +121,8 @@
  * experimental composition cannot boot on this machine); phases 1, 1b, and 3
  * still run.
  *
- * Check counts: phase 1 = 27, phase 1b = 12, phase 2 = 22, phase 3 = 70, so
- * every flow reports 131/131 checks when all four phases pass (`--no-worktree`
+ * Check counts: phase 1 = 27, phase 1b = 12, phase 2 = 23, phase 3 = 70, so
+ * every flow reports 132/132 checks when all four phases pass (`--no-worktree`
  * skips phase 2: 109/109). Run both flows before a release:
  *
  *   node scripts/e2e-smoke.mjs --flow patch
@@ -1238,6 +1239,15 @@ async function runWorktreeChecks(client, paths) {
     'the registered Workspace is the scratch workspace',
     workspace.path === repositoryRoot,
     `${String(workspace.path)} vs ${repositoryRoot}`,
+  )
+
+  // DevLead mode is globally single-active: phase 3 starts a new lead against
+  // the same durable scratch home, so this phase must release its slot.
+  const off = await client.command(leadId, '/devlead off')
+  checks.expect(
+    'phase 2 /devlead off releases the global slot',
+    off?.result?.kind === 'success' && /DevLead mode disabled\./u.test(off?.result?.text ?? ''),
+    off?.result?.text?.split('\n')[0],
   )
 
   checks.summarize()

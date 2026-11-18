@@ -667,6 +667,7 @@ describe('devlead command friendly error mapping', () => {
   const MAPPING: readonly (readonly [DevLeadErrorCode, string])[] = [
     ['DEVLEAD_INVALID_INPUT', 'not usable'],
     ['DEVLEAD_NOT_ENABLED', 'DevLead mode is off for this Session'],
+    ['DEVLEAD_ALREADY_ACTIVE', 'injected DEVLEAD_ALREADY_ACTIVE'],
     ['DEVLEAD_AGENT_NOT_LIVE', 'no longer live'],
     ['DEVLEAD_WORKSPACE_NOT_FOUND', 'Workspace could not be resolved'],
     ['DEVLEAD_DIRECTORY_MISSING', 'target directory is missing'],
@@ -686,6 +687,19 @@ describe('devlead command friendly error mapping', () => {
 
   it('has a mapping fixture for every stable code', () => {
     expect(UNMAPPED_CODES).toEqual({})
+  })
+
+  it('passes the single-active refusal through with its occupant label', async () => {
+    const { handler, service } = boot()
+    const refusal = 'Another Session is already in DevLead mode: Alpha (session-alpha). '
+      + 'Run /devlead off there first, then enable this Session.'
+    service.setEnabled = async () => {
+      throw new FakeDevLeadError('DEVLEAD_ALREADY_ACTIVE', refusal)
+    }
+    const result = await run(handler, 'on')
+    expect(result.kind).toBe('error')
+    expect(text(result)).toBe(refusal)
+    expect(text(result)).toContain('Alpha (session-alpha)')
   })
 
   it('covers every stable core error code with actionable text', async () => {

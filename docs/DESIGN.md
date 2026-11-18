@@ -220,6 +220,31 @@ default: boolean; broken? }[]; reason? }`；`default` 是 Host 有效默认（`s
   丢弃人类可能还想检查的记录）；`reset(agent)` 只 `assertLive`，追加 reset 记录后 flush。
   恢复后投影回到默认 disabled、watch 索引清空，需要重新 watch；持久日志里的旧记录保留但不再
   fold。hub 在 `session/event` 看到 reset 记录时也 `syncLead`（状态变 disabled → `removeLead`）。
+- **全局单活准入**：DevLead 模式是 Host 级资源，同一时刻最多一个 Session 可 enabled（跨全部
+  Workspace）。`setEnabled(true)` 在 Host 服务内的 `admissionTail` 临界区里执行“扫描占用者 →
+  必要时释放 archived 占用者 → 写 mode 记录”，因此同一进程内两个并发 `on` 只有一个能成功；
+  `setEnabled(false)` / `reset` 也走同一临界区，关闭立即释放。扫描来源：
+  - live Session/Agent 直接读 `projectionHandle.stateOf`（权威）；
+  - 持久语料经 `sessionQuery.listSessions()` 遍历；projection cache 的 active 行（`devLead`
+    enabled，含空 watch）精确 fold，inactive 行零 I/O 跳过，其余行有界读取（64 条上限）并
+    warning；
+  - 启动阶段的冷语料由 rehydration 扫描顺带产出 active 列表（不重复读），与 live 扫描合并。
+
+  错误码 `DEVLEAD_ALREADY_ACTIVE`，消息给出占用者 `title (sessionId)` 或裸 id，并提示先执行
+  `/devlead off`。被拒绝方的 projection 不变（按钮 off、状态条不渲染），失败文本走既有
+  UI 失败通道。
+- **释放与重启恢复**：`off`/`reset` 立即释放；archived 占用者在下次准入/启动时释放（live 直接
+  写 mode-off；冷 Session 用 `sessionController.resolveAgent` resume 后写，缺 controller 或
+  resume 失败则保留占用并拒绝新开启，消息明确说明 archived-unreleased）；永久删除的 Session
+  因扫描不可见而自然释放；turn 结束、冷 detach、Agent dispose **不释放**（durable 模式仍在）。
+  启动时 `reconcileActiveSessions` 合并 live + rehydration active，按
+  `rankActiveSessions` 保留一个（优先 incumbent/live/running/最近 enable/creator/id），对其余
+  写 mode-off 并 warning；释放失败则保留并继续阻塞新开启。恢复扫描只处理 archived/重复占用，
+  不改变唯一一个正常 lead 的 watch/通知状态。
+- **单活边界**：临界区是单 Host 进程内的；共享同一持久存储的多个 Host 进程仍可能并发通过扫描
+  （没有跨进程锁）。无 `sessionQuery` 的 Host 只能核对 live；projection cache 的
+  stale-negative 窗口与冷 lead 恢复共用同一“mode 写后 eager checkpoint”保障，极端崩溃窗口
+  仍无法数学消除。这些边界在 README 已知限制中说明。
 - `listModels`：`assertReady(agent)` 后取 `ctx.get('sessionController')` 的
   `modelCatalog()`，映射为精简的 `DevLeadModelCatalog`（default / routableProviders /
   providers+models+reasoning efforts+defaultEffort / failures），丢弃 description/badge 等
@@ -709,6 +734,7 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
 | --- | --- |
 | `DEVLEAD_INVALID_INPUT` | 参数不可用：空 prompt、相对路径、文件路径、空引用、`limit` 非法、前缀歧义、非法 prompt 目标等 |
 | `DEVLEAD_NOT_ENABLED` | 当前会话未开启 DevLead 模式 |
+| `DEVLEAD_ALREADY_ACTIVE` | 另一个 Session 已占用 Host 级 DevLead 模式；消息含占用者 `title (id)`（或裸 id）与“先 /devlead off”的指引；archived 且无法自动释放时给出专门恢复文案 |
 | `DEVLEAD_AGENT_NOT_LIVE` | 传入的 Agent 不是注册表中的 live 实例（工具侧绕过 `when` 时也走该码） |
 | `DEVLEAD_WORKSPACE_NOT_FOUND` | 指定 Workspace 引用无法解析，或 Host 未组合 Workspace registry |
 | `DEVLEAD_DIRECTORY_MISSING` | 目录不存在且未显式允许创建（文案提示 retry with `create: true`），或允许创建但创建失败 |
@@ -747,7 +773,12 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   已 watch 不受影响、`watch:false` 不变）、写路径的取消语义，以及可选 worktree 隔离的两种
   形态（fake `ctx.worktrees` 存在时按"创建→隔离→prompt"顺序调用子 Agent 的 `create`；
   缺席/畸形/抛错时降级为 `unavailable`/`failed`，Session 仍创建并 prompt，绝不抛错），以及
-  可选 Agent preset roster 的映射（`defaultId` 标记、无 id 行丢弃）与缺席/空/读取失败路径。
+  可选 Agent preset roster 的映射（`defaultId` 标记、无 id 行丢弃）与缺席/空/读取失败路径；
+  **全局单活**（第二会话被 `DEVLEAD_ALREADY_ACTIVE` 拒绝且消息含占用者、并发 on 只成功一个、
+  off 立即释放、archived 占用者释放、启动时多个 live enabled 只保留一个、冷持久占用者拒绝
+  新开启、冷占用者删除后释放、archived 冷占用者经 controller resume 后释放、无法 resume 时的专门文案）。另有独立
+  `active.spec.ts` 覆盖 `lastEnabledAt`（reset/坏记录）、`rankActiveSessions` 的确定性排序、
+  `activeSessionLabel` 与两种 refusal 文案。
 - `tool`：用 fake `ctx.devLead` + fake `ctx.tools`/`ctx.systemPrompt` 捕获工具定义，验证
   `when` gating、参数校验、值渲染、编译期 schema↔protocol 一致性、运行时 output schema
   校验、错误翻译、13 个工具的 execute 转发与取消信号转发（含 `listAgentPresets` 的 roster /
@@ -760,7 +791,8 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
 - `command`：解析（rawInput 契约 / 引号 / 空白 / 未知子命令 / `reset`）、前缀寻址（唯一 /
   歧义 / 缺失 / 列表窗口外回退）、渲染、穷尽错误码映射、单次 projection 快照、`/devlead reset`
   的恢复渲染、`/devlead off` 在冻结状态下恢复、`/devlead on` 在冻结状态下返回带 reset 提示的
-  友好错误，以及并发变更时 title/body 来自同一 post-mutation 快照；状态里的
+  友好错误、`DEVLEAD_ALREADY_ACTIVE` 的占用者文案透传，以及并发变更时 title/body 来自同一
+  post-mutation 快照；状态里的
   `Worktree isolation: available|unavailable` 行也按 fake 能力断言。
 - `client-ui`：纯函数（format / 准入状态机 gate+reducer / results 分类 / 样式 token 契约 /
   侧边栏行标记 predicate / locale 完整性与占位符一致）；组件保持薄，逻辑都下沉到可测纯函数。
@@ -837,11 +869,11 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   `team/mode` 与 false 关闭。版本与探测不一致会直接失败（rc.1 出现服务或 rc.2+ 缺少服务都能
   暴露）。
   patch 与 installed 两条加载流都跑完整多阶段；`--no-worktree` 跳过阶段 2（阶段 1、1b、3 仍
-  运行，调试用）。两条加载流各 **131/131**（阶段 1 27 + 阶段 1b 12 + 阶段 2 22 + 阶段 3 70，
+  运行，调试用）。两条加载流各 **132/132**（阶段 1 27 + 阶段 1b 12 + 阶段 2 23 + 阶段 3 70，
   阶段 3 新增 agent preset roster 检查）；跳过阶段 2 时 **109/109**（阶段 1 + 1b + 3）。
-- 本轮最终验证数字（工作树）：`pnpm verify` = typecheck 通过 + **23 文件 / 669 tests** +
+- 本轮最终验证数字（工作树）：`pnpm verify` = typecheck 通过 + **24 文件 / 689 tests** +
   7 个构建产物；`node scripts/check-packages.mjs` → `OK (6 packages)`；E2E 本轮重跑
-  patch / installed 各 **131/131**（阶段 1 27 + 阶段 1b 12 + 阶段 2 22 + 阶段 3 70）。
+  patch / installed 各 **132/132**（阶段 1 27 + 阶段 1b 12 + 阶段 2 23 + 阶段 3 70）。
 - **DSH 版本兼容矩阵（本轮真实 E2E，npm 临时安装 CLI + `DSH_BIN`）**：
 
   | DSH | flow | checks | Team 分支 / 其他 |
@@ -849,8 +881,8 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   | 0.2.2-rc.1 | installed（`--no-worktree`） | **109/109** | 预期不可用：`DEVLEAD_TEAM_UNAVAILABLE`、无 Session、文案含 rc.2 |
   | 0.2.2-rc.2 | installed（`--no-worktree`） | **109/109** | 成功：child enabled、durable `team/mode`、false 关闭 |
   | 0.2.2-rc.3 | installed（`--no-worktree`） | **109/109** | 成功（同上） |
-  | 0.2.2-rc.4 | installed（完整） | **131/131** | 成功；含实验 worktree 阶段 22/22 |
-  | 0.2.2-rc.4 | patch（完整） | **131/131** | 成功；含实验 worktree 阶段 22/22 |
+  | 0.2.2-rc.4 | installed（完整） | **132/132** | 成功；含实验 worktree 阶段 23/23 |
+  | 0.2.2-rc.4 | patch（完整） | **132/132** | 成功；含实验 worktree 阶段 23/23 |
 
   每条版本使用独立 throwaway `DSH_HOME`，结束后清理；rc.1–rc.3 跳过 phase 2（实验组合不与
   内置 worktree bundle 绑定，阶段 1/1b/3 全跑），rc.4 两条加载流都跑完整四个阶段。所有版本

@@ -10,6 +10,8 @@ interface that the human can see and interact with.
 
 - **A DevLead session = an ordinary session + one durable switch.** Once enabled, that session
   gains 13 `devlead_*` tools, a DevLead system prompt, and a status strip above the composer.
+  **Only one Session can hold DevLead mode at a time**, across every Workspace; enabling a second
+  one is refused until the incumbent is turned off.
   The switch itself is a **human-only action**; no tool can enable it. While the mode is off,
   the UI only shows a small composer-toolbar DevLead button (users icon + label) — no permanent
   bar on every conversation.
@@ -227,8 +229,8 @@ requires Node ≥ 24.9):
 | `0.2.2-rc.2` | same, `rc.2` | **109/109** (Team success branch) |
 | `0.2.2-rc.3` | same, `rc.3` | **109/109** (Team success branch) |
 | `0.2.2-rc.4` | same, `rc.4` | **109/109** (Team success branch) |
-| `0.2.2-rc.4` | `DSH_BIN=<tmp>/rc.4/node_modules/.bin/dsh node scripts/e2e-smoke.mjs --flow installed` | **131/131** (includes the experimental worktree phase) |
-| `0.2.2-rc.4` | same, `--flow patch` | **131/131** |
+| `0.2.2-rc.4` | `DSH_BIN=<tmp>/rc.4/node_modules/.bin/dsh node scripts/e2e-smoke.mjs --flow installed` | **132/132** (includes the experimental worktree phase) |
+| `0.2.2-rc.4` | same, `--flow patch` | **132/132** |
 
 Three positive model-selection checks per flow are reported as SKIP on this credential-less
 Host (the real reason is printed); the negative model path and `devlead_list_models` run on every
@@ -332,6 +334,34 @@ mode is off and `/devlead off` while it is on.
 /devlead           # show status: mode state, watched sessions (title/state), latest notifications, help
 /devlead status    # explicit alias of the above
 ```
+
+**Global single-active constraint.** DevLead mode is a Host-wide resource: at most one Session may
+be enabled, regardless of Workspace. `on` in a second Session fails with
+`DEVLEAD_ALREADY_ACTIVE`; the error names the occupying Session (title and id when available) and
+tells the human to run `/devlead off` there first. The refused Session's own projection stays
+`enabled: false`, so its toolbar button stays off and the status strip does not appear; the
+composer-toolbar failure channel shows the reason.
+
+Release and recovery semantics:
+
+- `/devlead off` (and `/devlead reset`) releases the slot immediately.
+- **Archiving the holder releases it**: the archived Session is no longer eligible on the next
+  admission/startup, and DevLead durably writes a mode-off record when it can. If an archived
+  holder is cold and cannot be resumed to write that record, a new `on` is refused with an
+  actionable message instead of opening a second active window.
+- **Permanently deleting** the holder releases the slot naturally: the scan only sees Sessions
+  that still exist in the live store or persisted corpus.
+- A settled turn, a cold detach, or an Agent disposal **does not** release the slot: the Session
+  (and its durable mode) still exists, so it keeps occupying it until the human turns it off,
+  archives it, or deletes it.
+- On restart DevLead rereads live projections plus the durable corpus, keeps one enabled Session
+  (preferring the incumbent/live/recently enabled one), and automatically writes mode-off for the
+  rest with a warning. If an extra cold Session cannot be resumed to persist that record, it is
+  reported and keeps blocking new activations rather than allowing a second active Session.
+
+Runtime admission is serialized in the Host service and checks live and persisted state, so two
+concurrent `on` requests cannot both succeed. A refused activation never changes the caller's
+projection.
 
 ### Commands
 
@@ -735,6 +765,7 @@ without it keeps the default single-checkout behavior and reports `unavailable`.
 | Under a dev overlay, `/devlead on` throws `gateway/internal: Receiver must be an instance of class Session` | the overlay has no linked root (stale generated overlay, hand-written patch, or the profile was swapped). Re-run `pnpm dev:patch --profile <dev>` and confirm `<profile>/node_modules/devlead-repo` exists, then restart; or use `pnpm e2e` to run the correct flow |
 | `pnpm dev:patch` reports profile not found / already enables bundle | a dedicated dev profile is required: `dsh devlead --from-default-profile web --dump-config`; a profile that enables this bundle cannot take a second loader row with the same id |
 | Passing `title` to an already-registered Workspace has no effect | expected: `title` only applies when registering a new Workspace record; an existing record keeps its title |
+| `/devlead on` reports `DEVLEAD_ALREADY_ACTIVE` | another Session already holds the Host-wide DevLead mode. The error names it; run `/devlead off` in that Session (or archive/delete it) before enabling this one. |
 | `/devlead` / tools report `DEVLEAD_PROJECTION_INVALID` | a `plugin:devlead/*` record in this Session's log is corrupt and replay froze. Run `/devlead reset` (human-only; discards the mode, watch set, and notification digest) — `/devlead off` does that implicitly, `/devlead on` refuses until the reset. Old plugin versions cannot recover. |
 | `devlead_use_workspace` reports `DEVLEAD_DIRECTORY_MISSING` | the directory does not exist and creation is not allowed by default. Create it first, or retry with `create: true` once the human explicitly asked for that directory |
 | A cold lead was resumed unexpectedly after a restart | expected default: `wakeColdSession` is `true` since 0.2.0; set it to `false` to keep queued notifications in memory until a human opens the lead Session |
@@ -798,13 +829,13 @@ unavailable model rejected before any Session exists, and the profile default mo
 unchanged), and `devlead_list_models` returns the compact Host catalog view (default,
 providers, failures). When a credential-less Host exposes no model catalog, the positive model
 checks are reported as SKIP with the reason instead of being faked. Per-phase and total check
-counts are **131/131 per flow** (phase 1 = 27, phase 1b = 12, phase 2 = 22, phase 3 = 70);
+counts are **132/132 per flow** (phase 1 = 27, phase 1b = 12, phase 2 = 23, phase 3 = 70);
 `--no-worktree` skips only the experimental phase, reporting
 **109/109** (phases 1 + 1b + 3) for debugging. Compatibility runs with npm-installed
 `0.2.2-rc.1` through `0.2.2-rc.4` CLIs (`DSH_BIN`, `--no-worktree`) report **109/109** each: on
 rc.1 the Team success checks become expected-unavailable assertions (`DEVLEAD_TEAM_UNAVAILABLE`,
 no Session created), while rc.2–rc.4 run the Team success path; the rc.4 installed and patch
-flows also pass **131/131** with the worktree phase. The probe is a private
+flows also pass **132/132** with the worktree phase. The probe is a private
 test-only package under `scripts/e2e-probe/`, not a published or workspace package. The profile
 mutations happen only in the throwaway profile under `os.tmpdir()`; no pnpm install, network, or
 lockfile change is involved.

@@ -323,6 +323,8 @@ function friendlyDevLeadError(error: DevLeadError): string {
   switch (error.code) {
     case 'DEVLEAD_NOT_ENABLED':
       return NOT_ENABLED_MESSAGE
+    case 'DEVLEAD_ALREADY_ACTIVE':
+      return error.message
     case 'DEVLEAD_AGENT_NOT_LIVE':
       return 'This Session is no longer live in this Host, so the command cannot run. '
         + 'Open it again from the sidebar and retry.'

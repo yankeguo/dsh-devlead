@@ -14,6 +14,13 @@ checkout-isolation capability is composed.
 /devlead unwatch <session>       # stop watching it
 ```
 
+DevLead mode is Host-wide and single-active: exactly one Session may hold it across every
+Workspace. `/devlead on` in a second Session is refused with `DEVLEAD_ALREADY_ACTIVE`, whose
+message names the occupying Session and says to run `/devlead off` there first; the refused
+Session's projection stays disabled. Off/reset release the slot immediately, and archiving the
+holder makes it releasable on the next admission/startup (the core writes the durable mode-off
+when it can).
+
 The command parses the DSH `CommandInvocation.rawInput` contract (text after the command name),
 does not accept composer attachments, and renders domain failures as friendly text instead of
 throwing. Prefix references are confirmed with the core's exhaustive resolver before a watch
@@ -42,6 +49,9 @@ dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 ## 中文
 
 `@yankeguo/dsh-command-devlead` 提供人类 `/devlead` 命令：模式状态、reset、watch/unwatch。
+DevLead 模式全局单活：第二个会话执行 `/devlead on` 会以 `DEVLEAD_ALREADY_ACTIVE` 被拒，
+消息给出占用者并提示先在占用者上 `/devlead off`；关闭/重置立即释放，归档占用者在下一次
+准入/启动时可被释放。
 0.2.0 起 `/devlead reset`（以及冻结时 `/devlead off`）追加 `plugin:devlead/reset` 记录并解冻
 损坏的 fold；reset 会丢弃该会话的 watch 集合与通知 digest。命令按 DSH `rawInput` 契约解析，
 不接受附件，前缀引用在变更前由 core 穷尽验证，变更后的标题与正文来自同一 post-mutation 快照。完整中文文档见

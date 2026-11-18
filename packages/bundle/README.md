@@ -108,8 +108,8 @@ profile，且 `desktop` profile 已启用本 bundle（重复插入相同 row id 
 `os.tmpdir()` DSH_HOME 验收本地加载路径（需要本机已安装 DSH，因此不在 CI 中运行）。
 0.2.0 起 E2E 分多阶段：阶段 1 保持默认组合断言（含 `Worktree isolation: unavailable`），
 阶段 1b 用同一加载流/scratch home 重启验证冷 lead 索引重建，阶段 2 在同一 scratch profile 里
-追加官方实验 forge bundle 并验证 worktree happy path；两条加载流各 **61/61**（阶段 1 27 +
-阶段 1b 12 + 阶段 2 22），`--no-worktree` 跳过阶段 2（**39/39**，阶段 1 + 1b）。
+追加官方实验 forge bundle 并验证 worktree happy path；两条加载流各 **132/132**（阶段 1 27 +
+阶段 1b 12 + 阶段 2 23 + 阶段 3 70），`--no-worktree` 跳过阶段 2（**109/109**，阶段 1 + 1b + 3）。
 
 ### 前置条件
 

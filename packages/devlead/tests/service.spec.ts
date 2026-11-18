@@ -322,6 +322,176 @@ describe('mode selection', () => {
   })
 })
 
+describe('global single active mode', () => {
+  it('rejects a second Session and names the active occupant', async () => {
+    const harness = await bootService({ enabled: true, sessionIds: ['child-b'] })
+    const child = new FakeAgent(requireSession(harness, 'child-b'))
+    harness.agents.add(child)
+    harness.sessionTitle.set(String(harness.lead.id), 'Lead Alpha')
+
+    const error = await expectCodeAsync(
+      () => harness.service.setEnabled(child.agent, true),
+      'DEVLEAD_ALREADY_ACTIVE',
+    )
+    expect(error.message).toContain('Lead Alpha')
+    expect(error.message).toContain(String(harness.lead.id))
+    expect(error.message).toContain('/devlead off')
+    expect(harness.service.isEnabled(harness.lead.agent)).toBe(true)
+    expect(harness.service.isEnabled(child.agent)).toBe(false)
+  })
+
+  it('serializes two simultaneous activations so only one wins', async () => {
+    const harness = await bootService({ sessionIds: ['child-a', 'child-b'] })
+    const alpha = new FakeAgent(requireSession(harness, 'child-a'))
+    const beta = new FakeAgent(requireSession(harness, 'child-b'))
+    harness.agents.add(alpha)
+    harness.agents.add(beta)
+
+    const results = await Promise.allSettled([
+      harness.service.setEnabled(alpha.agent, true),
+      harness.service.setEnabled(beta.agent, true),
+    ])
+    expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1)
+    const rejected = results.find(result => result.status === 'rejected')
+    expect(rejected?.status).toBe('rejected')
+    if (rejected?.status === 'rejected') {
+      expect((rejected.reason as DevLeadError).code).toBe('DEVLEAD_ALREADY_ACTIVE')
+    }
+    expect([alpha, beta].filter(candidate => harness.service.isEnabled(candidate.agent))).toHaveLength(1)
+  })
+
+  it('releases the global slot immediately on off', async () => {
+    const harness = await bootService({ enabled: true, sessionIds: ['child-b'] })
+    const child = new FakeAgent(requireSession(harness, 'child-b'))
+    harness.agents.add(child)
+    await expectCodeAsync(() => harness.service.setEnabled(child.agent, true), 'DEVLEAD_ALREADY_ACTIVE')
+
+    await harness.service.setEnabled(harness.lead.agent, false)
+    await harness.service.setEnabled(child.agent, true)
+    expect(harness.service.isEnabled(harness.lead.agent)).toBe(false)
+    expect(harness.service.isEnabled(child.agent)).toBe(true)
+  })
+
+  it('releases an archived holder before enabling the waiting Session', async () => {
+    const registry = new FakeWorkspaceRegistry()
+    const harness = await bootService({ enabled: true, sessionIds: ['child-b'], workspaceRegistry: registry })
+    const child = new FakeAgent(requireSession(harness, 'child-b'))
+    harness.agents.add(child)
+    registry.archived = [String(harness.lead.id)]
+
+    await harness.service.setEnabled(child.agent, true)
+    expect(harness.service.isEnabled(harness.lead.agent)).toBe(false)
+    expect(harness.service.isEnabled(child.agent)).toBe(true)
+    expect(durableModeRecords(harness).map(record => record.enabled)).toEqual([true, false])
+  })
+
+  it('keeps exactly one live Session when startup finds several enabled', async () => {
+    const harness = await bootService({
+      enabled: true,
+      sessionIds: ['duplicate-a', 'duplicate-b'],
+      seedSessions: (sessions) => {
+        appendPluginRecord(sessions['duplicate-a']!, DEVLEAD_MODE_RECORD_TYPE, modeRecord(true, T0 + 1))
+        appendPluginRecord(sessions['duplicate-b']!, DEVLEAD_MODE_RECORD_TYPE, modeRecord(true, T0 + 2))
+      },
+    })
+    const sessions = [
+      harness.leadSession,
+      requireSession(harness, 'duplicate-a'),
+      requireSession(harness, 'duplicate-b'),
+    ]
+    expect(sessions.filter(session => projectionStateOf(session).enabled)).toHaveLength(1)
+  })
+
+  it('rejects a live activation when a cold persisted Session holds the mode', async () => {
+    const query = new FakeSessionQuery()
+    const cache = new FakeProjectionCache()
+    await seedPersistedLead(query, { sessionId: 'cold-holder' })
+    cache.setDevLead('cold-holder', { enabled: true })
+    const harness = await bootService({ sessionIds: ['child-b'], sessionQuery: query, projectionCache: cache })
+    const child = new FakeAgent(requireSession(harness, 'child-b'))
+    harness.agents.add(child)
+
+    const error = await expectCodeAsync(
+      () => harness.service.setEnabled(child.agent, true),
+      'DEVLEAD_ALREADY_ACTIVE',
+    )
+    expect(error.message).toContain('cold-holder')
+    expect(harness.service.isEnabled(child.agent)).toBe(false)
+  })
+
+  it('frees the slot when the cold holder disappears from persistence', async () => {
+    const query = new FakeSessionQuery()
+    const cache = new FakeProjectionCache()
+    await seedPersistedLead(query, { sessionId: 'cold-deleted' })
+    cache.setDevLead('cold-deleted', { enabled: true })
+    const harness = await bootService({ sessionIds: ['child-b'], sessionQuery: query, projectionCache: cache })
+    const child = new FakeAgent(requireSession(harness, 'child-b'))
+    harness.agents.add(child)
+    await expectCodeAsync(() => harness.service.setEnabled(child.agent, true), 'DEVLEAD_ALREADY_ACTIVE')
+
+    expect(query.delete('cold-deleted')).toBe(true)
+    await harness.service.setEnabled(child.agent, true)
+    expect(harness.service.isEnabled(child.agent)).toBe(true)
+  })
+
+  it('releases an archived cold holder when the controller can resume it', async () => {
+    const controller = new FakeSessionController()
+    const query = new FakeSessionQuery()
+    const cache = new FakeProjectionCache()
+    const registry = new FakeWorkspaceRegistry()
+    await seedPersistedLead(query, { sessionId: 'cold-archived' })
+    cache.setDevLead('cold-archived', { enabled: true })
+    registry.archived = ['cold-archived']
+    const harness = await bootService({
+      sessionIds: ['child-b'],
+      sessionQuery: query,
+      projectionCache: cache,
+      workspaceRegistry: registry,
+      sessionController: controller,
+    })
+    // Startup could not release the cold holder (no handler yet); now the
+    // controller can attach it, so the next admission releases the slot.
+    controller.resolveHandler = () => ({
+      agent: attachPersistedLead(harness.ctx, harness.agents, {
+        sessionId: 'cold-archived',
+        watched: [],
+      }).agent,
+    })
+    const child = new FakeAgent(requireSession(harness, 'child-b'))
+    harness.agents.add(child)
+
+    await harness.service.setEnabled(child.agent, true)
+    expect(harness.service.isEnabled(child.agent)).toBe(true)
+    const released = harness.agents.resolve('cold-archived')
+    expect(released).toBeDefined()
+    expect(projectionStateOf(released!.session).enabled).toBe(false)
+  })
+
+  it('names an archived cold holder when it cannot be released automatically', async () => {
+    const query = new FakeSessionQuery()
+    const cache = new FakeProjectionCache()
+    const registry = new FakeWorkspaceRegistry()
+    await seedPersistedLead(query, { sessionId: 'cold-archived' })
+    cache.setDevLead('cold-archived', { enabled: true })
+    registry.archived = ['cold-archived']
+    const harness = await bootService({
+      sessionIds: ['child-b'],
+      sessionQuery: query,
+      projectionCache: cache,
+      workspaceRegistry: registry,
+    })
+    const child = new FakeAgent(requireSession(harness, 'child-b'))
+    harness.agents.add(child)
+
+    const error = await expectCodeAsync(
+      () => harness.service.setEnabled(child.agent, true),
+      'DEVLEAD_ALREADY_ACTIVE',
+    )
+    expect(error.message).toContain('cold-archived')
+    expect(error.message).toContain('archived')
+  })
+})
+
 describe('watch set', () => {
   it('adds and removes one Session with whole-value records', async () => {
     const harness = await bootService({ enabled: true, sessionIds: ['child-alpha'] })
@@ -2525,7 +2695,6 @@ describe('cold lead rehydration', () => {
     const persistence = new FakeSessionPersistence()
     persistence.ids = ['cold-lead-enabled']
     const harness = await bootService({
-      enabled: true,
       sessionIds: [watchedId],
       sessionQuery: query,
       projectionCache: cache,
@@ -2636,7 +2805,6 @@ describe('cold lead rehydration', () => {
     // The real query engine is composed, but its optional persistence binding is
     // not installed yet: listing the persisted corpus would silently see nothing.
     const harness = await bootService({
-      enabled: true,
       sessionIds: [watchedId],
       sessionQuery: query,
       projectionCache: cache,
@@ -2677,7 +2845,6 @@ describe('cold lead rehydration', () => {
     // consistency instead of scanning (and finalizing) too early.
     query.emptyListings = 1
     const harness = await bootService({
-      enabled: true,
       sessionIds: [watchedId],
       sessionQuery: query,
       projectionCache: cache,

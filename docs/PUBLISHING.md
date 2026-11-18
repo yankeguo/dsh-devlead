@@ -189,7 +189,7 @@ client-ui 的 `index`/`client`；`bundle` 只有 patch 文件与 icon，不产�
 可选（本机，需要已安装的 DSH 桌面端）：真实 DSH 端到端冒烟：
 
 ```sh
-pnpm e2e                          # 默认组合（阶段 1 + 1b + 2 + 3，全过报 131/131）
+pnpm e2e                          # 默认组合（阶段 1 + 1b + 2 + 3，全过报 132/132）
 pnpm e2e --flow installed         # 已安装形态的安装流
 pnpm e2e --no-worktree            # 跳过实验 forge bundle 组合（报 109/109，阶段 1 + 1b + 3）
 ```

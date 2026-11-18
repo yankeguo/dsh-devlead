@@ -5,6 +5,12 @@ Core Host service of the DevLead suite (`ctx.devLead`): the durable mode switch,
 with directory creation opt-in), the watched-session notification hub with cold-lead rehydration,
 and the `devLead` / `devLeadMode` Session projections.
 
+DevLead mode is **globally single-active**: at most one Session (across every Workspace) may be
+enabled. `setEnabled(agent, true)` throws `DEVLEAD_ALREADY_ACTIVE` naming the occupant when another
+Session holds it; `off`/`reset` release immediately, archiving or deleting the holder makes it
+releasable, and a restart/rehydration reconciles historical duplicates and keeps one Session.
+Admission is serialized in-process and scans live projections plus the durable corpus.
+
 Normally installed as part of the bundle:
 
 ```sh
@@ -13,7 +19,7 @@ dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 
 ## Requirements
 
-- DSH `>=0.2.2-rc.1 <0.3.0` (the installed runtime is `0.2.2-rc.1`).
+- DSH `0.2.2-rc.1`–`0.2.2-rc.4` (the package declares `engines.dsh: >=0.2.2-rc.1 <0.3.0`; this checkout's devDependencies pin rc.1 for the oldest-API typecheck).
 - Peer services `agents`, `sessions`, `sessionProjections` (provided by the default `dsh-base`
   composition).
 - Optional, probed at call time: `workspaceRegistry`, `sessionController`, `sessionTitle`,
