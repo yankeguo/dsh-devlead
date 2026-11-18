@@ -292,11 +292,15 @@ describe('styles', () => {
     expect(styles).toContain('.devlead-bar::before')
   })
 
-  it('sizes the toggle as the composer toolbar glyph seat in both states', () => {
-    expect(styles).toMatch(/\.devlead-toggle \{[^}]*width: 28px;/u)
+  it('lays the labelled toggle out as an auto-width composer-tool control', () => {
+    expect(styles).toMatch(/\.devlead-toggle \{[^}]*width: auto;/u)
     expect(styles).toMatch(/\.devlead-toggle \{[^}]*height: 28px;/u)
+    expect(styles).toMatch(/\.devlead-toggle \{[^}]*padding: 0 10px;/u)
+    expect(styles).toMatch(/\.devlead-toggle \{[^}]*gap: 6px;/u)
     expect(styles).toMatch(/\.devlead-toggle \{[^}]*border-radius: 999px;/u)
-    // The strip is status-only and the toggle keeps one geometry across states.
+    expect(styles).toMatch(/\.devlead-toggle-label \{[^}]*white-space: nowrap;/u)
+    // The visible label replaced the fixed 28px square; the strip stays read-only.
+    expect(styles).not.toMatch(/\.devlead-toggle \{[^}]*width: 28px;/u)
     expect(styles).not.toContain('.devlead-switch')
     expect(styles).toContain('.devlead-toggle[data-devlead-enabled="true"]')
   })

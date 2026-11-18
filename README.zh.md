@@ -9,8 +9,8 @@
 
 - **DevLead 会话 = 普通会话 + 一个持久开关**：打开后该会话额外获得 12 个 `devlead_*` 工具、
   一段 DevLead 系统提示，composer 上方出现状态条 UI；开关本身是**人类专属操作**，模型不能
-  自行打开。界面始终在 composer 工具条提供一个小图标作为开关；开启后才会在 composer 上方
-  出现状态条，不会在每个会话上显示常驻状态条。
+  自行打开。界面始终在 composer 工具条提供一个带 DevLead 文本的小按钮作为开关；开启后
+  才会在 composer 上方出现状态条，不会在每个会话上显示常驻状态条。
 - **默认调度、不亲自实现**：DevLead 会话先判定请求归属哪个 Workspace（依据已注册 Workspace
   的元数据与人类给出的目录，而不是去翻别的仓库代码），把自包含简报派发给该 Workspace 的
   Session，然后监督、审阅交付并汇报。只读检查属于**有界的可行性判断**——足以判定归属、给出
@@ -48,7 +48,7 @@
 | 事件溯源 | 模式/watch 集合/通知/reset 全部是可忽略的 `plugin:devlead/*` 记录，严格回放校验，可跨重启 / 恢复 / fork |
 | 损坏状态恢复 | 损坏的 `plugin:devlead/*` 记录会冻结 fold；人类专属 `/devlead reset`（或冻结时的 `/devlead off`）追加 `plugin:devlead/reset` 记录，让两个 projection 回到默认 disabled 状态（见[通知机制](#通知机制)） |
 | Session projection | `devLead` projection（`{ enabled, sessions, notifications }`）把状态同步到浏览器，无需自定义 Remote API；summary 级的 `devLeadMode`（`{ enabled }`）随每个 Session 列表行下发，供侧边栏渲染标记 |
-| 界面 | composer 工具条里的小图标是唯一开关，两态都存在（关闭态发 `/devlead on`、开启态发 `/devlead off`）；开启后 composer 上方出现只读 DevLeadBar：监督会话数/运行中数、最近一条通知；状态条不带开关；已开启的会话在侧边栏会话列表里带标记 |
+| 界面 | composer 工具条里带 DevLead 文本的图标按钮是唯一开关，两态都存在（关闭态发 `/devlead on`、开启态发 `/devlead off`）；开启后 composer 上方出现只读 DevLeadBar：监督会话数/运行中数、最近一条通知；状态条不带开关；已开启的会话在侧边栏会话列表里带标记 |
 | 权限模型 | 模式开关只能由人类命令/UI 触发；通知是运行时提示而非人类指令（见[权限模型](#权限模型)） |
 | 一键安装 | bundle 的 `cordis.patch.yml` 插入全部 4 个运行时插件行，也可单独安装某个包 |
 
@@ -57,8 +57,9 @@
 UI 有一个开关、两种状态。插件**不会**在每个会话上摆一条明显的常驻条：
 
 - **始终存在**：composer 工具条里（权限下拉旁，槽位 `conversation.input.left`）有一个很小的
-  用户图标按钮。模式关闭时悬停显示「开启 DevLead 模式」，点击即发送 `/devlead on`；模式开启时
-  同一个按钮留在原位，悬停显示「关闭 DevLead 模式」，点击发送 `/devlead off`。
+  用户图标 + DevLead 文本按钮。模式关闭时悬停显示「开启 DevLead 模式」，点击即发送
+  `/devlead on`；模式开启时同一个按钮留在原位，悬停显示「关闭 DevLead 模式」，点击发送
+  `/devlead off`。
 - **已开启**：composer 上方出现状态条 DevLeadBar（槽位 `conversation.input.dock`）：品牌、
   监督会话数、运行中数、最近一条通知；没有通知时显示帮助提示。状态条只做展示，不承载开关，
   因此关闭模式时不会把执行关闭的控件一起藏掉。模式关闭时没有状态条。
@@ -69,11 +70,11 @@ UI 有一个开关、两种状态。插件**不会**在每个会话上摆一条�
   开启模式后，要等第一次 turn 才显示标记；桌面端悬停行时 shell 会隐藏行尾 resting 标记，
   此时该行 hover card 另行说明「DevLead 模式已启用」（槽位 `sidebar.session.row.hover`）。
 
-未开启（工具条图标是唯一控件）：
+未开启（工具条按钮是唯一控件）：
 
-![未开启：composer 工具条里的 DevLead 图标](docs/screenshots/devlead-toggle-off.png)
+![未开启：composer 工具条里的 DevLead 图标 + 文本](docs/screenshots/devlead-toggle-off.png)
 
-已开启（同一个图标留在工具条；状态条只做展示）：
+已开启（同一个按钮留在工具条；状态条只做展示）：
 
 ![已开启：composer 上方的 DevLead 状态条](docs/screenshots/devlead-bar.png)
 
@@ -85,12 +86,12 @@ UI 有一个开关、两种状态。插件**不会**在每个会话上摆一条�
 | 状态 | 界面 | 交互 |
 | --- | --- | --- |
 | `devLead` projection 尚未加载 | 什么都不渲染 | — |
-| 模式关闭 | composer 工具条里的图标按钮 | 点击发送 `/devlead on`，随后从 projection 重渲染 |
-| 模式开启，无监督会话 | 同一图标按钮 + DevLeadBar：监督 0 个会话 + 帮助提示 | 图标点击发送 `/devlead off`；状态条只展示 |
-| 模式开启 | 同一图标按钮 + DevLeadBar：监督 N 个会话 / 运行中 M，另附最近一条通知摘要 | 同上；命令执行中图标禁用 |
-| 命令返回逻辑错误 | 图标 tooltip、aria-label 与屏幕阅读器 live region 显示对应方向的失败文案 | 修正后重试 |
+| 模式关闭 | composer 工具条里的 DevLead 图标 + 文本按钮 | 点击发送 `/devlead on`，随后从 projection 重渲染 |
+| 模式开启，无监督会话 | 同一图标 + 文本按钮 + DevLeadBar：监督 0 个会话 + 帮助提示 | 按钮点击发送 `/devlead off`；状态条只展示 |
+| 模式开启 | 同一图标 + 文本按钮 + DevLeadBar：监督 N 个会话 / 运行中 M，另附最近一条通知摘要 | 同上；命令执行中按钮禁用 |
+| 命令返回逻辑错误 | 按钮 tooltip、aria-label 与屏幕阅读器 live region 显示对应方向的失败文案 | 修正后重试 |
 
-- 图标按钮只读 `useProjection('devLead')`，调用注入的
+- 图标 + 文本按钮只读 `useProjection('devLead')`，调用注入的
   `executeCommand('/devlead on'|'/devlead off')`，不会乐观翻转，一律以 projection 为准；
   状态条只读同一 projection 与标准 Session 列表，**不发送命令**，也不新增 Remote API；
   侧边栏标记与 hover card 说明只读 Session 列表 summary。
@@ -261,8 +262,9 @@ DSH 跳过。
 
 ### 打开 / 关闭模式
 
-模式开关是**人类专属**的：在任意会话里执行命令，或点击 composer 工具条里的 DevLead 图标。
-图标在两种状态下都存在：未开启时发送 `/devlead on`，已开启时发送 `/devlead off`。
+模式开关是**人类专属**的：在任意会话里执行命令，或点击 composer 工具条里的 DevLead
+图标 + 文本按钮。按钮在两种状态下都存在：未开启时发送 `/devlead on`，已开启时发送
+`/devlead off`。
 
 ```
 /devlead on        # 打开当前会话的 DevLead 模式（需要 Agent live）
@@ -296,7 +298,7 @@ DSH 跳过。
 
 ### 推荐工作流
 
-1. 在准备統管多个仓库的那个会话里执行 `/devlead on`（或点 composer 工具条里的 DevLead 图标，它在两态下都是开关）；
+1. 在准备統管多个仓库的那个会话里执行 `/devlead on`（或点 composer 工具条里的 DevLead 图标 + 文本按钮，它在两态下都是开关）；
    此后模型把该会话当作调度者，而不是实现现场。
 2. 判定归属并注册工作区：先判断请求归属哪个 Workspace，用 `devlead_list_workspaces` 查看已注册
    项；`devlead_use_workspace` 传入仓库的**绝对路径**，重复注册幂等，`create` 默认 `false`：
@@ -555,7 +557,7 @@ config 是整体替换）。
   失败，此时 Session 继续在共享 checkout 运行（结果里如实上报）。未提交改动不会复制进 worktree。
 - **不跨进程 / 跨 DSH 实例编排**；不新增 Remote API；UI 只读 projection + 走命令。
 - **只有一个很小的开关**：为了不在每个会话上显示常驻状态条，唯一开关是 composer 工具条
-  图标，状态条只做展示；不习惯的话记 `/devlead on|off` 命令即可。
+  里的 DevLead 图标 + 文本按钮，状态条只做展示；不习惯的话记 `/devlead on|off` 命令即可。
 - **侧边栏标记的回填与空白行**：标记来自 summary 级 `devLeadMode` projection。本特性发布前
   就已开启 DevLead 的会话，要等它的投影 cache 出现该 key 后才显示标记（打开该会话一次，或
   再开关一次模式即可回填）；v1 不在 Host 启动时做回填。DSH rc.1 对空白（尚无 turn）的
@@ -572,16 +574,16 @@ config 是整体替换）。
 
 | 现象 | 可能原因 / 处理 |
 | --- | --- |
-| 安装后看不到 DevLead 图标 / 状态条 | bundle 未启用（Plugins 页面勾选）、页面未刷新、或 DSH 未重启使 preset 变更生效 |
+| 安装后看不到 DevLead 按钮 / 状态条 | bundle 未启用（Plugins 页面勾选）、页面未刷新、或 DSH 未重启使 preset 变更生效 |
 | 没有 `/devlead` 命令或 `devlead_*` 工具 | bundle 未启用 / 被 DSH 跳过（检查 DSH 版本与 `engines.dsh`）；本地 checkout 需先 `pnpm build` |
 | 本地安装脚本报 `run "pnpm build" first` | 先执行 `pnpm build` 再 `pnpm install:profile` |
 | `/devlead on` 报 "no longer live" | 当前 Agent 已不是注册表中的 live 实例；从侧边栏重新打开会话后重试 |
 | `/devlead watch` 报歧义 | 前缀命中多个会话；按错误里的候选改用更长前缀或完整 id |
 | `/devlead watch` 报模式未开启 | 先 `/devlead on`；watch 集合变更需要模式开启 |
 | 子会话 turn 结束但没有唤醒 DevLead | 模式已关闭、该会话未被 watch、lead 是 cold 且配置了 `wakeColdSession: false`（队列等会话被打开）、Host 没有可 resume 的 Session activator、通知还在合并窗口内，或唤醒在等 inbox 里的未投递 notice 先被消费（最多 1s 后重检） |
-| DevLead 开关点了没反应 | 命令可能仍在执行（图标按钮禁用）；开启/关闭失败时错误会显示在图标 tooltip、aria-label 与屏幕阅读器 live region 里 |
+| DevLead 开关点了没反应 | 命令可能仍在执行（按钮禁用）；开启/关闭失败时错误会显示在按钮 tooltip、aria-label 与屏幕阅读器 live region 里 |
 | 状态条显示的数量与侧边栏不一致 | 状态条按 projection 的 watch 集合与标准 Session 列表计算；刚变更时可能有短暂延迟，刷新页面可重读 |
-| 找不到开关 | 开关是 composer 工具条里的用户图标（权限下拉旁），两态都存在；未开启时悬停提示「开启 DevLead 模式」，已开启时提示「关闭 DevLead 模式」；也可直接 `/devlead on|off` |
+| 找不到开关 | 开关是 composer 工具条里的用户图标 + DevLead 文本按钮（权限下拉旁），两态都存在；未开启时悬停提示「开启 DevLead 模式」，已开启时提示「关闭 DevLead 模式」；也可直接 `/devlead on|off` |
 | 重启后 DevLead 状态仍在 | 预期行为：模式 / watch 集合 / 通知都是持久记录；不需要时 `/devlead off` |
 | 开发 overlay 下 `/devlead on` 报 `gateway/internal: Receiver must be an instance of class Session` | overlay 缺少 linked root（旧版生成物、手写 patch，或 profile 被换过）。重新执行 `pnpm dev:patch --profile <dev>`，确认 `<profile>/node_modules/devlead-repo` 存在后重启；或用 `pnpm e2e` 复现正确流程 |
 | `pnpm dev:patch` 报 profile not found / already enables bundle | 需要专用 dev profile：`dsh devlead --from-default-profile web --dump-config`；已启用本 bundle 的 profile 不能再插入同 id 的 loader row |

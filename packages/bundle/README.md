@@ -13,8 +13,8 @@ kind: "package-bundle"
 ## 特性
 
 - **DevLead 模式**：每个会话一个持久开关；打开后获得 12 个 `devlead_*` 工具、DevLead 系统
-  提示，以及两态 UI：composer 工具条里的小图标在两种状态下都常驻并负责开启/关闭，开启后
-  composer 上方才出现只读状态条。
+  提示，以及两态 UI：composer 工具条里的 DevLead 图标 + 文本按钮在两种状态下都常驻并负责
+  开启/关闭，开启后 composer 上方才出现只读状态条。
   已开启的会话还会在侧边栏会话行显示 DevLead 标记，关掉会话后仍可辨识（DSH rc.1 对
   blank / 尚无 turn 的新会话行不渲染该 seat，首次 turn 后才显示）。
   开关是**人类专属操作**（`/devlead on|off` 或 composer 工具条开关），模型无法自行打开。
@@ -29,8 +29,8 @@ kind: "package-bundle"
   随每个会话列表行下发，供侧边栏标记使用。
 - **人类命令**：`/devlead`、`/devlead on|off`、`/devlead reset`（损坏状态恢复）、
   `/devlead watch|unwatch <session>`。
-- **两态 UI**：composer 工具条里的 ghost 图标在两种状态下都显示——关闭态点击
-  `/devlead on`，开启态点击 `/devlead off`；开启后 composer 上方出现只读 DevLeadBar，
+- **两态 UI**：composer 工具条里的 ghost 图标 + DevLead 文本按钮在两种状态下都显示——关闭态
+  点击 `/devlead on`，开启态点击 `/devlead off`；开启后 composer 上方出现只读 DevLeadBar，
   显示监督会话数 / 运行中数与最近通知；侧边栏会话行同时带 DevLead 标记。
 
 ## 本 bundle 包含的插件行
@@ -40,7 +40,7 @@ kind: "package-bundle"
 | `devlead` | `@yankeguo/dsh-devlead` | 核心服务 `ctx.devLead`：模式、Workspace/Session 编排、通知投递、`devLead` projection |
 | `devlead-tool` | `@yankeguo/dsh-tool-devlead` | 12 个模型工具与条件 system prompt |
 | `devlead-command` | `@yankeguo/dsh-command-devlead` | `/devlead` 人类命令 |
-| `devlead-ui` | `@yankeguo/dsh-client-ui-devlead` | 浏览器两态 UI：常驻工具条开关 + 开启后的只读 DevLeadBar + 侧边栏会话行标记 |
+| `devlead-ui` | `@yankeguo/dsh-client-ui-devlead` | 浏览器两态 UI：常驻工具条开关（图标 + 文本）+ 开启后的只读 DevLeadBar + 侧边栏会话行标记 |
 
 依赖方向：`protocol ← devlead ← {tool, command}`；`client-ui` 只依赖 `protocol`（浏览器侧）。
 

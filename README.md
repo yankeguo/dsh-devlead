@@ -11,7 +11,8 @@ interface that the human can see and interact with.
 - **A DevLead session = an ordinary session + one durable switch.** Once enabled, that session
   gains 11 `devlead_*` tools, a DevLead system prompt, and a status strip above the composer.
   The switch itself is a **human-only action**; no tool can enable it. While the mode is off,
-  the UI only shows a small composer-toolbar icon — no permanent bar on every conversation.
+  the UI only shows a small composer-toolbar DevLead button (users icon + label) — no permanent
+  bar on every conversation.
 - **Dispatcher by default, not implementer.** The DevLead session decides which Workspace owns
   each request (from registered Workspace metadata, not by reading another repository's code),
   dispatches a self-contained brief to a Session there, watches it, reviews the delivery, and
@@ -57,7 +58,7 @@ Documentation: [Design notes (中文)](docs/DESIGN.md) · [Publishing guide (中
 | Event sourcing | Mode / watch set / notifications / reset are ignorable `plugin:devlead/*` records with strict replay validation; survive restart / resume / fork |
 | Damaged-state recovery | A corrupt `plugin:devlead/*` record freezes the fold, but the human-only `/devlead reset` (or `/devlead off` on a frozen fold) appends a `plugin:devlead/reset` record that restarts both projections from the default disabled state (see [Notification loop](#notification-loop)) |
 | Session projection | The `devLead` projection (`{ enabled, sessions, notifications }`) syncs state to the browser without a custom Remote API; its summary-sized companion `devLeadMode` (`{ enabled }`) rides every Session-list summary so sidebar rows can render the mark |
-| UI | A composer-toolbar toggle is present in both states and sends `/devlead on` or `/devlead off`. On: a status-only DevLeadBar above the composer shows the watched/running counts and the latest notification; the bar has no switch, so turning the mode off never hides the control that did it. Enabled Sessions are also marked in the sidebar session list |
+| UI | A labelled composer-toolbar DevLead toggle (icon + text) is present in both states and sends `/devlead on` or `/devlead off`. On: a status-only DevLeadBar above the composer shows the watched/running counts and the latest notification; the bar has no switch, so turning the mode off never hides the control that did it. Enabled Sessions are also marked in the sidebar session list |
 | Permission model | The mode switch can only be triggered by human commands/UI; notifications are runtime notices, not human instructions (see [Permission model](#permission-model)) |
 | One-command install | The bundle's `cordis.patch.yml` inserts all 4 runtime plugin rows; individual packages can also be installed separately |
 
@@ -67,9 +68,9 @@ The UI has two states and one switch. The plugin deliberately **never** puts an
 attention-grabbing permanent bar on every conversation:
 
 - **Always:** the composer toolbar (`conversation.input.left`, next to the permission dropdown)
-  carries a small user-icon button. While the mode is off, hovering it shows "Turn on DevLead
-  mode" and clicking sends `/devlead on`. While the mode is on, the same button stays in place,
-  shows "Turn off DevLead mode", and clicking sends `/devlead off`.
+  carries a small users-icon + `DevLead` label button. While the mode is off, hovering it shows
+  "Turn on DevLead mode" and clicking sends `/devlead on`. While the mode is on, the same button
+  stays in place, shows "Turn off DevLead mode", and clicking sends `/devlead off`.
 - **On:** the status-only DevLeadBar (`conversation.input.dock`) appears above the composer:
   the brand, the number of watched sessions, the number running, and the latest notification —
   or a help hint when there is none. The bar owns no switch, so turning the mode off can never
@@ -85,7 +86,7 @@ attention-grabbing permanent bar on every conversation:
 
 Off (the toolbar toggle is the only control):
 
-![Off: the DevLead icon in the composer toolbar](docs/screenshots/devlead-toggle-off.png)
+![Off: the DevLead icon + label in the composer toolbar](docs/screenshots/devlead-toggle-off.png)
 
 On (the same toggle stays in the toolbar; the strip is status-only):
 
@@ -100,7 +101,7 @@ reports):
 | State | UI | Interaction |
 | --- | --- | --- |
 | `devLead` projection not loaded yet | nothing renders | — |
-| Mode off | the small toolbar icon button | click sends `/devlead on`; the surface re-renders from the projection |
+| Mode off | the small DevLead toolbar button (icon + label) | click sends `/devlead on`; the surface re-renders from the projection |
 | Mode on, no watched sessions | DevLeadBar: watched 0 + help hint (status only) | the toolbar toggle sends `/devlead off` |
 | Mode on | DevLeadBar: watched N / running M + latest notification excerpt (status only) | same; the toggle is disabled while a command is in flight |
 | A command settles with a logical error | the error text in the toggle's tooltip, aria-label, and live region | fix and retry |
@@ -289,9 +290,9 @@ regress; incompatible bundles are skipped by DSH.
 
 ### Toggle the mode
 
-The mode switch is **human-only**: run the command in any session, or click the DevLead icon in
-the composer toolbar. The icon is present in both states: it sends `/devlead on` while the mode
-is off and `/devlead off` while it is on.
+The mode switch is **human-only**: run the command in any session, or click the DevLead button in
+the composer toolbar. The button is present in both states: it sends `/devlead on` while the
+mode is off and `/devlead off` while it is on.
 
 ```
 /devlead on        # enable DevLead mode for the current session (requires a live Agent)
@@ -330,7 +331,7 @@ is off and `/devlead off` while it is on.
 ### Recommended workflow
 
 1. Run `/devlead on` in the session that should orchestrate several repositories (or click the
-   DevLead icon in the composer toolbar). The model then treats that session as the dispatcher,
+   DevLead button in the composer toolbar). The model then treats that session as the dispatcher,
    not as the implementation site.
 2. Decide ownership and register workspaces: decide which Workspace owns the request, then use
    `devlead_list_workspaces` to see what is registered. `devlead_use_workspace` takes the
@@ -655,8 +656,8 @@ without it keeps the default single-checkout behavior and reports `unavailable`.
 - **No cross-process / cross-DSH-instance orchestration;** no custom Remote API; the UI only reads
   the projection and goes through commands.
 - **One small switch:** to avoid a permanent strip on every conversation, the only mode switch
-  is the composer-toolbar icon; the status strip is display-only. Remember `/devlead on|off` if
-  the icon is not obvious enough.
+  is the composer-toolbar DevLead button (icon + label); the status strip is display-only.
+  Remember `/devlead on|off` if the button is not obvious enough.
 - **Sidebar mark backfill and blank rows:** the mark renders from the summary-sized
   `devLeadMode` projection. A Session enabled before this feature shipped shows the mark only
   once its projection cache carries the key (open that Session once, or toggle the mode again);
@@ -678,7 +679,7 @@ without it keeps the default single-checkout behavior and reports `unavailable`.
 
 | Symptom | Likely cause / fix |
 | --- | --- |
-| No DevLead icon / strip after installing | bundle not enabled (tick it on the Plugins page), page not reloaded, or DSH not restarted so preset changes take effect |
+| No DevLead button / strip after installing | bundle not enabled (tick it on the Plugins page), page not reloaded, or DSH not restarted so preset changes take effect |
 | No `/devlead` command or `devlead_*` tools | bundle not enabled / skipped by DSH (check the DSH version and `engines.dsh`); a local checkout needs `pnpm build` first |
 | The local install script says `run "pnpm build" first` | run `pnpm build`, then `pnpm install:profile` |
 | `/devlead on` says "no longer live" | the Agent is no longer the live instance in the registry; reopen the session from the sidebar and retry |
@@ -687,7 +688,7 @@ without it keeps the default single-checkout behavior and reports `unavailable`.
 | A child's turn settled but the DevLead was not woken | the mode is off, the session is not watched, the lead is cold and `wakeColdSession: false` (queues wait for the Session to be opened), the Host composes no Session activator to resume it, the notification is still inside the coalescing window, or the wake is waiting for an undelivered notice to leave the inbox (retried within 1 s) |
 | The DevLead switch seems to do nothing | the command may still be running (the toggle is disabled); when enabling or disabling fails, the error shows in the toggle's tooltip, aria-label, and live region |
 | The strip's counts disagree with the sidebar | the strip computes from the projection's watch set and the standard Session list; a just-changed value can lag briefly — reload the page to re-read |
-| Cannot find the switch | it is the user icon in the composer toolbar (next to the permission dropdown) and is shown in both states; hover shows "Turn on DevLead mode" while off or "Turn off DevLead mode" while on; `/devlead on|off` also works |
+| Cannot find the switch | it is the users icon + "DevLead" label button in the composer toolbar (next to the permission dropdown) and is shown in both states; hover shows "Turn on DevLead mode" while off or "Turn off DevLead mode" while on; `/devlead on|off` also works |
 | DevLead state survives a restart | expected: mode / watch set / notifications are durable records; run `/devlead off` when no longer needed |
 | Under a dev overlay, `/devlead on` throws `gateway/internal: Receiver must be an instance of class Session` | the overlay has no linked root (stale generated overlay, hand-written patch, or the profile was swapped). Re-run `pnpm dev:patch --profile <dev>` and confirm `<profile>/node_modules/devlead-repo` exists, then restart; or use `pnpm e2e` to run the correct flow |
 | `pnpm dev:patch` reports profile not found / already enables bundle | a dedicated dev profile is required: `dsh devlead --from-default-profile web --dump-config`; a profile that enables this bundle cannot take a second loader row with the same id |

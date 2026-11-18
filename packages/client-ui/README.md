@@ -2,9 +2,10 @@
 
 Browser half of the DevLead suite, loaded on the DSH **Web** platform.
 
-- **Mode switch (both states):** a compact ghost icon in the composer toolbar
-  (`conversation.input.left`) sends `/devlead on` while the mode is off and `/devlead off`
-  while it is on. The same button stays mounted in both states.
+- **Mode switch (both states):** a compact ghost button in the composer toolbar
+  (`conversation.input.left`) shows the users icon plus a visible `DevLead` label and sends
+  `/devlead on` while the mode is off and `/devlead off` while it is on. The same button stays
+  mounted in both states.
 - **On state:** a status strip above the composer (`conversation.input.dock`) shows the brand,
   watched/running counts, and the latest retained notification (or the help hint). The strip is
   display-only and owns no switch.
@@ -43,7 +44,7 @@ dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 ## 中文
 
 `@yankeguo/dsh-client-ui-devlead` 是浏览器半边：composer 工具条里两态都存在的 DevLead
-开关（关闭态发 `/devlead on`、开启态发 `/devlead off`）、开启后的只读 DevLeadBar 状态条、
+图标 + 文本开关（关闭态发 `/devlead on`、开启态发 `/devlead off`）、开启后的只读 DevLeadBar 状态条、
 侧边栏会话行标记；只读 `devLead`/`devLeadMode` projection 并发送 `/devlead` 命令。
 0.2.0 起样式注入用跨模块实例引用计数（HMR 新旧实例交替不误删标签），组件与准入 hook 用
 `react-test-renderer` 做渲染测试。已知 mark 回填与 blank 行限制见根 README。完整中文文档见

@@ -419,6 +419,7 @@ describe('DevLeadIconToggle', () => {
     )
 
     const button = renderer.root.findByType('button')
+    expect(textOf(button)).toContain(zh['toggle.label'])
     expect(button.props['aria-label']).toBe(zh['toggle.enable'])
     expect(button.props['title']).toBe(zh['toggle.enable'])
     expect(button.props['aria-pressed']).toBe(false)
@@ -448,6 +449,7 @@ describe('DevLeadIconToggle', () => {
     )
 
     const button = renderer.root.findByType('button')
+    expect(textOf(button)).toContain(zh['toggle.label'])
     expect(button.props['aria-label']).toBe(zh['toggle.disable'])
     expect(button.props['title']).toBe(zh['toggle.disable'])
     expect(button.props['aria-pressed']).toBe(true)

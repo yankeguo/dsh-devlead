@@ -18,16 +18,23 @@ const STYLE_KEY = 'devlead'
 
 /** Global stylesheet of the DevLead conversation surfaces. */
 export const styles = `
-/* Composer-tool row control: the 28px round glyph seat of the shipped attach
-   and mode controls. The same geometry serves both mode states, so the toolbar
-   row does not shift when the status strip appears. */
+/* Composer-tool row control: the users glyph plus a visible DevLead label. It
+   keeps the 28px control height of the toolbar and sizes horizontally from its
+   content, rather than occupying a fixed square glyph seat. */
 .devlead-toggle {
   flex: none;
-  width: 28px;
+  width: auto;
   height: 28px;
-  padding: 0;
+  padding: 0 10px;
   border-radius: 999px;
+  gap: 6px;
   color: var(--dsw-alias-label-tertiary, GrayText);
+}
+
+.devlead-toggle-label {
+  flex: none;
+  font-weight: 500;
+  white-space: nowrap;
 }
 
 @media (hover: hover) {

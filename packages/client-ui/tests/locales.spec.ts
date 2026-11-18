@@ -38,6 +38,11 @@ describe('dictionaries', () => {
     }
   })
 
+  it('labels the toolbar toggle with the brand name in both locales', () => {
+    expect(zh['toggle.label']).toBe('DevLead')
+    expect(en['toggle.label']).toBe(zh['toggle.label'])
+  })
+
   it('offers both toggle directions and retires the old strip-switch keys', () => {
     expect(zh['toggle.enable'].length).toBeGreaterThan(0)
     expect(zh['toggle.disable'].length).toBeGreaterThan(0)

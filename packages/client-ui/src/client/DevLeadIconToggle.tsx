@@ -8,6 +8,9 @@
  * DevLeadBar appears and disappears above the composer — the status strip owns
  * no switch, so turning the mode off cannot hide the control that did it.
  *
+ * The button carries both the users icon and a visible localized `DevLead`
+ * label, so the toolbar entry explains itself without relying on hover alone.
+ *
  * State is read from the projection and never flipped optimistically. A click
  * runs the Host command through the injected face; pending disables the button
  * and is exposed through `aria-busy`. A failure keeps the button in place and
@@ -93,6 +96,7 @@ export function DevLeadIconToggle({ useProjection, executeCommand, t }: DevLeadI
           }}
         >
           <IconUsersOutlineRegular size={16} />
+          <span className="devlead-toggle-label">{t('toggle.label')}</span>
         </Button>
       </Tooltip>
       {/* The tooltip is the only visible failure seat here (hover/focus only).
