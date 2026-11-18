@@ -1,8 +1,15 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
-  <path d="M3 5.5h7.5v7.5H3z" />
-  <path d="M13.5 5.5H21v5h-7.5z" />
-  <path d="M13.5 13H21v5.5h-7.5z" />
-  <path d="M3 15.5h7.5V21H3z" />
-  <path d="M10.5 9.25h3" />
-  <path d="M13.5 15.75h-3" />
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+  <!-- Plugin Manager renders this file as an isolated <img>, where currentColor
+       falls back to black and disappears on dark panels. The tile therefore
+       carries its own business-primary background and explicit white strokes
+       so the mark reads on both light and dark surfaces. -->
+  <rect width="24" height="24" rx="5.5" fill="#4176e6" />
+  <g fill="none" stroke="#ffffff" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4.5 5.5h6v6h-6z" />
+    <path d="M13.5 5.5h6v4.5h-6z" />
+    <path d="M13.5 12.5h6v6h-6z" />
+    <path d="M4.5 13h6v5.5h-6z" />
+    <path d="M10.5 8.5h3" />
+    <path d="M13.5 15.5h-3" />
+  </g>
 </svg>

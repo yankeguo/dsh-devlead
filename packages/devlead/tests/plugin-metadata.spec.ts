@@ -163,6 +163,16 @@ describe('plugin display metadata', () => {
     const icon = bundle.manifest.icon
     expect(typeof icon, `${bundle.label}: bundle icon must be a path string`).toBe('string')
     if (typeof icon !== 'string') return
-    expect(existsSync(join(bundle.dirPath, icon)), `${bundle.label}: missing bundle icon file ${icon}`).toBe(true)
+    const iconPath = join(bundle.dirPath, icon)
+    expect(existsSync(iconPath), `${bundle.label}: missing bundle icon file ${icon}`).toBe(true)
+    // The plugin manager draws the manifest icon as an isolated <img>, so
+    // currentColor cannot inherit the page theme and resolves to black —
+    // invisible on dark panels. The icon must carry its own opaque background
+    // and an explicit stroke colour rather than relying on currentColor.
+    // Strip comments so explanatory prose does not trip the markup checks.
+    const svg = readFileSync(iconPath, 'utf8').replace(/<!--[\s\S]*?-->/g, '')
+    expect(svg.includes('currentColor'), `${bundle.label}: icon must not rely on currentColor`).toBe(false)
+    expect(/<rect\b[^>]*\bfill="#[0-9a-fA-F]{3,8}"/.test(svg), `${bundle.label}: icon must paint an explicit background`).toBe(true)
+    expect(/stroke="#[0-9a-fA-F]{3,8}"/.test(svg), `${bundle.label}: icon must use an explicit stroke colour`).toBe(true)
   })
 })
