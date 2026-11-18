@@ -85,6 +85,8 @@ interface LeadRuntime {
   scheduled: boolean
   /** Whether one delivery is in flight. */
   flushing: boolean
+  /** Consecutive failed cold-lead resume attempts since the last live index. */
+  resumeAttempts: number
 }
 
 /** Maximum digest lines a single wake-up message carries. */
@@ -99,6 +101,9 @@ const MAX_DIGEST_LINES = 12
  * a batch is kept pending instead of being dropped while a notice is queued.
  */
 const DELIVERY_RETRY_MS = 1_000
+
+/** Maximum consecutive cold-lead resume attempts before the hub gives up. */
+const MAX_COLD_RESUME_ATTEMPTS = 5
 
 /**
  * Maximum distinct Session ids whose corrupt replay warning is remembered for
@@ -283,8 +288,14 @@ export class DevLeadNotificationHub {
       return
     }
     const runtime = this.ensureLead(sessionId)
+    runtime.resumeAttempts = 0
     this.setWatched(runtime, state.sessions)
-    if (runtime.pending.length > 0 || runtime.unsaved.length > 0) this.scheduleFlush(runtime)
+    if (runtime.pending.length > 0 || runtime.unsaved.length > 0) {
+      // The live index supersedes any cold-resume retry that was armed while
+      // this Agent was still cold; the coalescing timer below replaces it.
+      this.clearTimer(runtime)
+      this.scheduleFlush(runtime)
+    }
   }
 
   /**
@@ -303,6 +314,7 @@ export class DevLeadNotificationHub {
       timer: undefined,
       scheduled: false,
       flushing: false,
+      resumeAttempts: 0,
     }
     this.leads.set(sessionId, runtime)
     return runtime
@@ -487,10 +499,13 @@ export class DevLeadNotificationHub {
     // Record first, then queue: a replayed turn/end keeps its durable audit row
     // (both rows stay in the log; the fold retains one) while the digest queues
     // the deterministic identity only once.
-    if (session !== undefined) this.appendNotificationRecord(session, notification, leadId)
+    const persisted = session !== undefined && this.appendNotificationRecord(session, notification, leadId)
     if (runtime.pending.some(existing => existing.id === notification.id)) return
     if (runtime.unsaved.some(existing => existing.id === notification.id)) return
-    if (session === undefined) {
+    if (!persisted) {
+      // A cold log cannot append, and a failed append leaves the durable digest
+      // without this row. Queue it as unsaved so resume/flush retries the
+      // append instead of treating a lost write as already durable.
       runtime.unsaved = [...runtime.unsaved, notification].slice(-DEVLEAD_DEFAULT_NOTIFICATION_RETENTION)
       this.scheduleFlush(runtime)
       return
@@ -507,15 +522,17 @@ export class DevLeadNotificationHub {
    * @param session - lead Session receiving the record.
    * @param notification - notification to persist.
    * @param leadId - lead Session identity used in warnings.
+   * @returns whether the durable append succeeded.
    */
-  private appendNotificationRecord(session: Session, notification: DevLeadNotification, leadId: string): void {
+  private appendNotificationRecord(session: Session, notification: DevLeadNotification, leadId: string): boolean {
     try {
       appendPluginRecord(session, DEVLEAD_NOTIFICATION_RECORD_TYPE, notificationRecord(notification))
     } catch (error: unknown) {
       this.ctx.logger.warn(`devlead: could not record a notification for lead "${leadId}": ${thrownMessage(error)}`)
-      return
+      return false
     }
     void this.checkpoint(session, leadId)
+    return true
   }
 
   /**
@@ -620,8 +637,11 @@ export class DevLeadNotificationHub {
       const session = this.ctx.sessions.get(leadSessionId) ?? this.ctx.agents.get(leadSessionId)?.session
       if (session !== undefined) {
         this.persistUnsaved(session, runtime)
+        // The in-memory wake queue is dropped, but a failed unsaved append must
+        // survive: clearing it here would discard an observation whose durable
+        // row was never written. It is retried when the lead is unarchived and
+        // opened (syncLead schedules the flush).
         runtime.pending = []
-        runtime.unsaved = []
       }
       this.clearTimer(runtime)
       return
@@ -687,6 +707,28 @@ export class DevLeadNotificationHub {
   }
 
   /**
+   * Schedule a bounded retry after a failed cold-lead resume.
+   *
+   * A cold lead's unsaved notifications are memory-only, so a transient
+   * resolve failure (a held writer, a warming controller) must not strand the
+   * batch until the next watched `turn/end`. The attempt counter is reset when
+   * the Agent becomes live; after the cap, one warning reports the give-up and
+   * the next live index or watched event retries naturally.
+   * @param runtime - lead runtime row.
+   */
+  private retryColdResume(runtime: LeadRuntime): void {
+    runtime.resumeAttempts += 1
+    if (runtime.resumeAttempts >= MAX_COLD_RESUME_ATTEMPTS) {
+      this.ctx.logger.warn(
+        `devlead: giving up resuming cold lead "${runtime.sessionId}" after ${runtime.resumeAttempts} attempts; `
+        + 'open the Session or wait for its next watched event',
+      )
+      return
+    }
+    this.scheduleRetry(runtime)
+  }
+
+  /**
    * Whether one lead Agent already holds an undelivered digest notice.
    * @param agent - live lead Agent.
    * @returns whether either inbox boundary carries a DevLead notice.
@@ -715,6 +757,7 @@ export class DevLeadNotificationHub {
       if (this.stopping) return
       if ('error' in resolved) {
         this.ctx.logger.warn(`devlead: could not resume lead "${leadId}": ${resolved.error.message}`)
+        this.retryColdResume(runtime)
         return
       }
       // The queued digest stays pending: syncLead re-arms the flush once the
@@ -723,6 +766,7 @@ export class DevLeadNotificationHub {
     } catch (error: unknown) {
       if (!this.stopping) {
         this.ctx.logger.warn(`devlead: could not resume lead "${leadId}": ${thrownMessage(error)}`)
+        this.retryColdResume(runtime)
       }
     } finally {
       this.resuming.delete(leadId)

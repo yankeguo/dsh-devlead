@@ -244,6 +244,34 @@ describe('mode selection', () => {
     expect(durableModeRecords(harness)[1]?.enabled).toBe(false)
   })
 
+  it('eagerly checkpoints the projection cache after durable mode and watch writes', async () => {
+    const cache = new FakeProjectionCache()
+    const harness = await bootService({
+      projectionCache: cache,
+      sessionIds: ['child-alpha'],
+    })
+    await harness.service.setEnabled(harness.lead.agent, true)
+    expect(cache.writeCalls).toBe(1)
+    await harness.service.watchSession(harness.lead.agent, 'child-alpha', true)
+    expect(cache.writeCalls).toBe(2)
+    await harness.service.setEnabled(harness.lead.agent, false)
+    expect(cache.writeCalls).toBe(3)
+  })
+
+  it('keeps a cache checkpoint failure a warning, not a failed mutation', async () => {
+    const cache = new FakeProjectionCache()
+    cache.writeError = new Error('cache offline')
+    const harness = await bootService({ projectionCache: cache })
+    const warn = vi.spyOn(harness.ctx.logger, 'warn')
+    try {
+      await expect(harness.service.setEnabled(harness.lead.agent, true)).resolves.toBeUndefined()
+      expect(harness.service.isEnabled(harness.lead.agent)).toBe(true)
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('cache offline'))
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
   it('rejects an Agent that is not the registry’s live instance', async () => {
     const harness = await bootService()
     const stale = new FakeAgent(harness.leadSession)
@@ -985,6 +1013,28 @@ describe('session listings', () => {
     expect(requireView(views, 'cold-beta').title).toBe('Persisted Beta')
   })
 
+  it('omits lastTurn for a live Agent that has not completed a turn', async () => {
+    const harness = await bootService({ enabled: true, sessionIds: ['fresh-child'] })
+    harness.agents.add(new FakeAgent(requireSession(harness, 'fresh-child')))
+    const views = await harness.service.listSessions(harness.lead.agent)
+    expect(requireView(views, 'fresh-child')).toMatchObject({ live: true, running: false })
+    expect(requireView(views, 'fresh-child').lastTurn).toBeUndefined()
+  })
+
+  it('reads cold titles only for the retained listing rows', async () => {
+    const query = new FakeSessionQuery()
+    for (let index = 0; index < 20; index += 1) {
+      query.seed(`cold-${String(index).padStart(2, '0')}`, [], `Cold ${index}`)
+    }
+    const harness = await bootService({ enabled: true, sessionQuery: query })
+    const views = await harness.service.listSessions(harness.lead.agent, { limit: 1 })
+    expect(views).toHaveLength(1)
+    // Ranking uses the query engine's headers; only the retained row pays for
+    // a cold title read (which folds that Session's complete log).
+    expect(query.readTitleSnapshotsCalls).toBe(1)
+    expect(query.readSessionCalls).toBe(0)
+  })
+
   it('keeps live rows when the query engine fails', async () => {
     const query = new FakeSessionQuery()
     query.listError = new Error('index unavailable')
@@ -994,6 +1044,16 @@ describe('session listings', () => {
     query.readError = new Error('title index unavailable')
     const degraded = await harness.service.listSessions(harness.lead.agent)
     expect(requireView(degraded, 'live-child').title).toBeUndefined()
+  })
+
+  it('fails identity resolution instead of silently matching live rows only', async () => {
+    const query = new FakeSessionQuery()
+    query.listError = new Error('index unavailable')
+    const harness = await bootService({ enabled: true, sessionIds: ['child-alpha'], sessionQuery: query })
+    await expectCodeAsync(
+      () => harness.service.getSession(harness.lead.agent, 'child-'),
+      'DEVLEAD_SESSION_UNAVAILABLE',
+    )
   })
 
   it('honors a pre-aborted read signal', async () => {
@@ -2665,6 +2725,28 @@ describe('cold lead rehydration', () => {
     expect(harness.service.view(harness.lead.agent).enabled).toBe(true)
     // The barrier polls the corpus, then the authoritative scan still runs.
     expect(query.listSessionsCalls).toBeGreaterThan(1)
+  })
+
+  it('bounds the readiness barrier when the persistence listing keeps failing', async () => {
+    const query = new FakeSessionQuery()
+    const cache = new FakeProjectionCache()
+    const persistence = new FakeSessionPersistence()
+    persistence.listError = new Error('persistence is still opening')
+    const started = Date.now()
+    const harness = await bootService({
+      enabled: true,
+      sessionQuery: query,
+      projectionCache: cache,
+      sessionPersistence: persistence,
+      config: { notificationBatchMs: 0 },
+    })
+    const elapsed = Date.now() - started
+    // The probe keeps failing, so the barrier spends its bound and then lets
+    // the service load; plugin load must never hang on the listing.
+    expect(elapsed).toBeGreaterThanOrEqual(1_900)
+    expect(elapsed).toBeLessThan(5_000)
+    expect(persistence.listCalls).toBeGreaterThan(1)
+    expect(harness.service.isEnabled(harness.lead.agent)).toBe(true)
   })
 
   it('does not scan the persisted corpus on events while persistence is absent', async () => {

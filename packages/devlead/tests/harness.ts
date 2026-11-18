@@ -782,6 +782,10 @@ export class FakeProjectionCache {
   private readonly rows = new Map<string, FakeCachedProjectionRow>()
   /** Number of `cachedSnapshot` lookups. */
   lookupCalls = 0
+  /** Number of eager `write` checkpoints. */
+  writeCalls = 0
+  /** When set, every eager write throws this failure. */
+  writeError: Error | undefined
   /** When set, every lookup throws this failure. */
   lookupError: Error | undefined
 
@@ -832,6 +836,17 @@ export class FakeProjectionCache {
     if (this.lookupError !== undefined) throw this.lookupError
     const id = (header as { id?: unknown } | undefined)?.id
     return typeof id === 'string' ? this.rows.get(id) : undefined
+  }
+
+  /**
+   * Record one eager checkpoint. The real cache would refresh the row from the
+   * Session's live projections; the fake only counts the call (and can fail).
+   * @param _session - Session being checkpointed.
+   * @returns fulfillment after the simulated write.
+   */
+  async write(_session: unknown): Promise<void> {
+    this.writeCalls += 1
+    if (this.writeError !== undefined) throw this.writeError
   }
 
   /** Projection-cache-shaped value for `ctx.provide`. */

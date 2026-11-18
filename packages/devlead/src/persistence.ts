@@ -26,7 +26,7 @@ import type { Context } from '@deepseek-ai/cordis'
 export interface SessionPersistenceLike {
   /**
    * List every stored Session snapshot.
-   * @param options - backend options, unused by this readiness probe.
+   * @param options - backend options; the readiness probe passes `{ signal }`.
    * @returns the stored Session snapshots.
    */
   list(options?: unknown): unknown
@@ -51,16 +51,20 @@ export interface PersistedSessionsProbe {
  * callable `list`, or a backend whose listing is still initializing all degrade
  * to an unverifiable/unknown result instead of failing plugin load.
  * @param ctx - context whose optional service is consulted.
+ * @param signal - cancellation bound for the backend listing.
  * @returns the readiness probe result.
  */
-export async function persistedSessionsOf(ctx: Context): Promise<PersistedSessionsProbe> {
+export async function persistedSessionsOf(ctx: Context, signal?: AbortSignal): Promise<PersistedSessionsProbe> {
   const candidate: unknown = ctx.get('sessionPersistence')
   if (typeof candidate !== 'object' || candidate === null) return { verifiable: false }
   const list = (candidate as { list?: unknown }).list
   if (typeof list !== 'function') return { verifiable: false }
   let listed: unknown
   try {
-    listed = await Promise.resolve((list as (options?: unknown) => unknown).call(candidate))
+    listed = await Promise.resolve((list as (options?: unknown) => unknown).call(
+      candidate,
+      signal === undefined ? undefined : { signal },
+    ))
   } catch {
     // Composed but not ready (or the probe failed): report verifiable-unknown.
     return { verifiable: true }

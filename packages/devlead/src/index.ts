@@ -78,6 +78,7 @@ import { worktreeCapabilityOf, worktreeCheckoutOf } from './isolation.ts'
 import { DevLeadNotificationHub } from './notification.ts'
 import type { DevLeadPersistedLead } from './notification.ts'
 import { persistedSessionsOf } from './persistence.ts'
+import type { PersistedSessionsProbe } from './persistence.ts'
 import { agentPresetRosterCapabilityOf, devLeadAgentPresetsOf } from './presets.ts'
 import { devLeadPrefilterOf, projectionCacheOf } from './projection-cache.ts'
 import {
@@ -87,6 +88,7 @@ import {
   devLeadWorkspaceView,
   rankSessionIds,
   readSessionFacts,
+  sessionRankFacts,
   resolveSessionReference,
   resolveWorkspaceReference,
   type DevLeadViewDeps,
@@ -385,6 +387,15 @@ export class DevLeadService extends Service {
   /** In-flight rehydration attempt, so concurrent readiness triggers share it. */
   private rehydrating: Promise<void> | undefined
 
+  /** Whether the plugin fiber was disposed; late rehydration steps must stop. */
+  private disposed = false
+
+  /** Resolver of the active readiness sleep, so disposal can wake it. */
+  private readinessWake: (() => void) | undefined
+
+  /** Timer of the active readiness sleep, so disposal can clear it. */
+  private readinessTimer: ReturnType<typeof setTimeout> | undefined
+
   /**
    * Disposers of the armed readiness retry: the optional-service injection fiber
    * and, while the query engine itself is missing, the lifecycle listeners.
@@ -415,7 +426,11 @@ export class DevLeadService extends Service {
     // The readiness retry machinery outlives init; make sure a plugin unload
     // clears its timers/fibers even while a rehydration is still pending.
     this.ctx.effect(function* (this: DevLeadService) {
-      yield () => this.disposeRehydrationRetry()
+      yield () => {
+        this.disposed = true
+        this.wakeReadiness()
+        this.disposeRehydrationRetry()
+      }
     }.bind(this), 'devlead: cold rehydration')
     await this.rehydrateFromPersistence()
   }
@@ -461,7 +476,7 @@ export class DevLeadService extends Service {
    * steady Host pays one macrotask plus one comparison.
    */
   private async runRehydration(): Promise<void> {
-    if (this.rehydrated) return
+    if (this.rehydrated || this.disposed) return
     const queryReady = this.ctx.get('sessionQuery') !== undefined
     // The live-attach fallback needs no corpus service, so it always runs now.
     try {
@@ -493,12 +508,18 @@ export class DevLeadService extends Service {
       return
     }
     await this.awaitCorpusReady()
-    if (this.rehydrated) return
+    if (this.rehydrated || this.disposed) return
     try {
-      this.hub.rehydrate(await this.persistedLeadRecords(true))
+      const records = await this.persistedLeadRecords(true)
+      // A lead resumed while the scan was in flight already has an
+      // authoritative live index (`agent/created` → `syncLead`); replaying the
+      // older scan snapshot over it would revert a watch change and drop its
+      // queued notifications. Only cold leads are rehydrated.
+      this.hub.rehydrate(records.filter(record => this.ctx.agents.get(toSessionId(record.sessionId)) === undefined))
     } catch (error: unknown) {
       this.ctx.logger.warn(`devlead: cold lead rehydration failed: ${thrownMessage(error)}`)
     }
+    if (this.disposed) return
     this.finalizeRehydration()
   }
 
@@ -514,33 +535,91 @@ export class DevLeadService extends Service {
    */
   private async awaitCorpusReady(): Promise<void> {
     const deadline = Date.now() + REHYDRATION_READINESS_TIMEOUT_MS
-    let probe = await persistedSessionsOf(this.ctx)
-    while (probe.verifiable && probe.ids === undefined && Date.now() < deadline) {
-      await new Promise<void>((resolve) => { setTimeout(resolve, REHYDRATION_READINESS_POLL_MS) })
-      probe = await persistedSessionsOf(this.ctx)
+    let probe = await this.probeCorpus(deadline)
+    while (!this.disposed && probe?.verifiable === true && probe.ids === undefined && Date.now() < deadline) {
+      await this.readinessSleep(REHYDRATION_READINESS_POLL_MS)
+      probe = await this.probeCorpus(deadline)
     }
-    const ids = probe.ids
-    if (ids === undefined) return
+    if (this.disposed) return
+    const ids = probe?.ids
+    if (ids === undefined) {
+      if (probe?.verifiable === true) {
+        this.ctx.logger.warn(
+          'devlead: the Session persistence listing did not settle within '
+          + `${REHYDRATION_READINESS_TIMEOUT_MS}ms; cold lead rehydration proceeds best-effort`,
+        )
+      }
+      return
+    }
     if (ids.size === 0) return
     let consistent = false
-    while (Date.now() < deadline) {
-      const listed = await this.listedPersistedSessionIds()
+    while (!this.disposed && Date.now() < deadline) {
+      const listed = await this.listedPersistedSessionIds(deadline)
       if (this.containsAllSessionIds(listed, ids)) {
         consistent = true
         break
       }
-      await new Promise<void>((resolve) => { setTimeout(resolve, REHYDRATION_READINESS_POLL_MS) })
+      await this.readinessSleep(REHYDRATION_READINESS_POLL_MS)
     }
+    if (this.disposed) return
     if (!consistent) {
       // One last check: the corpus may have become consistent during the final
       // poll's wait.
-      consistent = this.containsAllSessionIds(await this.listedPersistedSessionIds(), ids)
+      consistent = this.containsAllSessionIds(await this.listedPersistedSessionIds(deadline), ids)
     }
     if (!consistent) {
       this.ctx.logger.warn(
         'devlead: the persisted Session corpus is still warming up; cold lead rehydration proceeds best-effort',
       )
     }
+  }
+
+  /**
+   * Read the persistence ground truth under the readiness deadline. The real
+   * backend honors the signal; the race is a belt-and-braces bound for a
+   * backend that ignores it, so plugin load can never hang on the probe.
+   * @param deadline - absolute readiness deadline.
+   * @returns the probe result, or undefined when the deadline is already spent
+   *   or the listing did not settle in time.
+   */
+  private async probeCorpus(deadline: number): Promise<PersistedSessionsProbe | undefined> {
+    if (this.disposed) return undefined
+    const remaining = deadline - Date.now()
+    if (remaining <= 0) return undefined
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), remaining)
+    try {
+      const aborted = new Promise<undefined>((resolve) => {
+        controller.signal.addEventListener('abort', () => resolve(undefined), { once: true })
+      })
+      return await Promise.race([persistedSessionsOf(this.ctx, controller.signal), aborted])
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
+  /** Resolve a short readiness sleep early when the plugin is disposed. */
+  private async readinessSleep(milliseconds: number): Promise<void> {
+    if (this.disposed) return
+    await new Promise<void>((resolve) => {
+      this.readinessWake = resolve
+      this.readinessTimer = setTimeout(() => {
+        this.readinessTimer = undefined
+        this.readinessWake = undefined
+        resolve()
+      }, milliseconds)
+    })
+  }
+
+  /** Wake the active readiness sleep (if any) after disposal. */
+  private wakeReadiness(): void {
+    if (this.readinessTimer !== undefined) {
+      clearTimeout(this.readinessTimer)
+      this.readinessTimer = undefined
+    }
+    const wake = this.readinessWake
+    this.readinessWake = undefined
+    wake?.()
   }
 
   /**
@@ -562,13 +641,22 @@ export class DevLeadService extends Service {
    * Before its optional persistence binding is installed the query engine merges
    * only live Sessions, so this is the number the readiness barrier compares
    * against the persistence service's complete stored listing.
+   * @param deadline - absolute readiness deadline for the listing read.
    * @returns the visible persisted Session ids.
    */
-  private async listedPersistedSessionIds(): Promise<ReadonlySet<string>> {
+  private async listedPersistedSessionIds(deadline: number): Promise<ReadonlySet<string>> {
     const query = this.ctx.get('sessionQuery')
     if (query === undefined) return new Set()
+    const remaining = deadline - Date.now()
+    if (remaining <= 0) return new Set()
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), remaining)
     try {
-      const records = await query.listSessions()
+      const aborted = new Promise<undefined>((resolve) => {
+        controller.signal.addEventListener('abort', () => resolve(undefined), { once: true })
+      })
+      const records = await Promise.race([query.listSessions(controller.signal), aborted])
+      if (records === undefined) return new Set()
       return new Set(
         records
           .filter(record => record.persisted)
@@ -577,6 +665,8 @@ export class DevLeadService extends Service {
     } catch (error: unknown) {
       this.ctx.logger.debug(`devlead: corpus readiness listing failed: ${thrownMessage(error)}`)
       return new Set()
+    } finally {
+      clearTimeout(timer)
     }
   }
 
@@ -715,11 +805,13 @@ export class DevLeadService extends Service {
       }
       this.appendResetRecord(agent.session)
       await this.flushDurably(agent.session, `DevLead reset for Session "${agent.id}"`)
+      await this.checkpointProjectionCache(agent.session, `DevLead reset for Session "${agent.id}"`)
       return
     }
     if (current.enabled === enabled) return
     appendPluginRecord(agent.session, DEVLEAD_MODE_RECORD_TYPE, modeRecord(enabled, Date.now()))
     await this.flushDurably(agent.session, `DevLead mode for Session "${agent.id}"`)
+    await this.checkpointProjectionCache(agent.session, `DevLead mode for Session "${agent.id}"`)
   }
 
   /**
@@ -740,6 +832,7 @@ export class DevLeadService extends Service {
     signal?.throwIfAborted()
     this.appendResetRecord(agent.session)
     await this.flushDurably(agent.session, `DevLead reset for Session "${agent.id}"`)
+    await this.checkpointProjectionCache(agent.session, `DevLead reset for Session "${agent.id}"`)
   }
 
   /**
@@ -760,6 +853,7 @@ export class DevLeadService extends Service {
    * @returns detached Workspace views in registry order.
    */
   async listWorkspaces(signal?: AbortSignal): Promise<DevLeadWorkspaceView[]> {
+    signal?.throwIfAborted()
     const registry = this.ctx.get('workspaceRegistry')
     if (registry === undefined) return []
     const views: DevLeadWorkspaceView[] = []
@@ -921,9 +1015,12 @@ export class DevLeadService extends Service {
     const limit = options.watchedOnly === true
       ? Math.max(requestedLimit, deps.watchedSessions.length)
       : requestedLimit
-    const facts = await readSessionFacts(deps, ids)
+    // Rank on cheap facts first (headers and live titles), then read the
+    // retained rows' facts — including cold titles, which fold a complete log.
+    const ranking = await sessionRankFacts(deps, ids)
     signal?.throwIfAborted()
-    const retained = rankSessionIds(deps, ids, facts, limit)
+    const retained = rankSessionIds(deps, ids, ranking, limit)
+    const facts = await readSessionFacts(deps, retained)
     return await devLeadSessionViews(deps, retained, false, facts)
   }
 
@@ -1450,6 +1547,30 @@ export class DevLeadService extends Service {
       await this.ctx.sessions.flush(session)
     } catch (error: unknown) {
       this.ctx.logger.warn(`devlead: ${what} could not be flushed to persistence: ${thrownMessage(error)}`)
+    }
+  }
+
+  /**
+   * Eagerly checkpoint the optional Session projection cache after a durable
+   * DevLead mode/watch/reset write.
+   *
+   * Cold rehydration trusts a cached "disabled/empty watch" row as a negative
+   * pre-filter, and the cache's normal write-behind can lag the log by its
+   * throttled interval. Without this eager write a crash in that window leaves
+   * a stale negative row that hides a real cold lead until a human opens it.
+   * The write is best-effort: a cache that is absent or fails only leaves the
+   * throttled checkpoint in place, and the scan's exact fold still recovers the
+   * lead whenever the row is positive or unclassified.
+   * @param session - Session whose durable DevLead state just changed.
+   * @param what - operation label for the failure warning.
+   */
+  private async checkpointProjectionCache(session: Session, what: string): Promise<void> {
+    const cache = projectionCacheOf(this.ctx)
+    if (cache?.write === undefined) return
+    try {
+      await cache.write(session)
+    } catch (error: unknown) {
+      this.ctx.logger.warn(`devlead: ${what} could not be checkpointed into the Session projection cache: ${thrownMessage(error)}`)
     }
   }
 
@@ -2025,6 +2146,7 @@ export class DevLeadService extends Service {
       : state.sessions.filter(existing => existing !== id)
     appendPluginRecord(agent.session, DEVLEAD_WATCH_RECORD_TYPE, watchRecord(next, Date.now()))
     await this.flushDurably(agent.session, `watch set for lead "${agent.id}"`)
+    await this.checkpointProjectionCache(agent.session, `watch set for lead "${agent.id}"`)
     return { sessionId: id, watched: watching, sessions: next }
   }
 }

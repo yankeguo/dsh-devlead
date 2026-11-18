@@ -9,6 +9,13 @@
  * "enabled" row is a real lead candidate, and only rows the cache cannot
  * classify pay for an exact fold.
  *
+ * The negative verdict is safe only because the service eagerly checkpoints
+ * this cache after every durable mode/watch/reset write, and DSH's cache
+ * contract says a stored row is never wrong, only behind the log. A crash
+ * between the log flush and that eager checkpoint can still leave a stale
+ * negative row; the lead is then recovered when its Session is opened
+ * (live indexing), not by the cold scan.
+ *
  * The cache package is optional (a headless Host may compose neither it nor the
  * Session query engine), and DevLead must keep zero build/runtime dependency on
  * it, so this module declares only the small structural slice DevLead reads and
@@ -18,6 +25,7 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
+import type { Session } from '@deepseek-ai/dsh-session'
 
 /** Structural view of the optional `sessionProjectionCache` service. */
 export interface SessionProjectionCacheLike {
@@ -27,6 +35,15 @@ export interface SessionProjectionCacheLike {
    * @returns the cached row, or undefined when no row/key is cached.
    */
   cachedSnapshot(header: unknown): unknown
+  /**
+   * Durably checkpoint one live Session now, when the composed cache supports
+   * an eager write. DevLead uses this after its own durable mode/watch/reset
+   * records so the cache's pre-filter cannot stay behind them for the whole
+   * throttled write interval.
+   * @param session - live Session to checkpoint.
+   * @returns fulfillment after the durable checkpoint attempt.
+   */
+  write?(session: Session): Promise<void>
 }
 
 /**
@@ -56,10 +73,16 @@ export function projectionCacheOf(ctx: Context): SessionProjectionCacheLike | un
   if (typeof candidate !== 'object' || candidate === null) return undefined
   const cachedSnapshot = (candidate as { cachedSnapshot?: unknown }).cachedSnapshot
   if (typeof cachedSnapshot !== 'function') return undefined
-  const service = candidate as { cachedSnapshot: (header: unknown) => unknown }
-  // Bind the real service: its method may read `this`, and the structural view
-  // must not detach it.
-  return { cachedSnapshot: header => service.cachedSnapshot(header) }
+  const service = candidate as {
+    cachedSnapshot: (header: unknown) => unknown
+    write?: (session: Session) => Promise<void>
+  }
+  // Bind the real service: its methods may read `this`, and the structural view
+  // must not detach them. An eager writer is exposed only when callable.
+  return {
+    cachedSnapshot: header => service.cachedSnapshot(header),
+    ...(typeof service.write === 'function' ? { write: (session: Session) => service.write!(session) } : {}),
+  }
 }
 
 /**
@@ -88,7 +111,8 @@ export function devLeadPrefilterOf(cache: SessionProjectionCacheLike, header: un
   if (typeof devLead !== 'object' || devLead === null) return 'unknown'
   const record = devLead as { enabled?: unknown; sessions?: unknown }
   if (record.enabled !== true) {
-    // A row that positively reports a disabled mode never hid a live lead.
+    // A disabled row is trusted as a negative only under the eager-checkpoint
+    // invariant documented on this module; a malformed value stays unknown.
     return record.enabled === false ? 'not-lead' : 'unknown'
   }
   if (!Array.isArray(record.sessions)) return 'unknown'

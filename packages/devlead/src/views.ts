@@ -23,7 +23,7 @@ import type {
   DevLeadWorkspaceView,
 } from '@yankeguo/dsh-devlead-protocol'
 import { assistantExcerpt, failureExcerpt } from './domain.ts'
-import { DevLeadError } from './error.ts'
+import { DevLeadError, thrownMessage } from './error.ts'
 
 /** Read-side services, limits, and cancellation shared by every view builder. */
 export interface DevLeadViewDeps {
@@ -149,7 +149,15 @@ export async function collectSessionIds(
         }
       } catch (error: unknown) {
         rethrowIfAborted(error, signal)
-        // A listing that fails only loses the cold rows; live facts stay valid.
+        // A listing that fails only loses the cold rows for a bounded listing;
+        // exhaustive identity resolution must not silently treat that partial
+        // set as complete (a prefix could then resolve to the wrong Session).
+        if (exhaustive) {
+          throw new DevLeadError(
+            `could not list persisted Sessions to resolve a full identity: ${thrownMessage(error)}`,
+            'DEVLEAD_SESSION_UNAVAILABLE',
+          )
+        }
       }
     }
   }
@@ -204,6 +212,58 @@ async function knownSessions(
 }
 
 /**
+ * Gather the cheap ranking facts of every candidate without reading a cold
+ * Session's log.
+ *
+ * Live Sessions contribute their title service result and header directly. A
+ * cold Session's header comes from one query-engine listing (metadata only);
+ * titles stay absent until the retained rows are read, because reading a cold
+ * title through `readTitleSnapshots` folds the complete log. This keeps a
+ * bounded listing from reading every candidate log before it can rank and
+ * truncate the rows it will actually return.
+ * @param deps - view dependencies.
+ * @param ids - candidate Session identities.
+ * @returns per-id title/header/liveness facts (cold titles may be absent).
+ */
+export async function sessionRankFacts(
+  deps: DevLeadViewDeps,
+  ids: readonly string[],
+): Promise<ReadonlyMap<string, KnownFacts>> {
+  const { ctx, signal } = deps
+  const result = new Map<string, KnownFacts>()
+  const missingHeader: string[] = []
+  for (const id of ids) {
+    const session = ctx.sessions.get(toSessionId(id))
+    const agent = ctx.agents.get(toSessionId(id))
+    const live = session !== undefined || agent !== undefined
+    const sessionObject: Session | undefined = session ?? agent?.session
+    const title: string | undefined = sessionObject === undefined
+      ? undefined
+      : ctx.get('sessionTitle')?.get(sessionObject)?.title
+    result.set(id, { title, header: sessionObject?.header, live })
+    if (sessionObject === undefined) missingHeader.push(id)
+  }
+  if (missingHeader.length > 0) {
+    const query = ctx.get('sessionQuery')
+    if (query !== undefined) {
+      try {
+        const records = await query.listSessions(signal)
+        const wanted = new Set(missingHeader)
+        for (const record of records) {
+          const id = String(record.header.id)
+          const entry = wanted.has(id) ? result.get(id) : undefined
+          if (entry !== undefined) result.set(id, { ...entry, header: record.header })
+        }
+      } catch (error: unknown) {
+        rethrowIfAborted(error, signal)
+        // Ranking degrades to creation-time ties; the rows still list.
+      }
+    }
+  }
+  return result
+}
+
+/**
  * Gather every non-log fact one listing or detail view needs: known Session
  * facts, Workspace accounting, and archive state. The Workspace registry is
  * scanned once instead of once per row.
@@ -244,21 +304,21 @@ export async function readSessionFacts(
  * id breaks ties so ordering is deterministic.
  * @param deps - view dependencies.
  * @param ids - candidate ids.
- * @param facts - pre-read batch facts.
+ * @param known - cheap per-id title/header/liveness facts (see {@link sessionRankFacts}).
  * @param limit - maximum retained rows, already validated as positive.
  * @returns the retained ids in display order.
  */
 export function rankSessionIds(
   deps: DevLeadViewDeps,
   ids: readonly string[],
-  facts: SessionFacts,
+  known: ReadonlyMap<string, KnownFacts>,
   limit: number,
 ): string[] {
   const ranked = ids.map((id) => ({
     id,
     watched: deps.isWatched(id),
     running: deps.ctx.agents.get(toSessionId(id))?.status === 'running',
-    createdAt: facts.known.get(id)?.header?.createdAt ?? 0,
+    createdAt: known.get(id)?.header?.createdAt ?? 0,
   }))
   ranked.sort((left, right) => {
     if (left.watched !== right.watched) return left.watched ? -1 : 1
@@ -360,7 +420,11 @@ async function buildSessionView(
   const workspace = facts.workspaces.get(sessionId)
   const boundary = agent === undefined ? undefined : ctx.agents.turnBoundaryOf(agent.session)
   const log = withLog ? await sessionLogFacts(deps, sessionId) : {}
-  const lastTurn = log.lastTurn ?? boundary?.lastTurn
+  // The turn-boundary projection reports 0 before the first turn; turns are
+  // 1-based elsewhere and the decoder rejects 0, so a turnless Agent must not
+  // leak the sentinel into the public view.
+  const boundaryTurn = boundary !== undefined && boundary.lastTurn > 0 ? boundary.lastTurn : undefined
+  const lastTurn = log.lastTurn ?? boundaryTurn
   return {
     sessionId,
     ...(known?.title === undefined ? {} : { title: known.title }),
