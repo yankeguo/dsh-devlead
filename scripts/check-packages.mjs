@@ -183,6 +183,12 @@ for (const { dir, dirPath, manifest } of manifests) {
   }
   for (const [name, spec] of Object.entries(peers)) {
     if (name.startsWith('@yankeguo/')) continue
+    // A DSH peer must be a range: an exact rc.1 pin still loads (engines.dsh is
+    // decisive) but makes a profile's pnpm peer check report unmet peers on
+    // every later rc, so keep the regression guard.
+    if (name.startsWith('@deepseek-ai/dsh-') && semver.valid(spec) !== null) {
+      fail(`${label}: DSH peer ${name}@${spec} must be a range covering every supported rc, not an exact version`)
+    }
     const rootSpec = rootManifest.devDependencies?.[name]
     if (rootSpec === undefined) {
       fail(`${label}: peer ${name} is not installed at the root for type checking; add it to devDependencies`)
