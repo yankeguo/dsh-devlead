@@ -655,6 +655,9 @@ Session 的工作目录切到独立分支/检出，DevLead 用它**可选地**�
   已完成的 Session、保留其 Workspace 注册，注销影响面更大所以仅限陈旧/重复/空置/自己创建；
   `stop_running` 等于主动取消运行中工作；每次自主关闭都要汇报关闭了什么、为什么、影响面
   （哪些 Session 变未分组、是否停止运行中工作）与可恢复性。
+- lead policy 明确「按需介绍」：创建/继续一个已关注 Session 时，若任务长、多阶段或可能中途
+  阻塞，简报可邀请它用 `devlead_report` 提前发关键进展/真实阻塞/需 lead 决策的信息；不强制每条
+  简报都写，`watch:false` 时工具不可见所以不要写；报告是单向的，不替代最终 turn 通知。
 - **中途汇报工具** `devlead_report` 是唯一不要求 DevLead 模式的工具：`when` 为
   `ctx.devLead.isSupervised(agent)`（非 enabled + 唯一 active lead 的 watch），schema 只有
   `message` / `kind?` / `summary?`，没有 target。描述明确单向、不等待回复、最终 turn 仍走原
@@ -969,7 +972,7 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   patch 与 installed 两条加载流都跑完整多阶段；`--no-worktree` 跳过阶段 2（阶段 1、1b、3 仍
   运行，调试用）。两条加载流各 **143/143**（阶段 1 27 + 阶段 1b 12 + 阶段 2 23 + 阶段 3 81，
   阶段 3 新增 agent preset roster 检查）；跳过阶段 2 时 **120/120**（阶段 1 + 1b + 3）。
-- 本轮最终验证数字（工作树）：`pnpm verify` = typecheck 通过 + **25 文件 / 738 tests** +
+- 本轮最终验证数字（工作树）：`pnpm verify` = typecheck 通过 + **25 文件 / 740 tests** +
   7 个构建产物；`node scripts/check-packages.mjs` → `OK (6 packages)`；E2E 本轮重跑
   patch / installed 各 **143/143**（阶段 1 27 + 阶段 1b 12 + 阶段 2 23 + 阶段 3 81）。
 - **DSH 版本兼容矩阵（本轮真实 E2E，npm 临时安装 CLI + `DSH_BIN`）**：

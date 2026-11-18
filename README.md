@@ -487,8 +487,11 @@ the child can retry after the lead is available. Outbox rows are pruned after 7 
 never returns; `/devlead reset` drops that lead's pending rows. The receipt appears in the
 `devLead` projection, the status strip, `/devlead` status, `devlead_notifications`, and
 `devlead_get_session` when reading the lead itself. A running lead gets the report at its next
-reachable step. At most four distinct reports are accepted per child turn; identical messages in
-one turn are idempotent; a fifth report fails `DEVLEAD_REPORT_RATE_LIMITED`.
+reachable step. The lead may optionally introduce `devlead_report` in the brief for a long,
+multi-stage, or blockage-prone watched Session; this is on-demand, omitted when `watch` is false
+(the tool is absent), and never replaces the final turn notification. At most four distinct reports
+are accepted per child turn; identical messages in one turn are idempotent; a fifth report fails
+`DEVLEAD_REPORT_RATE_LIMITED`.
 
 Tools translate the core's `DevLeadError` into a `HarnessError` with a stable code. When reading
 state, trust `lastTurn` / `lastTransition` / `lastError` / `lastAssistant` instead of guessing.

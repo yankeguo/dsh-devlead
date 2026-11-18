@@ -143,7 +143,9 @@ const CREATE_SESSION_DESCRIPTION =
   + 'never call wait_agent to wait for it. A watched Session is the default, and its settled turn starts a new turn '
   + 'of this lead session with the wake-up message. Use it to dispatch the owning Workspace\'s work to that Session '
   + 'instead of doing the work yourself from this lead session; the brief may carry open questions, because the '
-  + 'Session owns the deeper investigation and the implementation.'
+  + 'Session owns the deeper investigation and the implementation. When watched, the child can use devlead_report '
+  + 'for key progress, real blockers, or decisions; mention it in a long, multi-stage, or blockage-prone brief, and '
+  + 'omit that advice with watch=false (the tool is absent).'
 
 const GET_SESSION_DESCRIPTION =
   'Read one Session in detail: whether it is live and running, whether it is archived, and, when the Host can read '
@@ -155,7 +157,9 @@ const GET_SESSION_DESCRIPTION =
 const PROMPT_SESSION_DESCRIPTION =
   'Admit a follow-up prompt into an existing Session, resuming a cold Session first. The prompt is attributed to this '
   + 'DevLead Session. Archived Sessions are rejected. The Session is watched by default, so after this call end the '
-  + 'turn instead of waiting: its settled turn starts a new turn of this lead session with the wake-up message.'
+  + 'turn instead of waiting: its settled turn starts a new turn of this lead session with the wake-up message. A '
+  + 'watched Session gains devlead_report; in a long or blockage-prone continuation, tell it to send key progress, '
+  + 'blockers, or decisions. With watch=false the tool is unavailable.'
 
 const WATCH_SESSION_DESCRIPTION =
   'Add one Session to, or remove it from, this DevLead Session\'s watch set. A watch is a one-way follow '
@@ -377,7 +381,8 @@ export function apply(ctx: Context): void {
       },
       watch: {
         type: 'boolean',
-        description: 'Watch the new Session and receive its turn notifications. Defaults to true.',
+        description: 'Watch the new Session and receive its turn notifications; watched Sessions also gain '
+          + 'devlead_report. Defaults to true.',
       },
       preset: {
         type: 'string',

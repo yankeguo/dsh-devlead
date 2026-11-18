@@ -421,7 +421,9 @@ cold / 归档 / 未 resume 时 outbox 行保留，下次启动或 lead 激活时
 子会话可在 lead 可用后重试。outbox 行最多保留 7 天，`/devlead reset` 会丢弃该 lead 的待投递
 报告。receipt 出现在 `devLead` projection、状态条、`/devlead` 状态、`devlead_notifications`，
 读取 lead 自身时也出现在 `devlead_get_session`。lead 通过通知的合并唤醒通道被唤醒；运行中的
-lead 在下一步收到。每个子会话每轮最多 4 条不同报告，同轮相同消息幂等，第 5 条返回
+lead 在下一步收到。lead 可在长任务、多阶段或可能中途阻塞的已关注会话简报中**按需**介绍
+`devlead_report`；不是每条简报都写，`watch=false` 时工具不存在，因此不要写。报告不能替代最终
+turn 通知；每个子会话每轮最多 4 条不同报告，同轮相同消息幂等，第 5 条返回
 `DEVLEAD_REPORT_RATE_LIMITED`。
 
 工具把 core 的 `DevLeadError` 翻译成带稳定 code 的 `HarnessError`；阅读状态时请以

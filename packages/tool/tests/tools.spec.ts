@@ -475,6 +475,14 @@ describe('policy', () => {
     expect(text).not.toContain('never clean up, archive, or remove anything on your own initiative')
   })
 
+  it('invites mid-turn reports only for long watched briefs', () => {
+    const harness = bootEnabled()
+    const text = harness.sectionText(harness.agent)
+    expect(text).toContain('you may invite devlead_report')
+    expect(text).toContain('watch=false')
+    expect(text).toContain('never replace the final turn notice')
+  })
+
   it('defines watch as a follow relationship, not a permission grant', () => {
     const harness = bootEnabled()
     const text = harness.sectionText(harness.agent)
@@ -1278,6 +1286,14 @@ describe('devlead_prompt_session', () => {
 })
 
 describe('devlead_watch_session', () => {
+  it('mentions devlead_report availability in create and prompt descriptions', () => {
+    const harness = boot()
+    expect(harness.tool('devlead_create_session').definition.description).toContain('devlead_report')
+    expect(harness.tool('devlead_create_session').definition.description).toContain('watch=false')
+    expect(harness.tool('devlead_prompt_session').definition.description).toContain('devlead_report')
+    expect(harness.tool('devlead_prompt_session').definition.description).toContain('watch=false')
+  })
+
   it('documents the watch relationship as one-way and non-permission', () => {
     const harness = boot()
     expect(harness.tool('devlead_watch_session').definition.description)

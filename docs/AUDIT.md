@@ -11,7 +11,7 @@ DSH 端到端验证。
 > 25/25 checks）记录的是当时的工作树。此后工作树新增了可选 worktree 隔离与依赖姿态审计
 > （0.1.1），并完成了 **0.2.0** 的六个决策项与 nits（见 §10.2）。最新验证数字与结论见
 > [`DESIGN.md`](DESIGN.md) §12 与 [`OPTIONAL-DEPENDENCIES.md`](OPTIONAL-DEPENDENCIES.md)
-> （本文件 §1–§9 是历史快照；当前为 25 文件 / 738 tests，E2E rc.4 installed/patch 各 143/143，rc.1–rc.3 `--no-worktree` 各 120/120）。
+> （本文件 §1–§9 是历史快照；当前为 25 文件 / 740 tests，E2E rc.4 installed/patch 各 143/143，rc.1–rc.3 `--no-worktree` 各 120/120）。
 
 ## 1. 结论摘要
 
@@ -331,7 +331,7 @@ PUBLISHING / OPTIONAL-DEPENDENCIES 与各包 README 同步；`docs/releases/v0.2
   `ignored` tombstone、warning、继续准入。`/devlead status` 新增
   `Archived DevLead holders (ignored for admission)` + unarchive/off/delete 指引；unarchive
   + `agent/created` reconciliation 会在 live Session 上写 mode-off 并清除 tombstone，避免双活。
-  25 文件 / 738 tests，E2E 143/143（phase 3 81）。
+  25 文件 / 740 tests，E2E 143/143（phase 3 81）。
 - **审计修复**（详见 release notes 0.2.4）：cold-lead 扫描先 rank 后读标题（避免为截断前
   的每个冷 Session 读完整日志）；corpus readiness 双重限时且 dispose 可唤醒；冷 lead
   resume 失败有界重试；通知 append 失败进入 `unsaved` 而不是当作已 durable；归档但运行中的

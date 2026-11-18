@@ -80,7 +80,9 @@ queueing, and cold-lead wake path, so the reporter returns immediately and never
 Identical messages in one turn are idempotent; more than four distinct reports in a turn fails
 `DEVLEAD_REPORT_RATE_LIMITED`; empty/oversized fields fail `DEVLEAD_INVALID_INPUT`. A separate
 `devlead:report-policy` prompt section tells the child when to use it and that the final turn still
-uses the normal turn-end notification; the lead policy explains how to act on incoming reports.
+uses the normal turn-end notification; the lead policy explains how to act on incoming reports and
+when to invite them in a brief: optionally for a long, multi-stage, or blockage-prone watched
+Session, never when `watch` is false, and never as a replacement for the final turn notice.
 The outbox is replayed after a restart/lead activation and cleared only after the lead log flush;
 rows are pruned after seven days, and `/devlead reset` drops that lead's pending rows.
 
@@ -118,7 +120,9 @@ durable outbox，lead 日志 flush 成功后才清理；Host 无 storage 时 `du
 可选 `kind`（progress/blocked/decision/fyi）与 `summary`（≤200），无 target 参数；相同消息同轮
 幂等，每轮最多 4 条，超限报 `DEVLEAD_REPORT_RATE_LIMITED`，关系不成立报
 `DEVLEAD_NOT_SUPERVISED`。报告写入 lead 的 durable receipt，进入状态条、`/devlead` 状态与
-`devlead_notifications`，并复用通知的合并唤醒/冷启动队列。关闭类工具（remove / archive / unarchive）
+`devlead_notifications`，并复用通知的合并唤醒/冷启动队列。lead 可在长任务、多阶段或可能阻塞的
+已关注会话简报中按需介绍 `devlead_report`；`watch=false` 时不要写，报告也不能替代最终 turn 通知。
+关闭类工具（remove / archive / unarchive）
 都不是破坏性操作，且采用判断式自主：合理收尾时可自行关闭自己创建/派发且已完成的 Session、
 明显陈旧/重复/空置或由自己创建的 Workspace 注册；但不得关闭人类正在使用/对话的 Session 或
 Workspace、不得用关闭掩盖失败，并且每次自主关闭都要汇报原因与影响面。remove 只注销 Workspace、
