@@ -244,6 +244,12 @@ export class FakeDevLead implements FakeDevLeadSurface {
   }
 
   /** @inheritdoc */
+  async archivedOccupants(): Promise<Array<{ readonly sessionId: string; readonly title?: string }>> {
+    this.calls.push('archivedOccupants')
+    return []
+  }
+
+  /** @inheritdoc */
   async listSessions(
     _agent: DevLeadCommandAgent,
     options: DevLeadListSessionsOptions = {},

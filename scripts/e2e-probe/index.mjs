@@ -351,6 +351,11 @@ async function executeInspect(ctx, invocation) {
       policy,
       reportPolicy,
       supervised: ctx.devLead.isSupervised(agent),
+      storageDomain: ctx.get('storageDomain') !== undefined,
+      storage: ctx.get('storage') !== undefined,
+      reportOutboxAvailable: ctx.devLead.reportOutboxAvailable === true,
+      reportOutboxLastError: ctx.devLead.reportOutboxLastError ?? null,
+      workspaceRegistry: ctx.get('workspaceRegistry') !== undefined,
       toolError,
       policyError,
     }),
@@ -556,6 +561,8 @@ async function executeReport(ctx, invocation) {
         text: JSON.stringify({ supervised, leadId: null, report: null, leadReports: [] }),
       }
     }
+    const outboxAvailable = ctx.devLead.reportOutboxAvailable === true
+    const outboxLastError = ctx.devLead.reportOutboxLastError ?? null
     const report = await ctx.devLead.reportProgress(agent, {
       message: 'e2e report: the parser is halfway through',
       kind: 'progress',
@@ -565,7 +572,7 @@ async function executeReport(ctx, invocation) {
     const leadReports = leadAgent === undefined ? [] : ctx.devLead.reports(leadAgent)
     return {
       kind: 'success',
-      text: JSON.stringify({ supervised, leadId, report, leadReports }),
+      text: JSON.stringify({ supervised, leadId, outboxAvailable, outboxLastError, report, leadReports }),
     }
   } catch (error) {
     return { kind: 'error', text: `devlead-e2e-report: ${messageOf(error)}` }

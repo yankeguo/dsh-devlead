@@ -198,12 +198,12 @@ durable `team/mode`）。模型 API（`modelCatalog`、`Agent.model.select`、`m
 
 | DSH CLI | 命令 | 结果 |
 | --- | --- | --- |
-| `0.2.2-rc.1` | `DSH_BIN=<tmp>/rc.1/node_modules/.bin/dsh node scripts/e2e-smoke.mjs --flow installed --no-worktree` | **118/118**（Team 不可用分支） |
-| `0.2.2-rc.2` | 同上，`rc.2` | **118/118**（Team 成功分支） |
-| `0.2.2-rc.3` | 同上，`rc.3` | **118/118**（Team 成功分支） |
-| `0.2.2-rc.4` | 同上，`rc.4` | **118/118**（Team 成功分支） |
-| `0.2.2-rc.4` | `DSH_BIN=<tmp>/rc.4/node_modules/.bin/dsh node scripts/e2e-smoke.mjs --flow installed` | **141/141**（含实验 worktree 阶段） |
-| `0.2.2-rc.4` | 同上，`--flow patch` | **141/141** |
+| `0.2.2-rc.1` | `DSH_BIN=<tmp>/rc.1/node_modules/.bin/dsh node scripts/e2e-smoke.mjs --flow installed --no-worktree` | **120/120**（Team 不可用分支） |
+| `0.2.2-rc.2` | 同上，`rc.2` | **120/120**（Team 成功分支） |
+| `0.2.2-rc.3` | 同上，`rc.3` | **120/120**（Team 成功分支） |
+| `0.2.2-rc.4` | 同上，`rc.4` | **120/120**（Team 成功分支） |
+| `0.2.2-rc.4` | `DSH_BIN=<tmp>/rc.4/node_modules/.bin/dsh node scripts/e2e-smoke.mjs --flow installed` | **143/143**（含实验 worktree 阶段） |
+| `0.2.2-rc.4` | 同上，`--flow patch` | **143/143** |
 
 每条 flow 有 3 条正向模型选择检查因本机无 provider 凭据记为 SKIP（打印真实原因）；负向
 model 路径与 `devlead_list_models` 在每个版本都真实运行。单元测试使用 rc.1 devDependencies，
@@ -310,9 +310,14 @@ projection 保持 `enabled: false`，工具条按钮保持 off、状态条不出
 释放与恢复语义：
 
 - `/devlead off`（以及 `/devlead reset`）立即释放全局槽位。
-- **占用者被归档时释放**：归档后它不再参与准入；下一次开启/启动时 DevLead 会尽力追加
-  mode-off 记录。若归档占用者是冷的且无法 resume 去写记录，新的 `on` 会被拒绝并给出可操作
-  提示，而不是打开第二个 active 窗口。
+- **占用者被归档时释放**：归档 Session 不是 active lead，**不再阻塞新的 `on`**。DevLead 仍会
+  尽力追加 durable mode-off；若做不到（cold 且无可 resume 的 controller），就写 durable
+  tombstone、warning 并继续准入。`/devlead status` 的 `Archived DevLead holders (ignored for
+  admission)` 会列出它并提示 unarchive 后执行 `/devlead off`，或删除。被 unarchive/打开的
+  占用者会在 `agent/created` 触发 reconciliation：在 live Session 上写 mode-off 并清除
+  tombstone，不会醒来变成第二个 active lead。
+未归档且 cold、无法 resume 的占用者仍会阻塞准入：它是真实 enabled lead，不打开就无法改写其
+状态；上面的 archived 分支才是无需运行 Session 即可解除的路径。
 - **永久删除占用者**自然释放：扫描只看仍存在于 live store 或持久语料里的 Session。
 - turn 结束、冷 detach、Agent dispose **不释放**：Session 及其持久模式仍存在，会继续占用，
   直到人类关闭、归档或删除它。
@@ -403,16 +408,21 @@ projection 保持 `enabled: false`，工具条按钮保持 off、状态条不出
 | `devlead_prompt_session` | `session`、`prompt`（必填）、`watch?`（默认 true） | 续写结果 |
 | `devlead_watch_session` | `session`、`watching`（必填 bool） | watch 变更结果 |
 | `devlead_notifications` | `limit?`（默认 20） | `{ notifications, reports, watched }` |
-| `devlead_report` | `message`（必填，纯文本，上限 4000 code points）、`kind?`（默认 `progress` / `blocked` / `decision` / `fyi`）、`summary?`（上限 200） | `{ report }`——只在被监督的非 lead 会话可见；单向，不等待回复 |
+| `devlead_report` | `message`（必填，纯文本，上限 4000 code points）、`kind?`（默认 `progress` / `blocked` / `decision` / `fyi`）、`summary?`（上限 200） | `{ report, durable, queued, warning? }`——只在被监督的非 lead 会话可见；单向，不等待回复 |
 | `devlead_remove_workspace` | `workspace`（必填：id 或已注册路径） | `{ workspace, removed }`（注销前快照） |
 | `devlead_archive_session` | `session`（必填）、`stop_running?`（默认 false） | `{ sessionId, archived: true, stopped }` |
 | `devlead_unarchive_session` | `session`（必填） | `{ sessionId, archived: false }` |
 
-报告会作为 durable receipt 写入 lead 自己的会话日志（`plugin:devlead/report`），出现在
-`devLead` projection、状态条、`/devlead` 状态和 `devlead_notifications` 的 `reports` 中。lead 通过
-与 turn 通知相同的合并唤醒通道被唤醒；正在运行的 lead 在下一步收到。子会话不会被阻塞，也不能
-指定 target。每个子会话每轮最多 4 条不同报告，同轮相同消息幂等，第 5 条返回
-`DEVLEAD_REPORT_RATE_LIMITED`。重启后仍可从 lead 的 durable log 折叠读到。
+工具返回成功前，报告先写入 Host 可选 `storageDomain` KV 设施提供的 durable outbox（domain
+`devlead_report_outbox`，按记录的原子写，写入完成后才 resolve）。lead receipt 追加到 lead
+自己的会话日志（`plugin:devlead/report`），**只有该日志 flush 成功后**才清理 outbox 行。lead
+cold / 归档 / 未 resume 时 outbox 行保留，下次启动或 lead 激活时 replay；归档 lead 不会仅为
+投递被自动 resume。Host 未组合 storage 时回执明确变 degraded：`durable:false` 并带 warning，
+子会话可在 lead 可用后重试。outbox 行最多保留 7 天，`/devlead reset` 会丢弃该 lead 的待投递
+报告。receipt 出现在 `devLead` projection、状态条、`/devlead` 状态、`devlead_notifications`，
+读取 lead 自身时也出现在 `devlead_get_session`。lead 通过通知的合并唤醒通道被唤醒；运行中的
+lead 在下一步收到。每个子会话每轮最多 4 条不同报告，同轮相同消息幂等，第 5 条返回
+`DEVLEAD_REPORT_RATE_LIMITED`。
 
 工具把 core 的 `DevLeadError` 翻译成带稳定 code 的 `HarnessError`；阅读状态时请以
 `lastTurn` / `lastTransition` / `lastError` / `lastAssistant` 等字段为准，不要靠猜。
@@ -704,11 +714,11 @@ dispatch 设置也走真实 Host：从 `modelCatalog()` 选模型（目录为空
 `agent_teams` true/false 与 durable `team/mode`、省略时结果字段不出现、不可用 model 在创建前
 被拒且不新增 Session、profile 默认模型前后不变；无 provider 凭据时正向模型检查记为 **SKIP**
 并报告原因（不伪造）；`devlead_list_models` 返回精简 Host 目录（default/providers/failures）。
-两条加载流各 **141/141**（阶段 1 27 + 阶段 1b 12 + 阶段 2 23 + 阶段 3 79）；调试时可加
-`--no-worktree` 跳过阶段 2（**118/118**，阶段 1 + 1b + 3）；用 npm 安装的 `0.2.2-rc.1` –
-`0.2.2-rc.4` CLI（`DSH_BIN`）跑同样 flow 也各 **118/118**：rc.1 上 Team 成功检查改为
+两条加载流各 **143/143**（阶段 1 27 + 阶段 1b 12 + 阶段 2 23 + 阶段 3 81）；调试时可加
+`--no-worktree` 跳过阶段 2（**120/120**，阶段 1 + 1b + 3）；用 npm 安装的 `0.2.2-rc.1` –
+`0.2.2-rc.4` CLI（`DSH_BIN`）跑同样 flow 也各 **120/120**：rc.1 上 Team 成功检查改为
 「预期不可用」（`DEVLEAD_TEAM_UNAVAILABLE`、不创建 Session），rc.2–rc.4 走 Team 成功路径；
-rc.4 的 installed / patch 完整 flow 各 **141/141**。probe 是
+rc.4 的 installed / patch 完整 flow 各 **143/143**。probe 是
 `scripts/e2e-probe/` 下的私有测试包，不发布、不属于 workspace 包；profile 变更只发生在
 `os.tmpdir()` 下的一次性 profile，不涉及 pnpm install / 网络 / lockfile。
 

@@ -76,6 +76,7 @@ import {
 } from './dispatch.ts'
 import type { AgentTeamsCapability, NormalizedModelSelection } from './dispatch.ts'
 import { DevLeadError, thrownMessage } from './error.ts'
+import { DevLeadReportOutbox } from './outbox.ts'
 import {
   applyDevLeadProjection,
   devLeadModeProjectionDefinition,
@@ -384,6 +385,18 @@ export interface DevLeadReportRequest {
   readonly summary?: string
 }
 
+/** Receipt returned by one report call. */
+export interface DevLeadReportReceipt {
+  /** Durable/deliverable report payload. */
+  readonly report: DevLeadReport
+  /** Whether the report is safely recoverable across a Host restart. */
+  readonly durable: boolean
+  /** Whether the lead has not yet had the receipt written into its Session log. */
+  readonly queued: boolean
+  /** Human warning when `durable` is false or delivery used a degraded path. */
+  readonly warning?: string
+}
+
 /**
  * DevLead service (`ctx.devLead`): durable mode selection, Workspace and
  * Session orchestration, and watched-session notifications for one Session
@@ -458,8 +471,23 @@ export class DevLeadService extends Service {
   private readonly reportState = new Map<string, {
     readonly turn: number
     readonly leadSessionId: string
-    readonly messages: Map<string, DevLeadReport>
+    readonly messages: Map<string, DevLeadReportReceipt>
   }>()
+
+  /** Durable report outbox; undefined when the Host composes no storage-domain. */
+  private outbox: DevLeadReportOutbox | undefined
+  /** In-flight outbox opening. */
+  private outboxOpening: Promise<void> | undefined
+  /** Optional-service fiber that retries opening the outbox once storage mounts. */
+  private outboxInjection: { dispose(): void } | undefined
+  /** Guard against overlapping outbox replay passes. */
+  private outboxReplaying = false
+  /**
+   * Archived holders whose mode-off could not be written. The durable
+   * tombstones live in the outbox domain; this set is the in-process mirror
+   * and also covers a Host without storage.
+   */
+  private ignoredArchived = new Set<string>()
 
   /**
    * Disposers of the armed readiness retry: the optional-service injection fiber
@@ -495,6 +523,9 @@ export class DevLeadService extends Service {
         this.disposed = true
         this.wakeReadiness()
         this.disposeRehydrationRetry()
+        this.outboxInjection?.dispose()
+        this.outboxInjection = undefined
+        void this.outbox?.close()
       }
     }.bind(this), 'devlead: cold rehydration')
     // A resumed Session can carry an old enabled mode. Reconcile before the
@@ -505,18 +536,38 @@ export class DevLeadService extends Service {
         if (this.disposed) return undefined
         const state = this.projectionHandle.stateOf(agent.session)
         if (state.failure !== null || !state.enabled) return undefined
-        if (this.activeSessionId === undefined || this.activeSessionId === String(agent.id)) return undefined
+        if (this.activeSessionId === undefined) {
+          void this.reconcileActiveSessions(String(agent.id))
+          void this.replayOutbox()
+          return undefined
+        }
+        if (this.activeSessionId === String(agent.id)) {
+          void this.replayOutbox()
+          return undefined
+        }
         void this.reconcileActiveSessions(this.activeSessionId)
+        void this.replayOutbox()
         return undefined
       })
       yield dispose
     }.bind(this), 'devlead: single active')
+    await this.openOutbox()
+    if (this.outbox === undefined) {
+      // The storage facility often mounts after the DevLead service in the
+      // default composition. Retry once it becomes available, then replay any
+      // rows that were already written by an earlier Host incarnation.
+      this.outboxInjection = this.ctx.inject(['storageDomain' as never], () => {
+        void this.openOutbox().then(() => this.replayOutbox())
+        return undefined
+      })
+    }
     await this.rehydrateFromPersistence()
     await this.reconcileActiveSessions(undefined, {
       includePersisted: false,
       knownActive: this.recoveredActive,
     })
     this.recoveredActive = []
+    await this.replayOutbox()
     this.initialized = true
   }
 
@@ -825,6 +876,16 @@ export class DevLeadService extends Service {
     )
   }
 
+  /** Whether the durable report outbox is open and usable. */
+  get reportOutboxAvailable(): boolean {
+    return this.outbox?.available === true
+  }
+
+  /** Last durable-outbox failure, exposed for the E2E probe and diagnostics. */
+  get reportOutboxLastError(): string | undefined {
+    return this.outbox?.lastError
+  }
+
   /** Deployment configuration after validation; read-only. */
   get settings(): Readonly<DevLeadSettings> {
     return this.resolved
@@ -917,7 +978,7 @@ export class DevLeadService extends Service {
         const blocker = await this.blockingOccupant(agent, signal)
         if (blocker !== undefined) {
           throw new DevLeadError(
-            alreadyActiveMessage(blocker.occupant, blocker.archivedUnreleased),
+            alreadyActiveMessage(blocker),
             'DEVLEAD_ALREADY_ACTIVE',
           )
         }
@@ -927,6 +988,7 @@ export class DevLeadService extends Service {
       await this.checkpointProjectionCache(agent.session, `DevLead mode for Session "${agent.id}"`)
       if (enabled) this.activeSessionId = String(agent.id)
       else if (this.activeSessionId === String(agent.id)) this.activeSessionId = undefined
+      if (enabled) void this.replayOutbox()
     })
   }
 
@@ -950,6 +1012,11 @@ export class DevLeadService extends Service {
       this.appendResetRecord(agent.session)
       await this.flushDurably(agent.session, `DevLead reset for Session "${agent.id}"`)
       await this.checkpointProjectionCache(agent.session, `DevLead reset for Session "${agent.id}"`)
+      // Reset is the explicit "discard this lead's DevLead state" action, so
+      // undelivered reports addressed to it must not survive to be replayed
+      // into the fresh projection.
+      await this.outbox?.dropForLead(String(agent.id))
+      this.ignoredArchived.delete(String(agent.id))
       if (this.activeSessionId === String(agent.id)) this.activeSessionId = undefined
     })
   }
@@ -1593,6 +1660,112 @@ export class DevLeadService extends Service {
     return state.notifications.slice(-effective)
   }
 
+  /** Open the optional durable outbox once and load its archived-holder tombstones. */
+  private async openOutbox(): Promise<void> {
+    if (this.outbox !== undefined || this.outboxOpening !== undefined) return
+    const run = (async () => {
+      const outbox = await DevLeadReportOutbox.open(this.ctx)
+      if (outbox === undefined) {
+        this.ctx.logger.debug(
+          'devlead: no storage-domain service is composed; reports use the explicit non-durable fallback',
+        )
+        return
+      }
+      this.outbox = outbox
+      for (const sessionId of outbox.ignoredIds()) this.ignoredArchived.add(sessionId)
+      await outbox.prune()
+    })()
+    this.outboxOpening = run
+    try {
+      await run
+    } finally {
+      this.outboxOpening = undefined
+    }
+  }
+
+  /**
+   * Replay durable outbox rows whose lead is now attachable, then clear each
+   * row only after its Session-log receipt was flushed.
+   */
+  private async replayOutbox(): Promise<void> {
+    if (this.disposed || this.outbox === undefined || this.outboxReplaying) return
+    this.outboxReplaying = true
+    try {
+      await this.outbox.prune()
+      const archived = new Set(
+        (this.ctx.get('workspaceRegistry')?.archivedSessionIds ?? []).map(id => String(id)),
+      )
+      let waiting = 0
+      for (const entry of this.outbox.entries()) {
+        if (this.disposed) return
+        const report = entry.report
+        if (archived.has(report.leadSessionId)) {
+          waiting += 1
+          continue
+        }
+        let delivered = false
+        try {
+          delivered = (await this.hub?.persistReport(report)) ?? false
+        } catch (error: unknown) {
+          this.ctx.logger.warn(
+            `devlead: could not replay report "${report.id}": ${thrownMessage(error)}`,
+          )
+        }
+        if (delivered) await this.outbox.delete(report)
+        else waiting += 1
+      }
+      if (waiting > 0) {
+        this.ctx.logger.warn(
+          `devlead: ${String(waiting)} durable report(s) wait for their lead Session or watch relationship to return`,
+        )
+      }
+    } finally {
+      this.outboxReplaying = false
+    }
+  }
+
+  /**
+   * Persist a report in the durable outbox (when available) and try to write
+   * its lead receipt. The outbox row is only removed after the lead flush
+   * succeeded; otherwise the report remains replayable.
+   * @param report - validated report.
+   * @returns the child-facing receipt with durability status.
+   */
+  private async deliverReport(report: DevLeadReport): Promise<DevLeadReportReceipt> {
+    const outboxed = this.outbox === undefined ? false : await this.outbox.put(report)
+    if (outboxed && this.outbox !== undefined) {
+      let delivered = false
+      try {
+        delivered = (await this.hub?.persistReport(report)) ?? false
+      } catch (error: unknown) {
+        this.ctx.logger.warn(
+          `devlead: report "${report.id}" is durable but its first delivery attempt failed: ${thrownMessage(error)}`,
+        )
+      }
+      if (delivered) await this.outbox.delete(report)
+      return {
+        report,
+        durable: true,
+        queued: !delivered,
+      }
+    }
+    const accepted = this.hub?.report(report) ?? false
+    if (!accepted) {
+      throw new DevLeadError(
+        'the active DevLead Session stopped watching this Session before the report could be queued',
+        'DEVLEAD_NOT_SUPERVISED',
+      )
+    }
+    return {
+      report,
+      durable: false,
+      queued: true,
+      warning: 'durable report storage is unavailable on this Host; the receipt is queued in memory '
+        + 'and may be lost if the Host exits before the lead consumes it'
+        + (this.outbox?.lastError === undefined ? '' : ` (${this.outbox.lastError})`),
+    }
+  }
+
   /**
    * Resolve the unique active DevLead Session supervising one reporter.
    *
@@ -1620,6 +1793,30 @@ export class DevLeadService extends Service {
   }
 
   /**
+   * List archived Sessions that still carry a durable enabled mode.
+   *
+   * They are ignored by admission (an archived Session is not an active lead),
+   * but the human needs a visible, actionable recovery path: unarchive and open
+   * the Session to run `/devlead off`, or delete it. The list is also the
+   * diagnostic surface for a tombstone that could not be cleared.
+   * @param signal - cancellation threaded through the scan.
+   * @returns archived holders with human labels.
+   */
+  async archivedOccupants(signal?: AbortSignal): Promise<Array<{
+    readonly sessionId: string
+    readonly title?: string
+  }>> {
+    const active = await this.scanActiveSessions(signal)
+    signal?.throwIfAborted()
+    return active
+      .filter(occupant => occupant.archived)
+      .map(occupant => ({
+        sessionId: occupant.sessionId,
+        ...(occupant.title === undefined ? {} : { title: occupant.title }),
+      }))
+  }
+
+  /**
    * Whether one Session may send mid-turn reports to an active DevLead.
    * @param agent - candidate reporter Agent.
    * @returns whether the reporter has exactly one usable supervisor.
@@ -1641,7 +1838,7 @@ export class DevLeadService extends Service {
    * @param agent - exact live reporter Agent.
    * @param request - report text, kind, and optional summary.
    * @param signal - cancellation checked before durable work.
-   * @returns the durable report receipt.
+   * @returns the report receipt, including whether it is durable and still queued.
    * @throws {@link DevLeadError} `DEVLEAD_NOT_SUPERVISED` when no unique active
    *   lead watches the reporter, `DEVLEAD_INVALID_INPUT` for unusable fields,
    *   and `DEVLEAD_REPORT_RATE_LIMITED` when the per-turn budget is exhausted.
@@ -1650,7 +1847,7 @@ export class DevLeadService extends Service {
     agent: Agent,
     request: DevLeadReportRequest,
     signal?: AbortSignal,
-  ): Promise<DevLeadReport> {
+  ): Promise<DevLeadReportReceipt> {
     this.assertLive(agent)
     signal?.throwIfAborted()
     if (this.isEnabled(agent)) {
@@ -1698,7 +1895,7 @@ export class DevLeadService extends Service {
     const previous = this.reportState.get(reporterId)
     const state = previous !== undefined && previous.turn === turn && previous.leadSessionId === leadSessionId
       ? previous
-      : { turn, leadSessionId, messages: new Map<string, DevLeadReport>() }
+      : { turn, leadSessionId, messages: new Map<string, DevLeadReportReceipt>() }
     if (previous === undefined || previous.turn !== turn || previous.leadSessionId !== leadSessionId) {
       this.reportState.set(reporterId, state)
     }
@@ -1733,18 +1930,13 @@ export class DevLeadService extends Service {
       at: Date.now(),
     })
     signal?.throwIfAborted()
-    if (!this.hub?.report(report)) {
-      throw new DevLeadError(
-        'the active DevLead Session stopped watching this Session before the report could be queued',
-        'DEVLEAD_NOT_SUPERVISED',
-      )
-    }
-    state.messages.set(message, report)
+    const receipt = await this.deliverReport(report)
+    state.messages.set(message, receipt)
     if (this.reportState.size > 512) {
       const oldest = this.reportState.keys().next().value
       if (oldest !== undefined) this.reportState.delete(oldest)
     }
-    return report
+    return receipt
   }
 
   /**
@@ -1891,22 +2083,43 @@ export class DevLeadService extends Service {
   private async blockingOccupant(
     agent: Agent,
     signal?: AbortSignal,
-  ): Promise<{ readonly occupant: DevLeadActiveSession; readonly archivedUnreleased: boolean } | undefined> {
+  ): Promise<DevLeadActiveSession | undefined> {
     const active = await this.scanActiveSessions(signal)
     const blockers: DevLeadActiveSession[] = []
     for (const occupant of active) {
       if (occupant.sessionId === String(agent.id)) continue
       if (occupant.archived) {
         signal?.throwIfAborted()
-        if (await this.releaseActiveOccupant(occupant, 'archived')) continue
+        // Archiving means the Session is no longer an active lead. Try to
+        // write the durable mode-off, but never let an unresumable archived
+        // Session block a new lead; remember the tombstone so a later
+        // unarchive/opening is reconciled instead of becoming a silent second
+        // active lead.
+        if (await this.releaseActiveOccupant(occupant, 'archived')) {
+          await this.rememberReleased(occupant.sessionId)
+        } else {
+          await this.rememberIgnored(occupant.sessionId)
+          this.ctx.logger.warn(
+            `devlead: archived Session "${occupant.sessionId}" is ignored for admission; `
+            + 'unarchive and open it to run /devlead off, or delete it',
+          )
+        }
+        continue
+      }
+      if (this.ignoredArchived.has(occupant.sessionId)) {
+        // The occupant was archived/ignored earlier; if it can still be
+        // disabled, do so, otherwise keep it out of admission and let the
+        // opening/reconciliation path handle it. It must not turn into a
+        // permanent refusal for every future lead.
+        if (await this.releaseActiveOccupant(occupant, 'duplicate')) {
+          await this.rememberReleased(occupant.sessionId)
+        }
+        continue
       }
       blockers.push(occupant)
     }
     signal?.throwIfAborted()
-    if (blockers.length === 0) return undefined
-    const occupant = rankActiveSessions(blockers, this.activeSessionId)[0]
-    if (occupant === undefined) return undefined
-    return { occupant, archivedUnreleased: occupant.archived }
+    return blockers.length === 0 ? undefined : rankActiveSessions(blockers, this.activeSessionId)[0]
   }
 
   /**
@@ -2086,7 +2299,20 @@ export class DevLeadService extends Service {
       `devlead: disabled DevLead mode for Session "${occupant.sessionId}" (${reason}); `
       + 'only one Session may hold DevLead mode at a time',
     )
+    await this.rememberReleased(occupant.sessionId)
     return true
+  }
+
+  /** Remember one ignored archived holder in memory and, when available, durably. */
+  private async rememberIgnored(sessionId: string): Promise<void> {
+    this.ignoredArchived.add(sessionId)
+    await this.outbox?.rememberIgnored(sessionId)
+  }
+
+  /** Forget one ignored-holder tombstone after a successful release. */
+  private async rememberReleased(sessionId: string): Promise<void> {
+    if (!this.ignoredArchived.delete(sessionId)) return
+    await this.outbox?.forgetIgnored(sessionId)
   }
 
   /**
@@ -2132,11 +2358,23 @@ export class DevLeadService extends Service {
         }
         const remaining: DevLeadActiveSession[] = []
         for (const occupant of active) {
-          if (!occupant.archived) {
-            remaining.push(occupant)
+          if (occupant.archived) {
+            if (!(await this.releaseActiveOccupant(occupant, 'archived'))) {
+              await this.rememberIgnored(occupant.sessionId)
+              this.ctx.logger.warn(
+                `devlead: archived Session "${occupant.sessionId}" still has DevLead mode enabled but is ignored for admission; `
+                + 'unarchive and open it to run /devlead off, or delete it',
+              )
+            }
             continue
           }
-          if (!(await this.releaseActiveOccupant(occupant, 'archived'))) remaining.push(occupant)
+          if (this.ignoredArchived.has(occupant.sessionId)) {
+            if (await this.releaseActiveOccupant(occupant, 'duplicate')) {
+              await this.rememberReleased(occupant.sessionId)
+            }
+            continue
+          }
+          remaining.push(occupant)
         }
         if (remaining.length === 0) {
           this.activeSessionId = undefined
@@ -2758,6 +2996,7 @@ export class DevLeadService extends Service {
     appendPluginRecord(agent.session, DEVLEAD_WATCH_RECORD_TYPE, watchRecord(next, Date.now()))
     await this.flushDurably(agent.session, `watch set for lead "${agent.id}"`)
     await this.checkpointProjectionCache(agent.session, `watch set for lead "${agent.id}"`)
+    if (watching) void this.replayOutbox()
     return { sessionId: id, watched: watching, sessions: next }
   }
 }

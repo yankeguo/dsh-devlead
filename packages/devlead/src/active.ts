@@ -118,15 +118,8 @@ export function activeSessionLabel(occupant: DevLeadActiveSession): string {
  * @param archivedUnreleased - whether release failed for an archived holder.
  * @returns the refusal text.
  */
-export function alreadyActiveMessage(
-  occupant: DevLeadActiveSession,
-  archivedUnreleased = false,
-): string {
+export function alreadyActiveMessage(occupant: DevLeadActiveSession): string {
   const label = activeSessionLabel(occupant)
-  if (archivedUnreleased) {
-    return `Another Session is already in DevLead mode: ${label}. That Session is archived and could not be `
-      + 'released automatically; open it, run /devlead off, then retry.'
-  }
   return `Another Session is already in DevLead mode: ${label}. `
     + 'Run /devlead off there first, then enable this Session.'
 }

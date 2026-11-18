@@ -68,18 +68,22 @@ with running work as `DEVLEAD_SESSION_ACTIVE` unless `stop_running` is true;
 itself (`DEVLEAD_INVALID_INPUT`).
 
 `devlead_report` sends a one-way mid-turn update from a watched, non-DevLead Session to the
-single active lead that watches it. It has no target argument: the core resolves the supervisor
+single active lead that watches it. Its result is `{ report, durable, queued, warning? }`: `durable`
+is true only after a durable plugin outbox write, and `warning` (with `durable: false`) is the
+explicit fallback for a Host without storage-domain. It has no target argument: the core resolves the supervisor
 from the durable watch/mode state and refuses with `DEVLEAD_NOT_SUPERVISED` when the caller is a
 lead, is no longer watched, the lead is off/archived, or several historical watchers leave no
 unique supervisor. The message is plain text (max 4000 code points), `kind` is
 `progress|blocked|decision|fyi` (default progress), and `summary` is an optional 200-code-point
-title. Reports are durable receipts in the lead's log; they appear in the status strip,
+title. Reports are first written to a durable outbox and then to the lead's log; they appear in the status strip,
 `/devlead` status, and `devlead_notifications`. Delivery reuses the notification hub's coalescing,
 queueing, and cold-lead wake path, so the reporter returns immediately and never waits for a reply.
 Identical messages in one turn are idempotent; more than four distinct reports in a turn fails
 `DEVLEAD_REPORT_RATE_LIMITED`; empty/oversized fields fail `DEVLEAD_INVALID_INPUT`. A separate
 `devlead:report-policy` prompt section tells the child when to use it and that the final turn still
 uses the normal turn-end notification; the lead policy explains how to act on incoming reports.
+The outbox is replayed after a restart/lead activation and cleared only after the lead log flush;
+rows are pruned after seven days, and `/devlead reset` drops that lead's pending rows.
 
 ## Install
 
@@ -109,7 +113,9 @@ supported platform.
 `default` 有效默认标记、`broken` 原因；Host 未组合 roster 时返回 `available: false` 与原因，
 不虚构 id）。`preset` 是 Host 定义的 id；省略/空白先回退插件 `defaultAgentPreset`，再回退
 Host 默认/selectedDefault；无效 id 在创建阶段返回结构化错误，不会被静默忽略。领域错误翻译为
-稳定的 `DEVLEAD_*` code。`devlead_report` 是被监督子会话的单向上报：`message`（≤4000 码点）、
+稳定的 `DEVLEAD_*` code。`devlead_report` 返回 `{ report, durable, queued, warning? }`：报告先写入
+durable outbox，lead 日志 flush 成功后才清理；Host 无 storage 时 `durable:false` 并带 warning。
+报告参数：`message`（≤4000 码点）、
 可选 `kind`（progress/blocked/decision/fyi）与 `summary`（≤200），无 target 参数；相同消息同轮
 幂等，每轮最多 4 条，超限报 `DEVLEAD_REPORT_RATE_LIMITED`，关系不成立报
 `DEVLEAD_NOT_SUPERVISED`。报告写入 lead 的 durable receipt，进入状态条、`/devlead` 状态与

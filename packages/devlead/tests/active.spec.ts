@@ -89,11 +89,4 @@ describe('single-active copy', () => {
     expect(message).toContain('/devlead off')
     expect(message).toContain('enable this Session')
   })
-
-  it('gives the archived-unreleased case its own recovery instruction', () => {
-    const message = alreadyActiveMessage(occupant('session-1', { archived: true }), true)
-    expect(message).toContain('archived')
-    expect(message).toContain('could not be released')
-    expect(message).toContain('/devlead off')
-  })
 })

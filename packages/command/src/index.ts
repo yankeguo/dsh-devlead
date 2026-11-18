@@ -67,11 +67,13 @@ async function collectStatus(ctx: Context, invocation: CommandInvocation): Promi
       else watched.push(session)
     }
   }
+  const archivedOccupants = await ctx.devLead.archivedOccupants(invocation.signal)
   return {
     enabled: view.enabled,
     worktreeIsolation: ctx.devLead.worktreeIsolationAvailable,
     watched,
     missingWatched,
+    archivedOccupants,
     notifications: view.notifications.slice(-RECENT_NOTIFICATION_LIMIT),
     reports: view.reports.slice(-RECENT_REPORT_LIMIT),
   }

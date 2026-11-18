@@ -21,6 +21,7 @@ function snapshot(overrides: Partial<DevLeadStatusSnapshot> = {}): DevLeadStatus
     missingWatched: [],
     notifications: [],
     reports: [],
+    archivedOccupants: [],
     ...overrides,
   }
 }
@@ -115,6 +116,14 @@ describe('statusLines', () => {
     expect(lines).toContain('Recent reports:')
     expect(lines.some(line => line.includes('credential blocker') && line.includes('blocked'))).toBe(true)
     expect(lines.some(line => line.startsWith('  - ') && line.includes('api (session-beta)'))).toBe(true)
+  })
+
+  it('lists archived holders with the unarchive/off/delete recovery path', () => {
+    const lines = statusLines(snapshot({
+      archivedOccupants: [{ sessionId: 'session-old', title: 'old lead' }],
+    }))
+    expect(lines).toContain('Archived DevLead holders (ignored for admission): 1')
+    expect(lines.some(line => line.includes('old lead (session-old)') && line.includes('/devlead off'))).toBe(true)
   })
 
   it('reports whether optional worktree isolation is composed', () => {

@@ -33,6 +33,12 @@ sender, kind, and summary/message; report errors (not-supervised, rate-limited, 
 rendered as friendly command text. A report is not sent by the command itself; watched Sessions
 use the `devlead_report` tool.
 
+An archived DevLead holder no longer blocks `/devlead on`: admission treats archived Sessions as
+inactive and records a durable tombstone when the mode-off cannot be written. `/devlead status`
+lists such holders under `Archived DevLead holders (ignored for admission)` with the action
+`unarchive and run /devlead off, or delete it`; opening the unarchived Session reconciles it so a
+second enabled lead is not left behind.
+
 `/devlead reset` appends a `plugin:devlead/reset` durable record: replay applies it before the
 corruption freeze check, so a Session whose earlier `plugin:devlead/*` record is corrupt becomes
 usable again (both projections restart from the default disabled state). `/devlead off` runs the
@@ -59,7 +65,10 @@ DevLead 模式全局单活：第二个会话执行 `/devlead on` 会以 `DEVLEAD
 准入/启动时可被释放。
 状态视图还会列出最近 5 条中途汇报（`Recent reports:`，含时间、sender、kind、summary/message）；
 not-supervised / rate-limited / 参数错误都会转成友好命令文本。命令本身不发送汇报；被监督会话
-使用 `devlead_report` 工具。
+使用 `devlead_report` 工具。已归档 DevLead 占用者不再阻塞 `/devlead on`：准入把它视为非 active，
+mode-off 写不掉时记录 durable tombstone；`/devlead status` 的
+`Archived DevLead holders (ignored for admission)` 会列出它并提示 unarchive + `/devlead off`
+或删除，打开后 reconciliation 会消除双活。
 0.2.0 起 `/devlead reset`（以及冻结时 `/devlead off`）追加 `plugin:devlead/reset` 记录并解冻
 损坏的 fold；reset 会丢弃该会话的 watch 集合与通知 digest。命令按 DSH `rawInput` 契约解析，
 不接受附件，前缀引用在变更前由 core 穷尽验证，变更后的标题与正文来自同一 post-mutation 快照。完整中文文档见

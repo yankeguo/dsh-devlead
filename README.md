@@ -225,12 +225,12 @@ requires Node ≥ 24.9):
 
 | DSH CLI | Command | Result |
 | --- | --- | --- |
-| `0.2.2-rc.1` | `DSH_BIN=<tmp>/rc.1/node_modules/.bin/dsh node scripts/e2e-smoke.mjs --flow installed --no-worktree` | **118/118** (Team-unavailable branch) |
-| `0.2.2-rc.2` | same, `rc.2` | **118/118** (Team success branch) |
-| `0.2.2-rc.3` | same, `rc.3` | **118/118** (Team success branch) |
-| `0.2.2-rc.4` | same, `rc.4` | **118/118** (Team success branch) |
-| `0.2.2-rc.4` | `DSH_BIN=<tmp>/rc.4/node_modules/.bin/dsh node scripts/e2e-smoke.mjs --flow installed` | **141/141** (includes the experimental worktree phase) |
-| `0.2.2-rc.4` | same, `--flow patch` | **141/141** |
+| `0.2.2-rc.1` | `DSH_BIN=<tmp>/rc.1/node_modules/.bin/dsh node scripts/e2e-smoke.mjs --flow installed --no-worktree` | **120/120** (Team-unavailable branch) |
+| `0.2.2-rc.2` | same, `rc.2` | **120/120** (Team success branch) |
+| `0.2.2-rc.3` | same, `rc.3` | **120/120** (Team success branch) |
+| `0.2.2-rc.4` | same, `rc.4` | **120/120** (Team success branch) |
+| `0.2.2-rc.4` | `DSH_BIN=<tmp>/rc.4/node_modules/.bin/dsh node scripts/e2e-smoke.mjs --flow installed` | **143/143** (includes the experimental worktree phase) |
+| `0.2.2-rc.4` | same, `--flow patch` | **143/143** |
 
 Three positive model-selection checks per flow are reported as SKIP on this credential-less
 Host (the real reason is printed); the negative model path and `devlead_list_models` run on every
@@ -345,10 +345,16 @@ composer-toolbar failure channel shows the reason.
 Release and recovery semantics:
 
 - `/devlead off` (and `/devlead reset`) releases the slot immediately.
-- **Archiving the holder releases it**: the archived Session is no longer eligible on the next
-  admission/startup, and DevLead durably writes a mode-off record when it can. If an archived
-  holder is cold and cannot be resumed to write that record, a new `on` is refused with an
-  actionable message instead of opening a second active window.
+- **Archiving the holder releases it**: an archived Session is not an active lead, so it never
+  blocks a new `on`. DevLead still tries to write the durable mode-off; when that is impossible
+  (cold and no resumable controller) it records a durable tombstone, warns, and admits the new
+  lead. `/devlead status` lists these holders under `Archived DevLead holders (ignored for
+  admission)` with the recovery action `unarchive and run /devlead off, or delete it`. An
+  unarchived/opened holder is reconciled on `agent/created`, which writes the mode-off on the live
+  Session and clears the tombstone, so it cannot wake as a second active lead.
+A cold, unresumable holder that is **not** archived still blocks admission: it is a real enabled
+lead whose state cannot be changed without opening it. The archived case above is the one that no
+longer requires a running Session to clear.
 - **Permanently deleting** the holder releases the slot naturally: the scan only sees Sessions
   that still exist in the live store or persisted corpus.
 - A settled turn, a cold detach, or an Agent disposal **does not** release the slot: the Session
@@ -465,18 +471,24 @@ non-DevLead Session watched by the unique active lead.
 | `devlead_prompt_session` | `session`, `prompt` (required), `watch?` (default true) | prompt result |
 | `devlead_watch_session` | `session`, `watching` (required bool) | watch mutation result |
 | `devlead_notifications` | `limit?` (default 20) | `{ notifications, reports, watched }` |
-| `devlead_report` | `message` (required, plain text, max 4000 code points), `kind?` (`progress` default / `blocked` / `decision` / `fyi`), `summary?` (max 200) | `{ report }` — visible only in a watched non-lead Session; one-way, never waits for a reply |
+| `devlead_report` | `message` (required, plain text, max 4000 code points), `kind?` (`progress` default / `blocked` / `decision` / `fyi`), `summary?` (max 200) | `{ report, durable, queued, warning? }` — visible only in a watched non-lead Session; one-way, never waits for a reply |
 | `devlead_remove_workspace` | `workspace` (required: id or registered path) | `{ workspace, removed }` (pre-removal snapshot) |
 | `devlead_archive_session` | `session` (required), `stop_running?` (default false) | `{ sessionId, archived: true, stopped }` |
 | `devlead_unarchive_session` | `session` (required) | `{ sessionId, archived: false }` |
 
-Reports are durable receipts in the lead's own Session log (`plugin:devlead/report`) and appear in
-the `devLead` projection, the status strip, `/devlead` status, and `devlead_notifications`. The
-lead is woken through the same coalesced notice path as a turn notification; a running lead gets
-the report at its next reachable step. The child is not blocked and cannot choose a target. At
-most four distinct reports are accepted per child turn; identical messages in one turn are
-idempotent; a fifth report fails `DEVLEAD_REPORT_RATE_LIMITED`. A report remains readable after a
-restart because it is folded from the lead's durable log.
+Before the tool returns, a report is written to a durable plugin outbox over the Host's optional
+`storageDomain` KV facility (domain `devlead_report_outbox`, atomic per-record writes that resolve
+after durability). The lead receipt is appended to the lead's own Session log
+(`plugin:devlead/report`) and the outbox row is cleared only after that log was flushed. If the
+lead is cold, archived, or not yet resumed, the outbox row remains and is replayed on the next
+boot/lead activation; archived holders are never auto-resumed just for delivery. The fallback
+when a Host composes no storage is explicit: the receipt has `durable: false` and a warning, and
+the child can retry after the lead is available. Outbox rows are pruned after 7 days if their lead
+never returns; `/devlead reset` drops that lead's pending rows. The receipt appears in the
+`devLead` projection, the status strip, `/devlead` status, `devlead_notifications`, and
+`devlead_get_session` when reading the lead itself. A running lead gets the report at its next
+reachable step. At most four distinct reports are accepted per child turn; identical messages in
+one turn are idempotent; a fifth report fails `DEVLEAD_REPORT_RATE_LIMITED`.
 
 Tools translate the core's `DevLeadError` into a `HarnessError` with a stable code. When reading
 state, trust `lastTurn` / `lastTransition` / `lastError` / `lastAssistant` instead of guessing.
@@ -775,7 +787,7 @@ without it keeps the default single-checkout behavior and reports `unavailable`.
 | Under a dev overlay, `/devlead on` throws `gateway/internal: Receiver must be an instance of class Session` | the overlay has no linked root (stale generated overlay, hand-written patch, or the profile was swapped). Re-run `pnpm dev:patch --profile <dev>` and confirm `<profile>/node_modules/devlead-repo` exists, then restart; or use `pnpm e2e` to run the correct flow |
 | `pnpm dev:patch` reports profile not found / already enables bundle | a dedicated dev profile is required: `dsh devlead --from-default-profile web --dump-config`; a profile that enables this bundle cannot take a second loader row with the same id |
 | Passing `title` to an already-registered Workspace has no effect | expected: `title` only applies when registering a new Workspace record; an existing record keeps its title |
-| `/devlead on` reports `DEVLEAD_ALREADY_ACTIVE` | another Session already holds the Host-wide DevLead mode. The error names it; run `/devlead off` in that Session (or archive/delete it) before enabling this one. |
+| `/devlead on` reports `DEVLEAD_ALREADY_ACTIVE` | another Session already holds the Host-wide DevLead mode. The error names it; run `/devlead off` in that Session before enabling this one. An **archived** holder does not block a new enable: it is ignored for admission, listed under `Archived DevLead holders` in `/devlead status`, and should be unarchived/opened to run `/devlead off` (or deleted). |
 | `devlead_report` reports `DEVLEAD_NOT_SUPERVISED` | the Session is a DevLead itself, the lead stopped watching it, the lead is archived, the lead's mode is off, or several historical watchers leave no unique supervisor. Re-watch it from the active lead. |
 | `devlead_report` reports `DEVLEAD_REPORT_RATE_LIMITED` | the child already sent four distinct reports in this turn. Wait for its next turn; the lead can still steer it with `devlead_prompt_session`. |
 | `devlead_report` reports `DEVLEAD_INVALID_INPUT` | the message is empty or over 4000 code points, the summary is over 200, or the kind is not `progress` / `blocked` / `decision` / `fyi`. |
@@ -842,13 +854,13 @@ unavailable model rejected before any Session exists, and the profile default mo
 unchanged), and `devlead_list_models` returns the compact Host catalog view (default,
 providers, failures). When a credential-less Host exposes no model catalog, the positive model
 checks are reported as SKIP with the reason instead of being faked. Per-phase and total check
-counts are **141/141 per flow** (phase 1 = 27, phase 1b = 12, phase 2 = 23, phase 3 = 79);
+counts are **143/143 per flow** (phase 1 = 27, phase 1b = 12, phase 2 = 23, phase 3 = 81);
 `--no-worktree` skips only the experimental phase, reporting
-**118/118** (phases 1 + 1b + 3) for debugging. Compatibility runs with npm-installed
-`0.2.2-rc.1` through `0.2.2-rc.4` CLIs (`DSH_BIN`, `--no-worktree`) report **118/118** each: on
+**120/120** (phases 1 + 1b + 3) for debugging. Compatibility runs with npm-installed
+`0.2.2-rc.1` through `0.2.2-rc.4` CLIs (`DSH_BIN`, `--no-worktree`) report **120/120** each: on
 rc.1 the Team success checks become expected-unavailable assertions (`DEVLEAD_TEAM_UNAVAILABLE`,
 no Session created), while rc.2–rc.4 run the Team success path; the rc.4 installed and patch
-flows also pass **141/141** with the worktree phase. The probe is a private
+flows also pass **143/143** with the worktree phase. The probe is a private
 test-only package under `scripts/e2e-probe/`, not a published or workspace package. The profile
 mutations happen only in the throwaway profile under `os.tmpdir()`; no pnpm install, network, or
 lockfile change is involved.

@@ -435,6 +435,20 @@ export const REPORT_OUTPUT = jsonOutput({
   additionalProperties: false,
   properties: {
     report: required(REPORT_SCHEMA),
+    durable: {
+      type: 'boolean',
+      required: true,
+      description: 'Whether the receipt is safely recoverable from durable storage across a Host restart.',
+    },
+    queued: {
+      type: 'boolean',
+      required: true,
+      description: 'Whether the lead receipt is still waiting for delivery/wake-up rather than flushed.',
+    },
+    warning: {
+      type: 'string',
+      description: 'Human warning shown when durable storage is unavailable and the receipt is memory-only.',
+    },
   },
 } as const)
 

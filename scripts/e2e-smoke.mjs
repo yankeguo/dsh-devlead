@@ -84,7 +84,9 @@
  *                 and none while it is off, both before and after a toggle;
  *               - a real watched non-lead child step admits exactly
  *                 `devlead_report`, receives the one-way report policy, and a
- *                 real `reportProgress` call lands in the lead's durable digest;
+ *                 real `reportProgress` call is durably outboxed (`durable:true`,
+ *                 `queued:false` on the default storage composition) and lands
+ *                 in the lead's durable digest;
  *               - the assembled `devlead:policy` section carries judgment-based
  *                 closing, its safety boundaries, and the feasibility-triage /
  *                 open-question handoff to the dispatched Session;
@@ -124,9 +126,9 @@
  * experimental composition cannot boot on this machine); phases 1, 1b, and 3
  * still run.
  *
- * Check counts: phase 1 = 27, phase 1b = 12, phase 2 = 23, phase 3 = 79, so
- * every flow reports 141/141 checks when all four phases pass (`--no-worktree`
- * skips phase 2: 118/118). Run both flows before a release:
+ * Check counts: phase 1 = 27, phase 1b = 12, phase 2 = 23, phase 3 = 81, so
+ * every flow reports 143/143 checks when all four phases pass (`--no-worktree`
+ * skips phase 2: 120/120). Run both flows before a release:
  *
  *   node scripts/e2e-smoke.mjs --flow patch
  *   node scripts/e2e-smoke.mjs --flow installed
@@ -1345,6 +1347,17 @@ async function runCloseChecks(client, paths, dshVersion) {
     inspectOn.text.slice(0, 300),
   )
   checks.expect('phase 3 enabled inspect reports enabled', inspectOn.report?.enabled === true)
+  checks.expect(
+    'phase 3 default Host composes storage-domain for the durable outbox',
+    inspectOn.report?.storageDomain === true,
+    JSON.stringify({
+      storageDomain: inspectOn.report?.storageDomain,
+      storage: inspectOn.report?.storage,
+      reportOutboxAvailable: inspectOn.report?.reportOutboxAvailable,
+      reportOutboxLastError: inspectOn.report?.reportOutboxLastError,
+      workspaceRegistry: inspectOn.report?.workspaceRegistry,
+    }),
+  )
   const devleadTools = inspectOn.report?.devleadTools ?? []
   checks.expect(
     'phase 3 enabled exposes exactly the thirteen devlead tools',
@@ -1435,16 +1448,29 @@ async function runCloseChecks(client, paths, dshVersion) {
     reportProbe.execution?.result?.kind === 'success',
     reportProbe.text.slice(0, 500),
   )
-  const reportId = typeof reportProbe.report?.report?.id === 'string' ? reportProbe.report.report.id : ''
+  const reportId = typeof reportProbe.report?.report?.report?.id === 'string'
+    ? reportProbe.report.report.report.id
+    : ''
   const leadReports = Array.isArray(reportProbe.report?.leadReports) ? reportProbe.report.leadReports : []
   checks.expect(
     'phase 3 report names the supervisor and returns a durable receipt',
     reportProbe.report?.supervised === true
       && typeof reportProbe.report?.leadId === 'string'
       && reportId.length > 0
-      && reportProbe.report?.report?.kind === 'progress'
-      && reportProbe.report?.report?.senderSessionId === watchedChildId,
+      && reportProbe.report?.report?.report?.kind === 'progress'
+      && reportProbe.report?.report?.report?.senderSessionId === watchedChildId,
     JSON.stringify(reportProbe.report),
+  )
+  checks.expect(
+    'phase 3 report receipt is durable before success',
+    reportProbe.report?.report?.durable === true
+      && reportProbe.report?.report?.queued === false
+      && reportProbe.report?.report?.warning === undefined,
+    JSON.stringify({
+      durable: reportProbe.report?.report?.durable,
+      queued: reportProbe.report?.report?.queued,
+      warning: reportProbe.report?.report?.warning,
+    }),
   )
   checks.expect(
     'phase 3 report appears in the lead report digest',

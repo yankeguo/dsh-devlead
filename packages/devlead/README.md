@@ -15,11 +15,19 @@ Admission is serialized in-process and scans live projections plus the durable c
 send a one-way report to its unique active lead. It resolves the supervisor through the hub's
 reverse index, validates size/kind, deduplicates identical messages within a turn, enforces four
 distinct reports per turn (`DEVLEAD_REPORT_RATE_LIMITED`), and otherwise refuses with
-`DEVLEAD_NOT_SUPERVISED`. The receipt is a `plugin:devlead/report` record in the lead's Session log,
-folded into the `devLead` projection's `reports` digest; delivery reuses the notification pump's
-coalescing, pending/unsaved queues, and cold-lead wake path. `supervisorOf(agent)` /
-`isSupervised(agent)` are synchronous tool-gating queries; `reports(agent, { limit? })` reads the
-lead digest.
+`DEVLEAD_NOT_SUPERVISED`. The receipt is `{ report, durable, queued, warning? }`.
+
+The report is first written to a durable outbox (`devlead_report_outbox` over the optional
+`storageDomain` KV facility), then a `plugin:devlead/report` receipt is appended to the lead's
+Session log. The outbox row is removed only after the lead log flush succeeds; a cold/archived/
+unattached lead leaves it for replay on the next boot/lead activation. Rows are pruned after seven
+days, and `/devlead reset` drops that lead's pending rows. A Host without storage-domain returns
+`durable: false` with an explicit warning. `supervisorOf(agent)` / `isSupervised(agent)` are
+synchronous tool-gating queries; `reports(agent, { limit? })` reads the lead digest.
+
+Archived holders are not active leads: admission ignores them, writes a durable tombstone when the
+mode-off cannot be written, and `/devlead status` exposes them with the unarchive/off/delete
+recovery path. Opening an unarchived holder reconciles it back to one active lead.
 
 Normally installed as part of the bundle:
 
@@ -34,8 +42,9 @@ dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
   composition).
 - Optional, probed at call time: `workspaceRegistry`, `sessionController`, `sessionTitle`,
   `agentPresets` (read-only preset roster discovery), `sessionQuery`, `sessionProjectionCache`
-  (cold-lead rehydration pre-filter), `sessionPersistence` (durable-corpus readiness barrier), and
-  the experimental `worktrees` capability. Missing optional services degrade to fewer features or
+  (cold-lead rehydration pre-filter), `sessionPersistence` (durable-corpus readiness barrier),
+  `storageDomain` (durable report outbox and archived-holder tombstones), and the experimental
+  `worktrees` capability. Missing optional services degrade to fewer features or
   structured domain errors; no experimental package is imported, injected, or declared.
 - Cold-lead rehydration: at plugin load the hub rebuilds its watch index from durable state
   (`sessionQuery` listing → projection-cache pre-filter → exact fold; unclassified rows are capped

@@ -317,6 +317,58 @@ export class DevLeadNotificationHub {
   }
 
   /**
+   * Persist one report receipt into the lead's attached Session log and wait
+   * for the durability checkpoint before claiming delivery.
+   *
+   * A cold lead cannot accept the receipt yet, so the report is queued for the
+   * normal cold-wake path and this method returns false; the caller keeps its
+   * durable outbox row and replays it later. An archived lead, a disabled lead,
+   * or a removed watch relationship returns false without queueing.
+   * @param report - report addressed to one watched lead.
+   * @returns whether the lead Session log now carries a flushed receipt.
+   */
+  async persistReport(report: DevLeadReport): Promise<boolean> {
+    if (this.stopping) return false
+    const runtime = this.leads.get(report.leadSessionId)
+    if (runtime === undefined || !runtime.watched.has(report.senderSessionId)) return false
+    if (this.ctx.get('workspaceRegistry')?.archivedSessionIds.some(id => String(id) === report.leadSessionId) ?? false) {
+      return false
+    }
+    const session = this.ctx.sessions.get(toSessionId(report.leadSessionId))
+    if (session === undefined) {
+      runtime.unsavedReports = [...runtime.unsavedReports, report].slice(-DEVLEAD_REPORT_RETENTION)
+      this.scheduleFlush(runtime)
+      return false
+    }
+    const state = this.stateOf(session)
+    if (state === undefined || !state.enabled) return false
+    if (!state.reports.some(existing => existing.id === report.id)) {
+      try {
+        appendPluginRecord(session, DEVLEAD_REPORT_RECORD_TYPE, reportRecord(report))
+      } catch (error: unknown) {
+        this.ctx.logger.warn(
+          `devlead: could not record a report for lead "${runtime.sessionId}": ${thrownMessage(error)}`,
+        )
+        runtime.unsavedReports = [...runtime.unsavedReports, report].slice(-DEVLEAD_REPORT_RETENTION)
+        this.scheduleFlush(runtime)
+        return false
+      }
+      runtime.pendingReports = [...runtime.pendingReports, report].slice(-DEVLEAD_REPORT_RETENTION)
+    }
+    try {
+      await this.ctx.sessions.flush(session)
+    } catch (error: unknown) {
+      this.ctx.logger.warn(
+        `devlead: report receipt for lead "${runtime.sessionId}" could not be flushed to persistence: ${thrownMessage(error)}`,
+      )
+      this.scheduleFlush(runtime)
+      return false
+    }
+    this.scheduleFlush(runtime)
+    return true
+  }
+
+  /**
    * Append one report receipt and fire-and-forget its durability checkpoint.
    * @param session - attached lead Session log receiving the record.
    * @param report - report to persist.

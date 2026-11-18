@@ -46,6 +46,11 @@ export interface DevLeadStatusSnapshot {
   readonly notifications: readonly DevLeadNotification[]
   /** Retained mid-turn reports, oldest first. */
   readonly reports: readonly DevLeadReport[]
+  /** Archived Sessions that still carry a durable enabled mode. */
+  readonly archivedOccupants: readonly {
+    readonly sessionId: string
+    readonly title?: string
+  }[]
 }
 
 /** Human label of the mode switch. */
@@ -112,6 +117,20 @@ function notificationLines(snapshot: DevLeadStatusSnapshot): string[] {
   return lines
 }
 
+/** Render archived holders with the human recovery action. */
+function archivedOccupantLines(snapshot: DevLeadStatusSnapshot): string[] {
+  if (snapshot.archivedOccupants.length === 0) return []
+  return [
+    `Archived DevLead holders (ignored for admission): ${String(snapshot.archivedOccupants.length)}`,
+    ...snapshot.archivedOccupants.map((occupant) => {
+      const label = occupant.title === undefined
+        ? occupant.sessionId
+        : `${occupant.title} (${occupant.sessionId})`
+      return `  - ${label} — unarchive and run /devlead off, or delete it`
+    }),
+  ]
+}
+
 /** Render the retained mid-turn report block lines, newest last. */
 function reportLines(snapshot: DevLeadStatusSnapshot): string[] {
   if (snapshot.reports.length === 0) return ['Recent reports: none']
@@ -132,6 +151,7 @@ export function statusLines(snapshot: DevLeadStatusSnapshot): string[] {
     `DevLead mode: ${modeLabel(snapshot.enabled)}`,
     `Worktree isolation: ${snapshot.worktreeIsolation ? 'available' : 'unavailable'}`,
     ...watchedLines(snapshot),
+    ...archivedOccupantLines(snapshot),
     ...notificationLines(snapshot),
     ...reportLines(snapshot),
   ]

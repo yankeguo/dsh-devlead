@@ -199,6 +199,13 @@ export class FakeDevLead {
     },
   ]
 
+  /** Durability flag returned by {@link reportProgress}. */
+  reportDurable = true
+  /** Queued flag returned by {@link reportProgress}. */
+  reportQueued = false
+  /** Warning returned by {@link reportProgress}, when set. */
+  reportWarning: string | undefined
+
   /** Result returned by {@link reportProgress}. */
   report: DevLeadReport = {
     id: 'report-2',
@@ -274,9 +281,14 @@ export class FakeDevLead {
     agent: Agent,
     request: { message: string; kind?: string; summary?: string },
     signal?: AbortSignal,
-  ): Promise<DevLeadReport> {
+  ): Promise<{ report: DevLeadReport; durable: boolean; queued: boolean; warning?: string }> {
     this.enter('reportProgress', agent, request, signal)
-    return this.report
+    return {
+      report: this.report,
+      durable: this.reportDurable,
+      queued: this.reportQueued,
+      ...(this.reportWarning === undefined ? {} : { warning: this.reportWarning }),
+    }
   }
 
   async listWorkspaces(signal?: AbortSignal): Promise<DevLeadWorkspaceView[]> {

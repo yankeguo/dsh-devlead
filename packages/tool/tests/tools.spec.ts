@@ -1350,7 +1350,7 @@ describe('devlead_report', () => {
       summary: ' credential blocker ',
     })
     expect(signal).toBeInstanceOf(AbortSignal)
-    expect(value).toEqual({ report: harness.devLead.report })
+    expect(value).toEqual({ report: harness.devLead.report, durable: true, queued: false })
   })
 
   it('defaults kind and summary when omitted', async () => {
@@ -1358,6 +1358,21 @@ describe('devlead_report', () => {
     await harness.call('devlead_report', { message: 'progress' })
     const [, request] = harness.devLead.callsOf('reportProgress')[0] ?? []
     expect(request).toEqual({ message: 'progress' })
+  })
+
+  it('exposes a degraded non-durable receipt with its warning', async () => {
+    const harness = boot()
+    harness.devLead.reportDurable = false
+    harness.devLead.reportQueued = true
+    harness.devLead.reportWarning = 'durable report storage is unavailable'
+    const value = await harness.call('devlead_report', { message: 'progress' })
+    expect(value).toEqual({
+      report: harness.devLead.report,
+      durable: false,
+      queued: true,
+      warning: 'durable report storage is unavailable',
+    })
+    expectValidOutput(harness, 'devlead_report', value)
   })
 
   it('translates a not-supervised refusal', async () => {

@@ -242,14 +242,21 @@ default: boolean; broken? }[]; reason? }`；`default` 是 Host 有效默认（`s
   错误码 `DEVLEAD_ALREADY_ACTIVE`，消息给出占用者 `title (sessionId)` 或裸 id，并提示先执行
   `/devlead off`。被拒绝方的 projection 不变（按钮 off、状态条不渲染），失败文本走既有
   UI 失败通道。
-- **释放与重启恢复**：`off`/`reset` 立即释放；archived 占用者在下次准入/启动时释放（live 直接
-  写 mode-off；冷 Session 用 `sessionController.resolveAgent` resume 后写，缺 controller 或
-  resume 失败则保留占用并拒绝新开启，消息明确说明 archived-unreleased）；永久删除的 Session
-  因扫描不可见而自然释放；turn 结束、冷 detach、Agent dispose **不释放**（durable 模式仍在）。
-  启动时 `reconcileActiveSessions` 合并 live + rehydration active，按
-  `rankActiveSessions` 保留一个（优先 incumbent/live/running/最近 enable/creator/id），对其余
-  写 mode-off 并 warning；释放失败则保留并继续阻塞新开启。恢复扫描只处理 archived/重复占用，
-  不改变唯一一个正常 lead 的 watch/通知状态。
+- **释放与重启恢复**：`off`/`reset` 立即释放；**archived 占用者视为非 active**：准入/启动
+  仍 best-effort 写 mode-off（live 直接写；冷 Session 尝试 `sessionController.resolveAgent`
+  后写），但写不掉时只 warning、写入 tombstone，并继续准入，**绝不因 archived 占用者永久拒绝
+  新 lead**。tombstone 持久在 outbox domain 的 `ignored` 表，重启后仍生效；被忽略的 Session
+  若 unarchive/打开，`agent/created` 触发 reconciliation，能在 live Session 上写 mode-off 时
+  自动关闭并清除 tombstone，避免双活。未归档且 cold、无法 resume 的占用者仍会阻塞准入（它是
+  真实 enabled lead，不打开无法改写状态）；archived 分支是无需运行 Session 即可解除的路径。
+  永久删除的 Session 因扫描不可见而自然释放；turn 结束、
+  冷 detach、Agent dispose **不释放**（durable 模式仍在）。启动时 `reconcileActiveSessions`
+  合并 live + rehydration active，archived/已 tombstone 的占用者只尝试释放但不参与
+  keeper/blocker 排序；其余按 `rankActiveSessions` 保留一个（优先
+  incumbent/live/running/最近 enable/creator/id），对其余写 mode-off 并 warning。恢复扫描只
+  处理 archived/重复占用，不改变唯一一个正常 lead 的 watch/通知状态。`/devlead status` 的
+  `Archived DevLead holders` 段列出 archived 占用者并给出 unarchive + `/devlead off` / 删除
+  的可执行路径。
 - **单活边界**：临界区是单 Host 进程内的；共享同一持久存储的多个 Host 进程仍可能并发通过扫描
   （没有跨进程锁）。无 `sessionQuery` 的 Host 只能核对 live；projection cache 的
   stale-negative 窗口与冷 lead 恢复共用同一“mode 写后 eager checkpoint”保障，极端崩溃窗口
@@ -459,22 +466,31 @@ watch 关系解析，绝不能由模型指定。
 - lead 侧 policy 增加收到 `[DEV LEAD REPORT]` 后的处理口径：当作 runtime fact，必要时用
   `devlead_prompt_session` steering，不用汇报通道回复。
 
-投递状态机（`DevLeadService.reportProgress` → `DevLeadNotificationHub.report`）：
+投递状态机（`DevLeadService.reportProgress` → outbox → `DevLeadNotificationHub.persistReport`）：
 
 1. 校验 live / 非 DevLead / 唯一 supervisor；解析 reporter 的当前 turn（命令调用可为 0）。
-2. 校验 message 非空且 ≤4000 码点、kind 枚举、summary ≤200；同轮同一 message 返回已有 report
+2. 校验 message 非空且 ≤4000 码点、kind 枚举、summary ≤200；同轮同一 message 复用已有 receipt
    （幂等），不同消息超过 4 条返回 `DEVLEAD_REPORT_RATE_LIMITED`。
-3. 构造 sender id/title、workspace id/title、lead id、`at`，把 receipt 写入 **lead** 的日志（sender
-   信息在 payload 中）：
-   - lead 日志已 attached：`appendPluginRecord(leadSession, 'plugin:devlead/report', ...)` 后进入
-     `pendingReports`；
-   - lead cold：进入 `unsavedReports`，由同一 flush 水泵 resume 后补写；无法 resume 时保留在
-     内存队列（与通知的既有弱语义一致）。
-4. `scheduleFlush` 与 turn 通知共用合并窗口 / `hasQueuedNotice` 避让 / 1s 重试。lead 空闲时
-   followup 唤醒；lead 运行中 followup 排到下一步；如果已有未消费的 DevLead notice，本批保留，
-   不丢。报告与通知同批时合并到一条 `[DEV LEAD NOTIFICATION] + [DEV LEAD REPORT]` 文本。
-5. `report` 记录驱动 `devLead` projection，状态条、`/devlead` status、`devlead_notifications`
+3. 构造 sender id/title、workspace id/title、lead id、`at`，**先写 durable outbox**
+   （`devlead_report_outbox` storage-domain，`pending` 表，per-record、写入 resolve 即 durable），
+   成功后工具即可安全返回。随后尝试把 receipt 写入 lead 日志：
+   - lead 日志 attached 且 enabled：append `plugin:devlead/report`，进入 `pendingReports`；
+     **await `ctx.sessions.flush(leadSession)` 成功后**才删除 outbox 行；
+   - lead cold / 未 attached / 归档 / watch 关系暂时消失：outbox 行保留，hub 只做内存唤醒队列；
+     不把“已入内存”当作 durable 交付；
+   - 若 flush 失败，outbox 行保留，receipt 已 append 的状态会在 replay 时再次 flush 并清理。
+4. `scheduleFlush` 与 turn 通知共用合并窗口 / `hasQueuedNotice` 避让 / 1s 重试；lead 空闲时唤醒，
+   运行中排到下一步。报告与通知同批时合并为一条 `[DEV LEAD NOTIFICATION] + [DEV LEAD REPORT]`。
+5. **Replay**：service init、storage-domain 晚挂载、`agent/created`、`setEnabled(true)`、
+   `watchSession(true)` 时扫描 outbox；对每条 report 重新执行
+   `hub.persistReport`，只有 lead 日志 flush 成功才删除。cold lead 的 resume 由同一 hub 水泵
+   处理；归档 lead 不自动 resume。outbox 行按 7 天 retention 清理；`/devlead reset` 丢弃该
+   lead 的待投递行；lead 被删除且不返回到期后清理。
+6. `report` 记录驱动 `devLead` projection，状态条、`/devlead` status、`devlead_notifications`
    读取同一份 durable digest；重启后从 lead 日志折叠恢复。
+7. 若 Host 未组合 `storageDomain`（或被显式禁用），工具回执为
+   `{ durable: false, queued: true, warning }`，文案明确告知可能丢；这是唯一允许的非持久路径。
+   默认 Host 的 e2e 断言 `durable: true`。
 
 释放关系：unwatch / mode off / reset / lead 归档后 `supervisorOf` 返回 undefined，下一次 tool
 `when` 隐藏，伪造调用返回 `DEVLEAD_NOT_SUPERVISED`；已经写入的 report 仍保留到 retention。
@@ -624,7 +640,7 @@ Session 的工作目录切到独立分支/检出，DevLead 用它**可选地**�
   `ctx.devLead.isSupervised(agent)`（非 enabled + 唯一 active lead 的 watch），schema 只有
   `message` / `kind?` / `summary?`，没有 target。描述明确单向、不等待回复、最终 turn 仍走原
   通知、每轮最多 4 条、同轮相同消息幂等；执行转发 `reportProgress` 并把 receipt 投影成
-  `{ report }`。`devlead_get_session` 读取 lead 自身时额外返回 `reports`（最近 5 条），
+  `{ report, durable, queued, warning? }`（durable 为真才代表已落 durable outbox；queued 表示 lead receipt 尚未 flush）。`devlead_get_session` 读取 lead 自身时额外返回 `reports`（最近 5 条），
   读取其他 Session 时输出形状不变。参数长度/kind 由 core 再校验，错误码 `DEVLEAD_INVALID_INPUT` /
   `DEVLEAD_NOT_SUPERVISED` / `DEVLEAD_REPORT_RATE_LIMITED` 由统一翻译层转成 `HarnessError`。
 - `systemPrompt` 另注册 `devlead:report-policy` 段，条件为 `ctx.devLead.isSupervised(agent)`；
@@ -795,7 +811,7 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
 | --- | --- |
 | `DEVLEAD_INVALID_INPUT` | 参数不可用：空 prompt、相对路径、文件路径、空引用、`limit` 非法、前缀歧义、非法 prompt 目标、空/超长 report message、超长 summary、未知 report kind 等 |
 | `DEVLEAD_NOT_ENABLED` | 当前会话未开启 DevLead 模式 |
-| `DEVLEAD_ALREADY_ACTIVE` | 另一个 Session 已占用 Host 级 DevLead 模式；消息含占用者 `title (id)`（或裸 id）与“先 /devlead off”的指引；archived 且无法自动释放时给出专门恢复文案 |
+| `DEVLEAD_ALREADY_ACTIVE` | 另一个 Session 已占用 Host 级 DevLead 模式；消息含占用者 `title (id)`（或裸 id）与“先 /devlead off”的指引。**archived 占用者不再抛出该错误**：它被视为非 active，准入继续；`/devlead status` 会列出并给出 unarchive + off / 删除路径 |
 | `DEVLEAD_NOT_SUPERVISED` | 当前 Session 不是「非 DevLead + 被唯一 active lead watch」；包括自身是 lead、lead off/归档、unwatch、或历史多 watcher 无唯一 supervisor |
 | `DEVLEAD_REPORT_RATE_LIMITED` | 被监督 Session 同一 turn 已发送 4 条不同报告；同轮相同 message 幂等，不计数 |
 | `DEVLEAD_AGENT_NOT_LIVE` | 传入的 Agent 不是注册表中的 live 实例（工具侧绕过 `when` 时也走该码） |
@@ -932,20 +948,20 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   `team/mode` 与 false 关闭。版本与探测不一致会直接失败（rc.1 出现服务或 rc.2+ 缺少服务都能
   暴露）。
   patch 与 installed 两条加载流都跑完整多阶段；`--no-worktree` 跳过阶段 2（阶段 1、1b、3 仍
-  运行，调试用）。两条加载流各 **141/141**（阶段 1 27 + 阶段 1b 12 + 阶段 2 23 + 阶段 3 79，
-  阶段 3 新增 agent preset roster 检查）；跳过阶段 2 时 **118/118**（阶段 1 + 1b + 3）。
-- 本轮最终验证数字（工作树）：`pnpm verify` = typecheck 通过 + **24 文件 / 723 tests** +
+  运行，调试用）。两条加载流各 **143/143**（阶段 1 27 + 阶段 1b 12 + 阶段 2 23 + 阶段 3 81，
+  阶段 3 新增 agent preset roster 检查）；跳过阶段 2 时 **120/120**（阶段 1 + 1b + 3）。
+- 本轮最终验证数字（工作树）：`pnpm verify` = typecheck 通过 + **25 文件 / 735 tests** +
   7 个构建产物；`node scripts/check-packages.mjs` → `OK (6 packages)`；E2E 本轮重跑
-  patch / installed 各 **141/141**（阶段 1 27 + 阶段 1b 12 + 阶段 2 23 + 阶段 3 79）。
+  patch / installed 各 **143/143**（阶段 1 27 + 阶段 1b 12 + 阶段 2 23 + 阶段 3 81）。
 - **DSH 版本兼容矩阵（本轮真实 E2E，npm 临时安装 CLI + `DSH_BIN`）**：
 
   | DSH | flow | checks | Team 分支 / 其他 |
   | --- | --- | --- | --- |
-  | 0.2.2-rc.1 | installed（`--no-worktree`） | **118/118** | 预期不可用：`DEVLEAD_TEAM_UNAVAILABLE`、无 Session、文案含 rc.2 |
-  | 0.2.2-rc.2 | installed（`--no-worktree`） | **118/118** | 成功：child enabled、durable `team/mode`、false 关闭 |
-  | 0.2.2-rc.3 | installed（`--no-worktree`） | **118/118** | 成功（同上） |
-  | 0.2.2-rc.4 | installed（完整） | **141/141** | 成功；含实验 worktree 阶段 23/23 |
-  | 0.2.2-rc.4 | patch（完整） | **141/141** | 成功；含实验 worktree 阶段 23/23 |
+  | 0.2.2-rc.1 | installed（`--no-worktree`） | **120/120** | 预期不可用：`DEVLEAD_TEAM_UNAVAILABLE`、无 Session、文案含 rc.2 |
+  | 0.2.2-rc.2 | installed（`--no-worktree`） | **120/120** | 成功：child enabled、durable `team/mode`、false 关闭 |
+  | 0.2.2-rc.3 | installed（`--no-worktree`） | **120/120** | 成功（同上） |
+  | 0.2.2-rc.4 | installed（完整） | **143/143** | 成功；含实验 worktree 阶段 23/23 |
+  | 0.2.2-rc.4 | patch（完整） | **143/143** | 成功；含实验 worktree 阶段 23/23 |
 
   每条版本使用独立 throwaway `DSH_HOME`，结束后清理；rc.1–rc.3 跳过 phase 2（实验组合不与
   内置 worktree bundle 绑定，阶段 1/1b/3 全跑），rc.4 两条加载流都跑完整四个阶段。所有版本

@@ -173,8 +173,9 @@ const REPORT_DESCRIPTION =
   + 'waiting for the turn to end. It is not a question or reply channel: the lead cannot answer through it, and you '
   + 'should keep working unless the lead steers you. Your settled turn still reaches the lead through the normal '
   + 'turn-end notification. Keep the message concise and actionable; at most four distinct reports are accepted per '
-  + 'turn, identical messages are deduplicated, and no target Session can be chosen. Selected kind: progress '
-  + '(default), blocked, decision, or fyi.'
+  + 'turn, identical messages are deduplicated, and no target Session can be chosen. The result carries '
+  + '`durable` and `queued`; when `durable` is false the Host has no durable storage and the warning must be '
+  + 'treated as a possible-loss receipt. Selected kind: progress (default), blocked, decision, or fyi.'
 
 const REMOVE_WORKSPACE_DESCRIPTION =
   'Close (remove) a DSH Workspace registration: the DSH remove action, not a deletion. The directory, its files, and '
@@ -569,12 +570,17 @@ export function apply(ctx: Context): void {
     execute(args, exec) {
       return runTool(async () => {
         const agent = requireAgent(exec.agent, 'devlead_report')
-        const report = await ctx.devLead.reportProgress(agent, {
+        const receipt = await ctx.devLead.reportProgress(agent, {
           message: args.message,
           ...args.kind === undefined ? {} : { kind: args.kind as DevLeadReportKind },
           ...args.summary === undefined ? {} : { summary: args.summary },
         }, exec.signal)
-        return { report: reportValue(report) }
+        return {
+          report: reportValue(receipt.report),
+          durable: receipt.durable,
+          queued: receipt.queued,
+          ...(receipt.warning === undefined ? {} : { warning: receipt.warning }),
+        }
       })
     },
   }), { when: ({ agent }) => ctx.devLead.isSupervised(agent) })

@@ -1187,6 +1187,8 @@ export interface BootServiceOptions {
   readonly agentTeams?: FakeAgentTeams
   /** Fake profile default model; lets a spec prove selections never rewrite it. */
   readonly agentDefaultModel?: FakeAgentDefaultModel
+  /** Fake durable storage-domain facility, provided through `ctx.storageDomain`. */
+  readonly storageDomain?: FakeStorageDomain
   /** Whether a durability participant is registered; false models an unpersisted Host. */
   readonly persistence?: boolean
   /** When set, the durability participant rejects with this failure. */
@@ -1214,6 +1216,7 @@ export interface ServiceHarness {
   readonly llm: FakeModelValidator | undefined
   readonly agentTeams: FakeAgentTeams | undefined
   readonly agentDefaultModel: FakeAgentDefaultModel | undefined
+  readonly storageDomain: FakeStorageDomain | undefined
   /** Session ids whose `session/flush` checkpoint ran, in call order. */
   readonly flushCalls: string[]
   /** Dispose this harness's context and stop tracking it. */
@@ -1269,6 +1272,7 @@ export async function bootService(options: BootServiceOptions = {}): Promise<Ser
   if (options.llm !== undefined) ctx.provide('llm', options.llm.asService())
   if (options.agentTeams !== undefined) ctx.provide('agentTeams', options.agentTeams.asService())
   if (options.agentDefaultModel !== undefined) ctx.provide('agentDefaultModel', options.agentDefaultModel.asService())
+  if (options.storageDomain !== undefined) ctx.provide('storageDomain' as never, options.storageDomain.asService() as never)
   await ctx.plugin(DevLeadService, options.config ?? {})
   liveContexts.push(ctx)
   return {
@@ -1287,6 +1291,7 @@ export async function bootService(options: BootServiceOptions = {}): Promise<Ser
     llm: options.llm,
     agentTeams: options.agentTeams,
     agentDefaultModel: options.agentDefaultModel,
+    storageDomain: options.storageDomain,
     flushCalls,
     dispose: () => disposeContext(ctx),
   }
@@ -1420,4 +1425,90 @@ export async function bootHub(options: BootHubOptions = {}): Promise<HubHarness>
 /** Build one human-authored user message fixture. */
 export function humanMessage(text: string): UserMessage {
   return createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } })
+}
+
+/** One in-memory table of {@link FakeStorageDomain}. */
+export class FakeStorageTable {
+  /** Persisted records by key. */
+  readonly records = new Map<string, unknown>()
+  /** When set, every put rejects with this failure. */
+  putError: Error | undefined
+  /** Number of durable puts attempted. */
+  putCalls = 0
+
+  get(key: string): unknown {
+    return this.records.get(key)
+  }
+
+  entries(): IterableIterator<[string, unknown]> {
+    return this.records.entries()
+  }
+
+  async put(key: string, value: unknown): Promise<void> {
+    this.putCalls += 1
+    if (this.putError !== undefined) throw this.putError
+    this.records.set(key, value)
+  }
+
+  async delete(key: string): Promise<boolean> {
+    return this.records.delete(key)
+  }
+
+  async deleteMany(keys: readonly string[]): Promise<number> {
+    let removed = 0
+    for (const key of keys) if (this.records.delete(key)) removed += 1
+    return removed
+  }
+}
+
+/** One in-memory storage-domain handle. */
+class FakeStorageDomainHandle {
+  /** Tables by declared name. */
+  readonly tables = new Map<string, FakeStorageTable>()
+
+  constructor(names: readonly string[]) {
+    for (const name of names) this.tables.set(name, new FakeStorageTable())
+  }
+
+  table(name: string): FakeStorageTable {
+    const table = this.tables.get(name)
+    if (table === undefined) throw new Error(`fake storage domain has no table ${name}`)
+    return table
+  }
+
+  async close(): Promise<void> {}
+}
+
+/**
+ * In-memory `ctx.storageDomain` stand-in. Domains survive a domain-handle
+ * close, so booting a second service over the same fake models a Host restart
+ * with durable outbox rows still on disk.
+ */
+export class FakeStorageDomain {
+  /** Persisted domains by name. */
+  readonly domains = new Map<string, FakeStorageDomainHandle>()
+
+  async open(spec: unknown): Promise<FakeStorageDomainHandle> {
+    const name = (spec as { name?: unknown }).name
+    const tableNames = Object.keys((spec as { tables?: Record<string, unknown> }).tables ?? {})
+    if (typeof name !== 'string' || name.length === 0) throw new Error('fake storage domain requires a name')
+    let domain = this.domains.get(name)
+    if (domain === undefined) {
+      domain = new FakeStorageDomainHandle(tableNames)
+      this.domains.set(name, domain)
+    }
+    return domain
+  }
+
+  /** Table of one persisted domain, for direct assertions. */
+  table(domainName: string, tableName: string): FakeStorageTable {
+    const domain = this.domains.get(domainName)
+    if (domain === undefined) throw new Error(`fake storage domain ${domainName} is not created`)
+    return domain.table(tableName)
+  }
+
+  /** Storage-domain-shaped value for `ctx.provide`. */
+  asService(): unknown {
+    return this
+  }
 }
