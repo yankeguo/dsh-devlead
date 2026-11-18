@@ -15,8 +15,9 @@
  * runs the Host command through the injected face; pending disables the button
  * and is exposed through `aria-busy`. A failure keeps the button in place and
  * exposes the Host text through its tooltip, aria-label, and a visually hidden
- * live region that announces the same text to assistive technology (this
- * compact toolbar surface has no inline error row).
+ * live region that announces the same text to assistive technology. The
+ * tooltip also opens on click while a failure is showing, so a touch user can
+ * read the full message (the button runs the idempotent command again).
  */
 
 import { useState } from 'react'
@@ -76,12 +77,18 @@ export function DevLeadIconToggle({ useProjection, executeCommand, t }: DevLeadI
 
   return (
     <>
-      <Tooltip label={label} side="top" delayMs={300} maxWidth={300} portal>
+      <Tooltip
+        label={label}
+        side="top"
+        delayMs={300}
+        maxWidth={300}
+        portal
+        openOnClick={failure !== null}
+      >
         <Button
           variant="ghost"
           size="sm"
           className="devlead-toggle"
-          title={label}
           aria-label={label}
           aria-busy={pending}
           aria-pressed={enabled}

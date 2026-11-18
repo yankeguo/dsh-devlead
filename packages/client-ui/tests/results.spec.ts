@@ -14,7 +14,6 @@ import {
   commandFailure,
   createDevLeadAdmissionGate,
   devLeadAdmissionReducer,
-  failureCopy,
   failureMessage,
   unexpectedFailure,
   type DevLeadCommandAdmission,
@@ -146,42 +145,6 @@ describe('failureMessage', () => {
   })
 })
 
-describe('failureCopy', () => {
-  it('renders transport failures with the message/code template', () => {
-    expect(failureCopy({ kind: 'transport', message: 'connection reset', code: 'gateway/internal' }))
-      .toEqual({
-        key: 'error.command',
-        params: { message: 'connection reset', code: 'gateway/internal' },
-      })
-  })
-
-  it('renders a logical rejection as a rejected-command line', () => {
-    expect(failureCopy({ kind: 'rejected', message: 'This Session has no live Agent.' }))
-      .toEqual({
-        key: 'error.rejected',
-        params: { message: 'This Session has no live Agent.' },
-      })
-  })
-
-  it('renders an unexpected throw as an unknown command failure', () => {
-    expect(failureCopy({ kind: 'unexpected', message: 'boom' }))
-      .toEqual({ key: 'error.unknown', params: { message: 'boom' } })
-  })
-
-  it('uses localized fallback keys when the Host supplied no text', () => {
-    expect(failureCopy({ kind: 'transport', code: 'x' }))
-      .toEqual({ key: 'error.fallback.transport', params: {} })
-    expect(failureCopy({ kind: 'rejected' }))
-      .toEqual({ key: 'error.fallback.rejected', params: {} })
-    expect(failureCopy({ kind: 'unexpected' }))
-      .toEqual({ key: 'error.fallback.unknown', params: {} })
-  })
-
-  it('renders an unresolved line as a not-recognized command line', () => {
-    expect(failureCopy({ kind: 'unresolved', line: '/devlead off' }))
-      .toEqual({ key: 'error.unresolved', params: { line: '/devlead off' } })
-  })
-})
 
 describe('createDevLeadAdmissionGate', () => {
   it('admits one claim at a time and reopens after release', () => {

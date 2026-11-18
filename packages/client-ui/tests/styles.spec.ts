@@ -322,6 +322,20 @@ describe('styles', () => {
     expect(styles).not.toContain('.devlead-error')
   })
 
+  it('collapses the visible labels on a narrow composer without hiding the control', () => {
+    expect(styles).toContain('@media (max-width: 480px)')
+    expect(styles).toMatch(/@media \(max-width: 480px\)[\s\S]*\.devlead-toggle-label,[\s\S]*\.devlead-label,[\s\S]*\.devlead-missing \{[\s\S]*display: none;/u)
+    // The icon (and its aria-label) stays: only redundant visible text is
+    // removed, so the single mode switch remains reachable on a phone.
+    expect(styles).not.toMatch(/@media \(max-width: 480px\)[\s\S]*\.devlead-toggle \{[^}]*display: none/u)
+  })
+
+  it('keeps the failed state readable on hover and exposes a pressed-state fill', () => {
+    expect(styles).toContain('.devlead-toggle:hover:not(:disabled):not([data-devlead-failed="true"])')
+    expect(styles).toContain('[aria-pressed="true"]')
+    expect(styles).toContain('--dsw-alias-label-error')
+  })
+
   it('uses only harness theme custom properties for colors and geometry', () => {
     const properties = [...themeProperties()]
     expect(properties.length).toBeGreaterThan(10)
@@ -330,20 +344,22 @@ describe('styles', () => {
     }
   })
 
-  it('pins the token set verified against the DSH 0.2.2-rc.1 theme', () => {
+  it('pins the token set verified against the DSH 0.2.2-rc.1 through rc.4 themes', () => {
     // Every name here was found in the DSH reference theme sources or their
     // shipped consumers; a misspelled or renamed token fails this list.
     expect(themeProperties()).toEqual(new Set([
       '--dsw-alias-label-tertiary',
       '--dsw-alias-label-secondary',
+      '--dsw-alias-label-error',
       '--dsw-alias-state-error-primary',
       '--dsw-alias-border-l1',
       '--dsw-elevation-stroke-color',
-      '--dsw-radius-md',
+      '--dsw-radius-lg',
       '--dsw-elevation-panel',
       '--dsw-specific-menu',
       '--dsw-menu-backdrop-filter',
       '--dsw-alias-label-primary',
+      '--dsw-alias-interactive-bg-hover',
       '--dsw-alias-state-success-primary',
       '--dsw-alias-state-warn-primary',
       '--dsw-alias-label-primary-dimmed',

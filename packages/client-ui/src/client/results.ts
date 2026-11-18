@@ -48,29 +48,8 @@ export type DevLeadCommandFailure =
   /** The Host settled the RPC without resolving a command for the line. */
   | { readonly kind: 'unresolved'; readonly line: string }
 
-/** Dictionary key of one rendered command failure. */
-export type DevLeadCommandFailureKey = Extract<
-  DevLeadKey,
-  | 'error.command'
-  | 'error.rejected'
-  | 'error.unknown'
-  | 'error.unresolved'
-  | 'error.fallback.transport'
-  | 'error.fallback.rejected'
-  | 'error.fallback.unknown'
-  | 'error.fallback.unresolved'
->
-
 /** Namespace-bound translate function accepted by the failure helpers. */
 export type DevLeadTranslate = (key: DevLeadKey, params?: Record<string, unknown>) => string
-
-/** One inline error line: dictionary key plus interpolation parameters. */
-export interface DevLeadCommandFailureCopy {
-  /** Dictionary key the strip renders. */
-  readonly key: DevLeadCommandFailureKey
-  /** Template parameters interpolated by the locale runtime. */
-  readonly params: Readonly<Record<string, string>>
-}
 
 /**
  * Trimmed text of one optional message, or undefined when it is absent or
@@ -159,30 +138,6 @@ const FAILURE_FALLBACK_KEYS = {
 export function failureMessage(failure: DevLeadCommandFailure, t: DevLeadTranslate): string {
   if (failure.kind === 'unresolved') return t('error.fallback.unresolved')
   return failure.message ?? t(FAILURE_FALLBACK_KEYS[failure.kind])
-}
-
-/**
- * Project one failure onto the localized inline error line.
- * @param failure - classified command failure.
- * @returns the dictionary key and template parameters the strip renders.
- */
-export function failureCopy(failure: DevLeadCommandFailure): DevLeadCommandFailureCopy {
-  switch (failure.kind) {
-    case 'transport':
-      return failure.message === undefined
-        ? { key: 'error.fallback.transport', params: {} }
-        : { key: 'error.command', params: { message: failure.message, code: failure.code } }
-    case 'rejected':
-      return failure.message === undefined
-        ? { key: 'error.fallback.rejected', params: {} }
-        : { key: 'error.rejected', params: { message: failure.message } }
-    case 'unexpected':
-      return failure.message === undefined
-        ? { key: 'error.fallback.unknown', params: {} }
-        : { key: 'error.unknown', params: { message: failure.message } }
-    case 'unresolved':
-      return { key: 'error.unresolved', params: { line: failure.line } }
-  }
 }
 
 /** One shared re-entrancy gate for a surface with a single command control. */

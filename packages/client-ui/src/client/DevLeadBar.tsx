@@ -57,7 +57,6 @@ export function DevLeadBar({
         className="devlead-bar"
         role="group"
         aria-label={t('bar.aria')}
-        title={t('hint.enabled')}
       >
         <span className="devlead-glyph" aria-hidden="true">
           <IconUsersOutlineRegular size={14} />

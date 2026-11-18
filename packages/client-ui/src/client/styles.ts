@@ -28,7 +28,7 @@ export const styles = `
   padding: 0 10px;
   border-radius: 999px;
   gap: 6px;
-  color: var(--dsw-alias-label-tertiary, GrayText);
+  color: var(--dsw-alias-label-secondary, GrayText);
 }
 
 .devlead-toggle-label {
@@ -38,8 +38,8 @@ export const styles = `
 }
 
 @media (hover: hover) {
-  .devlead-toggle:hover:not(:disabled) {
-    color: var(--dsw-alias-label-secondary, GrayText);
+  .devlead-toggle:hover:not(:disabled):not([data-devlead-failed="true"]) {
+    color: var(--dsw-alias-label-primary, CanvasText);
   }
 }
 
@@ -50,7 +50,38 @@ export const styles = `
 }
 
 .devlead-toggle[data-devlead-failed="true"] {
-  color: var(--dsw-alias-state-error-primary, #c0392b);
+  color: var(--dsw-alias-label-error, #c0392b);
+}
+
+/* The shell marks an active toolbar control with a subtle fill; the mode is a
+   pressed toggle, not only a colour change, so mirror that affordance. */
+.devlead-toggle[aria-pressed="true"] {
+  background: var(--dsw-alias-interactive-bg-hover, rgba(127, 127, 127, 0.12));
+}
+
+/* On a narrow viewport the visible label and the stale-watch warning would
+   squeeze the composer toolbar and the status notice. The toggle keeps its
+   accessible name and icon; the bar keeps the watched/running counts. */
+@media (max-width: 480px) {
+  .devlead-toggle {
+    padding: 0 8px;
+    gap: 0;
+  }
+
+  .devlead-toggle-label,
+  .devlead-label,
+  .devlead-missing {
+    display: none;
+  }
+
+  .devlead-bar {
+    gap: 6px;
+    padding: 4px 10px;
+  }
+
+  .devlead-meta {
+    gap: 6px;
+  }
 }
 
 .devlead-dock {
@@ -80,12 +111,14 @@ export const styles = `
   align-items: center;
   gap: 8px;
   width: 100%;
+  min-width: 0;
   min-height: 34px;
   margin: 0 auto;
   padding: 4px 12px;
+  overflow: hidden;
   border: 0;
   --dsw-elevation-stroke-color: var(--dsw-alias-border-l1, rgba(127, 127, 127, 0.24));
-  border-radius: var(--dsw-radius-md, 10px);
+  border-radius: var(--dsw-radius-lg, 12px);
   box-shadow: var(--dsw-elevation-panel, 0 1px 2px rgba(0, 0, 0, 0.08));
   color: var(--dsw-alias-label-primary, CanvasText);
   font-size: 13px;
@@ -151,7 +184,7 @@ export const styles = `
 }
 
 .devlead-missing {
-  color: var(--dsw-alias-state-warn-primary, #a15c00);
+  color: var(--dsw-alias-label-secondary, GrayText);
 }
 
 /* One stable live region wrapping the hint or the latest-notification chip so
@@ -225,7 +258,7 @@ export const styles = `
   flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
-  color: var(--dsw-alias-state-error-primary, #c0392b);
+  color: var(--dsw-alias-label-error, #c0392b);
   font-size: 12px;
   text-overflow: ellipsis;
 }

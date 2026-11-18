@@ -13,7 +13,7 @@
  *   counts and the live notification region;
  * - the toolbar toggle renders in both mode states, submits `/devlead on` or
  *   `/devlead off`, exposes pending through disabled/aria-busy, and reports
- *   failures through its label, title, tooltip, and a visually hidden live
+ *   failures through its label, tooltip, and a visually hidden live
  *   region;
  * - one in-flight command cannot be admitted twice, a settle after unmount is
  *   ignored, and a mode change retires stale feedback.
@@ -73,10 +73,11 @@ vi.mock('@deepseek-ai/dsh-client-ui-primitives', () => {
   }) => <button {...rest}>{children}</button>
 
   /** Tooltip renders its anchor and exposes the label it was asked to show. */
-  const Tooltip = ({ label, children }: {
+  const Tooltip = ({ label, openOnClick, children }: {
     readonly label?: string
+    readonly openOnClick?: boolean
     readonly children?: ReactNode
-  }) => <span data-mock-tooltip={label}>{children}</span>
+  }) => <span data-mock-tooltip={label} data-mock-open-on-click={openOnClick === true ? 'true' : 'false'}>{children}</span>
 
   /** Both surface glyphs render as an inert span. */
   const Icon = () => <span data-mock-icon="true" aria-hidden="true" />
@@ -346,7 +347,6 @@ describe('DevLeadBar', () => {
     expect(bar.props['role']).toBe('group')
     expect(bar.props['aria-label']).toBe(zh['bar.aria'])
     expect(bar.props['aria-busy']).toBeUndefined()
-    expect(bar.props['title']).toBe(zh['hint.enabled'])
 
     expect(textOf(renderer.root.findByProps({ className: 'devlead-watched' }))).toBe(
       t('count.watched', { count: 3 }),
@@ -421,7 +421,6 @@ describe('DevLeadIconToggle', () => {
     const button = renderer.root.findByType('button')
     expect(textOf(button)).toContain(zh['toggle.label'])
     expect(button.props['aria-label']).toBe(zh['toggle.enable'])
-    expect(button.props['title']).toBe(zh['toggle.enable'])
     expect(button.props['aria-pressed']).toBe(false)
     expect(button.props['aria-busy']).toBe(false)
     expect(button.props['data-devlead-toggle']).toBe('true')
@@ -451,7 +450,6 @@ describe('DevLeadIconToggle', () => {
     const button = renderer.root.findByType('button')
     expect(textOf(button)).toContain(zh['toggle.label'])
     expect(button.props['aria-label']).toBe(zh['toggle.disable'])
-    expect(button.props['title']).toBe(zh['toggle.disable'])
     expect(button.props['aria-pressed']).toBe(true)
     expect(button.props['aria-busy']).toBe(false)
     expect(button.props['data-devlead-enabled']).toBe('true')
@@ -486,7 +484,6 @@ describe('DevLeadIconToggle', () => {
     const pending = renderer.root.findByType('button')
     expect(pending.props['aria-busy']).toBe(true)
     expect(pending.props['aria-label']).toBe(zh['toggle.pending'])
-    expect(pending.props['title']).toBe(zh['toggle.pending'])
     expect(pending.props['disabled']).toBe(true)
     expect(pending.props['data-devlead-pending']).toBe('true')
 
@@ -514,8 +511,10 @@ describe('DevLeadIconToggle', () => {
     const label = t('toggle.failed', { message: 'carrier lost' })
     expect(button.props['data-devlead-failed']).toBe('true')
     expect(button.props['aria-label']).toBe(label)
-    expect(button.props['title']).toBe(label)
     expect(renderer.root.findByProps({ 'data-mock-tooltip': label })).toBeDefined()
+    // A failure is readable on touch too: the tooltip is pinned on click while
+    // the message is showing.
+    expect(renderer.root.findByProps({ 'data-mock-tooltip': label }).props['data-mock-open-on-click']).toBe('true')
     expect(textOf(renderer.root.findByProps({ role: 'status' }))).toBe(
       t('toggle.failed.status', { message: 'carrier lost' }),
     )
@@ -543,8 +542,10 @@ describe('DevLeadIconToggle', () => {
     expect(button.props['data-devlead-failed']).toBe('true')
     expect(button.props['data-devlead-enabled']).toBe('true')
     expect(button.props['aria-label']).toBe(label)
-    expect(button.props['title']).toBe(label)
     expect(renderer.root.findByProps({ 'data-mock-tooltip': label })).toBeDefined()
+    // A failure is readable on touch too: the tooltip is pinned on click while
+    // the message is showing.
+    expect(renderer.root.findByProps({ 'data-mock-tooltip': label }).props['data-mock-open-on-click']).toBe('true')
     expect(textOf(renderer.root.findByProps({ role: 'status' }))).toBe(
       t('toggle.failed.status.disable', { message: 'carrier lost' }),
     )
