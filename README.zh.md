@@ -29,6 +29,7 @@
   残余边界见[已知限制](#已知限制)。
 
 文档导航：[设计说明](docs/DESIGN.md) · [发布指南](docs/PUBLISHING.md) ·
+[Agent 工作约定](AGENTS.md) · [UI 可视验收](docs/UI-VERIFICATION.md) ·
 [审计记录](docs/AUDIT.md) · [v0.2.6 release notes](docs/releases/v0.2.6.md) ·
 [Bundle 说明](packages/bundle/README.md) · 包 README：[protocol](packages/protocol/README.md) ·
 [devlead](packages/devlead/README.md) · [tool](packages/tool/README.md) ·
