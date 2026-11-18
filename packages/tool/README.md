@@ -23,8 +23,8 @@ Session never sees them. They become visible only after a human enables DevLead 
 - `devlead_archive_session` (DSH archive; `stop_running` asks the Host to stop running work)
 - `devlead_unarchive_session` (restore to the recorded Workspace position)
 
-Every tool except `devlead_list_workspaces` requires a live calling Agent (`exec.agent`) and an
-enabled DevLead mode. Since 0.2.0 `devlead_use_workspace` forwards the live Agent to the core
+Every tool requires an enabled DevLead mode; every tool except `devlead_list_workspaces` also
+requires a live calling Agent (`exec.agent`). Since 0.2.0 `devlead_use_workspace` forwards the live Agent to the core
 `useWorkspace(agent, { path, title?, create? }, signal)`; `create` defaults to `false` (a missing
 directory is `DEVLEAD_DIRECTORY_MISSING`), and `create: true` is only for a human-explicit request
 to create the directory. Domain failures are translated to `HarnessError` with a stable
@@ -83,7 +83,8 @@ supported platform.
 ## 中文
 
 `@yankeguo/dsh-tool-devlead` 提供 13 个模型工具 `devlead_*` 与条件 system prompt，只在 DevLead
-模式开启时可见。除 `devlead_list_workspaces` 外都需要 live 调用者；0.2.0 起
+模式开启时可见。所有工具都要求 DevLead 模式开启；除 `devlead_list_workspaces` 外还需要 live
+调用者（`exec.agent`）。0.2.0 起
 `devlead_use_workspace` 把 live Agent 转发给 core 的 `useWorkspace(agent, request, signal)`，
 `create` 默认 `false`（缺目录报 `DEVLEAD_DIRECTORY_MISSING`，只有人类明确要求建目录时才传
 `true`）。`devlead_create_session` 还支持创建时指定 `provider`+`model`（可选

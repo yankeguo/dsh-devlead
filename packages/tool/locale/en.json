@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "DevLead Tools",
-    "description": "Model-facing devlead_* tools available only in DevLead mode: list and use Workspaces, create and prompt Sessions, read session status, watch Sessions, and read notifications."
+    "description": "Model-facing devlead_* tools available only in DevLead mode: list and use Workspaces, list Host models and Agent presets, create (inherit or pin a model/Agent Teams) and read/prompt/archive/unarchive/watch Sessions, and read notifications."
   }
 }

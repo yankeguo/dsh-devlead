@@ -25,8 +25,8 @@ import { DevLeadToolInputError } from './arguments.ts'
  */
 export function translateToolError(error: unknown): unknown {
   if (error instanceof HarnessError) return error
-  if (error instanceof DevLeadToolInputError) return new HarnessError(error.message, error.code)
-  if (isDevLeadError(error)) return new HarnessError(error.message, error.code)
+  if (error instanceof DevLeadToolInputError) return new HarnessError(error.message, error.code, { cause: error })
+  if (isDevLeadError(error)) return new HarnessError(error.message, error.code, { cause: error })
   return error
 }
 

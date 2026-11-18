@@ -64,7 +64,9 @@ export function sessionLabel(view: DevLeadSessionView): string {
  */
 export function sessionStateLabel(view: DevLeadSessionView): string {
   const state = view.archived
-    ? 'archived'
+    ? view.running
+      ? 'archived (running)'
+      : 'archived'
     : view.running
       ? 'running'
       : view.live
@@ -84,7 +86,7 @@ export function sessionStateLabel(view: DevLeadSessionView): string {
 function watchedLines(snapshot: DevLeadStatusSnapshot): string[] {
   const total = snapshot.watched.length + snapshot.missingWatched.length
   if (total === 0) return ['Watched sessions: none']
-  const running = snapshot.watched.filter(view => view.running).length
+  const running = snapshot.watched.filter(view => view.running && !view.archived).length
   const summary = running === 0
     ? `Watched sessions: ${total}`
     : `Watched sessions: ${total} (${running} running)`

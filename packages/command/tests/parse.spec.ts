@@ -103,11 +103,26 @@ describe('parseDevLeadCommand', () => {
     // No DSH 0.2.2-rc.1 adapter passes a complete line: the CommandRuntime
     // strips the name and separator before every handler. Surfacing the
     // violation loudly beats silently accepting a malformed rawInput.
-    for (const line of ['/devlead', '/devlead/', '/devlead on', '/devlead watch session-alpha']) {
+    for (const line of ['/devlead', '/devlead on', '/devlead watch session-alpha']) {
       const command = parseDevLeadCommand(line)
       expect(command.kind).toBe('invalid')
-      expect(command.kind === 'invalid' ? command.message : '').toContain('Unknown /devlead subcommand')
+      expect(command.kind === 'invalid' ? command.message : '').toContain('Pass only the text after the command name')
     }
+    const malformed = parseDevLeadCommand('/devlead/')
+    expect(malformed.kind).toBe('invalid')
+    expect(malformed.kind === 'invalid' ? malformed.message : '').toContain('Unknown /devlead subcommand')
+  })
+
+  it('accepts curly quotes from a Chinese IME and strips the pair', () => {
+    expect(parseDevLeadCommand('watch “session-alpha”')).toEqual({ kind: 'watch', session: 'session-alpha' })
+    expect(parseDevLeadCommand('unwatch ‘session-beta’')).toEqual({ kind: 'unwatch', session: 'session-beta' })
+    expect(parseDevLeadCommand('watch 「session-gamma」')).toEqual({ kind: 'watch', session: 'session-gamma' })
+  })
+
+  it('names trailing text after a closed quote instead of calling it unmatched', () => {
+    const command = parseDevLeadCommand('watch "session-alpha" extra')
+    expect(command.kind).toBe('invalid')
+    expect(command.kind === 'invalid' ? command.message : '').toContain('unexpected text follows the quoted reference')
   })
 
   it('rejects an unmatched surrounding quote instead of resolving a broken reference', () => {

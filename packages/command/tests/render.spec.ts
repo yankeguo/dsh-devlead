@@ -59,6 +59,8 @@ describe('sessionStateLabel', () => {
     expect(sessionStateLabel(sessionView('session-alpha', { live: true }))).toBe('idle')
     expect(sessionStateLabel(sessionView('session-alpha'))).toBe('cold')
     expect(sessionStateLabel(sessionView('session-alpha', { archived: true, live: true }))).toBe('archived')
+    expect(sessionStateLabel(sessionView('session-alpha', { archived: true, live: true, running: true })))
+      .toBe('archived (running)')
   })
 
   it('reports queued input while running', () => {
@@ -130,6 +132,17 @@ describe('statusLines', () => {
     expect(lines).toContain('  - session-gamma — cold')
     expect(lines).not.toContain('Turn DevLead mode on with: /devlead on')
     expect(lines[lines.length - 1]).toBe(HELP_LINE)
+  })
+
+  it('does not count an archived-but-running Session as running', () => {
+    const lines = statusLines(snapshot({
+      watched: [
+        sessionView('session-alpha', { title: 'webapp', live: true, running: true }),
+        sessionView('session-beta', { title: 'api', live: true, running: true, archived: true }),
+      ],
+    }))
+    expect(lines).toContain('Watched sessions: 2 (1 running)')
+    expect(lines).toContain('  - api (session-beta) — archived (running)')
   })
 
   it('renders watched ids the host could not describe as not found', () => {

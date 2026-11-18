@@ -46,6 +46,7 @@ describe('translateToolError', () => {
     const error = translated as HarnessError
     expect(error.message).toBe('the Session is archived')
     expect(error.code).toBe('DEVLEAD_SESSION_ARCHIVED')
+    expect(error.cause).toBe(original)
   })
 
   it('maps a code-only duplicate of the core error class', () => {
@@ -53,6 +54,7 @@ describe('translateToolError', () => {
     expect(translated).toBeInstanceOf(HarnessError)
     expect((translated as HarnessError).code).toBe('DEVLEAD_WATCH_LIMIT')
     expect((translated as HarnessError).message).toBe('watch limit reached')
+    expect((translated as HarnessError).cause).toBeInstanceOf(Error)
   })
 
   it('maps tool input errors to DEVLEAD_INVALID_INPUT', () => {
@@ -60,6 +62,7 @@ describe('translateToolError', () => {
     expect(translated).toBeInstanceOf(HarnessError)
     expect((translated as HarnessError).code).toBe('DEVLEAD_INVALID_INPUT')
     expect((translated as HarnessError).message).toBe('prompt must not be empty')
+    expect((translated as HarnessError).cause).toBeInstanceOf(DevLeadToolInputError)
   })
 
   it('keeps dispatch capability failures structured', () => {

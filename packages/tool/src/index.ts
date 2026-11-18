@@ -303,7 +303,7 @@ export function apply(ctx: Context): void {
       },
       limit: {
         type: 'integer',
-        description: 'Maximum number of Session rows to return; the Host may return fewer when its listing cap is lower.',
+        description: 'Maximum number of Session rows to return; the Host may return fewer when its listing cap is lower. With watched_only, the whole watch set is returned even when it exceeds this limit, so no watched Session is hidden.',
       },
     },
     output: LIST_SESSIONS_OUTPUT,

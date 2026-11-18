@@ -43,21 +43,35 @@ function splitHead(input: string): { readonly head: string; readonly rest: strin
   return { head: input.slice(0, separator).toLowerCase(), rest: input.slice(separator).trim() }
 }
 
+/** Opening quote characters a human may wrap a copied Session reference in. */
+const QUOTE_PAIRS: ReadonlyArray<readonly [string, string]> = [
+  ['"', '"'],
+  ["'", "'"],
+  ['“', '”'],
+  ['‘', '’'],
+  ['「', '」'],
+  ['『', '』'],
+  ['＂', '＂'],
+]
+
 /**
- * Strip one matching pair of surrounding single or double quotes from one
- * command argument. Humans naturally copy ids and titles from the UI, and the
- * composer passes the text through verbatim, so the quotes are grammar rather
- * than part of the value.
- * @param text - trimmed argument text.
- * @returns the argument without one surrounding quote pair, trimmed again.
+ * The closing quote paired with one opening quote, when it is one DevLead
+ * recognizes. ASCII quotes are paired with themselves; the CJK full-width and
+ * curly forms are the ones a Chinese IME produces around a pasted id.
+ * @param opening - first character of the argument.
+ * @returns the matching closing character, or undefined.
  */
-function unquote(text: string): string {
-  const trimmed = text.trim()
-  if (trimmed.length < 2) return trimmed
-  const first = trimmed[0]
-  const last = trimmed[trimmed.length - 1]
-  const pair = (first === '"' && last === '"') || (first === '\'' && last === '\'')
-  return pair ? trimmed.slice(1, -1).trim() : trimmed
+function closingQuoteOf(opening: string): string | undefined {
+  return QUOTE_PAIRS.find(([open]) => open === opening)?.[1]
+}
+
+/**
+ * Whether one character is any recognized closing quote.
+ * @param value - candidate character.
+ * @returns whether it closes a quote pair.
+ */
+function isClosingQuote(value: string): boolean {
+  return QUOTE_PAIRS.some(([, close]) => close === value)
 }
 
 /** Build the invalid result of one known subcommand that takes no argument. */
@@ -70,33 +84,63 @@ function unexpectedArgument(subcommand: string): DevLeadCommand {
  * strings, but they never contain whitespace, so an unquoted multi-word value
  * can never match one; reject it here instead of returning a confusing
  * "no such Session" from the resolver.
+ *
+ * One matching surrounding quote pair (ASCII or the curly/full-width forms a
+ * Chinese IME inserts) is grammar, not part of the value. A closed quote with
+ * trailing text is reported as such instead of as an "unmatched quote".
  * @param subcommand - canonical subcommand keyword used in the error message.
  * @param text - argument text after the keyword.
  * @returns the parsed command or an invalid result with a specific explanation.
  */
 function parseSessionArgument(subcommand: 'watch' | 'unwatch', text: string): DevLeadCommand {
-  const session = unquote(text)
-  if (session.length === 0) {
+  const raw = text.trim()
+  if (raw.length === 0) {
     return invalid(
       `/devlead ${subcommand} requires a Session id or a unique id prefix. `
       + 'Run /devlead to inspect the current watch set.',
     )
   }
-  // A human who pastes a quote-wrapped id from a transcript can leave one side
-  // behind; name that mistake instead of reporting a Session that cannot match.
-  if (/^["']|["']$/u.test(session)) {
+  const closer = closingQuoteOf(raw[0] ?? '')
+  if (closer !== undefined) {
+    const end = raw.indexOf(closer, 1)
+    if (end === -1) {
+      return invalid(
+        `The /devlead ${subcommand} Session reference has an unmatched quote; `
+        + 'wrap the whole reference in one matching pair of quotes.',
+      )
+    }
+    if (raw.slice(end + 1).trim().length > 0) {
+      return invalid(
+        `"/devlead ${subcommand}" takes exactly one Session reference; `
+        + 'unexpected text follows the quoted reference.',
+      )
+    }
+    const session = raw.slice(1, end).trim()
+    if (session.length === 0) {
+      return invalid(`/devlead ${subcommand} requires a Session id or a unique id prefix.`)
+    }
+    if (/\s/u.test(session)) {
+      return invalid(
+        `"/devlead ${subcommand}" takes one Session reference without spaces; `
+        + 'pass the full Session id or a unique id prefix.',
+      )
+    }
+    return { kind: subcommand, session }
+  }
+  // A closing quote with no opener is the other half of the same paste mistake.
+  if (isClosingQuote(raw[raw.length - 1] ?? '')) {
     return invalid(
       `The /devlead ${subcommand} Session reference has an unmatched quote; `
       + 'wrap the whole reference in one matching pair of quotes.',
     )
   }
-  if (/\s/u.test(session)) {
+  if (/\s/u.test(raw)) {
     return invalid(
       `"/devlead ${subcommand}" takes one Session reference without spaces; `
       + 'pass the full Session id or a unique id prefix.',
     )
   }
-  return { kind: subcommand, session }
+  return { kind: subcommand, session: raw }
 }
 
 /**
@@ -138,6 +182,11 @@ export function parseDevLeadCommand(rawInput: string): DevLeadCommand {
     case 'reset':
       return unexpectedArgument(head)
     default:
+      if (head === `/${DEVLEAD_COMMAND_NAME.toLowerCase()}`) {
+        return invalid(
+          'Pass only the text after the command name (for example "on"), not the full /devlead line.',
+        )
+      }
       return invalid(`Unknown /devlead subcommand "${head}".`)
   }
 }
