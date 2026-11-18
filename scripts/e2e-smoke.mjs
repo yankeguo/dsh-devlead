@@ -1426,7 +1426,7 @@ async function runCloseChecks(client, paths, dshVersion) {
     childInspect.text.slice(0, 500),
   )
   checks.expect(
-    'phase 3 watched child is not DevLead-enabled and is supervised',
+    'phase 3 watched child is not DevLead-enabled and is watched by the lead',
     childInspect.report?.enabled === false && childInspect.report?.supervised === true,
     JSON.stringify({ enabled: childInspect.report?.enabled, supervised: childInspect.report?.supervised }),
   )
@@ -1453,7 +1453,7 @@ async function runCloseChecks(client, paths, dshVersion) {
     : ''
   const leadReports = Array.isArray(reportProbe.report?.leadReports) ? reportProbe.report.leadReports : []
   checks.expect(
-    'phase 3 report names the supervisor and returns a durable receipt',
+    'phase 3 report names the watching lead and returns a durable receipt',
     reportProbe.report?.supervised === true
       && typeof reportProbe.report?.leadId === 'string'
       && reportId.length > 0

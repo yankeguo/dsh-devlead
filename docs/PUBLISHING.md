@@ -6,7 +6,7 @@
 | --- | --- | --- |
 | 1 | `@yankeguo/dsh-devlead-protocol` | 纯类型 + 常量 + 格式化（host 与浏览器共用），声明 `devLead` projection 类型 |
 | 2 | `@yankeguo/dsh-client-ui-devlead` | 浏览器两态 UI：工具条开关、DevLeadBar、侧边栏会话行标记 |
-| 3 | `@yankeguo/dsh-devlead` | 核心 Service `ctx.devLead`：模式、Workspace/Session 编排、监督索引、通知投递、projection fold |
+| 3 | `@yankeguo/dsh-devlead` | 核心 Service `ctx.devLead`：模式、Workspace/Session 编排、关注关系索引、通知投递、projection fold |
 | 4 | `@yankeguo/dsh-command-devlead` | `/devlead` 人类命令 |
 | 5 | `@yankeguo/dsh-tool-devlead` | 模型工具 `devlead_*` + 条件系统提示 |
 | 6 | `@yankeguo/dsh-devlead-bundle` | 安装入口 bundle（`cordis.patch.yml` 装齐整套） |

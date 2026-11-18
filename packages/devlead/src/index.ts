@@ -1767,15 +1767,15 @@ export class DevLeadService extends Service {
   }
 
   /**
-   * Resolve the unique active DevLead Session supervising one reporter.
+   * Resolve the unique active DevLead Session that watches one reporter.
    *
    * The hub's reverse index already reflects durable watch/mode state (live and
    * cold rehydrated leads). Archived leads are excluded, and when historical
    * state leaves more than one watcher the current global incumbent wins; with
-   * no unique answer the reporter is treated as unsupervised instead of
+   * no unique answer the reporter is treated as unwatched instead of
    * broadcasting to an arbitrary lead.
    * @param agent - candidate watched Session Agent.
-   * @returns the supervising lead Session id, or undefined.
+   * @returns the watching lead Session id, or undefined.
    */
   supervisorOf(agent: Agent): string | undefined {
     if (this.hub === undefined) return undefined
@@ -1819,7 +1819,7 @@ export class DevLeadService extends Service {
   /**
    * Whether one Session may send mid-turn reports to an active DevLead.
    * @param agent - candidate reporter Agent.
-   * @returns whether the reporter has exactly one usable supervisor.
+   * @returns whether the reporter has exactly one active lead watching it.
    */
   isSupervised(agent: Agent): boolean {
     return this.supervisorOf(agent) !== undefined

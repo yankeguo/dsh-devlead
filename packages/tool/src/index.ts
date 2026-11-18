@@ -158,8 +158,10 @@ const PROMPT_SESSION_DESCRIPTION =
   + 'turn instead of waiting: its settled turn starts a new turn of this lead session with the wake-up message.'
 
 const WATCH_SESSION_DESCRIPTION =
-  'Add one Session to, or remove it from, this DevLead Session\'s watch set. Only watched Sessions produce wake-up '
-  + 'notifications, so unwatch work that no longer needs attention. A Session cannot watch itself.'
+  'Add one Session to, or remove it from, this DevLead Session\'s watch set. A watch is a one-way follow '
+  + 'relationship, not a permission grant: it only routes turn notifications/reports and allows steering; it does '
+  + 'not grant file access or ownership. Only watched Sessions produce wake-up notifications, so unwatch work that '
+  + 'no longer needs attention. A Session cannot watch itself.'
 
 const NOTIFICATIONS_DESCRIPTION =
   'Read the retained notification digest of this DevLead Session together with the current watch set. Each entry names '

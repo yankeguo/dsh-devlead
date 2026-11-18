@@ -123,7 +123,7 @@ const OUTBOX_SPEC = {
   },
 } as const
 
-/** Stable path-safe table key for one report (lead-scoped so id reuse across supervisors cannot collide). */
+/** Stable path-safe table key for one report (lead-scoped so id reuse across leads cannot collide). */
 export function devLeadOutboxKey(report: DevLeadReport): string {
   return Buffer.from(`${report.leadSessionId}\u0000${report.id}`, 'utf8').toString('base64url')
 }

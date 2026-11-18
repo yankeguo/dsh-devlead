@@ -7,13 +7,13 @@
 **Session**（会话），创建/续写其他会话、读取会话状态、在会话状态变化时被唤醒，从而在一个
 人类可见、可参与的标准界面里统管多个仓库。
 
-- **DevLead 会话 = 普通会话 + 一个持久开关**：打开后该会话额外获得 13 个 `devlead_*` 主工具（被监督会话另有 1 个汇报工具）、
+- **DevLead 会话 = 普通会话 + 一个持久开关**：打开后该会话额外获得 13 个 `devlead_*` 主工具（已关注会话另有 1 个汇报工具）、
   一段 DevLead 系统提示，composer 上方出现状态条 UI；开关本身是**人类专属操作**，模型不能
   自行打开。界面始终在 composer 工具条提供一个带 DevLead 文本的小按钮作为开关；开启后
   才会在 composer 上方出现状态条，不会在每个会话上显示常驻状态条。
 - **默认调度、不亲自实现**：DevLead 会话先判定请求归属哪个 Workspace（依据已注册 Workspace
   的元数据与人类给出的目录，而不是去翻别的仓库代码），把自包含简报派发给该 Workspace 的
-  Session，然后监督、审阅交付并汇报。只读检查属于**有界的可行性判断**——足以判定归属、给出
+  Session，然后关注、审阅交付并汇报。只读检查属于**有界的可行性判断**——足以判定归属、给出
   当前行为与目标结果的高层事实、定义验证方式——外加审阅时核对具体断言；更深的调查与实现属于
   被派发的 Session。**写入**（改文件、构建、提交、推送、部署）归该 Workspace
   的 Session——即使目标就是 lead 自己所在的 Workspace 也一样——除非人类在本对话中明确授权
@@ -22,9 +22,9 @@
 - **产出物必须是标准 DSH 实体**：Workspace 真实注册进 `ctx.workspaceRegistry`，会话是真实的
   普通 Session（出现在侧边栏、可被人类打开、继续对话、归档），**不是 subagent**。这样人类
   始终能看见、介入、接管 Agent 的工作。
-- **通知回路**：DevLead 监督若干子会话；子会话的 turn 结束（完成/失败/阻塞/取消等）时，Host
+- **通知回路**：DevLead 关注若干子会话；子会话的 turn 结束（完成/失败/阻塞/取消等）时，Host
   把通知写入 DevLead 会话的持久日志，并以一条 `devlead` 来源的消息唤醒它，让它决定下一步
-  （继续追问、派发新任务、向人类汇报）。watch 索引在 Host 重启 / 插件重载后从持久记录重建，
+  （继续追问、派发新任务、向人类汇报）。关注关系索引在 Host 重启 / 插件重载后从持久记录重建，
   已 dispose 的 lead 仍继续观察，队列中的唤醒不会静默丢失；冷 lead 策略见[通知机制](#通知机制)，
   残余边界见[已知限制](#已知限制)。
 
@@ -42,13 +42,13 @@
 | 角色模型 | 默认调度：依据已注册元数据判定归属 Workspace → 向对应 Session 发自包含简报 → watch → 审阅交付 → 汇报；只读检查属于有界可行性判断（归属、当前行为的高层事实、验证方式）外加审阅时核对具体断言，更深的调查与实现留在归属 Workspace 的 Session（含 lead 自己的 Workspace；仅当人类在本对话中明确授权时由 lead 直接做；记录类文件可依 lead 仓库说明维护） |
 | 标准 DSH 实体 | 子会话是普通 Session（侧边栏可见、人类可打开接管），Workspace 走 `workspaceRegistry`，不是 subagent |
 | 可选 worktree 隔离 | 当 Host 组合了 DSH 实验性 Git worktree 服务（`ctx.worktrees`）时，`devlead_create_session` 可传 `isolation: "worktree"`，让写入型子会话拥有独立分支与检出、不再共享 Workspace checkout；能力检测是可选的，缺少能力时退化为共享 checkout 并在结果里如实上报，绝不报错（见[可选 worktree 隔离](#可选-worktree-隔离)） |
-| 13 个主工具 + 1 个汇报工具 | 注册/列出/关闭 Workspace，列出 Host 模型与 Agent preset，创建（继承或固定模型/Agent Teams）/读取/续写/归档/恢复/监督 Session，读取通知/汇报摘要；被监督的非 DevLead 会话可用 `devlead_report` 单向汇报（见[模型工具](#模型工具)） |
+| 13 个主工具 + 1 个汇报工具 | 注册/列出/关闭 Workspace，列出 Host 模型与 Agent preset，创建（继承或固定模型/Agent Teams）/读取/续写/归档/恢复/关注 Session，读取通知/汇报摘要；已关注的非 DevLead 会话可用 `devlead_report` 单向汇报（见[模型工具](#模型工具)） |
 | 人类命令 | `/devlead`（状态）、`/devlead on\|off`、`/devlead reset`（损坏状态恢复）、`/devlead watch\|unwatch <session>`；会话支持完整 id 或唯一前缀 |
-| 通知回路 | 被监督会话的 `turn/end` 写入持久通知记录，按合并窗口唤醒 DevLead（可配置窗口；冷 lead 默认 resume）；watch 索引在 Host 重启后从持久记录重建，已 dispose 的 lead 继续观察（见[通知机制](#通知机制)） |
-| 事件溯源 | 模式/watch 集合/通知/reset 全部是可忽略的 `plugin:devlead/*` 记录，严格回放校验，可跨重启 / 恢复 / fork |
+| 通知回路 | 已关注会话的 `turn/end` 写入持久通知记录，按合并窗口唤醒 DevLead（可配置窗口；冷 lead 默认 resume）；关注关系索引在 Host 重启后从持久记录重建，已 dispose 的 lead 继续观察（见[通知机制](#通知机制)） |
+| 事件溯源 | 模式/关注集合/通知/reset 全部是可忽略的 `plugin:devlead/*` 记录，严格回放校验，可跨重启 / 恢复 / fork |
 | 损坏状态恢复 | 损坏的 `plugin:devlead/*` 记录会冻结 fold；人类专属 `/devlead reset`（或冻结时的 `/devlead off`）追加 `plugin:devlead/reset` 记录，让两个 projection 回到默认 disabled 状态（见[通知机制](#通知机制)） |
 | Session projection | `devLead` projection（`{ enabled, sessions, notifications, reports }`）把状态同步到浏览器，无需自定义 Remote API；summary 级的 `devLeadMode`（`{ enabled }`）随每个 Session 列表行下发，供侧边栏渲染标记 |
-| 界面 | composer 工具条里带 DevLead 文本的图标按钮是唯一开关，两态都存在（关闭态发 `/devlead on`、开启态发 `/devlead off`）；开启后 composer 上方出现只读 DevLeadBar：监督会话数/运行中数、最近一条通知；状态条不带开关；已开启的会话在侧边栏会话列表里带标记 |
+| 界面 | composer 工具条里带 DevLead 文本的图标按钮是唯一开关，两态都存在（关闭态发 `/devlead on`、开启态发 `/devlead off`）；开启后 composer 上方出现只读 DevLeadBar：已关注会话数/运行中数、最近一条通知；状态条不带开关；已开启的会话在侧边栏会话列表里带标记 |
 | 权限模型 | 模式开关只能由人类命令/UI 触发；通知是运行时提示而非人类指令（见[权限模型](#权限模型)） |
 | 一键安装 | bundle 的 `cordis.patch.yml` 插入全部 4 个运行时插件行，也可单独安装某个包 |
 
@@ -62,7 +62,7 @@ UI 有一个开关、两种状态。插件**不会**在每个会话上摆一条�
   「关闭 DevLead 模式」，点击发送
   `/devlead off`。
 - **已开启**：composer 上方出现状态条 DevLeadBar（槽位 `conversation.input.dock`）：品牌、
-  监督会话数、运行中数、最近一条通知；没有通知时显示帮助提示。状态条只做展示，不承载开关，
+  已关注会话数、运行中数、最近一条通知；没有通知时显示帮助提示。状态条只做展示，不承载开关，
   因此关闭模式时不会把执行关闭的控件一起藏掉。模式关闭时没有状态条。
 - **侧边栏标记**：每个列出的、开启 DevLead 的会话在侧边栏会话列表里带一个小标记（行尾时间
   之后，槽位 `sidebar.session.row.trailing`），会话关掉后仍然可辨识。标记读 summary 级
@@ -88,8 +88,8 @@ UI 有一个开关、两种状态。插件**不会**在每个会话上摆一条�
 | --- | --- | --- |
 | `devLead` projection 尚未加载 | 什么都不渲染 | — |
 | 模式关闭 | composer 工具条里的 DevLead 图标 + 文本按钮 | 点击发送 `/devlead on`，随后从 projection 重渲染 |
-| 模式开启，无监督会话 | 同一图标 + 文本按钮 + DevLeadBar：监督 0 个会话 + 帮助提示 | 按钮点击发送 `/devlead off`；状态条只展示 |
-| 模式开启 | 同一图标 + 文本按钮 + DevLeadBar：监督 N 个会话 / 运行中 M，另附最近一条通知摘要 | 同上；命令执行中按钮禁用 |
+| 模式开启，无已关注会话 | 同一图标 + 文本按钮 + DevLeadBar：已关注 0 个会话 + 帮助提示 | 按钮点击发送 `/devlead off`；状态条只展示 |
+| 模式开启 | 同一图标 + 文本按钮 + DevLeadBar：已关注 N 个会话 / 运行中 M，另附最近一条通知摘要 | 同上；命令执行中按钮禁用 |
 | 命令返回逻辑错误 | 按钮 tooltip、aria-label 与屏幕阅读器 live region 显示对应方向的失败文案 | 修正后重试 |
 
 - 图标 + 文本按钮只读 `useProjection('devLead')`，调用注入的
@@ -106,7 +106,7 @@ UI 有一个开关、两种状态。插件**不会**在每个会话上摆一条�
 | 人机可见性 | 人类通常只看到最终汇总 | 人类全程可见，并可随时接管任意子会话 |
 | 交互方式 | 模型在单个 turn 内调用工具派发、等待结果 | DevLead 会话本身是普通会话；模型用 `devlead_*` 跨 turn 编排——派发后结束本轮，由唤醒开启新 turn——人类可以在同一界面介入 |
 | 生命周期 | 随父 turn / 父 Agent 结束 | 子会话独立存在，可续写；`turn/end` 持久通知，可跨重启 |
-| 唤醒机制 | 父 Agent 阻塞等待或 team 消息 | 被 watch 会话的 `turn/end` → 持久通知 → 合并窗口唤醒 DevLead（Agent 存活时） |
+| 唤醒机制 | 父 Agent 阻塞等待或 team 消息 | 已关注会话的 `turn/end` → 持久通知 → 合并窗口唤醒 DevLead（Agent 存活时） |
 | 开关 | 无 | **人类专属** `/devlead on\|off` 或 composer 工具条开关（两态都显示）；模型无工具可开启 |
 | 适用场景 | 一次性并行子任务 | 跨仓库、长周期、需要人类持续参与和审查的統管工作 |
 
@@ -120,7 +120,7 @@ pnpm workspace，`packages/*`：
 ```
 packages/
   protocol/    @yankeguo/dsh-devlead-protocol     纯类型 + 常量 + 格式化（host 与浏览器共用），devLead/devLeadMode projection 类型
-  devlead/     @yankeguo/dsh-devlead              核心服务：模式、Workspace/Session 编排、监督索引、通知投递、严格 fold
+  devlead/     @yankeguo/dsh-devlead              核心服务：模式、Workspace/Session 编排、关注关系索引、通知投递、严格 fold
   tool/        @yankeguo/dsh-tool-devlead         13 个主工具 + 1 个汇报工具 + 条件 prompt
   command/     @yankeguo/dsh-command-devlead      /devlead 人类命令
   client-ui/   @yankeguo/dsh-client-ui-devlead    浏览器 UI：工具条开关 + 开启后的只读 DevLeadBar + 侧边栏会话行标记
@@ -297,7 +297,7 @@ DSH 跳过。
 /devlead on        # 打开当前会话的 DevLead 模式（需要 Agent live）
 /devlead off       # 关闭；立即停止通知投递，已保留的通知记录仍在 Session 日志里；fold 冻结时隐式 reset
 /devlead reset     # 人类专属恢复：丢弃本会话的 DevLead 状态（也用于解冻损坏的 fold）
-/devlead           # 查看状态：模式状态、worktree 隔离能力、监督会话（标题/状态）、最近通知、帮助
+/devlead           # 查看状态：模式状态、worktree 隔离能力、已关注会话（标题/状态）、最近通知、帮助
 /devlead status    # 上一条的显式别名
 ```
 
@@ -330,21 +330,21 @@ projection 保持 `enabled: false`，工具条按钮保持 off、状态条不出
 
 | 命令 | 作用 |
 | --- | --- |
-| `/devlead` | 状态：模式、可选 worktree 隔离是否可用、监督会话（标题 / live / running / 最近 turn）、最近通知、帮助行 |
+| `/devlead` | 状态：模式、可选 worktree 隔离是否可用、已关注会话（标题 / live / running / 最近 turn）、最近通知、帮助行 |
 | `/devlead status` | 同 `/devlead` |
 | `/devlead on` | 打开当前会话的 DevLead 模式；若其他 Session 已占用则报 `DEVLEAD_ALREADY_ACTIVE` |
 | `/devlead off` | 关闭当前会话的 DevLead 模式并释放全局槽位；fold 冻结时同时执行隐式 reset 完成恢复 |
-| `/devlead reset` | 人类专属恢复：追加 `plugin:devlead/reset` 记录，丢弃本会话的模式 / watch 集合 / 通知 digest / 冻结失败标记，回到默认 disabled 状态 |
-| `/devlead watch <session>` | 监督某个会话（完整 id、唯一前缀，或省略 `session-` 的 uuid 第一段） |
-| `/devlead unwatch <session>` | 取消监督 |
+| `/devlead reset` | 人类专属恢复：追加 `plugin:devlead/reset` 记录，丢弃本会话的模式 / 关注集合 / 通知 digest / 冻结失败标记，回到默认 disabled 状态 |
+| `/devlead watch <session>` | 关注某个会话（完整 id、唯一前缀，或省略 `session-` 的 uuid 第一段） |
+| `/devlead unwatch <session>` | 取消关注 |
 
 - 会话寻址支持**完整 id、唯一 id 前缀，或省略 `session-` 前缀的 uuid 第一段**
   （`e59ab350` 可解析到 `session-e59ab350-…`）；命中多个时返回友好错误并列出候选（带标题），
   请改用更长的前缀或完整 id。引用中不能有空格，成对引号会被剥掉一层。
-- `watch` / `unwatch` 需要当前会话已开启 DevLead 模式；不能 watch 自己；监督集合有上限
+- `watch` / `unwatch` 需要当前会话已开启 DevLead 模式；不能 watch 自己；关注集合有上限
   （默认 64，见[配置](#配置)）。
 - 命令不接受 composer 附件；所有领域错误（`DEVLEAD_*` 稳定错误码）都会渲染成友好文本而不是
-  抛异常。命令优先在会话列表（默认最多 200 行）与当前 watch 集合内列出候选，并在变更前用
+  抛异常。命令优先在会话列表（默认最多 200 行）与当前关注集合内列出候选，并在变更前用
   core 的穷尽 resolver 确认引用，因此列表窗口之外的匹配不会被静默遮蔽（完整 id、唯一前缀
   与裸 uuid 第一段都会经由该 resolver 解析）。
 
@@ -362,7 +362,7 @@ projection 保持 `enabled: false`，工具条按钮保持 off、状态条不出
    验证、禁止事项；传**归属
    Workspace**，只有确实属于 lead 自己目录的工作才省略 `workspace`（此时新 Session 就建在该
    目录）。允许"带开放问题的简报"：更深的调查与实现属于 Session，不需要 lead 先查清所有
-   细节。子会话看不到当前对话，所有必要事实都要在 prompt 里重述。新会话默认被 watch 并立即
+   细节。子会话看不到当前对话，所有必要事实都要在 prompt 里重述。新会话默认被关注并立即
    开始第一个 turn（空白 Session 在第一个 turn 前不会出现在侧边栏，所以 "创建 + prompt" 是
    常规用法）。`preset` 是 Host 定义的 Agent preset id：先调 `devlead_list_agent_presets`
    查看 Host 当前 roster，不要假设固定列表；省略或留空时先回退插件 `defaultAgentPreset`，
@@ -408,7 +408,7 @@ projection 保持 `enabled: false`，工具条按钮保持 off、状态条不出
 | `devlead_prompt_session` | `session`、`prompt`（必填）、`watch?`（默认 true） | 续写结果 |
 | `devlead_watch_session` | `session`、`watching`（必填 bool） | watch 变更结果 |
 | `devlead_notifications` | `limit?`（默认 20） | `{ notifications, reports, watched }` |
-| `devlead_report` | `message`（必填，纯文本，上限 4000 code points）、`kind?`（默认 `progress` / `blocked` / `decision` / `fyi`）、`summary?`（上限 200） | `{ report, durable, queued, warning? }`——只在被监督的非 lead 会话可见；单向，不等待回复 |
+| `devlead_report` | `message`（必填，纯文本，上限 4000 code points）、`kind?`（默认 `progress` / `blocked` / `decision` / `fyi`）、`summary?`（上限 200） | `{ report, durable, queued, warning? }`——只在已关注的非 lead 会话可见；单向，不等待回复 |
 | `devlead_remove_workspace` | `workspace`（必填：id 或已注册路径） | `{ workspace, removed }`（注销前快照） |
 | `devlead_archive_session` | `session`（必填）、`stop_running?`（默认 false） | `{ sessionId, archived: true, stopped }` |
 | `devlead_unarchive_session` | `session`（必填） | `{ sessionId, archived: false }` |
@@ -490,9 +490,9 @@ settle，结果里 `stopped: true`（已归档的 Session 是 no-op，结果 `st
 
 ## 通知机制
 
-- **监督集合是持久状态**：`plugin:devlead/watch` 记录整值替换 watch 集合；只有被 watch 的
+- **关注集合是持久状态**：`plugin:devlead/watch` 记录整值替换关注集合；只有已关注的
   会话才会产生通知。
-- **通知的触发**：被监督会话每次 `turn/end`（完成 / 失败 / 阻塞 / 取消 / 超 token 等）都会
+- **通知的触发**：已关注会话每次 `turn/end`（完成 / 失败 / 阻塞 / 取消 / 超 token 等）都会
   在 DevLead 会话日志里追加一条 `plugin:devlead/notification` 记录，包含确定性 id、会话标题、
   turn 序号、转场类型，以及失败摘要或 turn 结束前最后一条 assistant 文本摘要（单行、最长 240
   字符，写入通知的 `summary` 字段）。lead Session 日志仍 attached 时立即追加并随即请求一次
@@ -502,8 +502,7 @@ settle，结果里 `stopped: true`（已归档的 Session 是 no-op，结果 `st
 - **合并窗口**：通知入队后按 `notificationBatchMs`（默认 400ms）合并；窗口结束时若 DevLead
   Agent 仍存活，以一条 `devlead` 来源（`form: 'notice'`）的消息唤醒它；Agent 正在运行时
   followup 排队到下一 turn；`agent/status` 变 idle 时也会尝试冲一次队列。
-- **冷 / 已 dispose 的 DevLead 会话**：Agent dispose 后 hub 仍保留该 lead 的索引与反向
-  watch 索引，因此被监督会话的 `turn/end` 仍会被观察并写入持久通知。插件加载时（Host 重启 /
+- **冷 / 已 dispose 的 DevLead 会话**：Agent dispose 后 hub 仍保留该 lead 的索引与反向关注关系索引，因此已关注会话的 `turn/end` 仍会被观察并写入持久通知。插件加载时（Host 重启 /
   插件重载）从持久状态重建索引：`[Service.init]` 会先等持久语料可读（有界 2s 的
   corpus-readiness barrier；全新 Host 无存储会话时立即通过，稳定 Host 只付一次语料比对），
   然后执行**唯一一次**权威冷扫描——用 `sessionQuery` 列出持久会话，经 projection cache 零 I/O
@@ -523,7 +522,7 @@ settle，结果里 `stopped: true`（已归档的 Session 是 no-op，结果 `st
   `/devlead on` 后状态视图仍能看到它们。
 - **损坏记录**：损坏的 `plugin:devlead/*` 记录会让 replay 冻结，读写报
   `DEVLEAD_PROJECTION_INVALID`。恢复路径是人类专属的：`/devlead reset` 追加
-  `plugin:devlead/reset` 记录，丢弃该会话的模式 / watch 集合 / digest / 冻结失败标记并回到
+  `plugin:devlead/reset` 记录，丢弃该会话的模式 / 关注集合 / digest / 冻结失败标记并回到
   默认 disabled（fold 冻结时 `/devlead off` 会隐式执行该 reset；`/devlead on` 会拒绝并提示先
   运行 `/devlead reset`）。旧版本会把 reset 记录当作未知记录忽略——不崩溃，但无法恢复。
 - 唤醒消息形如（英文，面向模型）：
@@ -543,7 +542,7 @@ DevLead 系统提示与 `devlead_create_session` 的工具描述还规定了**�
 的，`devlead_create_session` / `devlead_prompt_session` 返回后，模型不得在同一个 turn 内等待
 ——不得用 shell `sleep`，不得用 `devlead_list_sessions` / `devlead_get_session` /
 `devlead_notifications` 轮询，也不得用 Agent Teams 的 `wait_agent` 等被派发的 Session；正确
-做法是结束本轮（end the turn）。子会话继续独立运行，被 watch 会话的 turn 结束后，唤醒会以
+做法是结束本轮（end the turn）。子会话继续独立运行，已关注会话的 turn 结束后，唤醒会以
 新的 turn 恢复 DevLead 会话（冷 lead 默认 resume）。读工具只用于唤醒之后或人类明确询问时的
 状态检查，永远不是等待机制；若人类希望唤醒前就得到答复，模型应说明工作已派发、将在唤醒结果
 到达时汇报。
@@ -559,7 +558,7 @@ config 是整体替换）。
   name: '@yankeguo/dsh-devlead'
   config:
     notificationBatchMs: 400     # 通知合并窗口（毫秒，0–2147483647 整数）
-    maxWatchedSessions: 64       # 每个 lead 最多监督的会话数（正整数）
+    maxWatchedSessions: 64       # 每个 lead 最多关注的会话数（正整数）
     maxListedSessions: 200       # 会话列表最大行数（正整数）
     wakeColdSession: true        # resume 冷 DevLead 会话以投递其排队的通知（默认）
     defaultAgentPreset: ''       # 创建会话的默认 Agent preset（空 = 用 Host 默认；无效 id 创建失败）
@@ -569,7 +568,7 @@ config 是整体替换）。
 | --- | --- | --- |
 | `notificationBatchMs` | `400` | `[0, 2147483647]` 内整数（Node timer 上限）；窗口内多通知合并为一条唤醒消息 |
 | `maxWatchedSessions` | `64` | 正整数；超过上限的 watch 操作报 `DEVLEAD_WATCH_LIMIT` |
-| `maxListedSessions` | `200` | 正整数；列表类调用（`devlead_list_sessions` / `/devlead` 状态）的行数上限。身份解析不受该上限限制；watched-only 列表也不会截断到小于 watch 集合 |
+| `maxListedSessions` | `200` | 正整数；列表类调用（`devlead_list_sessions` / `/devlead` 状态）的行数上限。身份解析不受该上限限制；watched-only 列表也不会截断到小于关注集合 |
 | `wakeColdSession` | `true` | 为 `true` 时 resume（`sessionController.resolveAgent`）冷 lead 会话来投递其**已排队**的通知；设为 `false` 只把队列留在内存，等人类打开 lead Session。该开关不影响观察（观察由索引保留 + 重建保证） |
 | `defaultAgentPreset` | `''` | 创建会话时未指定 `preset`（或传空白）的默认值；空字符串表示没有插件默认值，使用 Host 有效默认。无效 id 会让创建失败并返回结构化错误 |
 
@@ -588,8 +587,7 @@ config 是整体替换）。
   会话里根本看不到它们。这与"不替人类做权限决策"的设计一致。
 - **写入需要模式开启**：所有 `devlead_*` 写工具都要求 live 调用者，且只在模式开启时可见；
   `createSession` / `promptSession` / `watchSession` 在 core 中重新校验 live 与模式
-  （`DEVLEAD_NOT_ENABLED` / `DEVLEAD_AGENT_NOT_LIVE`），命令侧同样只做人类授权范围内的
-  watch 集合变更。Workspace 注册也是 Host 级操作，但 0.2.0 起不再 caller-free：core 的
+  （`DEVLEAD_NOT_ENABLED` / `DEVLEAD_AGENT_NOT_LIVE`），命令侧同样只做人类授权范围内的关注集合变更。Workspace 注册也是 Host 级操作，但 0.2.0 起不再 caller-free：core 的
   `useWorkspace(agent, { path, title?, create? }, signal?)` 同样要求 live lead Agent 与已开启
   的模式，且除非显式传 `create: true` 否则绝不创建缺失目录。
 - **关闭是判断式自主，但有边界**：`devlead_remove_workspace` / `devlead_archive_session` /
@@ -611,16 +609,16 @@ config 是整体替换）。
 
 - **全局最多一个开启者**：模式持久，DSH 重启 / 会话恢复后仍占用；人类必须先在占用者上
   `/devlead off`（或归档/删除它）才能开启另一个 Session。
-- **冷 lead 默认会被 resume**：Host 重启 / 插件重载后 watch 索引从持久记录重建，排队通知
+- **冷 lead 默认会被 resume**：Host 重启 / 插件重载后关注关系索引从持久记录重建，排队通知
   默认 resume 冷 lead 投递；显式设 `wakeColdSession: false` 时队列只留在内存，等人类打开 lead。
   resume 需要 Host 组合 Session activator；没有时记录仍持久化，等会话被打开后投递。
-- **watch 索引只是进程内传输层**：已 dispose 的 lead 继续观察并继续写持久通知，索引在重启/
+- **关注关系索引只是进程内传输层**：已 dispose 的 lead 继续观察并继续写持久通知，索引在重启/
   重载后重建；只有**插件本体卸载期间**结束的 turn 不会被观察（事件不会按 watcher 重放），
   因此卸载期间结束的 turn 不会产生通知。
 - **通知保留 64 条**：projection 内按常量截断；更早记录仍在 Session 日志中。
-- **监督上限默认 64、列表默认 200**：可通过配置调整；命令的候选列表按该上限截断，列表之外
+- **关注上限默认 64、列表默认 200**：可通过配置调整；命令的候选列表按该上限截断，列表之外
   的会话仍可用完整 id 或唯一前缀寻址（core 的身份解析是穷尽的，不受列表上限限制）。命令的
-  候选列表与歧义提示基于有界列表 + watch 集合，但任何前缀在 watch/unwatch 变更前还会用 core
+  候选列表与歧义提示基于有界列表 + 关注集合，但任何前缀在 watch/unwatch 变更前还会用 core
   的穷尽 resolver 确认唯一性。
 - **不做 git 仓库创建 / clone / 通用 worktree 管理**：用 shell 工具完成，然后注册 Workspace。
   上文的可选隔离只借用已组合的实验性 DSH worktree 服务；**插件本身不执行任何 Git 操作**——
@@ -640,7 +638,7 @@ config 是整体替换）。
 - **损坏的 DevLead 记录按 fail-closed 处理，但可恢复**：replay 在首条损坏的
   `plugin:devlead/*` 记录处冻结，工具/状态读写报 `DEVLEAD_PROJECTION_INVALID`。人类专属的
   `/devlead reset`（或冻结时的 `/devlead off`）追加 `plugin:devlead/reset` 记录，丢弃本会话的
-  DevLead 状态（模式、watch 集合、digest、冻结失败标记）并回到默认 disabled；旧记录留在日志里
+  DevLead 状态（模式、关注集合、digest、冻结失败标记）并回到默认 disabled；旧记录留在日志里
   但不再 fold。冻结状态下 `/devlead on` 会拒绝并提示先 reset。旧版本插件会把 reset 记录当作
   未知记录忽略（不崩溃，但无法恢复）。
 
@@ -653,17 +651,17 @@ config 是整体替换）。
 | 本地安装脚本报 `run "pnpm build" first` | 先执行 `pnpm build` 再 `pnpm install:profile` |
 | `/devlead on` 报 "no longer live" | 当前 Agent 已不是注册表中的 live 实例；从侧边栏重新打开会话后重试 |
 | `/devlead watch` 报歧义 | 前缀命中多个会话；按错误里的候选改用更长前缀或完整 id |
-| `/devlead watch` 报模式未开启 | 先 `/devlead on`；watch 集合变更需要模式开启 |
-| 子会话 turn 结束但没有唤醒 DevLead | 模式已关闭、该会话未被 watch、lead 是 cold 且配置了 `wakeColdSession: false`（队列等会话被打开）、Host 没有可 resume 的 Session activator、通知还在合并窗口内，或唤醒在等 inbox 里的未投递 notice 先被消费（最多 1s 后重检） |
+| `/devlead watch` 报模式未开启 | 先 `/devlead on`；关注集合变更需要模式开启 |
+| 子会话 turn 结束但没有唤醒 DevLead | 模式已关闭、该会话未已关注、lead 是 cold 且配置了 `wakeColdSession: false`（队列等会话被打开）、Host 没有可 resume 的 Session activator、通知还在合并窗口内，或唤醒在等 inbox 里的未投递 notice 先被消费（最多 1s 后重检） |
 | DevLead 开关点了没反应 | 命令可能仍在执行（按钮禁用）；开启/关闭失败时错误会显示在按钮 tooltip、aria-label 与屏幕阅读器 live region 里 |
-| 状态条显示的数量与侧边栏不一致 | 状态条按 projection 的 watch 集合与标准 Session 列表计算；刚变更时可能有短暂延迟，刷新页面可重读 |
+| 状态条显示的数量与侧边栏不一致 | 状态条按 projection 的关注集合与标准 Session 列表计算；刚变更时可能有短暂延迟，刷新页面可重读 |
 | 找不到开关 | 开关是 composer 工具条里的用户图标 + DevLead 文本按钮（权限下拉旁），两态都存在；未开启时悬停提示「开启 DevLead 模式」，已开启时提示「关闭 DevLead 模式」；也可直接 `/devlead on|off` |
-| 重启后 DevLead 状态仍在 | 预期行为：模式 / watch 集合 / 通知都是持久记录；不需要时 `/devlead off` |
+| 重启后 DevLead 状态仍在 | 预期行为：模式 / 关注集合 / 通知都是持久记录；不需要时 `/devlead off` |
 | 开发 overlay 下 `/devlead on` 报 `gateway/internal: Receiver must be an instance of class Session` | overlay 缺少 linked root（旧版生成物、手写 patch，或 profile 被换过）。重新执行 `pnpm dev:patch --profile <dev>`，确认 `<profile>/node_modules/devlead-repo` 存在后重启；或用 `pnpm e2e` 复现正确流程 |
 | `pnpm dev:patch` 报 profile not found / already enables bundle | 需要专用 dev profile：`dsh devlead --from-default-profile web --dump-config`；已启用本 bundle 的 profile 不能再插入同 id 的 loader row |
 | 对已注册 Workspace 再传 `title` 不生效 | 预期行为：`title` 只用于新注册的 Workspace 记录；已存在的记录保留原标题 |
 | `/devlead on` 报 `DEVLEAD_ALREADY_ACTIVE` | 另一个 Session 已占用 Host 级 DevLead 模式。错误会点名占用者；先在那个 Session 执行 `/devlead off`（或归档/删除它），再开启当前 Session。 |
-| `/devlead` / 工具报 `DEVLEAD_PROJECTION_INVALID` | 本会话日志里有一条损坏的 `plugin:devlead/*` 记录，replay 已冻结。运行 `/devlead reset`（人类专属；会丢弃模式 / watch 集合 / 通知 digest）——`/devlead off` 也会隐式 reset，`/devlead on` 在 reset 前会拒绝。旧版本插件无法恢复。 |
+| `/devlead` / 工具报 `DEVLEAD_PROJECTION_INVALID` | 本会话日志里有一条损坏的 `plugin:devlead/*` 记录，replay 已冻结。运行 `/devlead reset`（人类专属；会丢弃模式 / 关注集合 / 通知 digest）——`/devlead off` 也会隐式 reset，`/devlead on` 在 reset 前会拒绝。旧版本插件无法恢复。 |
 | `devlead_use_workspace` 报 `DEVLEAD_DIRECTORY_MISSING` | 目录不存在且默认不允许创建。先创建目录，或在人类明确要求建该目录后带 `create: true` 重试 |
 | 重启后冷 lead 被自动 resume | 0.2.0 起的预期默认行为：`wakeColdSession` 为 `true`；不希望后台 resume 就设为 `false`，队列会留在内存等人类打开 lead Session |
 | `devlead_create_session` 返回 `isolation.status: "unavailable"` | profile 未组合 DSH 实验性 worktree 服务（默认 Web profile 从不组合）；启用实验性 worktree bundle，或改为串行派发写入型 Session——Session 已创建并仍可在共享 checkout 工作 |
@@ -674,7 +672,7 @@ config 是整体替换）。
 DevLead 面向**默认 DSH Web 组合**（`dsh-base` + `dsh-web-app`）构建，不需要任何实验性 bundle
 或第三方插件。所有非默认能力都走可选服务查找（`ctx.get(...)`）并退化为有文档的行为，而不是
 失败：Workspace registry / Session controller / 标题服务都是可选 peer；Session projection
-cache 与 persistence 服务用于 Host 重启后重建 watch 索引（缺失时冷重建退化为只恢复 live
+cache 与 persistence 服务用于 Host 重启后重建关注关系索引（缺失时冷重建退化为只恢复 live
 会话）；实验性 Git worktree 服务只在显式请求隔离时被借用。逐包的依赖判定表（含客户端 `dsh.client.inject` 各项）见
 [`docs/OPTIONAL-DEPENDENCIES.md`](docs/OPTIONAL-DEPENDENCIES.md)。
 
@@ -693,7 +691,7 @@ pnpm dev:patch      # 生成 overlay 并注册 linked root（见「安装：本�
 `pnpm e2e` 默认走 `patch` 加载流（等价于上面的 dev overlay）；`pnpm e2e --flow installed`
 走 `install-profile` 的包链接流。它只在本地运行（需要已安装的 DSH 运行时），CI 不包含；
 两种加载流都用真实浏览器 HTTP API 驱动。**0.2.0 起冒烟测试在同一 scratch root/profile 上分多个
-阶段**：阶段 1 是默认组合断言（`/devlead on`、投影翻转、真实子会话 watch、被 watch 会话的
+阶段**：阶段 1 是默认组合断言（`/devlead on`、投影翻转、真实子会话关注、已关注会话的
 `turn/end` → 持久通知 → 投影可见，以及 `Worktree isolation: unavailable`，证明「不启用实验性
 插件」的姿态）；阶段 1b 用同一 scratch home 重启同一加载流，验证**冷 lead 索引重建**（冷 lead
 的投影仍能从持久日志折叠、冷子会话被 resume、重启后下一次 `turn/end` 产生新通知、lead 被
@@ -737,7 +735,7 @@ rc.4 的 installed / patch 完整 flow 各 **143/143**。probe 是
   准入 hook 的 React 渲染测试（`react-test-renderer`）和跨实例 style tag 引用计数。
 
 本地端到端验收：`pnpm verify && pnpm e2e`。分阶段 E2E 启动一个隔离 DSH：阶段 1 走完
-`/devlead on` → 真实子会话 watch → 子会话 turn 结束 → 通知进入 lead 投影；阶段 1b 重启实例验证
+`/devlead on` → 真实子会话关注 → 子会话 turn 结束 → 通知进入 lead 投影；阶段 1b 重启实例验证
 冷 lead 索引重建（冷子会话被 resume、重启后产生新通知）；阶段 2 叠加实验性 forge bundle 验证
 worktree happy path；阶段 3 在真实 Host 上验证 13 个主工具 + 1 个汇报工具的条件可见性、只读模型目录、triage/自主关闭 policy、
 archive/unarchive/remove 的 durable 行为与文档化的安全边界；`--flow patch` 与

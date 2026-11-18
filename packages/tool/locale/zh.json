@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "DevLead 工具",
-    "description": "仅在 DevLead 模式下可用的 devlead_* 模型工具：列出并使用 Workspace，列出 Host 模型与 Agent preset，创建（继承或固定模型/Agent Teams）、读取、续写、归档、恢复与监督会话，并读取通知。"
+    "description": "仅在 DevLead 模式下可用的 devlead_* 模型工具：列出并使用 Workspace，列出 Host 模型与 Agent preset，创建（继承或固定模型/Agent Teams）、读取、续写、归档、恢复与关注会话，并读取通知。"
   }
 }

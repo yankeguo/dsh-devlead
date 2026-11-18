@@ -207,7 +207,7 @@ describe('registration', () => {
       .toContain('or the uuid prefix without the "session-" prefix')
   })
 
-  it('gates lead tools on DevLead mode and the report tool on supervision', async () => {
+  it('gates lead tools on DevLead mode and the report tool on the watch relationship', async () => {
     const harness = boot()
     const enabledAgent = makeAgent('agent-enabled')
     const disabledAgent = makeAgent('agent-disabled')
@@ -473,6 +473,12 @@ describe('policy', () => {
     // The old hard-line authorization wording is gone.
     expect(text).not.toContain('only when the human explicitly asked, in this conversation, to close')
     expect(text).not.toContain('never clean up, archive, or remove anything on your own initiative')
+  })
+
+  it('defines watch as a follow relationship, not a permission grant', () => {
+    const harness = bootEnabled()
+    const text = harness.sectionText(harness.agent)
+    expect(text).toContain('A watch is a follow relationship, not a permission grant')
   })
 
   it('tells the lead how to handle incoming reports', () => {
@@ -1272,6 +1278,12 @@ describe('devlead_prompt_session', () => {
 })
 
 describe('devlead_watch_session', () => {
+  it('documents the watch relationship as one-way and non-permission', () => {
+    const harness = boot()
+    expect(harness.tool('devlead_watch_session').definition.description)
+      .toContain('A watch is a one-way follow relationship, not a permission grant')
+  })
+
   it('forwards the mutation and returns the resulting watch set', async () => {
     const harness = boot()
     harness.devLead.mutation = { sessionId: 'session-2', watched: false, sessions: ['session-1'] }
@@ -1375,7 +1387,7 @@ describe('devlead_report', () => {
     expectValidOutput(harness, 'devlead_report', value)
   })
 
-  it('translates a not-supervised refusal', async () => {
+  it('translates a not-watched refusal', async () => {
     const harness = boot()
     harness.devLead.failures.set('reportProgress', devLeadFailure('DEVLEAD_NOT_SUPERVISED'))
     const error = await failureOf(harness.call('devlead_report', { message: 'progress' }))

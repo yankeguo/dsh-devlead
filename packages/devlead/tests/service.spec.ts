@@ -597,7 +597,7 @@ describe('mid-turn reports', () => {
     return { harness, child }
   }
 
-  it('resolves exactly the supervising lead and is false for a lead or an unwatched Session', async () => {
+  it('resolves exactly the watching lead and is false for a lead or an unwatched Session', async () => {
     const { harness, child } = await bootReporting()
     expect(harness.service.supervisorOf(child.agent)).toBe(String(harness.lead.id))
     expect(harness.service.isSupervised(child.agent)).toBe(true)
@@ -804,7 +804,7 @@ describe('mid-turn reports', () => {
     expect(harness.service.reports(harness.lead.agent)).toEqual([])
   })
 
-  it('becomes unsupervised after unwatch, lead off, or lead archive', async () => {
+  it('becomes unwatched after unwatch, lead off, or lead archive', async () => {
     const { harness, child } = await bootReporting()
     await harness.service.watchSession(harness.lead.agent, String(child.id), false)
     await expectCodeAsync(

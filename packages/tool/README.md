@@ -26,8 +26,7 @@ active lead.
 - `devlead_archive_session` (DSH archive; `stop_running` asks the Host to stop running work)
 - `devlead_unarchive_session` (restore to the recorded Workspace position)
 
-Every lead tool requires an enabled DevLead mode; `devlead_report` requires the inverse supervised
-state. Every tool except `devlead_list_workspaces` also requires a live calling Agent (`exec.agent`). Since 0.2.0 `devlead_use_workspace` forwards the live Agent to the core
+Every lead tool requires an enabled DevLead mode; `devlead_report` requires the inverse watched state. Every tool except `devlead_list_workspaces` also requires a live calling Agent (`exec.agent`). Since 0.2.0 `devlead_use_workspace` forwards the live Agent to the core
 `useWorkspace(agent, { path, title?, create? }, signal)`; `create` defaults to `false` (a missing
 directory is `DEVLEAD_DIRECTORY_MISSING`), and `create: true` is only for a human-explicit request
 to create the directory. Domain failures are translated to `HarnessError` with a stable
@@ -70,10 +69,10 @@ itself (`DEVLEAD_INVALID_INPUT`).
 `devlead_report` sends a one-way mid-turn update from a watched, non-DevLead Session to the
 single active lead that watches it. Its result is `{ report, durable, queued, warning? }`: `durable`
 is true only after a durable plugin outbox write, and `warning` (with `durable: false`) is the
-explicit fallback for a Host without storage-domain. It has no target argument: the core resolves the supervisor
-from the durable watch/mode state and refuses with `DEVLEAD_NOT_SUPERVISED` when the caller is a
-lead, is no longer watched, the lead is off/archived, or several historical watchers leave no
-unique supervisor. The message is plain text (max 4000 code points), `kind` is
+explicit fallback for a Host without storage-domain. It has no target argument: the core resolves the active lead that
+watches it from the durable watch/mode state and refuses with `DEVLEAD_NOT_SUPERVISED` when the caller is a
+lead, is no longer watched, the lead is off/archived, or several historical watchers leave no unique
+active lead watching it. The message is plain text (max 4000 code points), `kind` is
 `progress|blocked|decision|fyi` (default progress), and `summary` is an optional 200-code-point
 title. Reports are first written to a durable outbox and then to the lead's log; they appear in the status strip,
 `/devlead` status, and `devlead_notifications`. Delivery reuses the notification hub's coalescing,
@@ -103,7 +102,7 @@ supported platform.
 
 ## 中文
 
-`@yankeguo/dsh-tool-devlead` 提供 13 个主工具 + 1 个 `devlead_report` 与两段条件 system prompt。主工具只在 DevLead 模式开启时可见；`devlead_report` 只在非 DevLead、被唯一 active lead 监督的会话可见。除 `devlead_list_workspaces` 外都需要 live 调用者（`exec.agent`）。0.2.0 起
+`@yankeguo/dsh-tool-devlead` 提供 13 个主工具 + 1 个 `devlead_report` 与两段条件 system prompt。主工具只在 DevLead 模式开启时可见；`devlead_report` 只在非 DevLead、被唯一 active lead 关注的会话可见。除 `devlead_list_workspaces` 外都需要 live 调用者（`exec.agent`）。0.2.0 起
 `devlead_use_workspace` 把 live Agent 转发给 core 的 `useWorkspace(agent, request, signal)`，
 `create` 默认 `false`（缺目录报 `DEVLEAD_DIRECTORY_MISSING`，只有人类明确要求建目录时才传
 `true`）。`devlead_create_session` 还支持创建时指定 `provider`+`model`（可选

@@ -38,6 +38,13 @@ describe('dictionaries', () => {
     }
   })
 
+  it('uses watch/已关注 consistently in the strip copy', () => {
+    expect(zh['count.watched']).toBe('已关注 {count} 个会话')
+    expect(zh['hint.enabled']).toContain('已关注会话')
+    expect(zh['row.hover.enabled']).toContain('关注')
+    for (const message of Object.values(zh)) expect(message).not.toContain('监督')
+  })
+
   it('labels the toolbar toggle with the brand name in both locales', () => {
     expect(zh['toggle.label']).toBe('DevLead')
     expect(en['toggle.label']).toBe(zh['toggle.label'])

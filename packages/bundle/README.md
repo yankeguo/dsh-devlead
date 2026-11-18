@@ -12,7 +12,7 @@ kind: "package-bundle"
 
 ## 特性
 
-- **DevLead 模式**：每个会话一个持久开关；打开后获得 13 个主 `devlead_*` 工具（被监督会话另有 1 个 `devlead_report`）、DevLead 系统
+- **DevLead 模式**：每个会话一个持久开关；打开后获得 13 个主 `devlead_*` 工具（已关注会话另有 1 个 `devlead_report`）、DevLead 系统
   提示，以及两态 UI：composer 工具条里的 DevLead 图标 + 文本按钮在两种状态下都常驻并负责
   开启/关闭，开启后 composer 上方才出现只读状态条。
   已开启的会话还会在侧边栏会话行显示 DevLead 标记，关掉会话后仍可辨识（DSH rc.1 对
@@ -20,18 +20,18 @@ kind: "package-bundle"
   开关是**人类专属操作**（`/devlead on|off` 或 composer 工具条开关），模型无法自行打开。
 - **产出物是标准 DSH 实体**：Workspace 真实注册进 `ctx.workspaceRegistry`，子会话是真实普通
   Session（侧边栏可见、可被人类打开接管），**不是 subagent**。
-- **监督与唤醒**：被 watch 的会话每个 `turn/end` 都写入 DevLead 会话的持久通知记录；Agent
-  存活时经合并窗口唤醒它决定下一步。watch 索引在 Host 重启 / 插件重载后从持久记录重建
+- **关注与唤醒**：已关注的会话每个 `turn/end` 都写入 DevLead 会话的持久通知记录；Agent
+  存活时经合并窗口唤醒它决定下一步。关注关系索引在 Host 重启 / 插件重载后从持久记录重建
   （cold lead rehydration），已 dispose 的 lead 继续观察；冷 lead 默认 resume 投递
   （`wakeColdSession: true`）。
-- **事件溯源**：模式 / watch 集合 / 通知以可忽略的 `plugin:devlead/*` 记录持久化，可跨重启 /
+- **事件溯源**：模式 / 关注集合 / 通知以可忽略的 `plugin:devlead/*` 记录持久化，可跨重启 /
   恢复 / fork；`devLead` Session projection 把状态同步到浏览器，summary 级 `devLeadMode`
   随每个会话列表行下发，供侧边栏标记使用。
 - **人类命令**：`/devlead`、`/devlead on|off`、`/devlead reset`（损坏状态恢复）、
   `/devlead watch|unwatch <session>`。
 - **两态 UI**：composer 工具条里的 ghost 图标 + DevLead 文本按钮在两种状态下都显示——关闭态
   点击 `/devlead on`，开启态点击 `/devlead off`；开启后 composer 上方出现只读 DevLeadBar，
-  显示监督会话数 / 运行中数与最近通知；侧边栏会话行同时带 DevLead 标记。
+  显示已关注会话数 / 运行中数与最近通知；侧边栏会话行同时带 DevLead 标记。
 
 ## 本 bundle 包含的插件行
 
@@ -119,12 +119,12 @@ profile，且 `desktop` profile 已启用本 bundle（重复插入相同 row id 
 ## 使用
 
 ```
-/devlead                        # 状态：模式状态、监督会话、最近通知、帮助
+/devlead                        # 状态：模式状态、已关注会话、最近通知、帮助
 /devlead on                     # 打开当前会话的 DevLead 模式（人类专属）
 /devlead off                    # 关闭（fold 冻结时同时完成隐式 reset 恢复）
 /devlead reset                  # 人类专属恢复：丢弃本会话的 DevLead 状态（模式/watch/digest）
-/devlead watch <session>        # 监督某个会话（完整 id 或唯一前缀）
-/devlead unwatch <session>      # 取消监督
+/devlead watch <session>        # 关注某个会话（完整 id 或唯一前缀）
+/devlead unwatch <session>      # 取消关注
 ```
 
 `/devlead status` 还会打印 `Worktree isolation: available|unavailable`，让人类直接判断当前
@@ -150,7 +150,7 @@ bundle 的 patch 行没有显式写配置，核心服务使用 DESIGN 默认值�
 - id: devlead
   config:
     notificationBatchMs: 400     # 通知合并窗口（0–2147483647 毫秒）
-    maxWatchedSessions: 64       # 每个 lead 最多监督的会话数
+    maxWatchedSessions: 64       # 每个 lead 最多关注的会话数
     maxListedSessions: 200       # 会话列表最大行数
     wakeColdSession: true        # resume 冷 DevLead 会话以投递其排队的通知（默认）
     defaultAgentPreset: ''       # 创建会话的默认 Agent preset（空 = 用 Host 默认；无效 id 创建失败）
@@ -160,7 +160,7 @@ bundle 的 patch 行没有显式写配置，核心服务使用 DESIGN 默认值�
 
 - 模式是**每个 Session 的持久状态**：打开后 DSH 重启 / 会话恢复仍然打开，需要人类关闭。
 - 通知保留最近 64 条（projection 常量截断）；更早的记录仍在 Session 日志里。
-- watch 索引在 Host 重启 / 插件重载后从持久记录重建（projection cache 预筛 + 精确折叠，
+- 关注关系索引在 Host 重启 / 插件重载后从持久记录重建（projection cache 预筛 + 精确折叠，
   无法分类的候选全量读取上限 64）；`agent/disposed` 不再丢索引，已 dispose 的 lead 继续观察。
 - 冷 lead 有排队通知时默认 resume 投递（`wakeColdSession: true`）；设为 `false` 只把队列留在
   内存，等人类打开 lead Session 时补写并投递。插件卸载期间结束的 turn 无法补发。
