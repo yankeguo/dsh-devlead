@@ -1,5 +1,6 @@
 /**
- * Pure result helpers for the `/devlead` command face shared by both surfaces.
+ * Pure result helpers for the `/devlead` command face used by the composer
+ * toolbar toggle.
  *
  * A command admission has two failure layers:
  * - the Remote call itself can fail (`ok: false`, e.g. a carrier or Host error);
@@ -147,9 +148,10 @@ const FAILURE_FALLBACK_KEYS = {
 
 /**
  * One-line human text of a classified failure, for surfaces that report
- * through a tooltip instead of an inline row (the compact off-state toggle has
- * no inline error seat). All client-authored fallbacks go through the locale
- * dictionary; a Host message is used verbatim when present.
+ * through a tooltip instead of an inline row (the composer-toolbar toggle has
+ * no inline error seat, in either mode state). All client-authored fallbacks
+ * go through the locale dictionary; a Host message is used verbatim when
+ * present.
  * @param failure - classified command failure.
  * @param t - namespace-bound translate function.
  * @returns the failure text.
@@ -195,7 +197,7 @@ export interface DevLeadAdmissionGate {
 }
 
 /**
- * Create the same-render re-entrancy gate shared by both surfaces.
+ * Create the same-render re-entrancy gate of the toggle's command control.
  *
  * React state disables the control on the next render; the gate closes the
  * same-render window so a rapid double click cannot admit two commands.

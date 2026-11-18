@@ -1,13 +1,12 @@
 /**
- * The one command-admission state machine shared by both DevLead surfaces.
+ * The command-admission state machine behind the DevLead toolbar toggle.
  *
- * `DevLeadBar` (enabled strip) and `DevLeadIconToggle` (off-state toolbar
- * icon) each own exactly one command control, and their behavior is identical:
- * never flip state optimistically, ignore a second click while one command is
- * in flight, clear a stale failure when the projection changes, and never
- * touch React state after the surface collapsed. Keeping that logic here means
- * the two surfaces differ only in which line they submit and how they render
- * the resulting failure.
+ * `DevLeadIconToggle` owns the single mode switch (on in the off state, off in
+ * the on state). Its command behavior is: never flip state optimistically,
+ * ignore a second click while one command is in flight, clear a stale failure
+ * when the projection changes, and never touch React state after the surface
+ * collapsed. The status-only `DevLeadBar` issues no commands and therefore
+ * does not use this hook.
  *
  * The pure transitions (`devLeadAdmissionReducer`, `createDevLeadAdmissionGate`)
  * live in `results.ts` so they stay unit-testable without a renderer; this
@@ -24,7 +23,7 @@ import {
   type DevLeadCommandFailure,
 } from './results.ts'
 
-/** Admission face one DevLead surface renders. */
+/** Admission face the toolbar toggle renders. */
 export interface DevLeadAdmission {
   /** Whether the command is in flight; the surface disables its control while true. */
   readonly pending: boolean
@@ -38,10 +37,10 @@ export interface DevLeadAdmission {
 }
 
 /**
- * Bind the shared admission state machine to one surface.
+ * Bind the admission state machine to the toolbar toggle.
  *
- * `resetKey` is the projection's enabled flag: any mode change (from this
- * surface, the other one, or the `/devlead` command) invalidates feedback that
+ * `resetKey` is the projection's enabled flag: any mode change (from the
+ * toggle, another client, or a `/devlead` command) invalidates feedback that
  * belonged to the previous attempt, while a rejected toggle leaves the flag
  * untouched so its error stays visible.
  * @param executeCommand - injected command face bound to the surface's Session.

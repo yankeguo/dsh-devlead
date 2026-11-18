@@ -292,10 +292,13 @@ describe('styles', () => {
     expect(styles).toContain('.devlead-bar::before')
   })
 
-  it('sizes the off-state toggle as the composer toolbar glyph seat', () => {
+  it('sizes the toggle as the composer toolbar glyph seat in both states', () => {
     expect(styles).toMatch(/\.devlead-toggle \{[^}]*width: 28px;/u)
     expect(styles).toMatch(/\.devlead-toggle \{[^}]*height: 28px;/u)
     expect(styles).toMatch(/\.devlead-toggle \{[^}]*border-radius: 999px;/u)
+    // The strip is status-only and the toggle keeps one geometry across states.
+    expect(styles).not.toContain('.devlead-switch')
+    expect(styles).toContain('.devlead-toggle[data-devlead-enabled="true"]')
   })
 
   it('ships the sidebar Session-row mark and its hover-card explanation', () => {
@@ -311,6 +314,8 @@ describe('styles', () => {
     expect(styles).toContain('.devlead-notice {')
     expect(styles).toContain('.devlead-notification-dot[data-transition="completed"]')
     expect(styles).toMatch(/\.devlead-sr-only \{[^}]*clip: rect\(0 0 0 0\);/u)
+    // Inline command errors moved to the toolbar toggle's tooltip/live region.
+    expect(styles).not.toContain('.devlead-error')
   })
 
   it('uses only harness theme custom properties for colors and geometry', () => {

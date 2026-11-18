@@ -2,11 +2,12 @@
  * DevLead surface plugin, browser half. Two kinds of registration share one
  * command face:
  *
- * - `conversation.input.left` carries the compact off-state switch in the
- *   composer toolbar. This is the human entry point, so an inactive Session
- *   keeps its composer clean and no DevLead bar appears in every conversation.
- * - `conversation.input.dock` carries the full DevLeadBar, rendered only while
- *   mode is enabled for that Session.
+ * - `conversation.input.left` carries the compact DevLead toggle in the
+ *   composer toolbar. It is mounted in both mode states and is the single
+ *   on/off switch, so an inactive Session keeps its composer clean and the
+ *   control stays in place while the enabled-only strip appears and disappears.
+ * - `conversation.input.dock` carries the status-only DevLeadBar, rendered
+ *   only while mode is enabled for that Session.
  * - `sidebar.session.row.trailing` carries the Session-list mark, and
  *   `sidebar.session.row.hover` restates it in the row's hover card. Both read
  *   the summary-sized `devLeadMode` projection, because the digest-bearing
@@ -35,8 +36,8 @@ import type {} from '@deepseek-ai/dsh-client-ui-session/client'
 // Type-only: pulls the ui-workspace SlotMap merge (the sidebar Session-row seats).
 import type {} from '@deepseek-ai/dsh-client-ui-workspace/client'
 import type { SessionIdOf } from '@deepseek-ai/dsh-client-ui-slots'
-import { DevLeadBar, type DevLeadCommandInjected } from './DevLeadBar.tsx'
-import { DevLeadIconToggle } from './DevLeadIconToggle.tsx'
+import { DevLeadBar } from './DevLeadBar.tsx'
+import { DevLeadIconToggle, type DevLeadCommandInjected } from './DevLeadIconToggle.tsx'
 import { DevLeadSessionHoverMark } from './DevLeadSessionHoverMark.tsx'
 import { DevLeadSessionMark } from './DevLeadSessionMark.tsx'
 import { en, zh, type DevLeadKey } from './locales.ts'
@@ -56,9 +57,9 @@ const NS = 'devlead'
 export const inject = ['slots', 'sessions', 'remote', 'remote.commands', 'locale']
 
 /**
- * Client plugin body: dictionaries, the plugin stylesheet, the compact off-state
- * switch in the composer toolbar, the enabled-only DevLeadBar dock, and the
- * sidebar's per-Session DevLead marks.
+ * Client plugin body: dictionaries, the plugin stylesheet, the both-state
+ * toggle in the composer toolbar, the enabled-only DevLeadBar status dock, and
+ * the sidebar's per-Session DevLead marks.
  * @param ctx - client root context.
  */
 export function apply(ctx: ClientContext): void {
@@ -74,7 +75,7 @@ export function apply(ctx: ClientContext): void {
     name: 'conversation.input.left',
     id: 'devlead',
     // No shipped entry occupies this list; the order only sequences additive
-    // contributions, so the compact switch stays ahead of any later entry.
+    // contributions, so the compact toggle stays ahead of any later entry.
     order: 12,
     locale: NS,
     inject: face,
@@ -84,10 +85,10 @@ export function apply(ctx: ClientContext): void {
     name: 'conversation.input.dock',
     id: 'devlead',
     // The shipped context stack orders Todo (0), Goal (10), and Queue (20):
-    // the DevLead strip sits directly below the goal card.
+    // the status strip sits directly below the goal card. It has no injected
+    // command face: only the composer-toolbar toggle submits commands.
     order: 12,
     locale: NS,
-    inject: face,
   }, DevLeadBar))
 
   // The sidebar Session row renders trailing mark seats for every Session; the

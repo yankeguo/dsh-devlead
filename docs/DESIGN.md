@@ -13,8 +13,8 @@
 ## 1. 产品定位
 
 - **DevLead 会话 = 普通会话 + 一个持久开关**。打开开关后，该会话额外获得一组
-  `devlead_*` 工具和一段系统提示，composer 上方出现 DevLead 状态条；未打开时界面里只有
-  composer 工具条上的一个小图标，不显示常驻状态条。
+  `devlead_*` 工具和一段系统提示，composer 上方出现 DevLead 状态条；开关本身是 composer
+  工具条上的一个小图标，两种状态都在，开启时才多出状态条（不显示常驻状态条）。
 - **默认调度而非实现**：DevLead 会话先判定请求归属的 Workspace（依据已注册 Workspace 元数据
   与人类给出的目录，不靠翻别的仓库代码），只做**有界可行性判断**（归属、当前行为与目标结果的
   高层事实、验证方式），把自包含简报（允许带开放问题）派发给对应 Session；进一步细化调研与
@@ -29,7 +29,7 @@
 - **通知回路**：DevLead 监督若干子会话；子会话的 turn 结束（完成/失败/取消）时，Host 把
   通知写入 DevLead 会话的持久日志，并在 DevLead Agent 存活时以一条 `devlead` 来源的消息
   唤醒它，让它决定下一步（继续追问、派发新任务、向人类汇报）。
-- 开关本身是**人类专属操作**：命令 `/devlead on|off` 或 UI 开关；模型工具不能自行打开模式。
+- 开关本身是**人类专属操作**：命令 `/devlead on|off` 或 composer 工具条开关（两态都显示）；模型工具不能自行打开模式。
 
 ## 2. 包结构
 
@@ -41,7 +41,7 @@ pnpm workspace，`packages/*`：
 | `devlead` | `@yankeguo/dsh-devlead` | 核心 Service `ctx.devLead`：模式状态、Workspace/Session 编排、监督索引、通知投递、`devLead` 与 summary 级 `devLeadMode` 两个 projection fold |
 | `tool` | `@yankeguo/dsh-tool-devlead` | 模型工具 `devlead_*` + 条件系统提示 |
 | `command` | `@yankeguo/dsh-command-devlead` | 人类命令 `/devlead` |
-| `client-ui` | `@yankeguo/dsh-client-ui-devlead` | 浏览器 UI：未开启时的工具条开关 + 开启后的 DevLead 状态条 + 侧边栏会话行标记 |
+| `client-ui` | `@yankeguo/dsh-client-ui-devlead` | 浏览器 UI：两态都显示的工具条开关 + 开启后的只读 DevLead 状态条 + 侧边栏会话行标记 |
 | `bundle` | `@yankeguo/dsh-devlead-bundle` | bundle：`cordis.patch.yml` 插入全部插件 |
 
 依赖方向：`protocol ← devlead ← {tool, command}`；`client-ui` 只依赖 `protocol`（浏览器侧）。
@@ -628,20 +628,21 @@ Session 的工作目录切到独立分支/检出，DevLead 用它**可选地**�
 
 ## 7. 浏览器 UI（`@yankeguo/dsh-client-ui-devlead`）
 
-UI 分两态，避免在每个会话上显示常驻条：
+UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
 
-- **未开启**：`conversation.input.left`（composer 工具条，权限下拉旁）里一个 ghost 图标按钮
-  `DevLeadIconToggle`。它只读 projection，`enabled=true` 或 projection 未加载时不渲染。
-  点击发送 `/devlead on`；失败时错误文本进入按钮 tooltip（toolbar 没有内联错误位）。
-- **已开启**：`conversation.input.dock`（composer 上方）里的
-  `DevLeadBar`。
+- **两种状态都存在**：`conversation.input.left`（composer 工具条，权限下拉旁）里一个 ghost
+  图标按钮 `DevLeadIconToggle`。它只读 projection，projection 未加载时不渲染；`enabled=false`
+  时点击发送 `/devlead on`，`enabled=true` 时点击发送 `/devlead off`。按钮在两种状态下保持
+  同一位置与尺寸，`aria-label`/title/tooltip 随状态切换；pending 时禁用并置 `aria-busy`，
+  失败时按钮保留原位，错误文本进入 tooltip、aria-label 和隐藏的 `role=status` live region
+  （toolbar 没有内联错误位）。按钮不会自行翻转状态。
+- **已开启**：`conversation.input.dock`（composer 上方）里的只读 `DevLeadBar`。
   - `useProjection('devLead')`：`undefined`（加载中）或 `enabled=false` → 不渲染；
-    `enabled=true` → 开关（点击发 `/devlead off`）+ 监督会话数/运行中数（标准 props
-    `useSessions`/`useSessionStatus` 与 projection 的 `sessions` 计算）+ 最近一条通知摘要
-    + 帮助提示。
-  - 开关调用注入的 `executeCommand('/devlead on'|'/devlead off')`，pending 时禁用；
-    命令逻辑错误（`kind: 'error'`）在内联错误行显示。
-  - `Switch`/`Button`/`Tooltip` 组件来自 `@deepseek-ai/dsh-client-ui-primitives`；样式走本插件
+    `enabled=true` → 监督会话数/运行中数（标准 props `useSessions`/`useSessionStatus` 与
+    projection 的 `sessions` 计算）+ 最近一条通知摘要 + 帮助提示。状态条不含 Switch，也不
+    调用命令；关闭模式时它从 projection 消失，但工具条开关仍在原位——不会出现“开关把自己
+    藏起来”的交互。
+  - `Button`/`Tooltip` 组件来自 `@deepseek-ai/dsh-client-ui-primitives`；样式走本插件
     注入的 `<style>` 标签（`ensureStyleTag`），颜色只用 DSH theme 中真实存在的 `--dsw-*`
     token 并提供中性 fallback；状态条采用 shell 的 menu-surface 模式（无重复 hairline、
     `--dsw-menu-backdrop-filter`），宽度按 composer dock 的 side-clearance / dock-inset 公式。
@@ -649,16 +650,17 @@ UI 分两态，避免在每个会话上显示常驻条：
     `globalThis` 单例 `{ refs, element }`）：首个实例创建 `<style>`，后续实例复用并刷新 `textContent`，每个
     disposer 递减，归零才移除。这样 HMR 新旧模块实例交替时，旧实例如的 disposer 不会删掉新
     实例仍在使用的标签。
-  - 两个入口共享一个准入状态机：纯函数 gate + reducer（`results.ts`）+ 薄 React hook
+  - 工具条开关使用准入状态机：纯函数 gate + reducer（`results.ts`）+ 薄 React hook
     （`useDevLeadAdmission.ts`）——同渲染周期双击只会提交一条命令，未挂载后不再 setState，
     模式变化会作废旧失败提示。准入门面把 `ok:true` 但 `value: undefined`（Host 没有解析到
     命令）也当作失败（`unresolved`），不会把死入口当成功。0.2.0 起这两个组件与 hook 有
     **React 渲染测试**（`react-test-renderer`，devDependency，纯 node、无 jsdom）：用 `act`
-    驱动，覆盖两态分支、SR live region / label、pending 禁用、失败文案，以及 hook 的单击提交、
-    双击单次提交、卸载后不 setState、失败保留与 `resetKey` 清空。
-  - `role=status` live region 覆盖状态条提示 / 最新通知 / 图标失败文本，保证屏幕阅读器能听到
-    通知与错误；`aria-busy` / label 与 pending 状态一致。
-  - 两态互斥：开启时图标隐藏，关闭时状态条消失，因此同一个开关不会同时出现两份。
+    驱动，覆盖状态条只读且无开关、开关两态的 label/命令、SR live region、pending 禁用、开启/
+    关闭失败文案，以及 hook 的单击提交、双击单次提交、卸载后不 setState、失败保留与
+    `resetKey` 清空。
+  - `role=status` live region 覆盖状态条提示 / 最新通知，以及工具条开关的开启/关闭失败文本，
+    保证屏幕阅读器能听到通知与错误；`aria-busy` / label 与 pending 状态一致。
+  - 开关不随状态条出现/消失而消失；同一时刻只有一个模式开关。
 - **侧边栏会话行标记**：开启 DevLead 的会话在 Session 列表行尾部显示一个盾形标记
   （`sidebar.session.row.trailing`；非交互、不绑定/不激活 Session，只按 `sessionId` 读
   summary 级 `devLeadMode`）。rc.1 对 blank（尚无 turn）行不渲染 trailing seat，因此在空白
@@ -744,10 +746,10 @@ UI 分两态，避免在每个会话上显示常驻条：
   侧边栏行标记 predicate / locale 完整性与占位符一致）；组件保持薄，逻辑都下沉到可测纯函数。
   0.2.0 起另有 **React 渲染测试**（`react-test-renderer`，devDependency，纯 node、无 jsdom，
   组件把 `useProjection`/`useSessions`/`useSessionStatus` 作为 props 传入，因此只 mock
-  `@deepseek-ai/dsh-client-ui-primitives`）：覆盖 DevLeadBar enabled/disabled、SR live
-  region 与 label、pending 禁用、失败文案，DevLeadIconToggle 分支与隐藏失败活区，
-  SessionMark/HoverMark，以及 `useDevLeadAdmission` 的单击提交、双击单次提交、卸载不
-  setState、失败保留与 `resetKey` 清空。`ensureStyleTag` 的跨模块实例引用计数用
+  `@deepseek-ai/dsh-client-ui-primitives`）：覆盖 DevLeadBar enabled/disabled 且无开关、
+  SR live region 与 label、DevLeadIconToggle 两态 label/命令、pending 禁用、开启/关闭失败
+  文案与隐藏失败活区，SessionMark/HoverMark，以及 `useDevLeadAdmission` 的单击提交、双击
+  单次提交、卸载不 setState、失败保留与 `resetKey` 清空。`ensureStyleTag` 的跨模块实例引用计数用
   `vi.resetModules()` + 动态 import 模拟第二个模块实例，断言旧实例 dispose 后标签仍在、
   全部 dispose 后移除。
 - 全仓 `pnpm typecheck && pnpm test && pnpm build` 是 `pnpm verify`；`pnpm check:packages`

@@ -1,5 +1,6 @@
 /**
- * Plugin-owned CSS for the DevLeadBar dock.
+ * Plugin-owned CSS for the DevLead conversation surfaces: the composer-toolbar
+ * toggle, the enabled-only status strip, and the sidebar marks.
  *
  * The package deliberately ships no CSS Modules build chain: `apply()` injects
  * this string once into `document.head` as a `<style data-plugin-css="devlead">`
@@ -15,10 +16,11 @@ const STYLE_ATTRIBUTE = 'data-plugin-css'
 /** Value of {@link STYLE_ATTRIBUTE} owned by this plugin. */
 const STYLE_KEY = 'devlead'
 
-/** Global stylesheet of the DevLeadBar dock. */
+/** Global stylesheet of the DevLead conversation surfaces. */
 export const styles = `
 /* Composer-tool row control: the 28px round glyph seat of the shipped attach
-   and mode controls, so the off-state entry reads as one of them. */
+   and mode controls. The same geometry serves both mode states, so the toolbar
+   row does not shift when the status strip appears. */
 .devlead-toggle {
   flex: none;
   width: 28px;
@@ -32,6 +34,12 @@ export const styles = `
   .devlead-toggle:hover:not(:disabled) {
     color: var(--dsw-alias-label-secondary, GrayText);
   }
+}
+
+/* While the mode is on the same button stays in place and reads at full label
+   color; a failed settle overrides it and takes over the error color. */
+.devlead-toggle[data-devlead-enabled="true"] {
+  color: var(--dsw-alias-label-primary, CanvasText);
 }
 
 .devlead-toggle[data-devlead-failed="true"] {
@@ -67,7 +75,7 @@ export const styles = `
   width: 100%;
   min-height: 34px;
   margin: 0 auto;
-  padding: 4px 6px 4px 12px;
+  padding: 4px 12px;
   border: 0;
   --dsw-elevation-stroke-color: var(--dsw-alias-border-l1, rgba(127, 127, 127, 0.24));
   border-radius: var(--dsw-radius-md, 10px);
@@ -101,10 +109,6 @@ export const styles = `
   font-weight: 500;
   color: var(--dsw-alias-label-primary, CanvasText);
   white-space: nowrap;
-}
-
-.devlead-switch {
-  flex: none;
 }
 
 .devlead-meta {
@@ -217,16 +221,6 @@ export const styles = `
   color: var(--dsw-alias-state-error-primary, #c0392b);
   font-size: 12px;
   text-overflow: ellipsis;
-}
-
-.devlead-error {
-  flex: 0 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  color: var(--dsw-alias-state-error-primary, #c0392b);
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /* Visually hidden but announced: the compact toolbar surface has no inline

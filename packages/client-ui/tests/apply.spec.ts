@@ -19,7 +19,6 @@ vi.mock('@deepseek-ai/dsh-client-ui-primitives', () => {
   const Placeholder = (): null => null
   return {
     Button: Placeholder,
-    Switch: Placeholder,
     Tooltip: Placeholder,
     IconShieldOutlineRegular: Placeholder,
     IconUsersOutlineRegular: Placeholder,
@@ -34,6 +33,7 @@ interface RecordedRegistration {
   readonly id: string
   readonly order: number | undefined
   readonly locale: string | undefined
+  readonly inject: unknown
   readonly component: unknown
 }
 
@@ -97,6 +97,12 @@ describe('client apply', () => {
       'sidebar.session.row.hover',
     ])
     expect(state.registrations.filter(entry => entry.name.startsWith('conversation.input'))).toHaveLength(2)
+    // Only the toolbar toggle owns the command control; the status strip must
+    // not receive the command face at all.
+    const toggle = state.registrations.find(entry => entry.name === 'conversation.input.left')
+    const bar = state.registrations.find(entry => entry.name === 'conversation.input.dock')
+    expect(toggle?.inject).toBeTypeOf('function')
+    expect(bar?.inject).toBeUndefined()
   })
 
   it('registers the sidebar row mark and its hover-card explanation', () => {

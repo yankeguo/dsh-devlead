@@ -57,21 +57,23 @@ Documentation: [Design notes (中文)](docs/DESIGN.md) · [Publishing guide (中
 | Event sourcing | Mode / watch set / notifications / reset are ignorable `plugin:devlead/*` records with strict replay validation; survive restart / resume / fork |
 | Damaged-state recovery | A corrupt `plugin:devlead/*` record freezes the fold, but the human-only `/devlead reset` (or `/devlead off` on a frozen fold) appends a `plugin:devlead/reset` record that restarts both projections from the default disabled state (see [Notification loop](#notification-loop)) |
 | Session projection | The `devLead` projection (`{ enabled, sessions, notifications }`) syncs state to the browser without a custom Remote API; its summary-sized companion `devLeadMode` (`{ enabled }`) rides every Session-list summary so sidebar rows can render the mark |
-| UI | Off: only a small composer-toolbar icon (unobtrusive, no permanent strip). On: a DevLeadBar above the composer with the switch, watched/running counts, and the latest notification; the UI only sends `/devlead on\|off` commands. Enabled Sessions are also marked in the sidebar session list |
+| UI | A composer-toolbar toggle is present in both states and sends `/devlead on` or `/devlead off`. On: a status-only DevLeadBar above the composer shows the watched/running counts and the latest notification; the bar has no switch, so turning the mode off never hides the control that did it. Enabled Sessions are also marked in the sidebar session list |
 | Permission model | The mode switch can only be triggered by human commands/UI; notifications are runtime notices, not human instructions (see [Permission model](#permission-model)) |
 | One-command install | The bundle's `cordis.patch.yml` inserts all 4 runtime plugin rows; individual packages can also be installed separately |
 
 ## UI
 
-The UI has two states. The plugin deliberately **never** puts an attention-grabbing permanent
-bar on every conversation:
+The UI has two states and one switch. The plugin deliberately **never** puts an
+attention-grabbing permanent bar on every conversation:
 
-- **Off:** the composer toolbar (`conversation.input.left`, next to the permission dropdown)
-  shows only a small user-icon button; hovering it shows "Turn on DevLead mode", and clicking
-  it sends `/devlead on`. There is no status strip in the conversation. `/devlead on` works too.
-- **On:** the icon disappears and the full DevLeadBar (`conversation.input.dock`) appears above
-  the composer: the mode switch (click sends `/devlead off`), the number of watched sessions,
-  the number running, and the latest notification — or a help hint when there is none.
+- **Always:** the composer toolbar (`conversation.input.left`, next to the permission dropdown)
+  carries a small user-icon button. While the mode is off, hovering it shows "Turn on DevLead
+  mode" and clicking sends `/devlead on`. While the mode is on, the same button stays in place,
+  shows "Turn off DevLead mode", and clicking sends `/devlead off`.
+- **On:** the status-only DevLeadBar (`conversation.input.dock`) appears above the composer:
+  the brand, the number of watched sessions, the number running, and the latest notification —
+  or a help hint when there is none. The bar owns no switch, so turning the mode off can never
+  hide the control that did it. There is no status strip while the mode is off.
 - **Marked while enabled:** every listed DevLead-enabled Session carries a small DevLead mark
   in the sidebar session list, after its time label (`sidebar.session.row.trailing`), so the mode
   is recognizable after the conversation is closed. The mark reads the summary-sized
@@ -81,11 +83,11 @@ bar on every conversation:
   restates "DevLead mode is on" (`sidebar.session.row.hover`). On hover-capable devices the
   shell hides the row's resting marks while the row is hovered.
 
-Off (only the small toolbar icon):
+Off (the toolbar toggle is the only control):
 
 ![Off: the DevLead icon in the composer toolbar](docs/screenshots/devlead-toggle-off.png)
 
-On (the full status strip):
+On (the same toggle stays in the toolbar; the strip is status-only):
 
 ![On: the DevLead status strip above the composer](docs/screenshots/devlead-bar.png)
 
@@ -119,7 +121,7 @@ reports):
 | Interaction model | the model dispatches and waits inside a single turn | the DevLead session is itself an ordinary session; the model orchestrates across turns with `devlead_*` — after dispatching it ends the turn and the settle wake-up starts a new one — while the human can join in the same UI |
 | Lifecycle | ends with the parent turn / parent agent | child sessions exist independently and can be continued; `turn/end` notifications are durable and survive restarts |
 | Wake-up mechanism | parent agent blocks, or team messages | watched session `turn/end` → durable notification → coalesced wake of the DevLead (while its agent is alive) |
-| Switch | none | **human-only** `/devlead on\|off` or the UI switch (toolbar icon / strip switch); no model tool can enable it |
+| Switch | none | **human-only** `/devlead on\|off` or the composer-toolbar toggle (shown in both states); no model tool can enable it |
 | Best for | one-off parallel subtasks | cross-repository, long-running orchestration that needs continuous human participation and review |
 
 Rule of thumb: use subagent / agent-team for one-off parallel subtasks; use DevLead when an
@@ -136,7 +138,7 @@ packages/
   devlead/     @yankeguo/dsh-devlead              core service: mode, Workspace/Session orchestration, watch index, notification delivery, strict fold
   tool/        @yankeguo/dsh-tool-devlead         12 model tools + conditional system prompt
   command/     @yankeguo/dsh-command-devlead      the /devlead human command
-  client-ui/   @yankeguo/dsh-client-ui-devlead    browser UI: toolbar switch + DevLeadBar strip + sidebar row mark
+  client-ui/   @yankeguo/dsh-client-ui-devlead    browser UI: toolbar toggle + DevLeadBar status strip + sidebar row mark
   bundle/      @yankeguo/dsh-devlead-bundle       bundle: cordis.patch.yml + dependencies
 ```
 
@@ -286,8 +288,9 @@ regress; incompatible bundles are skipped by DSH.
 
 ### Toggle the mode
 
-The mode switch is **human-only**: run the command in any session, or click the UI switch —
-the DevLead icon in the composer toolbar while off, the strip switch while on.
+The mode switch is **human-only**: run the command in any session, or click the DevLead icon in
+the composer toolbar. The icon is present in both states: it sends `/devlead on` while the mode
+is off and `/devlead off` while it is on.
 
 ```
 /devlead on        # enable DevLead mode for the current session (requires a live Agent)
@@ -585,8 +588,8 @@ without it keeps the default single-checkout behavior and reports `unavailable`.
 
 ## Permission model
 
-- **Only humans can flip the mode:** `/devlead on|off`, or the UI switch (composer-toolbar icon /
-  strip switch — both merely send the same command). **No model tool can enable it**; every
+- **Only humans can flip the mode:** `/devlead on|off`, or the composer-toolbar toggle (shown
+  in both states and merely sending the same command). **No model tool can enable it**; every
   `devlead_*` tool is gated by `when`, so an ordinary session never sees them. This matches the
   design principle of never making permission decisions on the human's behalf.
 - **Writes require the mode:** every `devlead_*` write tool requires a live calling Agent and is
@@ -650,9 +653,9 @@ without it keeps the default single-checkout behavior and reports `unavailable`.
   result). Uncommitted changes are not copied into a worktree.
 - **No cross-process / cross-DSH-instance orchestration;** no custom Remote API; the UI only reads
   the projection and goes through commands.
-- **Small off-state entry point:** to avoid a permanent strip on every conversation, the off
-  state is only a composer-toolbar icon; remember the `/devlead on` command if that is not
-  obvious enough.
+- **One small switch:** to avoid a permanent strip on every conversation, the only mode switch
+  is the composer-toolbar icon; the status strip is display-only. Remember `/devlead on|off` if
+  the icon is not obvious enough.
 - **Sidebar mark backfill and blank rows:** the mark renders from the summary-sized
   `devLeadMode` projection. A Session enabled before this feature shipped shows the mark only
   once its projection cache carries the key (open that Session once, or toggle the mode again);
@@ -683,7 +686,7 @@ without it keeps the default single-checkout behavior and reports `unavailable`.
 | A child's turn settled but the DevLead was not woken | the mode is off, the session is not watched, the lead is cold and `wakeColdSession: false` (queues wait for the Session to be opened), the Host composes no Session activator to resume it, the notification is still inside the coalescing window, or the wake is waiting for an undelivered notice to leave the inbox (retried within 1 s) |
 | The DevLead switch seems to do nothing | the command may still be running (the switch is disabled); when enabling fails, the error shows inline in the strip or in the icon tooltip |
 | The strip's counts disagree with the sidebar | the strip computes from the projection's watch set and the standard Session list; a just-changed value can lag briefly — reload the page to re-read |
-| Cannot find the switch while off | it is the user icon in the composer toolbar (next to the permission dropdown); hover shows "Turn on DevLead mode"; `/devlead on` also works |
+| Cannot find the switch | it is the user icon in the composer toolbar (next to the permission dropdown) and is shown in both states; hover shows "Turn on DevLead mode" while off or "Turn off DevLead mode" while on; `/devlead on|off` also works |
 | DevLead state survives a restart | expected: mode / watch set / notifications are durable records; run `/devlead off` when no longer needed |
 | Under a dev overlay, `/devlead on` throws `gateway/internal: Receiver must be an instance of class Session` | the overlay has no linked root (stale generated overlay, hand-written patch, or the profile was swapped). Re-run `pnpm dev:patch --profile <dev>` and confirm `<profile>/node_modules/devlead-repo` exists, then restart; or use `pnpm e2e` to run the correct flow |
 | `pnpm dev:patch` reports profile not found / already enables bundle | a dedicated dev profile is required: `dsh devlead --from-default-profile web --dump-config`; a profile that enables this bundle cannot take a second loader row with the same id |

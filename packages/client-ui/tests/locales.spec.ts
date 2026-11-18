@@ -38,6 +38,17 @@ describe('dictionaries', () => {
     }
   })
 
+  it('offers both toggle directions and retires the old strip-switch keys', () => {
+    expect(zh['toggle.enable'].length).toBeGreaterThan(0)
+    expect(zh['toggle.disable'].length).toBeGreaterThan(0)
+    expect(zh['toggle.pending'].length).toBeGreaterThan(0)
+    expect(zh['toggle.failed.disable'].length).toBeGreaterThan(0)
+    expect(zh['toggle.failed.status.disable'].length).toBeGreaterThan(0)
+    expect(en['toggle.disable'].length).toBeGreaterThan(0)
+    expect(Object.keys(zh).filter(key => key.startsWith('switch.'))).toEqual([])
+    expect(Object.keys(en).filter(key => key.startsWith('switch.'))).toEqual([])
+  })
+
   it('localizes every shared protocol transition', () => {
     for (const transition of DEVLEAD_TRANSITIONS) {
       const key = transitionLabelKey(transition)

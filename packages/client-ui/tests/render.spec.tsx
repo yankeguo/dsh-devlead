@@ -9,11 +9,12 @@
  * branches.
  *
  * What each surface and the shared admission hook must guarantee:
- * - nothing renders while the mode is disabled or the projection is absent;
- * - the enabled strip exposes its busy/pending state, counts, and the live
- *   notification region to assistive technology;
- * - a failed command is never swallowed: the strip renders an inline alert, the
- *   toolbar toggle a failed marker plus a visually hidden live region;
+ * - the enabled strip is status-only: no switch or other command control, but
+ *   counts and the live notification region;
+ * - the toolbar toggle renders in both mode states, submits `/devlead on` or
+ *   `/devlead off`, exposes pending through disabled/aria-busy, and reports
+ *   failures through its label, title, tooltip, and a visually hidden live
+ *   region;
  * - one in-flight command cannot be admitted twice, a settle after unmount is
  *   ignored, and a mode change retires stale feedback.
  */
@@ -27,12 +28,12 @@ import {
   notificationLine,
 } from '@yankeguo/dsh-devlead-protocol/client'
 import type { DevLeadNotification, DevLeadProjection } from '@yankeguo/dsh-devlead-protocol/client'
+import { DevLeadBar, type DevLeadBarProps } from '../src/client/DevLeadBar.tsx'
 import {
-  DevLeadBar,
-  type DevLeadBarProps,
+  DevLeadIconToggle,
   type DevLeadCommandInjected,
-} from '../src/client/DevLeadBar.tsx'
-import { DevLeadIconToggle, type DevLeadIconToggleProps } from '../src/client/DevLeadIconToggle.tsx'
+  type DevLeadIconToggleProps,
+} from '../src/client/DevLeadIconToggle.tsx'
 import {
   DevLeadSessionHoverMark,
   type DevLeadSessionHoverMarkProps,
@@ -71,37 +72,17 @@ vi.mock('@deepseek-ai/dsh-client-ui-primitives', () => {
     readonly 'data-devlead-failed'?: string
   }) => <button {...rest}>{children}</button>
 
-  /** Checkbox-like switch forwarding the controlled state and the click intent. */
-  const Switch = ({ checked, disabled, label, title, onChange, className }: {
-    readonly checked: boolean
-    readonly disabled?: boolean
-    readonly label: string
-    readonly title?: string
-    readonly className?: string
-    readonly onChange: (next: boolean) => void
-  }) => (
-    <input
-      type="checkbox"
-      className={className}
-      checked={checked}
-      disabled={disabled}
-      aria-label={label}
-      title={title}
-      onChange={() => {
-        onChange(!checked)
-      }}
-    />
-  )
-
-  /** Tooltip renders its anchor only; hover behavior is not under test. */
-  const Tooltip = ({ children }: { readonly children?: ReactNode }) => <>{children}</>
+  /** Tooltip renders its anchor and exposes the label it was asked to show. */
+  const Tooltip = ({ label, children }: {
+    readonly label?: string
+    readonly children?: ReactNode
+  }) => <span data-mock-tooltip={label}>{children}</span>
 
   /** Both surface glyphs render as an inert span. */
   const Icon = () => <span data-mock-icon="true" aria-hidden="true" />
 
   return {
     Button,
-    Switch,
     Tooltip,
     IconShieldOutlineRegular: Icon,
     IconUsersOutlineRegular: Icon,
@@ -237,7 +218,7 @@ function barProps(fakes: SurfaceFakes): DevLeadBarProps {
 }
 
 /**
- * Props of the off-state toolbar toggle for one test input.
+ * Props of the both-state toolbar toggle for one test input.
  * @param fakes - per-test inputs.
  * @returns the composed component props.
  */
@@ -337,7 +318,7 @@ describe('DevLeadBar', () => {
     expect(disabled.toJSON()).toBeNull()
   })
 
-  it('renders the enabled strip: group label, counts, switch, and help hint', async () => {
+  it('renders the enabled strip as status-only: label, counts, and help hint', async () => {
     const projection: DevLeadProjection = {
       enabled: true,
       sessions: ['session-a', 'session-b', 'session-c'],
@@ -356,11 +337,15 @@ describe('DevLeadBar', () => {
       />,
     )
 
-    expect(renderer.root.findByProps({ 'data-devlead-enabled': 'true' })).toBeDefined()
+    const dock = renderer.root.findByProps({ 'data-devlead-bar': 'true' })
+    expect(dock.props['data-devlead-enabled']).toBe('true')
+    // The old strip carried a pending flag for its switch; a status strip that
+    // issues no command must not expose one.
+    expect(dock.props['data-devlead-pending']).toBeUndefined()
     const bar = renderer.root.findByProps({ className: 'devlead-bar' })
     expect(bar.props['role']).toBe('group')
     expect(bar.props['aria-label']).toBe(zh['bar.aria'])
-    expect(bar.props['aria-busy']).toBe(false)
+    expect(bar.props['aria-busy']).toBeUndefined()
     expect(bar.props['title']).toBe(zh['hint.enabled'])
 
     expect(textOf(renderer.root.findByProps({ className: 'devlead-watched' }))).toBe(
@@ -373,13 +358,11 @@ describe('DevLeadBar', () => {
       t('count.missing', { count: 1 }),
     )
 
-    // The switch is controlled by the projection only: checked, enabled, and
-    // asking for "off" while the strip is the enabled surface.
-    const control = renderer.root.findByType('input')
-    expect(control.props['checked']).toBe(true)
-    expect(control.props['disabled']).toBe(false)
-    expect(control.props['aria-label']).toBe(zh['switch.aria'])
-    expect(control.props['title']).toBe(zh['switch.disable'])
+    // The strip owns no mode switch: the only control lives in the composer
+    // toolbar and must stay visible when the strip comes and goes.
+    expect(renderer.root.findAllByType('input')).toHaveLength(0)
+    expect(renderer.root.findAllByType('button')).toHaveLength(0)
+    expect(renderer.root.findAllByProps({ className: 'devlead-switch' })).toHaveLength(0)
 
     // No retained notification yet: the strip keeps the help hint visible in
     // its polite live region instead of leaving the row visually empty.
@@ -419,75 +402,12 @@ describe('DevLeadBar', () => {
     )
   })
 
-  it('marks the strip busy and disables the switch while a command is in flight', async () => {
-    const command = deferredAdmission()
-    const executeCommand = vi.fn(() => command.promise)
-    const renderer = await mount(
-      <DevLeadBar {...barProps({ projection: ENABLED_PROJECTION, executeCommand })} />,
-    )
-
-    await settle(() => {
-      renderer.root.findByType('input').props['onChange']()
-    })
-    expect(executeCommand).toHaveBeenCalledTimes(1)
-    expect(executeCommand).toHaveBeenCalledWith('/devlead off')
-
-    // In flight: the outer dock and the bar report it, the switch refuses input.
-    expect(renderer.root.findByProps({ 'data-devlead-pending': 'true' })).toBeDefined()
-    expect(renderer.root.findByProps({ className: 'devlead-bar' }).props['aria-busy']).toBe(true)
-    const pendingControl = renderer.root.findByType('input')
-    expect(pendingControl.props['disabled']).toBe(true)
-    expect(pendingControl.props['title']).toBe(zh['switch.pending'])
-
-    command.resolve(SUCCESS)
-    await settle(() => {})
-    expect(renderer.root.findByProps({ 'data-devlead-pending': 'false' })).toBeDefined()
-    const settledControl = renderer.root.findByType('input')
-    expect(settledControl.props['disabled']).toBe(false)
-    expect(settledControl.props['title']).toBe(zh['switch.disable'])
-    expect(renderer.root.findAllByProps({ role: 'alert' })).toHaveLength(0)
-  })
-
-  it('reports a thrown command face as an inline alert', async () => {
-    const executeCommand = vi.fn(async (): Promise<DevLeadCommandAdmission> => {
-      throw new Error('transport down')
-    })
-    const renderer = await mount(
-      <DevLeadBar {...barProps({ projection: ENABLED_PROJECTION, executeCommand })} />,
-    )
-    await settle(() => {
-      renderer.root.findByType('input').props['onChange']()
-    })
-    const alert = renderer.root.findByProps({ role: 'alert' })
-    expect(textOf(alert)).toBe(t('error.unknown', { message: 'transport down' }))
-  })
-
-  it('reports a logical command rejection as an inline alert', async () => {
-    const executeCommand = vi.fn(
-      async (): Promise<DevLeadCommandAdmission> => ({
-        ok: true,
-        value: { result: { kind: 'error', text: 'no live Agent' } },
-      }),
-    )
-    const renderer = await mount(
-      <DevLeadBar {...barProps({ projection: ENABLED_PROJECTION, executeCommand })} />,
-    )
-    await settle(() => {
-      renderer.root.findByType('input').props['onChange']()
-    })
-    const alert = renderer.root.findByProps({ role: 'alert' })
-    expect(textOf(alert)).toBe(t('error.rejected', { message: 'no live Agent' }))
-  })
 })
 
 describe('DevLeadIconToggle', () => {
-  it('renders nothing without a projection or while mode is enabled', async () => {
+  it('renders nothing without a projection', async () => {
     const absent = await mount(<DevLeadIconToggle {...toggleProps({ projection: undefined })} />)
     expect(absent.toJSON()).toBeNull()
-    const enabled = await mount(
-      <DevLeadIconToggle {...toggleProps({ projection: ENABLED_PROJECTION })} />,
-    )
-    expect(enabled.toJSON()).toBeNull()
   })
 
   it('renders the off-state button and turns mode on when clicked', async () => {
@@ -500,9 +420,13 @@ describe('DevLeadIconToggle', () => {
 
     const button = renderer.root.findByType('button')
     expect(button.props['aria-label']).toBe(zh['toggle.enable'])
+    expect(button.props['title']).toBe(zh['toggle.enable'])
+    expect(button.props['aria-pressed']).toBe(false)
     expect(button.props['aria-busy']).toBe(false)
     expect(button.props['data-devlead-toggle']).toBe('true')
+    expect(button.props['data-devlead-enabled']).toBe('false')
     expect(button.props['data-devlead-failed']).toBe('false')
+    expect(renderer.root.findByProps({ 'data-mock-tooltip': zh['toggle.enable'] })).toBeDefined()
     // The compact toolbar has no inline error seat: the live region is mounted
     // from the start and announces a later change.
     expect(textOf(renderer.root.findByProps({ role: 'status' }))).toBe('')
@@ -515,19 +439,52 @@ describe('DevLeadIconToggle', () => {
     expect(renderer.root.findByType('button').props['data-devlead-pending']).toBe('false')
   })
 
-  it('disables the button while the command is in flight', async () => {
+  it('stays rendered in the on state and turns mode off when clicked', async () => {
+    const executeCommand = vi.fn(async () => SUCCESS)
+    const renderer = await mount(
+      <DevLeadIconToggle
+        {...toggleProps({ projection: ENABLED_PROJECTION, executeCommand })}
+      />,
+    )
+
+    const button = renderer.root.findByType('button')
+    expect(button.props['aria-label']).toBe(zh['toggle.disable'])
+    expect(button.props['title']).toBe(zh['toggle.disable'])
+    expect(button.props['aria-pressed']).toBe(true)
+    expect(button.props['aria-busy']).toBe(false)
+    expect(button.props['data-devlead-enabled']).toBe('true')
+    expect(button.props['data-devlead-failed']).toBe('false')
+    expect(renderer.root.findByProps({ 'data-mock-tooltip': zh['toggle.disable'] })).toBeDefined()
+    expect(textOf(renderer.root.findByProps({ role: 'status' }))).toBe('')
+
+    await settle(() => {
+      button.props['onClick']()
+    })
+    expect(executeCommand).toHaveBeenCalledTimes(1)
+    expect(executeCommand).toHaveBeenCalledWith('/devlead off')
+    expect(renderer.root.findByType('button').props['data-devlead-pending']).toBe('false')
+  })
+
+  it.each([
+    ['on', DISABLED_PROJECTION, '/devlead on'],
+    ['off', ENABLED_PROJECTION, '/devlead off'],
+  ] as const)('disables the button and shows pending copy while a %s command is in flight', async (
+    _direction, projection, line,
+  ) => {
     const command = deferredAdmission()
     const executeCommand = vi.fn(() => command.promise)
     const renderer = await mount(
-      <DevLeadIconToggle
-        {...toggleProps({ projection: DISABLED_PROJECTION, executeCommand })}
-      />,
+      <DevLeadIconToggle {...toggleProps({ projection, executeCommand })} />,
     )
     await settle(() => {
       renderer.root.findByType('button').props['onClick']()
     })
+
+    expect(executeCommand).toHaveBeenCalledWith(line)
     const pending = renderer.root.findByType('button')
     expect(pending.props['aria-busy']).toBe(true)
+    expect(pending.props['aria-label']).toBe(zh['toggle.pending'])
+    expect(pending.props['title']).toBe(zh['toggle.pending'])
     expect(pending.props['disabled']).toBe(true)
     expect(pending.props['data-devlead-pending']).toBe('true')
 
@@ -538,7 +495,7 @@ describe('DevLeadIconToggle', () => {
     expect(settled.props['disabled']).toBe(false)
   })
 
-  it('reports a failure through the aria-label, failed marker, and hidden live region', async () => {
+  it('reports a failed on attempt through the label, tooltip, and hidden live region', async () => {
     const executeCommand = vi.fn(async (): Promise<DevLeadCommandAdmission> => {
       throw new Error('carrier lost')
     })
@@ -552,16 +509,52 @@ describe('DevLeadIconToggle', () => {
     })
 
     const button = renderer.root.findByType('button')
+    const label = t('toggle.failed', { message: 'carrier lost' })
     expect(button.props['data-devlead-failed']).toBe('true')
-    expect(button.props['aria-label']).toBe(
-      t('toggle.failed', { message: 'carrier lost' }),
-    )
+    expect(button.props['aria-label']).toBe(label)
+    expect(button.props['title']).toBe(label)
+    expect(renderer.root.findByProps({ 'data-mock-tooltip': label })).toBeDefined()
     expect(textOf(renderer.root.findByProps({ role: 'status' }))).toBe(
       t('toggle.failed.status', { message: 'carrier lost' }),
     )
     // A settled failure must not leave the control disabled: retrying is the
     // whole point of keeping the button in place.
     expect(button.props['disabled']).toBe(false)
+  })
+
+  it('reports a failed off attempt with the off copy and keeps the control retryable', async () => {
+    const executeCommand = vi.fn(async (): Promise<DevLeadCommandAdmission> => {
+      throw new Error('carrier lost')
+    })
+    const renderer = await mount(
+      <DevLeadIconToggle
+        {...toggleProps({ projection: ENABLED_PROJECTION, executeCommand })}
+      />,
+    )
+    await settle(() => {
+      renderer.root.findByType('button').props['onClick']()
+    })
+
+    const button = renderer.root.findByType('button')
+    const label = t('toggle.failed.disable', { message: 'carrier lost' })
+    expect(executeCommand).toHaveBeenCalledWith('/devlead off')
+    expect(button.props['data-devlead-failed']).toBe('true')
+    expect(button.props['data-devlead-enabled']).toBe('true')
+    expect(button.props['aria-label']).toBe(label)
+    expect(button.props['title']).toBe(label)
+    expect(renderer.root.findByProps({ 'data-mock-tooltip': label })).toBeDefined()
+    expect(textOf(renderer.root.findByProps({ role: 'status' }))).toBe(
+      t('toggle.failed.status.disable', { message: 'carrier lost' }),
+    )
+    expect(button.props['disabled']).toBe(false)
+
+    // The mode never left the projection's enabled state, so a retry still
+    // submits the off command.
+    await settle(() => {
+      renderer.root.findByType('button').props['onClick']()
+    })
+    expect(executeCommand).toHaveBeenCalledTimes(2)
+    expect(executeCommand).toHaveBeenLastCalledWith('/devlead off')
   })
 })
 

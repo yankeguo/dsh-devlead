@@ -9,7 +9,8 @@
 
 - **DevLead 会话 = 普通会话 + 一个持久开关**：打开后该会话额外获得 12 个 `devlead_*` 工具、
   一段 DevLead 系统提示，composer 上方出现状态条 UI；开关本身是**人类专属操作**，模型不能
-  自行打开。未开启时界面里只有 composer 工具条上的一个小图标，不会在每个会话上显示常驻状态条。
+  自行打开。界面始终在 composer 工具条提供一个小图标作为开关；开启后才会在 composer 上方
+  出现状态条，不会在每个会话上显示常驻状态条。
 - **默认调度、不亲自实现**：DevLead 会话先判定请求归属哪个 Workspace（依据已注册 Workspace
   的元数据与人类给出的目录，而不是去翻别的仓库代码），把自包含简报派发给该 Workspace 的
   Session，然后监督、审阅交付并汇报。只读检查属于**有界的可行性判断**——足以判定归属、给出
@@ -47,20 +48,20 @@
 | 事件溯源 | 模式/watch 集合/通知/reset 全部是可忽略的 `plugin:devlead/*` 记录，严格回放校验，可跨重启 / 恢复 / fork |
 | 损坏状态恢复 | 损坏的 `plugin:devlead/*` 记录会冻结 fold；人类专属 `/devlead reset`（或冻结时的 `/devlead off`）追加 `plugin:devlead/reset` 记录，让两个 projection 回到默认 disabled 状态（见[通知机制](#通知机制)） |
 | Session projection | `devLead` projection（`{ enabled, sessions, notifications }`）把状态同步到浏览器，无需自定义 Remote API；summary 级的 `devLeadMode`（`{ enabled }`）随每个 Session 列表行下发，供侧边栏渲染标记 |
-| 界面 | 未开启时只有 composer 工具条里的一个小图标（不显眼、无常驻条）；开启后 composer 上方出现 DevLeadBar：开关、监督会话数/运行中数、最近一条通知；界面只发 `/devlead on\|off` 命令；已开启的会话在侧边栏会话列表里带标记 |
+| 界面 | composer 工具条里的小图标是唯一开关，两态都存在（关闭态发 `/devlead on`、开启态发 `/devlead off`）；开启后 composer 上方出现只读 DevLeadBar：监督会话数/运行中数、最近一条通知；状态条不带开关；已开启的会话在侧边栏会话列表里带标记 |
 | 权限模型 | 模式开关只能由人类命令/UI 触发；通知是运行时提示而非人类指令（见[权限模型](#权限模型)） |
 | 一键安装 | bundle 的 `cordis.patch.yml` 插入全部 4 个运行时插件行，也可单独安装某个包 |
 
 ## 界面
 
-UI 分两态，插件**不会**在每个会话上摆一条明显的常驻条：
+UI 有一个开关、两种状态。插件**不会**在每个会话上摆一条明显的常驻条：
 
-- **未开启**：composer 工具条里（权限下拉旁，槽位 `conversation.input.left`）只有一个很小的
-  用户图标按钮，悬停显示「开启 DevLead 模式」；点击即发送 `/devlead on`。会话里没有状态条。
-  也可以用 `/devlead on` 命令打开。
-- **已开启**：图标隐藏，composer 上方出现完整的 DevLeadBar（槽位
-  `conversation.input.dock`）：模式开关（点击即 `/devlead off`）、监督会话数、运行中数、
-  最近一条通知；没有通知时显示帮助提示。
+- **始终存在**：composer 工具条里（权限下拉旁，槽位 `conversation.input.left`）有一个很小的
+  用户图标按钮。模式关闭时悬停显示「开启 DevLead 模式」，点击即发送 `/devlead on`；模式开启时
+  同一个按钮留在原位，悬停显示「关闭 DevLead 模式」，点击发送 `/devlead off`。
+- **已开启**：composer 上方出现状态条 DevLeadBar（槽位 `conversation.input.dock`）：品牌、
+  监督会话数、运行中数、最近一条通知；没有通知时显示帮助提示。状态条只做展示，不承载开关，
+  因此关闭模式时不会把执行关闭的控件一起藏掉。模式关闭时没有状态条。
 - **侧边栏标记**：每个列出的、开启 DevLead 的会话在侧边栏会话列表里带一个小标记（行尾时间
   之后，槽位 `sidebar.session.row.trailing`），会话关掉后仍然可辨识。标记读 summary 级
   `devLeadMode` projection，因此 cold 会话也能渲染，且不产生每行额外 Host 读取。DSH
@@ -68,11 +69,11 @@ UI 分两态，插件**不会**在每个会话上摆一条明显的常驻条：
   开启模式后，要等第一次 turn 才显示标记；桌面端悬停行时 shell 会隐藏行尾 resting 标记，
   此时该行 hover card 另行说明「DevLead 模式已启用」（槽位 `sidebar.session.row.hover`）。
 
-未开启（只有工具条里的小图标）：
+未开启（工具条图标是唯一控件）：
 
 ![未开启：composer 工具条里的 DevLead 图标](docs/screenshots/devlead-toggle-off.png)
 
-已开启（完整状态条）：
+已开启（同一个图标留在工具条；状态条只做展示）：
 
 ![已开启：composer 上方的 DevLead 状态条](docs/screenshots/devlead-bar.png)
 
@@ -84,15 +85,15 @@ UI 分两态，插件**不会**在每个会话上摆一条明显的常驻条：
 | 状态 | 界面 | 交互 |
 | --- | --- | --- |
 | `devLead` projection 尚未加载 | 什么都不渲染 | — |
-| 模式关闭 | composer 工具条里的小图标按钮 | 点击发送 `/devlead on`，随后从 projection 重渲染 |
-| 模式开启，无监督会话 | DevLeadBar：开关 + 监督 0 个会话 + 帮助提示 | 拨动开关发送 `/devlead off` |
-| 模式开启 | DevLeadBar：开关 + 监督 N 个会话 / 运行中 M，另附最近一条通知摘要 | 同上；命令执行中开关禁用 |
-| 命令返回逻辑错误 | 开启时：状态条内联错误行；未开启时：图标 tooltip 显示错误文本 | 修正后重试 |
+| 模式关闭 | composer 工具条里的图标按钮 | 点击发送 `/devlead on`，随后从 projection 重渲染 |
+| 模式开启，无监督会话 | 同一图标按钮 + DevLeadBar：监督 0 个会话 + 帮助提示 | 图标点击发送 `/devlead off`；状态条只展示 |
+| 模式开启 | 同一图标按钮 + DevLeadBar：监督 N 个会话 / 运行中 M，另附最近一条通知摘要 | 同上；命令执行中图标禁用 |
+| 命令返回逻辑错误 | 图标 tooltip、aria-label 与屏幕阅读器 live region 显示对应方向的失败文案 | 修正后重试 |
 
-- 状态条与图标只读 `useProjection('devLead')` 与标准 Session 列表，**不新增 Remote API**；
-  侧边栏标记与 hover card 说明只读 Session 列表 summary；
-  两者都调用注入的 `executeCommand('/devlead on'|'/devlead off')`，不会乐观翻转，一律以
-  projection 为准。
+- 图标按钮只读 `useProjection('devLead')`，调用注入的
+  `executeCommand('/devlead on'|'/devlead off')`，不会乐观翻转，一律以 projection 为准；
+  状态条只读同一 projection 与标准 Session 列表，**不发送命令**，也不新增 Remote API；
+  侧边栏标记与 hover card 说明只读 Session 列表 summary。
 - 浏览器侧只在 Web 端渲染；i18n namespace 为 `devlead`，提供 `zh` / `en` 词典。
 
 ## 与 subagent / agent-team 的区别
@@ -104,7 +105,7 @@ UI 分两态，插件**不会**在每个会话上摆一条明显的常驻条：
 | 交互方式 | 模型在单个 turn 内调用工具派发、等待结果 | DevLead 会话本身是普通会话；模型用 `devlead_*` 跨 turn 编排——派发后结束本轮，由唤醒开启新 turn——人类可以在同一界面介入 |
 | 生命周期 | 随父 turn / 父 Agent 结束 | 子会话独立存在，可续写；`turn/end` 持久通知，可跨重启 |
 | 唤醒机制 | 父 Agent 阻塞等待或 team 消息 | 被 watch 会话的 `turn/end` → 持久通知 → 合并窗口唤醒 DevLead（Agent 存活时） |
-| 开关 | 无 | **人类专属** `/devlead on\|off` 或界面开关（composer 工具条图标 / 状态条 Switch）；模型无工具可开启 |
+| 开关 | 无 | **人类专属** `/devlead on\|off` 或 composer 工具条开关（两态都显示）；模型无工具可开启 |
 | 适用场景 | 一次性并行子任务 | 跨仓库、长周期、需要人类持续参与和审查的統管工作 |
 
 选择建议：只需要并行跑一次性子任务时用 subagent / agent-team；要让 Agent 长期负责多个仓库、
@@ -120,7 +121,7 @@ packages/
   devlead/     @yankeguo/dsh-devlead              核心服务：模式、Workspace/Session 编排、监督索引、通知投递、严格 fold
   tool/        @yankeguo/dsh-tool-devlead         12 个模型工具 + 条件 system prompt
   command/     @yankeguo/dsh-command-devlead      /devlead 人类命令
-  client-ui/   @yankeguo/dsh-client-ui-devlead    浏览器 UI：工具条开关 + 开启后的 DevLeadBar + 侧边栏会话行标记
+  client-ui/   @yankeguo/dsh-client-ui-devlead    浏览器 UI：工具条开关 + 开启后的只读 DevLeadBar + 侧边栏会话行标记
   bundle/      @yankeguo/dsh-devlead-bundle       bundle：cordis.patch.yml + 依赖
 ```
 
@@ -260,8 +261,8 @@ DSH 跳过。
 
 ### 打开 / 关闭模式
 
-模式开关是**人类专属**的：在任意会话里执行命令，或点击界面上的开关——未开启时是 composer
-工具条里的 DevLead 图标，已开启时是状态条上的 Switch。
+模式开关是**人类专属**的：在任意会话里执行命令，或点击 composer 工具条里的 DevLead 图标。
+图标在两种状态下都存在：未开启时发送 `/devlead on`，已开启时发送 `/devlead off`。
 
 ```
 /devlead on        # 打开当前会话的 DevLead 模式（需要 Agent live）
@@ -295,7 +296,7 @@ DSH 跳过。
 
 ### 推荐工作流
 
-1. 在准备統管多个仓库的那个会话里执行 `/devlead on`（或点 composer 工具条里的 DevLead 图标）；
+1. 在准备統管多个仓库的那个会话里执行 `/devlead on`（或点 composer 工具条里的 DevLead 图标，它在两态下都是开关）；
    此后模型把该会话当作调度者，而不是实现现场。
 2. 判定归属并注册工作区：先判断请求归属哪个 Workspace，用 `devlead_list_workspaces` 查看已注册
    项；`devlead_use_workspace` 传入仓库的**绝对路径**，重复注册幂等，`create` 默认 `false`：
@@ -506,8 +507,8 @@ config 是整体替换）。
 
 ## 权限模型
 
-- **模式开关只能由人类触发**：`/devlead on\|off` 命令或界面开关（composer 工具条图标 /
-  状态条 Switch，二者也只是发送同名命令）。模型工具中**没有任何可以打开模式的能力**；`devlead_*` 全部带 `when` 门控，普通
+- **模式开关只能由人类触发**：`/devlead on\|off` 命令或 composer 工具条开关（两态都显示，
+  只是发送同名命令）。模型工具中**没有任何可以打开模式的能力**；`devlead_*` 全部带 `when` 门控，普通
   会话里根本看不到它们。这与"不替人类做权限决策"的设计一致。
 - **写入需要模式开启**：所有 `devlead_*` 写工具都要求 live 调用者，且只在模式开启时可见；
   `createSession` / `promptSession` / `watchSession` 在 core 中重新校验 live 与模式
@@ -553,8 +554,8 @@ config 是整体替换）。
   不可用；即使有，沙箱过严、checkout 不是 Git 仓库、或生成的分支/检出路径已存在时创建仍可能
   失败，此时 Session 继续在共享 checkout 运行（结果里如实上报）。未提交改动不会复制进 worktree。
 - **不跨进程 / 跨 DSH 实例编排**；不新增 Remote API；UI 只读 projection + 走命令。
-- **未开启时入口较小**：为了不在每个会话上显示常驻状态条，未开启时只有一个 composer 工具条
-  图标；不习惯的话记 `/devlead on` 命令即可。
+- **只有一个很小的开关**：为了不在每个会话上显示常驻状态条，唯一开关是 composer 工具条
+  图标，状态条只做展示；不习惯的话记 `/devlead on|off` 命令即可。
 - **侧边栏标记的回填与空白行**：标记来自 summary 级 `devLeadMode` projection。本特性发布前
   就已开启 DevLead 的会话，要等它的投影 cache 出现该 key 后才显示标记（打开该会话一次，或
   再开关一次模式即可回填）；v1 不在 Host 启动时做回填。DSH rc.1 对空白（尚无 turn）的
@@ -578,9 +579,9 @@ config 是整体替换）。
 | `/devlead watch` 报歧义 | 前缀命中多个会话；按错误里的候选改用更长前缀或完整 id |
 | `/devlead watch` 报模式未开启 | 先 `/devlead on`；watch 集合变更需要模式开启 |
 | 子会话 turn 结束但没有唤醒 DevLead | 模式已关闭、该会话未被 watch、lead 是 cold 且配置了 `wakeColdSession: false`（队列等会话被打开）、Host 没有可 resume 的 Session activator、通知还在合并窗口内，或唤醒在等 inbox 里的未投递 notice 先被消费（最多 1s 后重检） |
-| DevLead 开关点了没反应 | 命令可能仍在执行（开关禁用）；开启失败时错误会显示在状态条内联行或图标 tooltip 里 |
+| DevLead 开关点了没反应 | 命令可能仍在执行（图标按钮禁用）；开启/关闭失败时错误会显示在图标 tooltip、aria-label 与屏幕阅读器 live region 里 |
 | 状态条显示的数量与侧边栏不一致 | 状态条按 projection 的 watch 集合与标准 Session 列表计算；刚变更时可能有短暂延迟，刷新页面可重读 |
-| 未开启时找不到开关 | 开关是 composer 工具条里的用户图标（权限下拉旁），悬停有「开启 DevLead 模式」提示；也可直接 `/devlead on` |
+| 找不到开关 | 开关是 composer 工具条里的用户图标（权限下拉旁），两态都存在；未开启时悬停提示「开启 DevLead 模式」，已开启时提示「关闭 DevLead 模式」；也可直接 `/devlead on|off` |
 | 重启后 DevLead 状态仍在 | 预期行为：模式 / watch 集合 / 通知都是持久记录；不需要时 `/devlead off` |
 | 开发 overlay 下 `/devlead on` 报 `gateway/internal: Receiver must be an instance of class Session` | overlay 缺少 linked root（旧版生成物、手写 patch，或 profile 被换过）。重新执行 `pnpm dev:patch --profile <dev>`，确认 `<profile>/node_modules/devlead-repo` 存在后重启；或用 `pnpm e2e` 复现正确流程 |
 | `pnpm dev:patch` 报 profile not found / already enables bundle | 需要专用 dev profile：`dsh devlead --from-default-profile web --dump-config`；已启用本 bundle 的 profile 不能再插入同 id 的 loader row |

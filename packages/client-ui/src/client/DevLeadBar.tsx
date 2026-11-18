@@ -2,52 +2,36 @@
  * DevLeadBar: the DevLead status strip docked above the message composer
  * (`conversation.input.dock`).
  *
- * The strip renders only while DevLead mode is enabled for this Session. An
- * inactive Session shows nothing here: the off-state switch lives in the
- * composer toolbar (`DevLeadIconToggle`, `conversation.input.left`), so
- * installing the plugin does not put a permanent bar above every conversation.
+ * The strip renders only while DevLead mode is enabled for this Session. It is
+ * a pure status surface: it owns no switch and sends no command. The single
+ * mode switch is the composer-toolbar toggle (`DevLeadIconToggle`,
+ * `conversation.input.left`), which stays mounted in both states — so turning
+ * the mode off can never hide the control that did it. Installing the plugin
+ * still does not put a permanent bar above every conversation.
  *
- * Enabled state shows the brand, the on switch, the watched/running counts, and
- * the latest retained notification (or the help hint when there is none).
- *
- * The switch is controlled by the projection only — never optimistically
- * flipped. A click executes the Host `/devlead off` command through the
- * injected face, and the strip disappears from the projection once the Host
- * append lands. Every failure (a failed Remote admission, a logical command
- * rejection, or a line the Host resolved to no command) surfaces inline; the
- * strip never swallows it.
+ * Enabled state shows the brand, the watched/running counts, and the latest
+ * retained notification (or the help hint when there is none). Durable state
+ * arrives through the `devLead` projection; this surface never writes it.
  */
 
-import { IconUsersOutlineRegular, Switch } from '@deepseek-ai/dsh-client-ui-primitives'
+import { IconUsersOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { SessionListState } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { SessionStatusSnapshot } from '@deepseek-ai/dsh-client-ui-session/client'
-import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
-import { DEVLEAD_COMMAND_NAME, DEVLEAD_PROJECTION_KEY } from '@yankeguo/dsh-devlead-protocol/client'
+import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
+import { DEVLEAD_PROJECTION_KEY } from '@yankeguo/dsh-devlead-protocol/client'
 import {
   latestNotification,
   notificationSummary,
   summarizeWatched,
 } from './format.ts'
-import { failureCopy, type DevLeadCommandAdmission } from './results.ts'
-import { useDevLeadAdmission } from './useDevLeadAdmission.ts'
 
-/** Injected business face shared by every DevLead surface: command admission. */
-export interface DevLeadCommandInjected {
-  /**
-   * Execute one `/devlead` line against the surface's Session.
-   * @param line - the full command line, leading slash included.
-   * @returns the Host admission result.
-   */
-  readonly executeCommand: (line: string) => Promise<DevLeadCommandAdmission>
-}
-
-/** Full props of the dock entry: runtime share + injected face + locale seat. */
+/** Full props of the dock entry: runtime share + locale seat. */
 export type DevLeadBarProps =
-  PropsRuntime<'conversation.input.dock'> & InjectFace<DevLeadCommandInjected> & PropsLocale<'devlead'>
+  PropsRuntime<'conversation.input.dock'> & PropsLocale<'devlead'>
 
 /** The DevLead strip above the composer, rendered only in enabled mode. */
 export function DevLeadBar({
-  useProjection, useSessions, useSessionStatus, executeCommand, t,
+  useProjection, useSessions, useSessionStatus, t,
 }: DevLeadBarProps) {
   const projection = useProjection(DEVLEAD_PROJECTION_KEY)
   // Both sources are selector hooks over framework snapshots; the explicit
@@ -56,50 +40,29 @@ export function DevLeadBar({
   const rows = useSessions((state: SessionListState) => state.byId)
   const statuses = useSessionStatus((current: SessionStatusSnapshot) => current)
   const enabled = projection?.enabled ?? false
-  const { pending, failure, run } = useDevLeadAdmission(executeCommand, enabled)
 
   if (projection === undefined || !enabled) return null
 
   const summary = summarizeWatched(projection.sessions, rows, statuses)
   const latest = latestNotification(projection.notifications)
   const notice = latest === null ? null : notificationSummary(latest)
-  const failureLine = failure === null ? null : failureCopy(failure)
-  const switchTitle = pending ? t('switch.pending') : t('switch.disable')
-
-  // The strip only exists while enabled, so the only transition the switch can
-  // request is turning the mode off; a reported check (for example a duplicated
-  // click after the projection already caught up) is ignored.
-  const toggle = (next: boolean): void => {
-    if (next) return
-    run(`/${DEVLEAD_COMMAND_NAME} off`)
-  }
 
   return (
     <div
       className="devlead-dock"
       data-devlead-bar="true"
       data-devlead-enabled="true"
-      data-devlead-pending={pending ? 'true' : 'false'}
     >
       <div
         className="devlead-bar"
         role="group"
         aria-label={t('bar.aria')}
-        aria-busy={pending}
         title={t('hint.enabled')}
       >
         <span className="devlead-glyph" aria-hidden="true">
           <IconUsersOutlineRegular size={14} />
         </span>
         <span className="devlead-label">{t('label')}</span>
-        <Switch
-          className="devlead-switch"
-          checked
-          disabled={pending}
-          label={t('switch.aria')}
-          title={switchTitle}
-          onChange={toggle}
-        />
         <span className="devlead-meta">
           <span className="devlead-watched">{t('count.watched', { count: summary.watched })}</span>
           <span className="devlead-running">
@@ -147,9 +110,6 @@ export function DevLeadBar({
             </span>
           )}
         </span>
-        {failureLine !== null && (
-          <span className="devlead-error" role="alert">{t(failureLine.key, failureLine.params)}</span>
-        )}
       </div>
     </div>
   )
