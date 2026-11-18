@@ -87,7 +87,8 @@
  *     modelUnavailable: { code, message, sessionsBefore, sessionsAfter },
  *     teamsUnavailableChecked: false,
  *     teamsUnavailableReason: string,
- *     listModels: { view: DevLeadModelCatalog | null, error: { code, message } | null }
+ *     listModels: { view: DevLeadModelCatalog | null, error: { code, message } | null },
+ *     presets: { view: DevLeadAgentPresetCatalog | null, error: { code, message } | null }
  *   }
  *
  *   close:
@@ -528,6 +529,14 @@ async function executeDispatch(ctx, invocation) {
     listModelsError = { code: error?.code ?? null, message: messageOf(error) }
   }
 
+  let presetsView = null
+  let presetsError = null
+  try {
+    presetsView = await ctx.devLead.listAgentPresets(agent)
+  } catch (error) {
+    presetsError = { code: error?.code ?? null, message: messageOf(error) }
+  }
+
   let selection = null
   let modelReason = null
   let modelSource = null
@@ -642,6 +651,10 @@ async function executeDispatch(ctx, invocation) {
       listModels: {
         view: listModelsView,
         error: listModelsError,
+      },
+      presets: {
+        view: presetsView,
+        error: presetsError,
       },
       model: {
         available: modelApplied,

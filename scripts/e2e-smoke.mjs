@@ -114,15 +114,15 @@
  *                 Agent Teams is version-adaptive: rc.2+ (default composition)
  *                 must apply it, while an rc.1 Host must reject the explicit
  *                 request with DEVLEAD_TEAM_UNAVAILABLE and create nothing.
- *             69 checks.
+ *             70 checks.
  *
  * `--no-worktree` skips phase 2 only (debugging escape hatch when the
  * experimental composition cannot boot on this machine); phases 1, 1b, and 3
  * still run.
  *
- * Check counts: phase 1 = 27, phase 1b = 12, phase 2 = 22, phase 3 = 69, so
- * every flow reports 130/130 checks when all four phases pass (`--no-worktree`
- * skips phase 2: 108/108). Run both flows before a release:
+ * Check counts: phase 1 = 27, phase 1b = 12, phase 2 = 22, phase 3 = 70, so
+ * every flow reports 131/131 checks when all four phases pass (`--no-worktree`
+ * skips phase 2: 109/109). Run both flows before a release:
  *
  *   node scripts/e2e-smoke.mjs --flow patch
  *   node scripts/e2e-smoke.mjs --flow installed
@@ -1409,6 +1409,21 @@ async function runCloseChecks(client, paths, dshVersion) {
     JSON.stringify({
       providers: listModelsView?.providers?.length,
       failures: listModelsView?.failures?.length,
+    }),
+  )
+  const presets = dispatch.report?.presets ?? {}
+  const presetRows = Array.isArray(presets.view?.presets) ? presets.view.presets : []
+  checks.expect(
+    'phase 3 agent preset roster is available and lists at least one row',
+    presets.error === null
+      && presets.view?.available === true
+      && presetRows.length > 0
+      && presetRows.every(row => typeof row.id === 'string' && row.id.length > 0)
+      && presetRows.filter(row => row.default === true).length === 1,
+    JSON.stringify({
+      error: presets.error,
+      available: presets.view?.available,
+      presets: presetRows.map(row => ({ id: row.id, default: row.default, broken: row.broken })),
     }),
   )
   const dispatchModel = dispatch.report?.model ?? {}
