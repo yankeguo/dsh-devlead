@@ -388,6 +388,37 @@ export interface DevLeadModelCatalog {
   readonly failures: readonly DevLeadModelCatalogFailure[]
 }
 
+/** One Agent preset the Host advertises for Session creation. */
+export interface DevLeadAgentPresetView {
+  /** Host-defined preset id accepted by `devlead_create_session`'s `preset`. */
+  readonly id: string
+  /** Display name the preset publishes, when the Host supplies one. */
+  readonly name?: string
+  /** One-sentence purpose the preset publishes, when the Host supplies one. */
+  readonly description?: string
+  /**
+   * Whether Sessions that name no preset use this one. The Host's effective
+   * default is `selectedDefault` when configured, otherwise its base default.
+   */
+  readonly default: boolean
+  /** Host activation failure detail; present only when this preset cannot compose a Session. */
+  readonly broken?: string
+}
+
+/**
+ * Host Agent preset roster as the read-only `devlead_list_agent_presets` tool
+ * reports it. `available: false` means the Host composes no roster service;
+ * an empty roster is `available: true` with no entries.
+ */
+export interface DevLeadAgentPresetCatalog {
+  /** Whether the Host composes an Agent preset roster service. */
+  readonly available: boolean
+  /** Declared presets in Host roster order; empty when unavailable or empty. */
+  readonly presets: readonly DevLeadAgentPresetView[]
+  /** Why the roster is unavailable; present only with `available: false`. */
+  readonly reason?: string
+}
+
 /**
  * Request shape of one token-less Session creation inside a Workspace.
  *

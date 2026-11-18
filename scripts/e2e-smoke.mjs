@@ -79,7 +79,7 @@
  *             bundle is not required) and drives the close lifecycle through
  *             `ctx.devLead`:
  *               - a real step-time tool activation (`ctx.tools.resolve`) admits
- *                 exactly the twelve `devlead_*` tools while the mode is on and
+ *                 exactly the thirteen `devlead_*` tools while the mode is on and
  *                 none while it is off, both before and after a toggle;
  *               - the assembled `devlead:policy` section carries judgment-based
  *                 closing, its safety boundaries, and the feasibility-triage /
@@ -199,11 +199,12 @@ const PROBE_INSPECT_COMMAND = 'devlead-e2e-inspect'
 const PROBE_CLOSE_COMMAND = 'devlead-e2e-close'
 /** Dispatch-settings command: creation-time model selection + Agent Teams. */
 const PROBE_DISPATCH_COMMAND = 'devlead-e2e-dispatch'
-/** Exact DevLead tool surface an enabled lead step admits (8 shipped + 3 close tools). */
+/** Exact DevLead tool surface an enabled lead step admits. */
 const DEVLEAD_TOOL_NAMES = [
   'devlead_archive_session',
   'devlead_create_session',
   'devlead_get_session',
+  'devlead_list_agent_presets',
   'devlead_list_models',
   'devlead_list_sessions',
   'devlead_list_workspaces',
@@ -1329,7 +1330,7 @@ async function runCloseChecks(client, paths, dshVersion) {
   checks.expect('phase 3 enabled inspect reports enabled', inspectOn.report?.enabled === true)
   const devleadTools = inspectOn.report?.devleadTools ?? []
   checks.expect(
-    'phase 3 enabled exposes exactly the twelve devlead tools',
+    'phase 3 enabled exposes exactly the thirteen devlead tools',
     JSON.stringify(devleadTools) === JSON.stringify(DEVLEAD_TOOL_NAMES),
     JSON.stringify(devleadTools),
   )

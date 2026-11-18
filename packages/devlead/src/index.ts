@@ -28,6 +28,7 @@ import type {} from '@deepseek-ai/dsh-workspace'
 import type { SessionActivity, Workspace, WorkspaceRegistry } from '@deepseek-ai/dsh-workspace'
 import { DEVLEAD_DEFAULT_MAX_WATCHED } from '@yankeguo/dsh-devlead-protocol'
 import type {
+  DevLeadAgentPresetCatalog,
   DevLeadArchivedSession,
   DevLeadArchiveSessionOptions,
   DevLeadCreatedSession,
@@ -77,6 +78,7 @@ import { worktreeCapabilityOf, worktreeCheckoutOf } from './isolation.ts'
 import { DevLeadNotificationHub } from './notification.ts'
 import type { DevLeadPersistedLead } from './notification.ts'
 import { persistedSessionsOf } from './persistence.ts'
+import { agentPresetRosterCapabilityOf, devLeadAgentPresetsOf } from './presets.ts'
 import { devLeadPrefilterOf, projectionCacheOf } from './projection-cache.ts'
 import {
   collectSessionIds,
@@ -961,6 +963,53 @@ export class DevLeadService extends Service {
     }
     signal?.throwIfAborted()
     return devLeadModelCatalogOf(catalog)
+  }
+
+  /**
+   * Read the Host's Agent preset roster for creation-time preset selection.
+   *
+   * The roster is optional: a Host that composes no Agent preset service
+   * returns `available: false` with a reason instead of an empty list that
+   * could be mistaken for "no presets defined". When the service is present,
+   * rows are normalized onto the stable protocol view; a row without a usable
+   * id is dropped, and the Host's effective default gets the `default` marker.
+   * This is a read-only capability: no Session, profile default, or preset is
+   * changed.
+   * @param agent - exact live lead Agent.
+   * @param signal - cancellation checked before and after the roster read.
+   * @returns the roster view, or an explicit unavailable result.
+   * @throws {@link DevLeadError} `DEVLEAD_SESSION_UNAVAILABLE` when a composed
+   *   roster fails a read.
+   */
+  async listAgentPresets(agent: Agent, signal?: AbortSignal): Promise<DevLeadAgentPresetCatalog> {
+    this.assertReady(agent)
+    signal?.throwIfAborted()
+    const roster = agentPresetRosterCapabilityOf(this.ctx)
+    if (roster === undefined) {
+      return {
+        available: false,
+        presets: [],
+        reason: 'this Host composes no Agent preset roster; omit preset to use the Host default',
+      }
+    }
+    let rows: readonly unknown[]
+    try {
+      rows = await roster.list()
+      if (!Array.isArray(rows)) {
+        throw new Error('the roster service returned no array')
+      }
+    } catch (error: unknown) {
+      signal?.throwIfAborted()
+      throw new DevLeadError(
+        `could not read the Agent preset roster: ${thrownMessage(error)}`,
+        'DEVLEAD_SESSION_UNAVAILABLE',
+      )
+    }
+    signal?.throwIfAborted()
+    return {
+      available: true,
+      presets: devLeadAgentPresetsOf(rows, roster.defaultId),
+    }
   }
 
   /**

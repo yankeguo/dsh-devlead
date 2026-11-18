@@ -7,7 +7,7 @@
 **Session**（会话），创建/续写其他会话、读取会话状态、在会话状态变化时被唤醒，从而在一个
 人类可见、可参与的标准界面里统管多个仓库。
 
-- **DevLead 会话 = 普通会话 + 一个持久开关**：打开后该会话额外获得 12 个 `devlead_*` 工具、
+- **DevLead 会话 = 普通会话 + 一个持久开关**：打开后该会话额外获得 13 个 `devlead_*` 工具、
   一段 DevLead 系统提示，composer 上方出现状态条 UI；开关本身是**人类专属操作**，模型不能
   自行打开。界面始终在 composer 工具条提供一个带 DevLead 文本的小按钮作为开关；开启后
   才会在 composer 上方出现状态条，不会在每个会话上显示常驻状态条。
@@ -42,7 +42,7 @@
 | 角色模型 | 默认调度：依据已注册元数据判定归属 Workspace → 向对应 Session 发自包含简报 → watch → 审阅交付 → 汇报；只读检查属于有界可行性判断（归属、当前行为的高层事实、验证方式）外加审阅时核对具体断言，更深的调查与实现留在归属 Workspace 的 Session（含 lead 自己的 Workspace；仅当人类在本对话中明确授权时由 lead 直接做；记录类文件可依 lead 仓库说明维护） |
 | 标准 DSH 实体 | 子会话是普通 Session（侧边栏可见、人类可打开接管），Workspace 走 `workspaceRegistry`，不是 subagent |
 | 可选 worktree 隔离 | 当 Host 组合了 DSH 实验性 Git worktree 服务（`ctx.worktrees`）时，`devlead_create_session` 可传 `isolation: "worktree"`，让写入型子会话拥有独立分支与检出、不再共享 Workspace checkout；能力检测是可选的，缺少能力时退化为共享 checkout 并在结果里如实上报，绝不报错（见[可选 worktree 隔离](#可选-worktree-隔离)） |
-| 12 个模型工具 | 注册/列出/关闭 Workspace，列出 Host 模型，创建（继承或固定模型/Agent Teams）/读取/续写/归档/恢复/监督 Session，读取通知摘要（见[模型工具](#模型工具)） |
+| 13 个模型工具 | 注册/列出/关闭 Workspace，列出 Host 模型与 Agent preset，创建（继承或固定模型/Agent Teams）/读取/续写/归档/恢复/监督 Session，读取通知摘要（见[模型工具](#模型工具)） |
 | 人类命令 | `/devlead`（状态）、`/devlead on\|off`、`/devlead reset`（损坏状态恢复）、`/devlead watch\|unwatch <session>`；会话支持完整 id 或唯一前缀 |
 | 通知回路 | 被监督会话的 `turn/end` 写入持久通知记录，按合并窗口唤醒 DevLead（可配置窗口；冷 lead 默认 resume）；watch 索引在 Host 重启后从持久记录重建，已 dispose 的 lead 继续观察（见[通知机制](#通知机制)） |
 | 事件溯源 | 模式/watch 集合/通知/reset 全部是可忽略的 `plugin:devlead/*` 记录，严格回放校验，可跨重启 / 恢复 / fork |
@@ -120,7 +120,7 @@ pnpm workspace，`packages/*`：
 packages/
   protocol/    @yankeguo/dsh-devlead-protocol     纯类型 + 常量 + 格式化（host 与浏览器共用），devLead/devLeadMode projection 类型
   devlead/     @yankeguo/dsh-devlead              核心服务：模式、Workspace/Session 编排、监督索引、通知投递、严格 fold
-  tool/        @yankeguo/dsh-tool-devlead         12 个模型工具 + 条件 system prompt
+  tool/        @yankeguo/dsh-tool-devlead         13 个模型工具 + 条件 system prompt
   command/     @yankeguo/dsh-command-devlead      /devlead 人类命令
   client-ui/   @yankeguo/dsh-client-ui-devlead    浏览器 UI：工具条开关 + 开启后的只读 DevLeadBar + 侧边栏会话行标记
   bundle/      @yankeguo/dsh-devlead-bundle       bundle：cordis.patch.yml + 依赖
@@ -312,8 +312,11 @@ DSH 跳过。
    目录）。允许"带开放问题的简报"：更深的调查与实现属于 Session，不需要 lead 先查清所有
    细节。子会话看不到当前对话，所有必要事实都要在 prompt 里重述。新会话默认被 watch 并立即
    开始第一个 turn（空白 Session 在第一个 turn 前不会出现在侧边栏，所以 "创建 + prompt" 是
-   常规用法）。若归属 Workspace 里已有处理该请求的 live Session，用 `devlead_prompt_session`
-   续写它，而不是重复创建。子会话**默认继承 Host 默认模型**；只有人类明确要求，或简报确实
+   常规用法）。`preset` 是 Host 定义的 Agent preset id：先调 `devlead_list_agent_presets`
+   查看 Host 当前 roster，不要假设固定列表；省略或留空时先回退插件 `defaultAgentPreset`，
+   再回退 Host 默认/selectedDefault；无效 id 在创建阶段失败并返回结构化错误。若归属 Workspace
+   里已有处理该请求的 live Session，用 `devlead_prompt_session` 续写它，而不是重复创建。
+   子会话**默认继承 Host 默认模型**；只有人类明确要求，或简报确实
    需要成本/能力路由、可复现性时才固定模型——先调 `devlead_list_models`，再传 `provider` +
    `model`（可选 `reasoning_effort`）。Team 模式由 lead 判断：复杂、多步、可并行、适合子代理
    协作的任务可传 `agent_teams: true`；简单线性任务省略；人类明确要求开/关时照做。两者都是
@@ -345,9 +348,10 @@ DSH 跳过。
 | --- | --- | --- |
 | `devlead_list_workspaces` | `{}` | `{ workspaces }` |
 | `devlead_list_models` | `{}` | `{ default, routableProviders, providers, failures }`（精简目录） |
+| `devlead_list_agent_presets` | `{}` | `{ available, presets: [{ id, name?, description?, default, broken? }], reason? }`（Host roster；Host 未组合 roster 时 `available: false`） |
 | `devlead_use_workspace` | `path`（必填，绝对路径）、`title?`、`create?`（默认 false：缺目录报错；人类明确要求时传 true 才 `mkdir -p`） | `{ workspace }` |
 | `devlead_list_sessions` | `workspace?`、`watched_only?`、`limit?` | `{ sessions, watched }` |
-| `devlead_create_session` | `workspace?`、`prompt?`、`title?`、`watch?`（默认 true）、`preset?`、`isolation?`（默认 `none`；`worktree` = 尽力提供隔离检出）、`provider?`+`model?`（成对；可选 `reasoning_effort?`）、`agent_teams?` | 创建结果（含 `isolation` 结果；请求时含已应用的 `model`/`agentTeams`） |
+| `devlead_create_session` | `workspace?`、`prompt?`、`title?`、`watch?`（默认 true）、`preset?`（Host 定义的 id；空白/省略时先回退插件默认 preset，再回退 Host 默认）、`isolation?`（默认 `none`；`worktree` = 尽力提供隔离检出）、`provider?`+`model?`（成对；可选 `reasoning_effort?`）、`agent_teams?` | 创建结果（含 `isolation` 结果；请求时含已应用的 `model`/`agentTeams`） |
 | `devlead_get_session` | `session`（必填） | `{ session }` |
 | `devlead_prompt_session` | `session`、`prompt`（必填）、`watch?`（默认 true） | 续写结果 |
 | `devlead_watch_session` | `session`、`watching`（必填 bool） | watch 变更结果 |
@@ -358,6 +362,12 @@ DSH 跳过。
 
 工具把 core 的 `DevLeadError` 翻译成带稳定 code 的 `HarnessError`；阅读状态时请以
 `lastTurn` / `lastTransition` / `lastError` / `lastAssistant` 等字段为准，不要靠猜。
+
+`devlead_list_agent_presets` 返回 Host 的真实 roster：preset id、发布的名称/描述、
+`default` 标记（Host 有效默认：配置了 `selectedDefault` 时用 selectedDefault，否则用基础默认）
+以及无法组合 Session 时的 `broken` 原因。Host 未组合 roster 时返回 `available: false` 与
+原因，绝不虚构 preset id。`preset` 参数始终是 Host 定义的 id；无效或不可用 id 会让创建阶段
+返回结构化错误，而不是被静默替换。
 
 三个关闭类工具沿用 DSH 自己的术语，且都不是破坏性操作。`devlead_remove_workspace` 执行 DSH 的
 **remove**：只注销 Workspace 记录，目录、文件与所有 Session 日志都不动；其 Session 变为
@@ -488,7 +498,7 @@ config 是整体替换）。
     maxWatchedSessions: 64       # 每个 lead 最多监督的会话数（正整数）
     maxListedSessions: 200       # 会话列表最大行数（正整数）
     wakeColdSession: true        # resume 冷 DevLead 会话以投递其排队的通知（默认）
-    defaultAgentPreset: ''       # 创建会话的默认 Agent preset（空 = 用 DSH 默认）
+    defaultAgentPreset: ''       # 创建会话的默认 Agent preset（空 = 用 Host 默认；无效 id 创建失败）
 ```
 
 | 键 | 默认 | 范围 / 说明 |
@@ -497,7 +507,7 @@ config 是整体替换）。
 | `maxWatchedSessions` | `64` | 正整数；超过上限的 watch 操作报 `DEVLEAD_WATCH_LIMIT` |
 | `maxListedSessions` | `200` | 正整数；列表类调用（`devlead_list_sessions` / `/devlead` 状态）的行数上限。身份解析不受该上限限制；watched-only 列表也不会截断到小于 watch 集合 |
 | `wakeColdSession` | `true` | 为 `true` 时 resume（`sessionController.resolveAgent`）冷 lead 会话来投递其**已排队**的通知；设为 `false` 只把队列留在内存，等人类打开 lead Session。该开关不影响观察（观察由索引保留 + 重建保证） |
-| `defaultAgentPreset` | `''` | 创建会话时未指定 `preset` 的默认值；空字符串表示不指定 |
+| `defaultAgentPreset` | `''` | 创建会话时未指定 `preset`（或传空白）的默认值；空字符串表示没有插件默认值，使用 Host 有效默认。无效 id 会让创建失败并返回结构化错误 |
 
 `tool` / `command` / `client-ui` 没有部署配置；所有领域限制（watch 上限、通知保留条数等）
 由核心服务与 protocol 常量决定。
@@ -628,7 +638,7 @@ resume 后 `/devlead status` 与 `/devlead off` 正常）；阶段 2 向**一次
 'worktree'` 且 `path`/`branch`/`baseCommit` 非空；`git worktree list` 与分支存在；`baseCommit`
 等于 checkout 的 `HEAD`；子会话有效工作目录是 worktree 路径而 header cwd 仍指向 Workspace；
 Session 仍归属该 Workspace）；阶段 3 链接同一个私有 probe 包后重启（不需要 worktree bundle），
-通过真实 Host 驱动关闭工具：真实的一步工具激活在模式开启时恰好可见 12 个 `devlead_*`、关闭时
+通过真实 Host 驱动关闭工具：真实的一步工具激活在模式开启时恰好可见 13 个 `devlead_*`、关闭时
 为 0；组装出的 `devlead:policy` section 含判断式自主关闭、安全边界与「有限可行性判断/开放
 问题/深挖交接」；归档一个已 prompt 的子会话后 durable archive 集合与 archived 视图/列表行
 生效，重复归档是幂等 no-op，unarchive 恢复且日志保持完整；临时 activity provider 让活跃
@@ -664,7 +674,7 @@ probe 是
 本地端到端验收：`pnpm verify && pnpm e2e`。分阶段 E2E 启动一个隔离 DSH：阶段 1 走完
 `/devlead on` → 真实子会话 watch → 子会话 turn 结束 → 通知进入 lead 投影；阶段 1b 重启实例验证
 冷 lead 索引重建（冷子会话被 resume、重启后产生新通知）；阶段 2 叠加实验性 forge bundle 验证
-worktree happy path；阶段 3 在真实 Host 上验证 12 个工具的条件可见性、只读模型目录、triage/自主关闭 policy、
+worktree happy path；阶段 3 在真实 Host 上验证 13 个工具的条件可见性、只读模型目录、triage/自主关闭 policy、
 archive/unarchive/remove 的 durable 行为与文档化的安全边界；`--flow patch` 与
 `--flow installed` 分别覆盖两条加载路径。
 

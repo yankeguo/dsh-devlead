@@ -1,5 +1,5 @@
 /**
- * Behavior of the twelve `devlead_*` tools: registration and gating, per-tool
+ * Behavior of the thirteen `devlead_*` tools: registration and gating, per-tool
  * forwarding into `ctx.devLead`, input validation, canonical value projection,
  * error translation, and pure presentation.
  */
@@ -10,6 +10,7 @@ import { HarnessError } from '@deepseek-ai/dsh-llm'
 import type { GenericCallView, InferValue } from '@deepseek-ai/dsh-tools'
 import { validateJsonSchemaValue } from '@deepseek-ai/dsh-tools'
 import type {
+  DevLeadAgentPresetCatalog,
   DevLeadArchivedSession,
   DevLeadCreatedSession,
   DevLeadIsolation,
@@ -31,6 +32,7 @@ import {
   CREATE_SESSION_OUTPUT,
   DEVLEAD_ISOLATION_MODES,
   DEVLEAD_ISOLATION_STATUSES,
+  LIST_AGENT_PRESETS_OUTPUT,
   LIST_MODELS_OUTPUT,
   PROMPT_SESSION_OUTPUT,
   REMOVE_WORKSPACE_OUTPUT,
@@ -47,6 +49,7 @@ import {
   devLeadFailure,
   makeAgent,
   makeExec,
+  AGENT_PRESET_CATALOG,
   MODEL_CATALOG,
   NOTIFICATION,
   SESSION,
@@ -86,12 +89,16 @@ type SchemaUnarchivedConforms = Assert<
 type SchemaModelCatalogConforms = Assert<
   InferValue<typeof LIST_MODELS_OUTPUT.schema> extends DevLeadModelCatalog ? true : false
 >
+type SchemaAgentPresetCatalogConforms = Assert<
+  InferValue<typeof LIST_AGENT_PRESETS_OUTPUT.schema> extends DevLeadAgentPresetCatalog ? true : false
+>
 
 
 /** Exact registered surface promised by DESIGN §5. */
 const TOOL_NAMES = [
   'devlead_list_workspaces',
   'devlead_list_models',
+  'devlead_list_agent_presets',
   'devlead_use_workspace',
   'devlead_list_sessions',
   'devlead_create_session',
@@ -108,6 +115,7 @@ const TOOL_NAMES = [
 const MINIMAL_ARGS: Record<(typeof TOOL_NAMES)[number], Record<string, unknown>> = {
   devlead_list_workspaces: {},
   devlead_list_models: {},
+  devlead_list_agent_presets: {},
   devlead_use_workspace: { path: '/tmp/webapp' },
   devlead_list_sessions: {},
   devlead_create_session: {},
@@ -124,6 +132,7 @@ const MINIMAL_ARGS: Record<(typeof TOOL_NAMES)[number], Record<string, unknown>>
 const CALLER_TOOLS = [
   'devlead_use_workspace',
   'devlead_list_models',
+  'devlead_list_agent_presets',
   'devlead_list_sessions',
   'devlead_create_session',
   'devlead_get_session',
@@ -167,7 +176,7 @@ function expectValidOutput(harness: Harness, toolName: string, value: unknown): 
 }
 
 describe('registration', () => {
-  it('registers exactly the twelve documented tools', () => {
+  it('registers exactly the thirteen documented tools', () => {
     const harness = boot()
     expect([...harness.tools.keys()].sort()).toEqual([...TOOL_NAMES].sort())
     for (const name of TOOL_NAMES) {
@@ -318,6 +327,30 @@ describe('policy', () => {
     }
     expect(parameters.properties['provider']?.description).toContain('Omit to inherit the Host default')
     expect(parameters.properties['agent_teams']?.description).toContain('Obey an explicit human on/off')
+  })
+
+  it('teaches Host-defined preset discovery, fallback, and rejection', () => {
+    const harness = bootEnabled()
+    const text = harness.sectionText()
+    expect(text).toContain('devlead_list_agent_presets')
+    expect(text).toContain('Host-defined Agent preset id')
+    expect(text).toContain('plugin defaultAgentPreset')
+    expect(text).toContain('Host default/selectedDefault')
+    expect(text).toContain('never guess an id')
+    const createSession = harness.tool('devlead_create_session').definition
+    expect(createSession.description).toContain('devlead_list_agent_presets')
+    expect(createSession.description).toContain('defaultAgentPreset')
+    expect(createSession.description).toContain('unknown or unusable preset fails creation')
+    const parameters = createSession.parameters as {
+      properties: { preset: { description: string } }
+    }
+    expect(parameters.properties.preset.description).toContain('Host-defined Agent preset id')
+    expect(parameters.properties.preset.description).toContain('devlead_list_agent_presets')
+    expect(parameters.properties.preset.description).toContain('standard and ptc are examples')
+    expect(parameters.properties.preset.description).toContain('plugin defaultAgentPreset')
+    expect(parameters.properties.preset.description).toContain('Host default/selectedDefault')
+    expect(parameters.properties.preset.description).toContain('structured error')
+    expect(parameters.properties.preset.description).toContain('never silently ignored')
   })
 
   it('tells the model to end the turn instead of waiting after a dispatch', () => {
@@ -484,7 +517,8 @@ describe('canonical values', () => {
       SchemaArchivedConforms,
       SchemaUnarchivedConforms,
       SchemaModelCatalogConforms,
-    ] = [true, true, true, true, true, true, true, true, true, true, true]
+      SchemaAgentPresetCatalogConforms,
+    ] = [true, true, true, true, true, true, true, true, true, true, true, true]
     expect(conformance.every(value => value)).toBe(true)
   })
 
@@ -596,6 +630,55 @@ describe('devlead_list_models', () => {
     const harness = boot()
     harness.devLead.failures.set('listModels', devLeadFailure('DEVLEAD_SESSION_UNAVAILABLE'))
     const error = await failureOf(harness.call('devlead_list_models'))
+    expect(error.code).toBe('DEVLEAD_SESSION_UNAVAILABLE')
+  })
+})
+
+describe('devlead_list_agent_presets', () => {
+  it('forwards the caller and signal and returns the canonical roster projection', async () => {
+    const harness = boot()
+    const value = await harness.call('devlead_list_agent_presets')
+    const [agent, signal] = harness.devLead.callsOf('listAgentPresets')[0] ?? []
+    expect(agent).toBe(harness.agent)
+    expect(signal).toBe(harness.exec.signal)
+    expect(value).toEqual(AGENT_PRESET_CATALOG)
+    expectValidOutput(harness, 'devlead_list_agent_presets', value)
+  })
+
+  it('reports an unavailable roster explicitly without inventing presets', async () => {
+    const harness = boot()
+    harness.devLead.agentPresets = {
+      available: false,
+      presets: [],
+      reason: 'this Host composes no Agent preset roster',
+    }
+    const value = await harness.call('devlead_list_agent_presets')
+    expect(value).toEqual({
+      available: false,
+      presets: [],
+      reason: 'this Host composes no Agent preset roster',
+    })
+    expectValidOutput(harness, 'devlead_list_agent_presets', value)
+  })
+
+  it('renders the roster as one JSON text block and advertises the guidance', () => {
+    const harness = boot()
+    const definition = harness.tool('devlead_list_agent_presets').definition
+    expect(definition.description).toContain('Host currently defines')
+    expect(definition.description).toContain('never assume a fixed list')
+    expect(definition.description).toContain('standard and ptc are examples')
+    expect(definition.description).toContain('available false with a reason')
+    expect(definition.description).toContain('defaultAgentPreset')
+    expect((definition.parameters as { properties: Record<string, unknown> }).properties).toEqual({})
+    const value = AGENT_PRESET_CATALOG
+    const text = renderedText(harness, 'devlead_list_agent_presets', value)
+    expect(JSON.parse(text)).toEqual(AGENT_PRESET_CATALOG)
+  })
+
+  it('translates a roster read failure', async () => {
+    const harness = boot()
+    harness.devLead.failures.set('listAgentPresets', devLeadFailure('DEVLEAD_SESSION_UNAVAILABLE'))
+    const error = await failureOf(harness.call('devlead_list_agent_presets'))
     expect(error.code).toBe('DEVLEAD_SESSION_UNAVAILABLE')
   })
 })

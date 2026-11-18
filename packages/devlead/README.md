@@ -17,9 +17,10 @@ dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 - Peer services `agents`, `sessions`, `sessionProjections` (provided by the default `dsh-base`
   composition).
 - Optional, probed at call time: `workspaceRegistry`, `sessionController`, `sessionTitle`,
-  `sessionQuery`, `sessionProjectionCache` (cold-lead rehydration pre-filter), `sessionPersistence`
-  (durable-corpus readiness barrier), and the experimental `worktrees` capability. Missing optional services degrade to fewer features or structured domain
-  errors; no experimental package is imported, injected, or declared.
+  `agentPresets` (read-only preset roster discovery), `sessionQuery`, `sessionProjectionCache`
+  (cold-lead rehydration pre-filter), `sessionPersistence` (durable-corpus readiness barrier), and
+  the experimental `worktrees` capability. Missing optional services degrade to fewer features or
+  structured domain errors; no experimental package is imported, injected, or declared.
 - Cold-lead rehydration: at plugin load the hub rebuilds its watch index from durable state
   (`sessionQuery` listing → projection-cache pre-filter → exact fold; unclassified rows are capped
   at 64 full-log reads). Without a projection cache only live lead Sessions are recovered. A
@@ -29,7 +30,8 @@ dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 ## Configuration
 
 The Loader row id `devlead` accepts `notificationBatchMs`, `maxWatchedSessions`,
-`maxListedSessions`, `wakeColdSession` (default `true` since 0.2.0), and `defaultAgentPreset`. See the
+`maxListedSessions`, `wakeColdSession` (default `true` since 0.2.0), and `defaultAgentPreset`
+(used when a created Session names no preset; an invalid id fails creation). See the
 [configuration section](https://github.com/yankeguo/dsh-devlead/blob/main/README.md#configuration) for defaults and ranges; all limits are
 validated at both the Loader and direct-construction boundaries.
 

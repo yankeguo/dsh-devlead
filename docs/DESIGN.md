@@ -149,6 +149,7 @@ export class DevLeadService extends Service {
   // Session
   listSessions(agent: Agent, options?: { workspace?: string; watchedOnly?: boolean; limit?: number; signal?: AbortSignal }): Promise<DevLeadSessionView[]>
   listModels(agent: Agent, signal?: AbortSignal): Promise<DevLeadModelCatalog>
+  listAgentPresets(agent: Agent, signal?: AbortSignal): Promise<DevLeadAgentPresetCatalog>
   getSession(agent: Agent, sessionId: string, signal?: AbortSignal): Promise<DevLeadSessionView>
   createSession(agent: Agent, request: DevLeadCreateSessionRequest, signal?: AbortSignal): Promise<DevLeadCreatedSession>
   promptSession(agent: Agent, sessionId: string, prompt: string, options?: { watch?: boolean; signal?: AbortSignal }): Promise<DevLeadPromptedSession>
@@ -171,7 +172,10 @@ export class DevLeadService extends Service {
 `agentTeams` 字段（未请求的字段省略）。模型目录的 protocol 类型：
 `DevLeadModelCatalog = { default: DevLeadModelSelection; routableProviders: string[];
 providers: { id; name; models: { id; name; reasoning?: { efforts: { id; name }[]; defaultEffort? } }[] }[];
-failures: { id; name; message }[] }`（省略 model description/badge 等展示字段）。关闭语义的 protocol 类型：
+failures: { id; name; message }[] }`（省略 model description/badge 等展示字段）。Agent preset
+目录：`DevLeadAgentPresetCatalog = { available: boolean; presets: { id; name?; description?;
+default: boolean; broken? }[]; reason? }`；`default` 是 Host 有效默认（`selectedDefault`
+优先，否则基础默认），`available: false` 表示 Host 未组合 roster。关闭语义的 protocol 类型：
 `DevLeadRemovedWorkspace = { workspace: DevLeadWorkspaceView; removed: boolean }`、
 `DevLeadArchiveSessionOptions = { stopRunning?: boolean; signal?: AbortSignal }`、
 `DevLeadArchivedSession = { sessionId: string; archived: true; stopped: boolean }`、
@@ -230,6 +234,14 @@ failures: { id; name; message }[] }`（省略 model description/badge 等展示�
   → 可选 prompt。隔离失败不会让创建失败；结果里的 `isolation` 字段如实上报
   `none` / `worktree` / `unavailable` / `failed`。注意：空白 Session 在第一次 turn
   开始前不会出现在侧边栏，因此"创建+prompt"是常规用法。
+- **创建时 preset**：`preset` 是 Host 定义的 Agent preset id（不能假设只有 `standard`/`ptc`）。
+  `createSession` 使用 `request.preset?.trim() ?? resolved.defaultAgentPreset`；工具层先把空格/
+  空白转为省略，因此省略或空白 = 插件 `defaultAgentPreset` → Host 的有效默认（`selectedDefault`
+  优先，否则基础 `default`）。有效 id 原样作为 `agentPreset` 传给 `sessionController.create`；
+  Host 拒绝未知/不可用 id 时，创建失败并被归类为 `DEVLEAD_SESSION_UNAVAILABLE`（消息保留 Host
+  文本），不会静默忽略或替换。`listAgentPresets` 用 `ctx.get('agentPresets')` duck-typing 探测
+  可选 roster：服务缺席返回 `available: false` + reason，读取失败返回结构化错误，行按 Host
+  `list()` 顺序映射、无 id 行丢弃，`default` 取 Host `defaultId`。
 - **创建时模型与 Agent Teams**：默认继承 Host 默认模型；`provider`/`model` 必须成对，
   `reasoning_effort` 只能与成对模型一起用（否则 `DEVLEAD_INVALID_INPUT`），并且只在人类明确
   要求或简报需要成本/能力路由、可复现性时才应指定（policy 口径）。创建前按与 Session controller 的
@@ -490,9 +502,10 @@ Session 的工作目录切到独立分支/检出，DevLead 用它**可选地**�
 | --- | --- | --- |
 | `devlead_list_workspaces` | `{}` | `{ workspaces: DevLeadWorkspaceView[] }` |
 | `devlead_list_models` | `{}` | `DevLeadModelCatalog`（default / routableProviders / providers / failures，精简） |
+| `devlead_list_agent_presets` | `{}` | `DevLeadAgentPresetCatalog`（available / presets[id,name?,description?,default,broken?] / reason?） |
 | `devlead_use_workspace` | `path`(必填，绝对路径), `title?`, `create?`(默认 false；显式 true 才 mkdir) | `{ workspace }` |
 | `devlead_list_sessions` | `workspace?`(id 或 path), `watched_only?`, `limit?` | `{ sessions, watched: string[] }` |
-| `devlead_create_session` | `workspace?`, `prompt?`, `title?`, `watch?`(默认 true), `preset?`, `isolation?`(默认 `none`；`worktree` = 尽力隔离), `provider?`+`model?`(成对；可选 `reasoning_effort?`), `agent_teams?` | `DevLeadCreatedSession`（含 `isolation`；请求时含已应用的 `model`/`agentTeams`） |
+| `devlead_create_session` | `workspace?`, `prompt?`, `title?`, `watch?`(默认 true), `preset?`(Host 定义 id；空白回退插件默认再 Host 默认), `isolation?`(默认 `none`；`worktree` = 尽力隔离), `provider?`+`model?`(成对；可选 `reasoning_effort?`), `agent_teams?` | `DevLeadCreatedSession`（含 `isolation`；请求时含已应用的 `model`/`agentTeams`） |
 | `devlead_get_session` | `session`(必填) | `{ session }` |
 | `devlead_prompt_session` | `session`(必填), `prompt`(必填), `watch?`(默认 true) | `DevLeadPromptedSession` |
 | `devlead_watch_session` | `session`(必填), `watching`(必填 bool) | `DevLeadWatchMutation` |
@@ -520,7 +533,7 @@ Session 的工作目录切到独立分支/检出，DevLead 用它**可选地**�
   工具）都在 core 中重新校验 live + 模式。`devlead_use_workspace` 0.2.0 起转发 live lead Agent
   给 core 的 `useWorkspace(agent, request, signal)`，`create` 默认
   `false`，仅当人类明确要求建目录时才传 `create: true`（工具 schema 与 policy 文案同步）。
-- 关闭语义工具（共 3 个，8 → 12）：`devlead_remove_workspace` 执行 DSH **remove**：
+- 关闭语义工具（共 3 个；0.2.0 时工具数 8 → 12，后续新增 `devlead_list_agent_presets` 后为 13）：`devlead_remove_workspace` 执行 DSH **remove**：
   只注销 Workspace 记录，目录、文件与 Session 日志保留，其 Session 变未分组；返回注销前快照
   与 `removed`。`devlead_archive_session` 执行 DSH **archive**：日志保留、可恢复；带运行中
   工作（turn / subagent / job / schedule）的 Session 默认报 `DEVLEAD_SESSION_ACTIVE`，
@@ -730,10 +743,12 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   **promptSession 自动 watch 的补偿语义**（admission/resume 失败与取消时移除本次新增、
   已 watch 不受影响、`watch:false` 不变）、写路径的取消语义，以及可选 worktree 隔离的两种
   形态（fake `ctx.worktrees` 存在时按"创建→隔离→prompt"顺序调用子 Agent 的 `create`；
-  缺席/畸形/抛错时降级为 `unavailable`/`failed`，Session 仍创建并 prompt，绝不抛错）。
+  缺席/畸形/抛错时降级为 `unavailable`/`failed`，Session 仍创建并 prompt，绝不抛错），以及
+  可选 Agent preset roster 的映射（`defaultId` 标记、无 id 行丢弃）与缺席/空/读取失败路径。
 - `tool`：用 fake `ctx.devLead` + fake `ctx.tools`/`ctx.systemPrompt` 捕获工具定义，验证
   `when` gating、参数校验、值渲染、编译期 schema↔protocol 一致性、运行时 output schema
-  校验、错误翻译、每个工具的 execute 转发与取消信号转发、presentCall replay 纯净性，以及
+  校验、错误翻译、13 个工具的 execute 转发与取消信号转发（含 `listAgentPresets` 的 roster /
+  unavailable / 失败投影）、presentCall replay 纯净性，以及
   policy 文案的角色边界契约（默认调度、写入归属、归属未明时先问或注册、无空会话）与派发后的
   等待契约（结束本轮、不 shell `sleep` / 不轮询 / 不用 `wait_agent`、唤醒以新 turn 恢复本
   会话、读工具不是等待机制，`devlead_create_session` 等工具描述自身回答「派发后我该等吗」）；
@@ -798,7 +813,7 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   scratch workspace 被初始化成真实 git 仓库（一次 seed commit），因此是真实 Git happy path。
   阶段 3 停实例 → 链接同一个 probe 包并叠加 probe patch 重启（关闭工具不需要实验 bundle，
   因此 `--no-worktree` 也会运行）→ probe 的 `devlead-e2e-inspect` 用真实
-  `ctx.tools.resolve` 报告该 Agent 一步可见的工具集（模式开启时恰好 12 个 `devlead_*`，
+  `ctx.tools.resolve` 报告该 Agent 一步可见的工具集（模式开启时恰好 13 个 `devlead_*`，
   模式关闭时为 0），用 `ctx.systemPrompt.assemble` 取 `devlead:policy` section（判断式自主
   关闭、安全边界、有限可行性判断/开放问题/深挖交接；关闭时为空文本）；`devlead-e2e-close`
   通过 `ctx.devLead` 归档一个已 prompt 的子会话（durable archive 集合 + archived 视图/列表行、

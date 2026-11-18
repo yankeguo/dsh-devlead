@@ -1,6 +1,6 @@
 # @yankeguo/dsh-tool-devlead
 
-The twelve model-facing `devlead_*` tools and the conditional DevLead system-prompt section.
+The thirteen model-facing `devlead_*` tools and the conditional DevLead system-prompt section.
 
 The tools are registered with `when: ({ agent }) => ctx.devLead.isEnabled(agent)`, so an ordinary
 Session never sees them. They become visible only after a human enables DevLead mode with
@@ -10,6 +10,7 @@ Session never sees them. They become visible only after a human enables DevLead 
 
 - `devlead_list_workspaces`
 - `devlead_list_models` (compact Host model catalog for dispatch pinning)
+- `devlead_list_agent_presets` (Host Agent preset roster: id, name/description, default marker, broken reason)
 - `devlead_use_workspace`
 - `devlead_list_sessions`
 - `devlead_create_session` (optional `isolation: "none" | "worktree"`; creation-time
@@ -31,10 +32,19 @@ to create the directory. Domain failures are translated to `HarnessError` with a
 schemas.
 
 `devlead_list_models` reports the compact Host model catalog (default selection, providers,
-models, reasoning efforts, and provider failures). `devlead_create_session` inherits the Host
-default model unless the human explicitly asked for a route or the brief needs cost/capability
-routing or reproducibility; when pinning, call `devlead_list_models` first and pass `provider` +
-`model` (optional `reasoning_effort`). Agent Teams is the lead's judgment for complex, multi-step,
+models, reasoning efforts, and provider failures). `devlead_list_agent_presets` reports the
+Host's actual preset roster: the ids accepted by `devlead_create_session`'s `preset`, published
+name/description, the `default` marker (the effective default: `selectedDefault` when configured,
+otherwise the base default), and a `broken` reason for a preset that cannot compose a Session. A
+Host that composes no roster returns `available: false` with a reason; the tool never invents
+preset ids. The `preset` argument is always a Host-defined id; omitted or blank values fall back
+to the plugin `defaultAgentPreset`, then the Host default/selectedDefault, and an invalid or
+unusable id fails creation with a structured error instead of being silently ignored.
+
+`devlead_create_session` inherits the Host default model unless the human explicitly asked for a
+route or the brief needs cost/capability routing or reproducibility; when pinning, call
+`devlead_list_models` first and pass `provider` + `model` (optional `reasoning_effort`). Agent
+Teams is the lead's judgment for complex, multi-step,
 or parallel work (`agent_teams: true`); simple linear work omits it, and an explicit human on/off
 is obeyed. The model is validated before the Session exists, the selection is recorded on the
 child Session only (never through the controller's profile-default-writing path), and omitted
@@ -72,14 +82,18 @@ supported platform.
 
 ## 中文
 
-`@yankeguo/dsh-tool-devlead` 提供 12 个模型工具 `devlead_*` 与条件 system prompt，只在 DevLead
+`@yankeguo/dsh-tool-devlead` 提供 13 个模型工具 `devlead_*` 与条件 system prompt，只在 DevLead
 模式开启时可见。除 `devlead_list_workspaces` 外都需要 live 调用者；0.2.0 起
 `devlead_use_workspace` 把 live Agent 转发给 core 的 `useWorkspace(agent, request, signal)`，
 `create` 默认 `false`（缺目录报 `DEVLEAD_DIRECTORY_MISSING`，只有人类明确要求建目录时才传
 `true`）。`devlead_create_session` 还支持创建时指定 `provider`+`model`（可选
 `reasoning_effort`）与 `agent_teams`：模型在创建前按 Host 当前 provider 目录校验，只记录在该
 子 Session 上（不走会改写 profile 默认模型的 controller 路径），省略时不动 Host 默认，且均为
-仅创建时生效。领域错误翻译为稳定的 `DEVLEAD_*` code。关闭类工具（remove / archive / unarchive）
+仅创建时生效。`devlead_list_agent_presets` 返回 Host 的真实 preset roster（id、名称/描述、
+`default` 有效默认标记、`broken` 原因；Host 未组合 roster 时返回 `available: false` 与原因，
+不虚构 id）。`preset` 是 Host 定义的 id；省略/空白先回退插件 `defaultAgentPreset`，再回退
+Host 默认/selectedDefault；无效 id 在创建阶段返回结构化错误，不会被静默忽略。领域错误翻译为
+稳定的 `DEVLEAD_*` code。关闭类工具（remove / archive / unarchive）
 都不是破坏性操作，且采用判断式自主：合理收尾时可自行关闭自己创建/派发且已完成的 Session、
 明显陈旧/重复/空置或由自己创建的 Workspace 注册；但不得关闭人类正在使用/对话的 Session 或
 Workspace、不得用关闭掩盖失败，并且每次自主关闭都要汇报原因与影响面。remove 只注销 Workspace、

@@ -61,6 +61,11 @@ export function presentListModelsCall(): GenericCallView {
   return present('List DevLead models', 'read')
 }
 
+/** Pending card of `devlead_list_agent_presets`. */
+export function presentListAgentPresetsCall(): GenericCallView {
+  return present('List DevLead Agent presets', 'read')
+}
+
 /** Pending card of `devlead_use_workspace`. */
 export function presentUseWorkspaceCall(args: UseWorkspaceArgs): GenericCallView {
   return present('Register DevLead workspace', 'other', firstText(args.path))

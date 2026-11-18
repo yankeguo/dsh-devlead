@@ -32,6 +32,7 @@ import {
   presentArchiveSessionCall,
   presentCreateSessionCall,
   presentGetSessionCall,
+  presentListAgentPresetsCall,
   presentListModelsCall,
   presentListSessionsCall,
   presentListWorkspacesCall,
@@ -46,6 +47,7 @@ import {
   ARCHIVE_SESSION_OUTPUT,
   CREATE_SESSION_OUTPUT,
   GET_SESSION_OUTPUT,
+  LIST_AGENT_PRESETS_OUTPUT,
   LIST_MODELS_OUTPUT,
   LIST_SESSIONS_OUTPUT,
   LIST_WORKSPACES_OUTPUT,
@@ -55,6 +57,7 @@ import {
   UNARCHIVE_SESSION_OUTPUT,
   USE_WORKSPACE_OUTPUT,
   WATCH_SESSION_OUTPUT,
+  agentPresetCatalogValue,
   archivedSessionValue,
   createdSessionValue,
   modelCatalogValue,
@@ -92,6 +95,15 @@ const LIST_MODELS_DESCRIPTION =
   + 'model parameters and inherit the Host default; only pin a model when the human explicitly asked, or the brief '
   + 'needs cost/capability routing or reproducibility.'
 
+const LIST_AGENT_PRESETS_DESCRIPTION =
+  'List the Agent preset roster this Host currently defines for Session creation. Each entry carries the id accepted by '
+  + 'devlead_create_session preset, its published name/description when available, a default marker (the Host effective '
+  + 'default: selectedDefault when configured, otherwise its base default), and a broken reason when the preset cannot '
+  + 'compose a Session. Call this before setting preset and never assume a fixed list; standard and ptc are examples on '
+  + 'some Hosts, not a complete vocabulary. An unknown or unusable preset fails creation with a structured error rather '
+  + 'than being silently ignored. If the Host composes no roster, the result reports available false with a reason; '
+  + 'omitting preset then falls back to the plugin defaultAgentPreset, then the Host default.'
+
 const LIST_WORKSPACES_DESCRIPTION =
   'List every registered DSH Workspace: its title, canonical directory path, live directory status, and the Sessions '
   + 'the registry accounts to it. Use it first to decide which Workspace owns a request, before registering a new '
@@ -118,8 +130,11 @@ const CREATE_SESSION_DESCRIPTION =
   + 'human on/off. Agent Teams requires DSH 0.2.2-rc.2 or newer with the Agent Teams service composed; when the Host '
   + 'reports it unavailable, continue without Team mode instead of retrying or blocking. Never change the Host/profile '
   + 'default, and do not upgrade or downgrade a model on your own. Both '
-  + 'settings are creation-time only; the model is validated before the Session is created. The Session is a real Session '
-  + 'the human can open and take over, not a subagent. It runs independently, so after this call end the turn instead '
+  + 'settings are creation-time only; the model is validated before the Session is created. Use devlead_list_agent_presets '
+  + 'before pinning a preset: omitted or blank follows the plugin defaultAgentPreset, then the Host default/selectedDefault, '
+  + 'and an unknown or unusable preset fails creation with a structured error rather than being silently ignored. The Session '
+  + 'is a real Session the human can open and take over, not a subagent. It runs independently, so after this call end the '
+  + 'turn instead '
   + 'of waiting: never sleep, never poll devlead_get_session, devlead_list_sessions, or devlead_notifications, and '
   + 'never call wait_agent to wait for it. A watched Session is the default, and its settled turn starts a new turn '
   + 'of this lead session with the wake-up message. Use it to dispatch the owning Workspace\'s work to that Session '
@@ -175,7 +190,7 @@ const UNARCHIVE_SESSION_DESCRIPTION =
   + 'wrapping up, or when the human asks to restore a Session; report the restored Session.'
 
 /**
- * Register the twelve DevLead tools and their shared policy section.
+ * Register the thirteen DevLead tools and their shared policy section.
  *
  * The tools and the policy text follow the same condition: DevLead mode is
  * enabled for the assembling Agent. Because both are evaluated per step, toggling
@@ -217,6 +232,20 @@ export function apply(ctx: Context): void {
       return runTool(async () => {
         const agent = requireAgent(exec.agent, 'devlead_list_models')
         return modelCatalogValue(await ctx.devLead.listModels(agent, exec.signal))
+      })
+    },
+  }), { when: ({ agent }) => ctx.devLead.isEnabled(agent) })
+
+  ctx.tools.register(defineTool({
+    name: 'devlead_list_agent_presets',
+    description: LIST_AGENT_PRESETS_DESCRIPTION,
+    parameters: {},
+    output: LIST_AGENT_PRESETS_OUTPUT,
+    presentCall: presentListAgentPresetsCall,
+    execute(_args, exec) {
+      return runTool(async () => {
+        const agent = requireAgent(exec.agent, 'devlead_list_agent_presets')
+        return agentPresetCatalogValue(await ctx.devLead.listAgentPresets(agent, exec.signal))
       })
     },
   }), { when: ({ agent }) => ctx.devLead.isEnabled(agent) })
@@ -323,7 +352,10 @@ export function apply(ctx: Context): void {
       },
       preset: {
         type: 'string',
-        description: 'Optional Agent preset id for the new Session.',
+        description: 'Optional Host-defined Agent preset id for the new Session; call devlead_list_agent_presets to read '
+          + 'this Host\'s roster. Do not assume a fixed list (standard and ptc are examples on some Hosts). Omit or leave '
+          + 'blank to inherit the plugin defaultAgentPreset, then the Host default/selectedDefault. An unknown or unusable '
+          + 'preset fails creation with a structured error; it is never silently ignored.',
       },
       isolation: {
         type: 'string',

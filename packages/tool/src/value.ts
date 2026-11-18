@@ -15,6 +15,7 @@
 import type { InferValue, ValueSchemaSpec } from '@deepseek-ai/dsh-tools'
 import { DEVLEAD_TRANSITIONS } from '@yankeguo/dsh-devlead-protocol'
 import type {
+  DevLeadAgentPresetCatalog,
   DevLeadArchivedSession,
   DevLeadCreatedSession,
   DevLeadIsolation,
@@ -463,8 +464,52 @@ export const MODEL_CATALOG_SCHEMA = {
   },
 } as const
 
+/** Enforced schema of one Agent preset roster row. */
+const AGENT_PRESET_VIEW_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    id: {
+      type: 'string',
+      required: true,
+      description: 'Host-defined preset id accepted by devlead_create_session preset.',
+    },
+    name: { type: 'string', description: 'Display name the preset publishes.' },
+    description: { type: 'string', description: 'One-sentence purpose the preset publishes.' },
+    default: {
+      type: 'boolean',
+      required: true,
+      description: 'Whether Sessions naming no preset use this one (selected default when configured).',
+    },
+    broken: { type: 'string', description: 'Why this preset cannot compose a Session; absent when usable.' },
+  },
+} as const
+
+/** Enforced schema of the Agent preset roster. */
+export const AGENT_PRESET_CATALOG_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    available: {
+      type: 'boolean',
+      required: true,
+      description: 'Whether the Host composes an Agent preset roster service.',
+    },
+    presets: {
+      type: 'array',
+      required: true,
+      items: AGENT_PRESET_VIEW_SCHEMA,
+      description: 'Declared presets in Host roster order; empty when unavailable or empty.',
+    },
+    reason: { type: 'string', description: 'Why the roster is unavailable; present only with available false.' },
+  },
+} as const
+
 /** Canonical value of `devlead_list_models`. */
 export const LIST_MODELS_OUTPUT = jsonOutput(MODEL_CATALOG_SCHEMA)
+
+/** Canonical value of `devlead_list_agent_presets`. */
+export const LIST_AGENT_PRESETS_OUTPUT = jsonOutput(AGENT_PRESET_CATALOG_SCHEMA)
 
 /** Canonical value of `devlead_remove_workspace`. */
 export const REMOVE_WORKSPACE_OUTPUT = jsonOutput({
@@ -546,6 +591,24 @@ export function watchMutationValue(mutation: DevLeadWatchMutation): InferValue<t
     sessionId: mutation.sessionId,
     watched: mutation.watched,
     sessions: [...mutation.sessions],
+  }
+}
+
+/** Canonical value of the Agent preset roster. */
+export type AgentPresetCatalogValue = InferValue<typeof AGENT_PRESET_CATALOG_SCHEMA>
+
+/** Project the Host Agent preset roster onto the canonical value. */
+export function agentPresetCatalogValue(catalog: DevLeadAgentPresetCatalog): AgentPresetCatalogValue {
+  return {
+    available: catalog.available,
+    presets: catalog.presets.map(preset => ({
+      id: preset.id,
+      default: preset.default,
+      ...(preset.name === undefined ? {} : { name: preset.name }),
+      ...(preset.description === undefined ? {} : { description: preset.description }),
+      ...(preset.broken === undefined ? {} : { broken: preset.broken }),
+    })),
+    ...(catalog.reason === undefined ? {} : { reason: catalog.reason }),
   }
 }
 

@@ -16,9 +16,10 @@ plugin-market 等）。审计对象是本仓库的 6 个包（`protocol`、`devl
 > 依赖；阶段 3 在真实 Host 上验证 12 个工具的条件可见性、只读模型目录、triage/自主关闭 policy、
 > archive/unarchive/remove 与创建时模型/Agent Teams 的 durable 行为）。最新验证计数见 §7.6。
 >
-> **后续 UI 变更（0.2.4）**：DevLead 模式开关已统一到 composer toolbar 的
-> `DevLeadIconToggle`（两态常驻）；`DevLeadBar` 只读且不再导入 `Switch`。下表 §4.3 的
-> `Switch` 是审计时点的引入形态，当前实现见 `docs/DESIGN.md` §7。
+> **后续变更（本轮）**：DevLead 模式开关已统一到 composer toolbar 的
+> `DevLeadIconToggle`（两态常驻）；`DevLeadBar` 只读且不再导入 `Switch`。工具面新增
+> `devlead_list_agent_presets`，DevLead 工具数为 13；§7 中的 12 个工具是 0.2.0 审计时点计数。
+> 下表 §4.3 的 `Switch` 是审计时点的引入形态，当前实现见 `docs/DESIGN.md` §7。
 
 ## 1. 结论摘要
 

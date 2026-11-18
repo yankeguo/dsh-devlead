@@ -12,7 +12,7 @@ kind: "package-bundle"
 
 ## 特性
 
-- **DevLead 模式**：每个会话一个持久开关；打开后获得 12 个 `devlead_*` 工具、DevLead 系统
+- **DevLead 模式**：每个会话一个持久开关；打开后获得 13 个 `devlead_*` 工具、DevLead 系统
   提示，以及两态 UI：composer 工具条里的 DevLead 图标 + 文本按钮在两种状态下都常驻并负责
   开启/关闭，开启后 composer 上方才出现只读状态条。
   已开启的会话还会在侧边栏会话行显示 DevLead 标记，关掉会话后仍可辨识（DSH rc.1 对
@@ -38,7 +38,7 @@ kind: "package-bundle"
 | entry id | 包 | 作用 |
 | --- | --- | --- |
 | `devlead` | `@yankeguo/dsh-devlead` | 核心服务 `ctx.devLead`：模式、Workspace/Session 编排、通知投递、`devLead` projection |
-| `devlead-tool` | `@yankeguo/dsh-tool-devlead` | 12 个模型工具与条件 system prompt |
+| `devlead-tool` | `@yankeguo/dsh-tool-devlead` | 13 个模型工具与条件 system prompt |
 | `devlead-command` | `@yankeguo/dsh-command-devlead` | `/devlead` 人类命令 |
 | `devlead-ui` | `@yankeguo/dsh-client-ui-devlead` | 浏览器两态 UI：常驻工具条开关（图标 + 文本）+ 开启后的只读 DevLeadBar + 侧边栏会话行标记 |
 
@@ -153,7 +153,7 @@ bundle 的 patch 行没有显式写配置，核心服务使用 DESIGN 默认值�
     maxWatchedSessions: 64       # 每个 lead 最多监督的会话数
     maxListedSessions: 200       # 会话列表最大行数
     wakeColdSession: true        # resume 冷 DevLead 会话以投递其排队的通知（默认）
-    defaultAgentPreset: ''       # 创建会话的默认 Agent preset
+    defaultAgentPreset: ''       # 创建会话的默认 Agent preset（空 = 用 Host 默认；无效 id 创建失败）
 ```
 
 ## 行为与限制
@@ -188,7 +188,7 @@ bundle 的 patch 行没有显式写配置，核心服务使用 DESIGN 默认值�
 ## English summary
 
 `@yankeguo/dsh-devlead-bundle` installs the whole DevLead suite - the core `ctx.devLead` service,
-twelve `devlead_*` tools, the `/devlead` human command, and the Web UI (composer-toolbar toggle
+thirteen `devlead_*` tools, the `/devlead` human command, and the Web UI (composer-toolbar toggle
 plus a status-only strip and sidebar marks). The suite targets the default DSH Web composition
 (`dsh-base` + `dsh-web-app`) and has no hard dependency on experimental plugins. Full docs:
 [README.md](https://github.com/yankeguo/dsh-devlead/blob/main/README.md) (English), [README.zh.md](https://github.com/yankeguo/dsh-devlead/blob/main/README.zh.md) (中文), and

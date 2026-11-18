@@ -52,7 +52,7 @@ Documentation: [Design notes (中文)](docs/DESIGN.md) · [Publishing guide (中
 | Role model | Dispatch-first: determine the owning Workspace from registered metadata, send a self-contained brief to a Session there, watch it, review the delivery, report; read-only inspection is bounded feasibility triage (ownership, current behavior at a high level, verification) plus checking a specific claim during review, while the deeper investigation and implementation stay in the owning Workspace's Session (including the lead's own workspace; direct work only when the human explicitly authorizes it in this conversation; record-file upkeep may follow the lead's repository instructions) |
 | Standard DSH entities | Child sessions are ordinary Sessions (visible in the sidebar; humans can open and take them over); Workspaces go through `workspaceRegistry`, not subagents |
 | Optional worktree isolation | When the Host composes DSH's experimental Git worktree service (`ctx.worktrees`), `devlead_create_session` can request `isolation: "worktree"` so a writing Session gets its own branch and checkout instead of sharing the Workspace checkout; detection is optional and a missing capability degrades to the shared checkout with a reported status, never an error (see [Optional worktree isolation](#optional-worktree-isolation)) |
-| 12 model tools | Register/list/remove Workspaces, list Host models, create (model/Agent Teams inherited or pinned)/read/continue/archive/restore/watch Sessions, read the notification digest (see [Model tools](#model-tools)) |
+| 13 model tools | Register/list/remove Workspaces, list Host models and Agent presets, create (model/Agent Teams inherited or pinned)/read/continue/archive/restore/watch Sessions, read the notification digest (see [Model tools](#model-tools)) |
 | Human commands | `/devlead` (status), `/devlead on\|off`, `/devlead reset` (damaged-state recovery), `/devlead watch\|unwatch <session>`; sessions are addressable by full id or unique prefix |
 | Notification loop | A watched session's `turn/end` writes a durable notification and wakes an indexed DevLead through a coalescing window (configurable window; cold leads are resumed by default); the watch index is rebuilt from durable records after a Host restart, and a disposed lead keeps observing (see [Notification loop](#notification-loop)) |
 | Event sourcing | Mode / watch set / notifications / reset are ignorable `plugin:devlead/*` records with strict replay validation; survive restart / resume / fork |
@@ -138,7 +138,7 @@ A pnpm workspace under `packages/*`:
 packages/
   protocol/    @yankeguo/dsh-devlead-protocol     pure types + constants + formatting (shared by host and browser), devLead/devLeadMode projection types
   devlead/     @yankeguo/dsh-devlead              core service: mode, Workspace/Session orchestration, watch index, notification delivery, strict fold
-  tool/        @yankeguo/dsh-tool-devlead         12 model tools + conditional system prompt
+  tool/        @yankeguo/dsh-tool-devlead         13 model tools + conditional system prompt
   command/     @yankeguo/dsh-command-devlead      the /devlead human command
   client-ui/   @yankeguo/dsh-client-ui-devlead    browser UI: toolbar toggle + DevLeadBar status strip + sidebar row mark
   bundle/      @yankeguo/dsh-devlead-bundle       bundle: cordis.patch.yml + dependencies
@@ -342,8 +342,11 @@ mode is off and `/devlead off` while it is on.
    it, ask and stop instead of guessing or inspecting another repository first.
 3. Let the model dispatch work: `devlead_create_session` (optional `workspace` / `title` /
    `preset`) with a **self-contained prompt** — background, target result, the open questions
-   the Session must confirm or refine, deliverables, how to verify them, and what not to touch;
-   pass the **owning Workspace** and
+   the Session must confirm or refine, deliverables, how to verify them, and what not to touch.
+   `preset` is a Host-defined Agent preset id: call `devlead_list_agent_presets` first, do not
+   assume a fixed list, and omit or leave it blank to inherit the plugin `defaultAgentPreset`,
+   then the Host default/selectedDefault; an unknown id fails creation with a structured error.
+   Pass the **owning Workspace** and
    omit `workspace` only when the work truly belongs to the lead's own directory (the new Session
    then lives there). A brief with open questions is expected: the deeper investigation and the
    implementation belong to the Session, not to the lead. The child cannot see this conversation,
@@ -392,9 +395,10 @@ DevLead session:
 | --- | --- | --- |
 | `devlead_list_workspaces` | `{}` | `{ workspaces }` |
 | `devlead_list_models` | `{}` | `{ default, routableProviders, providers, failures }` (compact catalog) |
+| `devlead_list_agent_presets` | `{}` | `{ available, presets: [{ id, name?, description?, default, broken? }], reason? }` (Host roster; `available: false` when the Host composes no roster) |
 | `devlead_use_workspace` | `path` (required, absolute), `title?`, `create?` (default false: a missing directory is an error; `true` creates it with `mkdir -p` after the human asked) | `{ workspace }` |
 | `devlead_list_sessions` | `workspace?`, `watched_only?`, `limit?` | `{ sessions, watched }` |
-| `devlead_create_session` | `workspace?`, `prompt?`, `title?`, `watch?` (default true), `preset?`, `isolation?` (default `none`; `worktree` = best-effort isolated checkout), `provider?`+`model?` (paired; optional `reasoning_effort?`), `agent_teams?` | creation result (including the `isolation` outcome, and the applied `model`/`agentTeams` when requested) |
+| `devlead_create_session` | `workspace?`, `prompt?`, `title?`, `watch?` (default true), `preset?` (Host-defined id; blank/omitted falls back to the plugin default then the Host default), `isolation?` (default `none`; `worktree` = best-effort isolated checkout), `provider?`+`model?` (paired; optional `reasoning_effort?`), `agent_teams?` | creation result (including the `isolation` outcome, and the applied `model`/`agentTeams` when requested) |
 | `devlead_get_session` | `session` (required) | `{ session }` |
 | `devlead_prompt_session` | `session`, `prompt` (required), `watch?` (default true) | prompt result |
 | `devlead_watch_session` | `session`, `watching` (required bool) | watch mutation result |
@@ -405,6 +409,13 @@ DevLead session:
 
 Tools translate the core's `DevLeadError` into a `HarnessError` with a stable code. When reading
 state, trust `lastTurn` / `lastTransition` / `lastError` / `lastAssistant` instead of guessing.
+
+`devlead_list_agent_presets` reports the Host's actual roster: each preset id, published
+name/description, a `default` marker (the effective default: `selectedDefault` when configured,
+otherwise the base default), and a `broken` reason when it cannot compose a Session. A Host that
+composes no roster returns `available: false` with a reason; the tool never invents preset ids.
+The `preset` argument is always a Host-defined id, and an invalid or unusable id fails creation
+with a structured error instead of being silently replaced.
 
 The three closing tools use DSH's own vocabulary and are never destructive. `devlead_remove_workspace`
 performs the DSH **remove** action: it unregisters the Workspace only — the directory, its files,
@@ -568,7 +579,7 @@ the profile's `cordis.patch.yml` — DSH replaces a row's whole config):
     maxWatchedSessions: 64       # max watched sessions per lead (positive integer)
     maxListedSessions: 200       # max rows per session listing (positive integer)
     wakeColdSession: true        # resume a cold DevLead Session to deliver its queued notifications (default)
-    defaultAgentPreset: ''       # default Agent preset for created sessions (empty = DSH default)
+    defaultAgentPreset: ''       # default Agent preset for created sessions (empty = Host default; invalid id fails creation)
 ```
 
 | Key | Default | Range / notes |
@@ -577,7 +588,7 @@ the profile's `cordis.patch.yml` — DSH replaces a row's whole config):
 | `maxWatchedSessions` | `64` | positive integer; a watch operation over the cap reports `DEVLEAD_WATCH_LIMIT` |
 | `maxListedSessions` | `200` | positive integer; row cap for listing calls (`devlead_list_sessions` / `/devlead` status). Identity resolution is not limited by it, and a watched-only listing never truncates below the watch set |
 | `wakeColdSession` | `true` | when `true`, a cold lead Session with queued notifications is resumed (`sessionController.resolveAgent`) to deliver them; set `false` to keep the queues in memory and wait for a human to open the lead Session. Observation is not affected by this flag |
-| `defaultAgentPreset` | `''` | default value used when a created session names no `preset`; an empty string means no preset |
+| `defaultAgentPreset` | `''` | default value used when a created session names no `preset` (or passes blanks); an empty string means no plugin default, so the Host's effective default applies. An invalid id fails creation with a structured error |
 
 `tool` / `command` / `client-ui` have no deployment configuration; all domain limits (watch cap,
 notification retention, etc.) are owned by the core service and protocol constants.
@@ -739,7 +750,7 @@ non-empty `path`/`branch`/`baseCommit`; `git worktree list` and the branch exist
 equals the checkout `HEAD`; the child's effective cwd is the worktree path while its header cwd
 still points at the Workspace; the Session still belongs to that Workspace); phase 3 links the
 same private probe package and restarts (the worktree bundle is not required) to drive the close
-tools through the real Host: a real step-time tool activation shows exactly the twelve
+tools through the real Host: a real step-time tool activation shows exactly the thirteen
 `devlead_*` tools while the mode is on and none while it is off, the assembled `devlead:policy`
 section carries judgment-based closing with its safety boundaries and the
 triage/open-question handoff, archiving a prompted child updates the durable archive set and

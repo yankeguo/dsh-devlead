@@ -20,6 +20,7 @@ import type {
 } from '@deepseek-ai/dsh-tools'
 import { DevLeadError } from '@yankeguo/dsh-devlead'
 import type {
+  DevLeadAgentPresetCatalog,
   DevLeadArchivedSession,
   DevLeadArchiveSessionOptions,
   DevLeadCreatedSession,
@@ -80,6 +81,16 @@ export const NOTIFICATION: DevLeadNotification = {
   transition: 'completed',
   turn: 3,
   at: 1_700_000_000_000,
+}
+
+/** One Agent preset roster fixture with a default, metadata, and a broken preset. */
+export const AGENT_PRESET_CATALOG: DevLeadAgentPresetCatalog = {
+  available: true,
+  presets: [
+    { id: 'standard', name: 'Standard', description: 'General-purpose preset', default: false },
+    { id: 'ptc', name: 'PTC', default: true },
+    { id: 'broken', default: false, broken: 'missing service' },
+  ],
 }
 
 /** One model catalog fixture with a default, reasoning efforts, and a failure. */
@@ -146,6 +157,9 @@ export class FakeDevLead {
 
   /** Catalog returned by {@link listModels}. */
   models: DevLeadModelCatalog = MODEL_CATALOG
+
+  /** Roster returned by {@link listAgentPresets}. */
+  agentPresets: DevLeadAgentPresetCatalog = AGENT_PRESET_CATALOG
 
   /** Result returned by {@link createSession}. */
   created: DevLeadCreatedSession = {
@@ -275,6 +289,11 @@ export class FakeDevLead {
   async listModels(agent: Agent, signal?: AbortSignal): Promise<DevLeadModelCatalog> {
     this.enter('listModels', agent, signal)
     return this.models
+  }
+
+  async listAgentPresets(agent: Agent, signal?: AbortSignal): Promise<DevLeadAgentPresetCatalog> {
+    this.enter('listAgentPresets', agent, signal)
+    return this.agentPresets
   }
 
   async removeWorkspace(agent: Agent, workspace: string, signal?: AbortSignal): Promise<DevLeadRemovedWorkspace> {

@@ -1816,6 +1816,27 @@ describe('session creation', () => {
     expect(controller.createCalls).toEqual([{ workspaceId: 'ws-1', agentPreset: 'reviewer' }])
   })
 
+  it('surfaces an invalid preset from the Host as a structured creation failure', async () => {
+    const controller = new FakeSessionController(
+      Object.assign(new Error('Unknown agent preset: nope'), { code: 'agent-preset/not-found' }),
+    )
+    const registry = new FakeWorkspaceRegistry()
+    registry.add({ path: '/tmp/invalid-preset', title: 'Invalid Preset' })
+    const harness = await bootService({
+      enabled: true,
+      sessionController: controller,
+      workspaceRegistry: registry,
+    })
+    const error = await expectCodeAsync(
+      () => harness.service.createSession(harness.lead.agent, { workspace: 'ws-1', preset: 'nope' }),
+      'DEVLEAD_SESSION_UNAVAILABLE',
+    )
+    expect(error.message).toContain('could not create a Session')
+    expect(error.message).toContain('Unknown agent preset: nope')
+    expect(controller.createCalls).toEqual([{ workspaceId: 'ws-1', agentPreset: 'nope' }])
+    expect(harness.service.view(harness.lead.agent).sessions).toEqual([])
+  })
+
   it('maps creation failures to the stable error vocabulary', async () => {
     const notFound = new FakeSessionController(Object.assign(new Error('gone'), { code: 'session/not-found' }))
     const registry = new FakeWorkspaceRegistry()
@@ -2256,6 +2277,98 @@ describe('model catalog', () => {
       enabled.service.listModels(enabled.lead.agent, aborter.signal),
     ).rejects.toMatchObject({ name: 'AbortError' })
     expect(controller.modelCatalogCalls).toBe(0)
+  })
+})
+
+describe('agent preset roster', () => {
+  it('maps the optional Host roster onto the compact protocol view', async () => {
+    const harness = await bootService({ enabled: true })
+    const list = vi.fn(async () => [
+      { id: 'standard', name: 'Standard', description: 'General-purpose preset', order: 1 },
+      { id: 'ptc', name: 'PTC' },
+      { id: 'broken', broken: 'missing service' },
+    ])
+    harness.ctx.provide('agentPresets', { defaultId: 'ptc', list })
+    const catalog = await harness.service.listAgentPresets(harness.lead.agent)
+    expect(catalog).toEqual({
+      available: true,
+      presets: [
+        { id: 'standard', name: 'Standard', description: 'General-purpose preset', default: false },
+        { id: 'ptc', name: 'PTC', default: true },
+        { id: 'broken', default: false, broken: 'missing service' },
+      ],
+    })
+    expect(list).toHaveBeenCalledTimes(1)
+  })
+
+  it('distinguishes an empty roster from an absent roster service', async () => {
+    const empty = await bootService({ enabled: true })
+    empty.ctx.provide('agentPresets', { defaultId: 'standard', list: async () => [] })
+    await expect(empty.service.listAgentPresets(empty.lead.agent)).resolves.toEqual({
+      available: true,
+      presets: [],
+    })
+
+    const absent = await bootService({ enabled: true })
+    await expect(absent.service.listAgentPresets(absent.lead.agent)).resolves.toEqual({
+      available: false,
+      presets: [],
+      reason: 'this Host composes no Agent preset roster; omit preset to use the Host default',
+    })
+  })
+
+  it('drops malformed roster rows and derives the default marker from defaultId', async () => {
+    const harness = await bootService({ enabled: true })
+    harness.ctx.provide('agentPresets', {
+      defaultId: 'standard',
+      list: async () => [
+        null,
+        {},
+        { id: '   ' },
+        { id: ' standard ', name: '   ', description: ' keep ', broken: '   ' },
+      ],
+    })
+    await expect(harness.service.listAgentPresets(harness.lead.agent)).resolves.toEqual({
+      available: true,
+      presets: [{ id: 'standard', description: 'keep', default: true }],
+    })
+  })
+
+  it('maps a roster read failure to a structured error', async () => {
+    const harness = await bootService({ enabled: true })
+    harness.ctx.provide('agentPresets', {
+      defaultId: 'standard',
+      list: async () => {
+        throw new Error('roster store offline')
+      },
+    })
+    const error = await expectCodeAsync(
+      () => harness.service.listAgentPresets(harness.lead.agent),
+      'DEVLEAD_SESSION_UNAVAILABLE',
+    )
+    expect(error.message).toContain('roster store offline')
+  })
+
+  it('requires a live lead with the mode enabled and honors cancellation', async () => {
+    const disabled = await bootService({})
+    await expectCodeAsync(
+      () => disabled.service.listAgentPresets(disabled.lead.agent),
+      'DEVLEAD_NOT_ENABLED',
+    )
+    const harness = await bootService({ enabled: true })
+    const stale = new FakeAgent(harness.leadSession)
+    await expectCodeAsync(
+      () => harness.service.listAgentPresets(stale.agent),
+      'DEVLEAD_AGENT_NOT_LIVE',
+    )
+    const list = vi.fn(async () => [])
+    harness.ctx.provide('agentPresets', { defaultId: 'standard', list })
+    const aborter = new AbortController()
+    aborter.abort()
+    await expect(
+      harness.service.listAgentPresets(harness.lead.agent, aborter.signal),
+    ).rejects.toMatchObject({ name: 'AbortError' })
+    expect(list).not.toHaveBeenCalled()
   })
 })
 
