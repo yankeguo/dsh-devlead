@@ -29,7 +29,7 @@
   残余边界见[已知限制](#已知限制)。
 
 文档导航：[设计说明](docs/DESIGN.md) · [发布指南](docs/PUBLISHING.md) ·
-[审计记录](docs/AUDIT.md) · [v0.2.5 release notes](docs/releases/v0.2.5.md) ·
+[审计记录](docs/AUDIT.md) · [v0.2.6 release notes](docs/releases/v0.2.6.md) ·
 [Bundle 说明](packages/bundle/README.md) · 包 README：[protocol](packages/protocol/README.md) ·
 [devlead](packages/devlead/README.md) · [tool](packages/tool/README.md) ·
 [command](packages/command/README.md) · [client-ui](packages/client-ui/README.md)

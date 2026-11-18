@@ -40,7 +40,7 @@ interface that the human can see and interact with.
   for the cold-lead policy and [Known limitations](#known-limitations) for the residual cases.
 
 Documentation: [Design notes (中文)](docs/DESIGN.md) · [Publishing guide (中文)](docs/PUBLISHING.md) ·
-[Audit record (中文)](docs/AUDIT.md) · [v0.2.5 release notes (中文)](docs/releases/v0.2.5.md) ·
+[Audit record (中文)](docs/AUDIT.md) · [v0.2.6 release notes (中文)](docs/releases/v0.2.6.md) ·
 [Bundle package (中文)](packages/bundle/README.md) · Package READMEs:
 [protocol](packages/protocol/README.md) · [devlead](packages/devlead/README.md) ·
 [tool](packages/tool/README.md) · [command](packages/command/README.md) ·

@@ -47,7 +47,7 @@ DevLead 的 watch 是 **lead 关注一个 Session 的单向关系**，不是权�
 | watcher / active lead that watches it | 关注该会话的 active lead | 当前唯一 enabled、且 watch 了目标 Session 的 lead |
 
 - 不再用「监督」表示关注关系；历史 release notes（v0.1.0 / v0.2.4）保留原文作为已发布
-  快照，v0.2.5 起的新文案统一使用「关注」。
+  快照，v0.2.6 起的新文案统一使用「关注」。
 - 内部代码标识 `supervisorOf` / `isSupervised` / `DEVLEAD_NOT_SUPERVISED` 是既有 API 与错误码，
   不改名；错误文案已经用 “not watched by the unique active DevLead” 表达同一含义。
 - watch 不是权限授予：lead 仍只能通过既有工具创建/续写/归档 Session；不能因此读写子 Session
