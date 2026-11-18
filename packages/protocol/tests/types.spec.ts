@@ -22,6 +22,7 @@ import type { DevLeadModeProjection, DevLeadProjection } from '../src/index.ts'
 const wire: SessionProjectionViewValue<SessionProjectionMap['devLead']> = {
   enabled: false,
   sessions: ['session-alpha'],
+  reports: [],
   notifications: [{
     id: 'session-alpha:1:completed',
     sessionId: 'session-alpha',

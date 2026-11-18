@@ -8,8 +8,9 @@ Browser half of the DevLead suite, loaded on the DSH **Web** platform.
   mounted in both states; while the mode is on it gains the business-accent border and a light
   halo, with the border reserved transparent in the off state so the toolbar never shifts.
 - **On state:** a status strip above the composer (`conversation.input.dock`) shows the brand,
-  watched/running counts, and the latest retained notification (or the help hint). The strip is
-  display-only and owns no switch.
+  watched/running counts, and the newest retained notification or mid-turn report (or the help
+  hint). Reports show sender, localized kind, and summary/message; the strip is display-only and
+  owns no switch.
 - **Sidebar marks:** enabled Sessions get a shield mark (`sidebar.session.row.trailing`) and a
   line in the row hover card (`sidebar.session.row.hover`), read from the summary-sized
   `devLeadMode` projection.

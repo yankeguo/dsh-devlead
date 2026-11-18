@@ -11,7 +11,7 @@ DSH 端到端验证。
 > 25/25 checks）记录的是当时的工作树。此后工作树新增了可选 worktree 隔离与依赖姿态审计
 > （0.1.1），并完成了 **0.2.0** 的六个决策项与 nits（见 §10.2）。最新验证数字与结论见
 > [`DESIGN.md`](DESIGN.md) §12 与 [`OPTIONAL-DEPENDENCIES.md`](OPTIONAL-DEPENDENCIES.md)
-> （本文件 §1–§9 是历史快照；当前为 24 文件 / 689 tests，E2E rc.4 installed/patch 各 132/132，rc.1–rc.3 `--no-worktree` 各 109/109）。
+> （本文件 §1–§9 是历史快照；当前为 24 文件 / 723 tests，E2E rc.4 installed/patch 各 141/141，rc.1–rc.3 `--no-worktree` 各 118/118）。
 
 ## 1. 结论摘要
 
@@ -311,8 +311,16 @@ PUBLISHING / OPTIONAL-DEPENDENCIES 与各包 README 同步；`docs/releases/v0.2
   unmet peer；范围修复了该噪声。`scripts/check-packages.mjs` 改为「root devDependency
   必须落在 peer 范围内」，并新增 `semver` devDependency。devDependencies 仍固定 rc.1，
   以最旧 API 做类型检查。
-- **E2E 矩阵**：rc.1–rc.3 `--no-worktree` 各 109/109；rc.4 installed 与 patch 各 132/132
-  （阶段 3 新增 agent preset roster 检查：rc.1–rc.4 都返回 `standard` 为默认的真实 roster）。
+- **E2E 矩阵**：rc.1–rc.3 `--no-worktree` 各 118/118；rc.4 installed 与 patch 各 141/141
+  （阶段 3 新增 agent preset roster 检查：rc.1–rc.4 都返回 `standard` 为默认的真实 roster；
+  新增 watched-child 汇报检查：子会话真实 step 只看到 `devlead_report`、收到单向 policy，
+  真实 report 写入 lead digest）。
+- **中途汇报（当前工作树）**：新增 `plugin:devlead/report` durable 记录与 `reports`
+  projection 数组；`devlead_report` 仅在「非 DevLead + 唯一 active lead watch」时可见；
+  `reportProgress` 同步解析 supervisor，异步投递复用通知 hub 的 pending/unsaved 队列与合并
+  唤醒；同轮相同 message 幂等，每轮 4 条上限，返回 `DEVLEAD_NOT_SUPERVISED` /
+  `DEVLEAD_REPORT_RATE_LIMITED` / `DEVLEAD_INVALID_INPUT`；lead 状态条、`/devlead` status、
+  `devlead_notifications` 均展示 report。24 文件 / 723 tests，E2E 141/141（phase 3 79）。
 - **审计修复**（详见 release notes 0.2.4）：cold-lead 扫描先 rank 后读标题（避免为截断前
   的每个冷 Session 读完整日志）；corpus readiness 双重限时且 dispose 可唤醒；冷 lead
   resume 失败有界重试；通知 append 失败进入 `unsaved` 而不是当作已 durable；归档但运行中的

@@ -7,7 +7,10 @@
 
 import {
   DEVLEAD_ERROR_EXCERPT_MAX,
+  DEVLEAD_REPORT_KINDS,
   type DevLeadNotification,
+  type DevLeadReport,
+  type DevLeadReportKind,
   type DevLeadTransition,
 } from './types.ts'
 
@@ -140,4 +143,69 @@ export function notificationDigest(notifications: readonly DevLeadNotification[]
  */
 export function formatInstant(at: number): string {
   return new Date(at).toISOString().replace(/\.\d{3}Z$/u, 'Z')
+}
+
+/** English technical label of one report kind, used in Host-rendered prompt text. */
+const REPORT_KIND_LABELS: Record<DevLeadReportKind, string> = {
+  progress: 'progress',
+  blocked: 'blocked',
+  decision: 'decision needed',
+  fyi: 'fyi',
+}
+
+/**
+ * Membership-checked report kind guard.
+ * @param value - candidate value from the wire or a tool argument.
+ * @returns whether the value is a known report kind.
+ */
+export function isDevLeadReportKind(value: unknown): value is DevLeadReportKind {
+  return typeof value === 'string' && (DEVLEAD_REPORT_KINDS as readonly string[]).includes(value)
+}
+
+/**
+ * Build the deterministic identity of one report.
+ *
+ * Same sender, turn, kind, and message map to the same id, so a retried tool
+ * call or a replayed durable record cannot duplicate the lead's digest. The
+ * message is hashed rather than embedded to keep ids compact.
+ * @param senderSessionId - reporting Session identity.
+ * @param turn - reporter's current turn (0 before the first turn).
+ * @param kind - report kind.
+ * @param message - full report message.
+ * @returns the stable report id.
+ */
+export function devLeadReportId(
+  senderSessionId: string,
+  turn: number,
+  kind: DevLeadReportKind,
+  message: string,
+): string {
+  let hash = 0x811c9dc5
+  for (const character of `${kind}\u0000${message}`) {
+    hash ^= character.codePointAt(0) ?? 0
+    hash = Math.imul(hash, 0x01000193)
+  }
+  return `${senderSessionId}:${turn}:report:${kind}:${(hash >>> 0).toString(36)}`
+}
+
+/**
+ * Render one report as one compact Host digest line.
+ * @param report - report to render.
+ * @returns a single line naming the sender, kind, and summary/message excerpt.
+ */
+export function reportLine(report: DevLeadReport): string {
+  const title = presentLine(report.senderSessionTitle)
+  const who = title === undefined ? report.senderSessionId : `${title} (${report.senderSessionId})`
+  const detail = presentLine(report.summary) ?? excerptLine(report.message, DEVLEAD_ERROR_EXCERPT_MAX)
+  const suffix = detail === undefined ? '' : `: ${detail}`
+  return `${who} — report ${REPORT_KIND_LABELS[report.kind]}${suffix}`
+}
+
+/**
+ * Render the retained report digest as prompt/UI lines, newest last.
+ * @param reports - retained reports.
+ * @returns one line per report, oldest first.
+ */
+export function reportDigest(reports: readonly DevLeadReport[]): string[] {
+  return reports.map(reportLine)
 }

@@ -28,7 +28,15 @@
  *     (registry archive set, Session views, durable log reads, filesystem
  *     survival) is read back and returned as one JSON document.
  *
- *   `devlead-e2e-dispatch` (phase 3)
+ *   `devlead-e2e-watch-child` (phase 3)
+    Create one idle watched child so the harness can inspect that child's real
+    step-time tool surface and drive a report through the same command seat.
+
+  `devlead-e2e-report` (phase 3)
+    Called inside that watched child: send a real `reportProgress` call and
+    return the durable lead receipt plus the lead's current report digest.
+
+  `devlead-e2e-dispatch` (phase 3)
  *     Exercise creation-time dispatch settings: pick a model from the Host's
  *     own `modelCatalog()` (falling back to the deployment default route when
  *     the catalog is unavailable), create a model-selected child, an Agent
@@ -171,6 +179,10 @@ export const INSPECT_COMMAND_NAME = 'devlead-e2e-inspect'
 export const CLOSE_COMMAND_NAME = 'devlead-e2e-close'
 /** Dispatch-settings command: creation-time model selection + Agent Teams. */
 export const DISPATCH_COMMAND_NAME = 'devlead-e2e-dispatch'
+/** Create one idle watched child for the report-surface checks. */
+export const WATCH_CHILD_COMMAND_NAME = 'devlead-e2e-watch-child'
+/** Send one real report from inside the watched child. */
+export const REPORT_COMMAND_NAME = 'devlead-e2e-report'
 /** Upper bound for one prompted child turn to settle inside the close command. */
 const CHILD_TURN_TIMEOUT_MS = 45_000
 /** Poll interval of the close command's child-turn wait. */
@@ -311,6 +323,7 @@ async function executeInspect(ctx, invocation) {
     toolError = messageOf(error)
   }
   let policy = null
+  let reportPolicy = null
   let policyError = null
   try {
     // Mirror the real step assembly (`agent-loop` passes agent + scope + the
@@ -323,6 +336,7 @@ async function executeInspect(ctx, invocation) {
       ...(toolSet === undefined ? {} : { toolSet }),
     })
     policy = (assembly.sections ?? []).find(section => section.name === 'devlead:policy')?.text ?? null
+    reportPolicy = (assembly.sections ?? []).find(section => section.name === 'devlead:report-policy')?.text ?? null
   } catch (error) {
     policyError = messageOf(error)
   } finally {
@@ -335,6 +349,8 @@ async function executeInspect(ctx, invocation) {
       tools: toolNames,
       devleadTools: toolNames.filter(name => name.startsWith('devlead_')),
       policy,
+      reportPolicy,
+      supervised: ctx.devLead.isSupervised(agent),
       toolError,
       policyError,
     }),
@@ -493,6 +509,66 @@ async function executeClose(ctx, invocation) {
         childViewWorkspaceIdAfterReRegister: viewAfterReRegister.workspaceId ?? null,
       },
     }),
+  }
+}
+
+/**
+ * Create one idle watched child and return its identity.
+ * @param ctx - probe context.
+ * @param invocation - command invocation carrying the lead Agent.
+ * @returns success JSON with the child id, or an error result.
+ */
+async function executeWatchChild(ctx, invocation) {
+  const agent = invocation.agent
+  try {
+    const created = await ctx.devLead.createSession(agent, {
+      watch: true,
+      title: 'e2e report child',
+    })
+    const childId = String(created.session.sessionId)
+    return {
+      kind: 'success',
+      text: JSON.stringify({
+        childId,
+        watched: ctx.devLead.view(agent).sessions.includes(childId),
+        live: ctx.agents.get(childId) !== undefined,
+      }),
+    }
+  } catch (error) {
+    return { kind: 'error', text: `devlead-e2e-watch-child: ${messageOf(error)}` }
+  }
+}
+
+/**
+ * Send one real mid-turn report from the calling watched child.
+ * @param ctx - probe context.
+ * @param invocation - command invocation carrying the child Agent.
+ * @returns success JSON with the report and the lead's digest, or an error result.
+ */
+async function executeReport(ctx, invocation) {
+  const agent = invocation.agent
+  try {
+    const supervised = ctx.devLead.isSupervised(agent)
+    const leadId = ctx.devLead.supervisorOf(agent)
+    if (leadId === undefined) {
+      return {
+        kind: 'success',
+        text: JSON.stringify({ supervised, leadId: null, report: null, leadReports: [] }),
+      }
+    }
+    const report = await ctx.devLead.reportProgress(agent, {
+      message: 'e2e report: the parser is halfway through',
+      kind: 'progress',
+      summary: 'e2e parser progress',
+    })
+    const leadAgent = ctx.agents.get(leadId)
+    const leadReports = leadAgent === undefined ? [] : ctx.devLead.reports(leadAgent)
+    return {
+      kind: 'success',
+      text: JSON.stringify({ supervised, leadId, report, leadReports }),
+    }
+  } catch (error) {
+    return { kind: 'error', text: `devlead-e2e-report: ${messageOf(error)}` }
   }
 }
 
@@ -727,5 +803,17 @@ export function apply(ctx) {
     name: DISPATCH_COMMAND_NAME,
     description: 'E2E probe: create Sessions with a model selection and Agent Teams, and report the real state.',
     handler: guarded(DISPATCH_COMMAND_NAME, invocation => executeDispatch(ctx, invocation)),
+  })
+  ctx.commands.register({
+    definitionId: CommandDefinitionId(`${DEFINITION_ID}#watch-child`),
+    name: WATCH_CHILD_COMMAND_NAME,
+    description: 'E2E probe: create one idle watched child for report-surface checks.',
+    handler: guarded(WATCH_CHILD_COMMAND_NAME, invocation => executeWatchChild(ctx, invocation)),
+  })
+  ctx.commands.register({
+    definitionId: CommandDefinitionId(`${DEFINITION_ID}#report`),
+    name: REPORT_COMMAND_NAME,
+    description: 'E2E probe: send a real mid-turn report from this watched child.',
+    handler: guarded(REPORT_COMMAND_NAME, invocation => executeReport(ctx, invocation)),
   })
 }

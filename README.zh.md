@@ -7,7 +7,7 @@
 **Session**（会话），创建/续写其他会话、读取会话状态、在会话状态变化时被唤醒，从而在一个
 人类可见、可参与的标准界面里统管多个仓库。
 
-- **DevLead 会话 = 普通会话 + 一个持久开关**：打开后该会话额外获得 13 个 `devlead_*` 工具、
+- **DevLead 会话 = 普通会话 + 一个持久开关**：打开后该会话额外获得 13 个 `devlead_*` 主工具（被监督会话另有 1 个汇报工具）、
   一段 DevLead 系统提示，composer 上方出现状态条 UI；开关本身是**人类专属操作**，模型不能
   自行打开。界面始终在 composer 工具条提供一个带 DevLead 文本的小按钮作为开关；开启后
   才会在 composer 上方出现状态条，不会在每个会话上显示常驻状态条。
@@ -42,7 +42,7 @@
 | 角色模型 | 默认调度：依据已注册元数据判定归属 Workspace → 向对应 Session 发自包含简报 → watch → 审阅交付 → 汇报；只读检查属于有界可行性判断（归属、当前行为的高层事实、验证方式）外加审阅时核对具体断言，更深的调查与实现留在归属 Workspace 的 Session（含 lead 自己的 Workspace；仅当人类在本对话中明确授权时由 lead 直接做；记录类文件可依 lead 仓库说明维护） |
 | 标准 DSH 实体 | 子会话是普通 Session（侧边栏可见、人类可打开接管），Workspace 走 `workspaceRegistry`，不是 subagent |
 | 可选 worktree 隔离 | 当 Host 组合了 DSH 实验性 Git worktree 服务（`ctx.worktrees`）时，`devlead_create_session` 可传 `isolation: "worktree"`，让写入型子会话拥有独立分支与检出、不再共享 Workspace checkout；能力检测是可选的，缺少能力时退化为共享 checkout 并在结果里如实上报，绝不报错（见[可选 worktree 隔离](#可选-worktree-隔离)） |
-| 13 个模型工具 | 注册/列出/关闭 Workspace，列出 Host 模型与 Agent preset，创建（继承或固定模型/Agent Teams）/读取/续写/归档/恢复/监督 Session，读取通知摘要（见[模型工具](#模型工具)） |
+| 13 个主工具 + 1 个汇报工具 | 注册/列出/关闭 Workspace，列出 Host 模型与 Agent preset，创建（继承或固定模型/Agent Teams）/读取/续写/归档/恢复/监督 Session，读取通知/汇报摘要；被监督的非 DevLead 会话可用 `devlead_report` 单向汇报（见[模型工具](#模型工具)） |
 | 人类命令 | `/devlead`（状态）、`/devlead on\|off`、`/devlead reset`（损坏状态恢复）、`/devlead watch\|unwatch <session>`；会话支持完整 id 或唯一前缀 |
 | 通知回路 | 被监督会话的 `turn/end` 写入持久通知记录，按合并窗口唤醒 DevLead（可配置窗口；冷 lead 默认 resume）；watch 索引在 Host 重启后从持久记录重建，已 dispose 的 lead 继续观察（见[通知机制](#通知机制)） |
 | 事件溯源 | 模式/watch 集合/通知/reset 全部是可忽略的 `plugin:devlead/*` 记录，严格回放校验，可跨重启 / 恢复 / fork |
@@ -121,7 +121,7 @@ pnpm workspace，`packages/*`：
 packages/
   protocol/    @yankeguo/dsh-devlead-protocol     纯类型 + 常量 + 格式化（host 与浏览器共用），devLead/devLeadMode projection 类型
   devlead/     @yankeguo/dsh-devlead              核心服务：模式、Workspace/Session 编排、监督索引、通知投递、严格 fold
-  tool/        @yankeguo/dsh-tool-devlead         13 个模型工具 + 条件 system prompt
+  tool/        @yankeguo/dsh-tool-devlead         13 个主工具 + 1 个汇报工具 + 条件 prompt
   command/     @yankeguo/dsh-command-devlead      /devlead 人类命令
   client-ui/   @yankeguo/dsh-client-ui-devlead    浏览器 UI：工具条开关 + 开启后的只读 DevLeadBar + 侧边栏会话行标记
   bundle/      @yankeguo/dsh-devlead-bundle       bundle：cordis.patch.yml + 依赖
@@ -171,7 +171,7 @@ staged 发布辅助脚本（`stage-release.mjs`、`promote-release.mjs`、`trust
 
 | 能力 | rc.1 | rc.2 | rc.3 | rc.4 | 说明 |
 | --- | --- | --- | --- | --- | --- |
-| 插件加载、13 个 `devlead_*`、`/devlead`、Web UI | 支持 | 支持 | 支持 | 支持 | 基础插件面 |
+| 插件加载、13 个主工具 + 1 个汇报工具、`/devlead`、Web UI | 支持 | 支持 | 支持 | 支持 | 基础插件面 |
 | `devlead_list_agent_presets` | 支持 | 支持 | 支持 | 支持 | `dsh-web-app` 从 rc.1 起组合 agent-presets；每个版本都通过真实 roster 验证（`standard` 为默认） |
 | 派发模型选择 + `reasoning_effort`（`agent.model.select`） | 支持 | 支持 | 支持 | 支持 | 仅 Session 级；不改 profile 默认 |
 | `devlead_list_models`（`sessionController.modelCatalog()`） | 支持 | 支持 | 支持 | 支持 | 只读精简目录 |
@@ -198,12 +198,12 @@ durable `team/mode`）。模型 API（`modelCatalog`、`Agent.model.select`、`m
 
 | DSH CLI | 命令 | 结果 |
 | --- | --- | --- |
-| `0.2.2-rc.1` | `DSH_BIN=<tmp>/rc.1/node_modules/.bin/dsh node scripts/e2e-smoke.mjs --flow installed --no-worktree` | **109/109**（Team 不可用分支） |
-| `0.2.2-rc.2` | 同上，`rc.2` | **109/109**（Team 成功分支） |
-| `0.2.2-rc.3` | 同上，`rc.3` | **109/109**（Team 成功分支） |
-| `0.2.2-rc.4` | 同上，`rc.4` | **109/109**（Team 成功分支） |
-| `0.2.2-rc.4` | `DSH_BIN=<tmp>/rc.4/node_modules/.bin/dsh node scripts/e2e-smoke.mjs --flow installed` | **132/132**（含实验 worktree 阶段） |
-| `0.2.2-rc.4` | 同上，`--flow patch` | **132/132** |
+| `0.2.2-rc.1` | `DSH_BIN=<tmp>/rc.1/node_modules/.bin/dsh node scripts/e2e-smoke.mjs --flow installed --no-worktree` | **118/118**（Team 不可用分支） |
+| `0.2.2-rc.2` | 同上，`rc.2` | **118/118**（Team 成功分支） |
+| `0.2.2-rc.3` | 同上，`rc.3` | **118/118**（Team 成功分支） |
+| `0.2.2-rc.4` | 同上，`rc.4` | **118/118**（Team 成功分支） |
+| `0.2.2-rc.4` | `DSH_BIN=<tmp>/rc.4/node_modules/.bin/dsh node scripts/e2e-smoke.mjs --flow installed` | **141/141**（含实验 worktree 阶段） |
+| `0.2.2-rc.4` | 同上，`--flow patch` | **141/141** |
 
 每条 flow 有 3 条正向模型选择检查因本机无 provider 凭据记为 SKIP（打印真实原因）；负向
 model 路径与 `devlead_list_models` 在每个版本都真实运行。单元测试使用 rc.1 devDependencies，
@@ -399,13 +399,20 @@ projection 保持 `enabled: false`，工具条按钮保持 off、状态条不出
 | `devlead_use_workspace` | `path`（必填，绝对路径）、`title?`、`create?`（默认 false：缺目录报错；人类明确要求时传 true 才 `mkdir -p`） | `{ workspace }` |
 | `devlead_list_sessions` | `workspace?`、`watched_only?`、`limit?` | `{ sessions, watched }` |
 | `devlead_create_session` | `workspace?`、`prompt?`、`title?`、`watch?`（默认 true）、`preset?`（Host 定义的 id；空白/省略时先回退插件默认 preset，再回退 Host 默认）、`isolation?`（默认 `none`；`worktree` = 尽力提供隔离检出）、`provider?`+`model?`（成对；可选 `reasoning_effort?`）、`agent_teams?` | 创建结果（含 `isolation` 结果；请求时含已应用的 `model`/`agentTeams`） |
-| `devlead_get_session` | `session`（必填） | `{ session }` |
+| `devlead_get_session` | `session`（必填） | `{ session, reports? }`——读取本 lead 自身时，`reports` 携带最近保留的汇报 |
 | `devlead_prompt_session` | `session`、`prompt`（必填）、`watch?`（默认 true） | 续写结果 |
 | `devlead_watch_session` | `session`、`watching`（必填 bool） | watch 变更结果 |
-| `devlead_notifications` | `limit?`（默认 20） | `{ notifications, watched }` |
+| `devlead_notifications` | `limit?`（默认 20） | `{ notifications, reports, watched }` |
+| `devlead_report` | `message`（必填，纯文本，上限 4000 code points）、`kind?`（默认 `progress` / `blocked` / `decision` / `fyi`）、`summary?`（上限 200） | `{ report }`——只在被监督的非 lead 会话可见；单向，不等待回复 |
 | `devlead_remove_workspace` | `workspace`（必填：id 或已注册路径） | `{ workspace, removed }`（注销前快照） |
 | `devlead_archive_session` | `session`（必填）、`stop_running?`（默认 false） | `{ sessionId, archived: true, stopped }` |
 | `devlead_unarchive_session` | `session`（必填） | `{ sessionId, archived: false }` |
+
+报告会作为 durable receipt 写入 lead 自己的会话日志（`plugin:devlead/report`），出现在
+`devLead` projection、状态条、`/devlead` 状态和 `devlead_notifications` 的 `reports` 中。lead 通过
+与 turn 通知相同的合并唤醒通道被唤醒；正在运行的 lead 在下一步收到。子会话不会被阻塞，也不能
+指定 target。每个子会话每轮最多 4 条不同报告，同轮相同消息幂等，第 5 条返回
+`DEVLEAD_REPORT_RATE_LIMITED`。重启后仍可从 lead 的 durable log 折叠读到。
 
 工具把 core 的 `DevLeadError` 翻译成带稳定 code 的 `HarnessError`；阅读状态时请以
 `lastTurn` / `lastTransition` / `lastError` / `lastAssistant` 等字段为准，不要靠猜。
@@ -686,7 +693,7 @@ resume 后 `/devlead status` 与 `/devlead off` 正常）；阶段 2 向**一次
 'worktree'` 且 `path`/`branch`/`baseCommit` 非空；`git worktree list` 与分支存在；`baseCommit`
 等于 checkout 的 `HEAD`；子会话有效工作目录是 worktree 路径而 header cwd 仍指向 Workspace；
 Session 仍归属该 Workspace）；阶段 3 链接同一个私有 probe 包后重启（不需要 worktree bundle），
-通过真实 Host 驱动关闭工具：真实的一步工具激活在模式开启时恰好可见 13 个 `devlead_*`、关闭时
+通过真实 Host 驱动关闭工具：真实的一步工具激活在模式开启时恰好可见 13 个主 `devlead_*`、关闭时
 为 0；组装出的 `devlead:policy` section 含判断式自主关闭、安全边界与「有限可行性判断/开放
 问题/深挖交接」；归档一个已 prompt 的子会话后 durable archive 集合与 archived 视图/列表行
 生效，重复归档是幂等 no-op，unarchive 恢复且日志保持完整；临时 activity provider 让活跃
@@ -697,11 +704,11 @@ dispatch 设置也走真实 Host：从 `modelCatalog()` 选模型（目录为空
 `agent_teams` true/false 与 durable `team/mode`、省略时结果字段不出现、不可用 model 在创建前
 被拒且不新增 Session、profile 默认模型前后不变；无 provider 凭据时正向模型检查记为 **SKIP**
 并报告原因（不伪造）；`devlead_list_models` 返回精简 Host 目录（default/providers/failures）。
-两条加载流各 **132/132**（阶段 1 27 + 阶段 1b 12 + 阶段 2 23 + 阶段 3 70）；调试时可加
-`--no-worktree` 跳过阶段 2（**109/109**，阶段 1 + 1b + 3）；用 npm 安装的 `0.2.2-rc.1` –
-`0.2.2-rc.4` CLI（`DSH_BIN`）跑同样 flow 也各 **109/109**：rc.1 上 Team 成功检查改为
+两条加载流各 **141/141**（阶段 1 27 + 阶段 1b 12 + 阶段 2 23 + 阶段 3 79）；调试时可加
+`--no-worktree` 跳过阶段 2（**118/118**，阶段 1 + 1b + 3）；用 npm 安装的 `0.2.2-rc.1` –
+`0.2.2-rc.4` CLI（`DSH_BIN`）跑同样 flow 也各 **118/118**：rc.1 上 Team 成功检查改为
 「预期不可用」（`DEVLEAD_TEAM_UNAVAILABLE`、不创建 Session），rc.2–rc.4 走 Team 成功路径；
-rc.4 的 installed / patch 完整 flow 各 **132/132**。probe 是
+rc.4 的 installed / patch 完整 flow 各 **141/141**。probe 是
 `scripts/e2e-probe/` 下的私有测试包，不发布、不属于 workspace 包；profile 变更只发生在
 `os.tmpdir()` 下的一次性 profile，不涉及 pnpm install / 网络 / lockfile。
 
@@ -722,7 +729,7 @@ rc.4 的 installed / patch 完整 flow 各 **132/132**。probe 是
 本地端到端验收：`pnpm verify && pnpm e2e`。分阶段 E2E 启动一个隔离 DSH：阶段 1 走完
 `/devlead on` → 真实子会话 watch → 子会话 turn 结束 → 通知进入 lead 投影；阶段 1b 重启实例验证
 冷 lead 索引重建（冷子会话被 resume、重启后产生新通知）；阶段 2 叠加实验性 forge bundle 验证
-worktree happy path；阶段 3 在真实 Host 上验证 13 个工具的条件可见性、只读模型目录、triage/自主关闭 policy、
+worktree happy path；阶段 3 在真实 Host 上验证 13 个主工具 + 1 个汇报工具的条件可见性、只读模型目录、triage/自主关闭 policy、
 archive/unarchive/remove 的 durable 行为与文档化的安全边界；`--flow patch` 与
 `--flow installed` 分别覆盖两条加载路径。
 

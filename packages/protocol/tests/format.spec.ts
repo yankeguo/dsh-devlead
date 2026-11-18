@@ -15,18 +15,28 @@ import {
   DEVLEAD_NOTIFICATION_RECORD_TYPE,
   DEVLEAD_PROJECTION_KEY,
   DEVLEAD_RECORD_VERSION,
+  DEVLEAD_REPORT_KINDS,
+  DEVLEAD_REPORT_RECORD_TYPE,
   DEVLEAD_TOOL_PREFIX,
   DEVLEAD_TRANSITIONS,
   DEVLEAD_WATCH_RECORD_TYPE,
+  devLeadReportId,
   excerptLine,
   formatInstant,
+  isDevLeadReportKind,
   isDevLeadTransition,
   notificationDigest,
   notificationId,
   notificationLine,
+  reportDigest,
+  reportLine,
   transitionLabel,
 } from '@yankeguo/dsh-devlead-protocol'
-import type { DevLeadNotification, DevLeadTransition } from '@yankeguo/dsh-devlead-protocol'
+import type {
+  DevLeadNotification,
+  DevLeadReport,
+  DevLeadTransition,
+} from '@yankeguo/dsh-devlead-protocol'
 
 /** Fixed epoch milliseconds used by every fixture. */
 const T0 = 1_700_000_000_000
@@ -313,5 +323,66 @@ describe('protocol constants', () => {
     expect(DEVLEAD_COMMAND_NAME).toBe('devlead')
     expect(DEVLEAD_MESSAGE_KIND).toBe('devlead')
     expect(DEVLEAD_TOOL_PREFIX).toBe('devlead_')
+  })
+})
+
+
+/** Build one report fixture. */
+function report(overrides: Partial<DevLeadReport> = {}): DevLeadReport {
+  return {
+    id: 'session-alpha:3:report:progress:abc',
+    kind: 'progress',
+    message: 'halfway through the parser',
+    summary: 'parser progress',
+    senderSessionId: 'session-alpha',
+    senderSessionTitle: 'Fix the parser',
+    leadSessionId: 'lead-1',
+    turn: 3,
+    at: T0,
+    ...overrides,
+  }
+}
+
+describe('report vocabulary', () => {
+  it('pins every accepted report kind', () => {
+    expect(DEVLEAD_REPORT_KINDS).toEqual(['progress', 'blocked', 'decision', 'fyi'])
+    for (const kind of DEVLEAD_REPORT_KINDS) expect(isDevLeadReportKind(kind)).toBe(true)
+    expect(isDevLeadReportKind('urgent')).toBe(false)
+    expect(isDevLeadReportKind(undefined)).toBe(false)
+  })
+
+  it('uses the durable report record type', () => {
+    expect(DEVLEAD_REPORT_RECORD_TYPE).toBe('plugin:devlead/report')
+  })
+})
+
+describe('devLeadReportId', () => {
+  it('is deterministic for the same sender, turn, kind, and message', () => {
+    const first = devLeadReportId('session-alpha', 3, 'blocked', 'waiting')
+    expect(devLeadReportId('session-alpha', 3, 'blocked', 'waiting')).toBe(first)
+    expect(devLeadReportId('session-alpha', 4, 'blocked', 'waiting')).not.toBe(first)
+    expect(devLeadReportId('session-alpha', 3, 'decision', 'waiting')).not.toBe(first)
+    expect(devLeadReportId('session-alpha', 3, 'blocked', 'waiting!')).not.toBe(first)
+  })
+
+  it('handles non-ASCII messages without throwing', () => {
+    expect(devLeadReportId('session-alpha', 1, 'fyi', '等待凭据')).toMatch(/^session-alpha:1:report:fyi:/)
+  })
+})
+
+describe('reportLine', () => {
+  it('prefers the summary and names the sender and kind', () => {
+    expect(reportLine(report())).toBe('Fix the parser (session-alpha) — report progress: parser progress')
+  })
+
+  it('falls back to the message excerpt and the bare id', () => {
+    const { summary: _summary, senderSessionTitle: _title, ...bare } = report()
+    expect(reportLine(bare)).toBe('session-alpha — report progress: halfway through the parser')
+  })
+
+  it('renders the digest oldest-last', () => {
+    expect(reportDigest([report(), report({ id: 'two', summary: 'second' })]))
+      .toHaveLength(2)
+    expect(reportDigest([])).toEqual([])
   })
 })

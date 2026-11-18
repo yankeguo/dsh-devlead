@@ -27,11 +27,16 @@ import {
   DEVLEAD_NOTIFICATION_RECORD_TYPE,
   DEVLEAD_MODE_RECORD_TYPE,
   DEVLEAD_RECORD_VERSION,
+  DEVLEAD_REPORT_MESSAGE_MAX,
+  DEVLEAD_REPORT_RECORD_TYPE,
+  DEVLEAD_REPORT_SUMMARY_MAX,
   DEVLEAD_RESET_RECORD_TYPE,
   DEVLEAD_WATCH_RECORD_TYPE,
   DEVLEAD_DEFAULT_MAX_WATCHED,
   DEVLEAD_DEFAULT_NOTIFICATION_RETENTION,
+  devLeadReportId,
   excerptLine,
+  isDevLeadReportKind,
   isDevLeadTransition,
   notificationId,
 } from '@yankeguo/dsh-devlead-protocol'
@@ -39,6 +44,9 @@ import type {
   DevLeadModeRecord,
   DevLeadNotification,
   DevLeadNotificationRecord,
+  DevLeadReport,
+  DevLeadReportKind,
+  DevLeadReportRecord,
   DevLeadResetRecord,
   DevLeadTransition,
   DevLeadWatchRecord,
@@ -52,6 +60,9 @@ export {
   DEVLEAD_NOTIFICATION_RECORD_TYPE,
   DEVLEAD_MODE_RECORD_TYPE,
   DEVLEAD_RECORD_VERSION,
+  DEVLEAD_REPORT_MESSAGE_MAX,
+  DEVLEAD_REPORT_RECORD_TYPE,
+  DEVLEAD_REPORT_SUMMARY_MAX,
   DEVLEAD_RESET_RECORD_TYPE,
   DEVLEAD_WATCH_RECORD_TYPE,
   DEVLEAD_DEFAULT_MAX_WATCHED,
@@ -63,6 +74,9 @@ export type {
   DevLeadModeRecord,
   DevLeadWatchRecord,
   DevLeadNotificationRecord,
+  DevLeadReport,
+  DevLeadReportKind,
+  DevLeadReportRecord,
   DevLeadResetRecord,
 }
 
@@ -100,6 +114,8 @@ declare module '@deepseek-ai/dsh-session/types' {
     'plugin:devlead/watch': DevLeadWatchRecord
     /** One watched-session transition notification. */
     'plugin:devlead/notification': DevLeadNotificationRecord
+    /** One mid-turn report from a watched Session to its lead. */
+    'plugin:devlead/report': DevLeadReportRecord
     /** Reset marker discarding every earlier DevLead record of the Session. */
     'plugin:devlead/reset': DevLeadResetRecord
   }
@@ -212,6 +228,61 @@ export function devLeadNotification(
 }
 
 /**
+ * Build one durable mid-turn report.
+ *
+ * The caller (the core service) validates emptiness, code-point budgets, the
+ * kind, and the rate limit before calling this factory; the factory normalizes
+ * display fields into the same bounded single-line form the decoders accept.
+ * @param input - report fields already validated by the service.
+ * @returns the report payload with its deterministic identity.
+ */
+export function devLeadReport(input: {
+  readonly senderSessionId: string
+  readonly senderSessionTitle?: string
+  readonly senderWorkspaceId?: string
+  readonly senderWorkspaceTitle?: string
+  readonly leadSessionId: string
+  readonly turn: number
+  readonly kind: DevLeadReportKind
+  readonly message: string
+  readonly summary?: string
+  readonly at: number
+}): DevLeadReport {
+  const message = input.message.trim()
+  const title = input.senderSessionTitle === undefined
+    ? undefined
+    : excerptLine(input.senderSessionTitle, DEVLEAD_ERROR_EXCERPT_MAX)
+  const summary = input.summary === undefined
+    ? undefined
+    : excerptLine(input.summary, DEVLEAD_REPORT_SUMMARY_MAX)
+  const workspaceTitle = input.senderWorkspaceTitle === undefined
+    ? undefined
+    : excerptLine(input.senderWorkspaceTitle, DEVLEAD_ERROR_EXCERPT_MAX)
+  return {
+    id: devLeadReportId(input.senderSessionId, input.turn, input.kind, message),
+    kind: input.kind,
+    message,
+    ...(summary === undefined ? {} : { summary }),
+    senderSessionId: input.senderSessionId,
+    ...(title === undefined ? {} : { senderSessionTitle: title }),
+    ...(input.senderWorkspaceId === undefined ? {} : { senderWorkspaceId: input.senderWorkspaceId }),
+    ...(workspaceTitle === undefined ? {} : { senderWorkspaceTitle: workspaceTitle }),
+    leadSessionId: input.leadSessionId,
+    turn: Number.isSafeInteger(input.turn) && input.turn >= 0 ? input.turn : 0,
+    at: representableInstant(input.at, Date.now()),
+  }
+}
+
+/**
+ * Build one durable report receipt record.
+ * @param report - report appended to the lead's retained digest.
+ * @returns the record payload.
+ */
+export function reportRecord(report: DevLeadReport): DevLeadReportRecord {
+  return { kind: 'devlead/report', version: DEVLEAD_RECORD_VERSION, report }
+}
+
+/**
  * Clamp one observed instant into the representable Date range. The hub writes
  * the settled event's own `time` into durable records; a restored or foreign
  * log carrying an unrepresentable instant must not make the writer persist a
@@ -321,6 +392,23 @@ function decodeExcerpt(value: unknown, label: string): string {
 }
 
 /**
+ * Decode one bounded excerpt with an explicit code-point budget.
+ * @param value - persisted field.
+ * @param label - field name used in the failure text.
+ * @param max - maximum code points.
+ * @returns the validated excerpt.
+ */
+function decodeExcerptWithMax(value: unknown, label: string, max: number): string {
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new Error(`${label} must be a non-empty string when present`)
+  }
+  if (value.length > max * 2 || Array.from(value).length > max) {
+    throw new Error(`${label} must be at most ${max} code points`)
+  }
+  return value
+}
+
+/**
  * Decode one persisted mode record.
  * @param value - persisted payload.
  * @returns the decoded mode record.
@@ -364,6 +452,93 @@ export function decodeWatchRecord(value: unknown): DevLeadWatchRecord {
     sessions: [...record.sessions] as string[],
     at: decodeInstant(record.at, `${label} at`),
   }
+}
+
+/**
+ * Decode one persisted report value.
+ * @param value - persisted report.
+ * @returns the decoded report.
+ * @throws when the value is not a valid report.
+ */
+export function decodeReport(value: unknown): DevLeadReport {
+  const record = expectRecord(value, DEVLEAD_REPORT_RECORD_TYPE)
+  const label = 'report'
+  expectFields(record, label, [
+    'id',
+    'kind',
+    'message',
+    'senderSessionId',
+    'leadSessionId',
+    'turn',
+    'at',
+  ], [
+    'summary',
+    'senderSessionTitle',
+    'senderWorkspaceId',
+    'senderWorkspaceTitle',
+  ])
+  if (typeof record.id !== 'string' || record.id.length === 0) {
+    throw new Error(`${label} id must be a non-empty string`)
+  }
+  if (!isDevLeadReportKind(record.kind)) {
+    throw new Error(`${label} kind ${JSON.stringify(record.kind)} is not recognized`)
+  }
+  if (typeof record.message !== 'string' || record.message.trim().length === 0) {
+    throw new Error(`${label} message must be a non-empty string`)
+  }
+  if (Array.from(record.message).length > DEVLEAD_REPORT_MESSAGE_MAX) {
+    throw new Error(`${label} message must be at most ${DEVLEAD_REPORT_MESSAGE_MAX} code points`)
+  }
+  if (typeof record.senderSessionId !== 'string' || record.senderSessionId.length === 0) {
+    throw new Error(`${label} senderSessionId must be a non-empty string`)
+  }
+  if (typeof record.leadSessionId !== 'string' || record.leadSessionId.length === 0) {
+    throw new Error(`${label} leadSessionId must be a non-empty string`)
+  }
+  const turn = typeof record.turn === 'number' && Number.isSafeInteger(record.turn) && record.turn >= 0
+    ? record.turn
+    : (() => { throw new Error(`${label} turn must be a non-negative safe integer`) })()
+  const summary = record.summary === undefined
+    ? undefined
+    : decodeExcerptWithMax(record.summary, `${label} summary`, DEVLEAD_REPORT_SUMMARY_MAX)
+  const senderSessionTitle = record.senderSessionTitle === undefined
+    ? undefined
+    : decodeExcerpt(record.senderSessionTitle, `${label} senderSessionTitle`)
+  const senderWorkspaceId = record.senderWorkspaceId === undefined
+    ? undefined
+    : decodeExcerpt(record.senderWorkspaceId, `${label} senderWorkspaceId`)
+  const senderWorkspaceTitle = record.senderWorkspaceTitle === undefined
+    ? undefined
+    : decodeExcerpt(record.senderWorkspaceTitle, `${label} senderWorkspaceTitle`)
+  const id = devLeadReportId(record.senderSessionId, turn, record.kind, record.message)
+  if (record.id !== id) throw new Error(`${label} id must be ${id}`)
+  return {
+    id,
+    kind: record.kind,
+    message: record.message,
+    ...(summary === undefined ? {} : { summary }),
+    senderSessionId: record.senderSessionId,
+    ...(senderSessionTitle === undefined ? {} : { senderSessionTitle }),
+    ...(senderWorkspaceId === undefined ? {} : { senderWorkspaceId }),
+    ...(senderWorkspaceTitle === undefined ? {} : { senderWorkspaceTitle }),
+    leadSessionId: record.leadSessionId,
+    turn,
+    at: decodeInstant(record.at, `${label} at`),
+  }
+}
+
+/**
+ * Decode one persisted report record.
+ * @param value - persisted payload.
+ * @returns the decoded report value.
+ * @throws when the payload is not a valid report record.
+ */
+export function decodeReportRecord(value: unknown): DevLeadReport {
+  const record = expectRecord(value, DEVLEAD_REPORT_RECORD_TYPE)
+  const label = 'report record'
+  expectFields(record, label, ['kind', 'version', 'report'])
+  expectEnvelope(record, DEVLEAD_REPORT_RECORD_TYPE, 'devlead/report')
+  return decodeReport(record.report)
 }
 
 /**

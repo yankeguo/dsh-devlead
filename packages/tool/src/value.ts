@@ -27,6 +27,7 @@ import type {
   DevLeadProjection,
   DevLeadPromptedSession,
   DevLeadRemovedWorkspace,
+  DevLeadReport,
   DevLeadSessionView,
   DevLeadUnarchivedSession,
   DevLeadWatchMutation,
@@ -182,6 +183,30 @@ export const NOTIFICATION_SCHEMA = {
   },
 } as const
 
+/** Enforced schema of one mid-turn report from a watched Session. */
+export const REPORT_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    id: { type: 'string', required: true, description: 'Deterministic report identity.' },
+    kind: {
+      type: 'string',
+      required: true,
+      enum: ['progress', 'blocked', 'decision', 'fyi'],
+      description: 'Why the reporter sent this update.',
+    },
+    message: { type: 'string', required: true, description: 'Full report text.' },
+    summary: { type: 'string', description: 'Optional short title for digest rows.' },
+    senderSessionId: { type: 'string', required: true, description: 'Reporting Session identity.' },
+    senderSessionTitle: { type: 'string', description: 'Reporting Session title at report time.' },
+    senderWorkspaceId: { type: 'string', description: 'Reporting Session Workspace identity.' },
+    senderWorkspaceTitle: { type: 'string', description: 'Reporting Session Workspace title.' },
+    leadSessionId: { type: 'string', required: true, description: 'Active DevLead Session receiving the report.' },
+    turn: { type: 'integer', required: true, description: "Reporter's current turn (0 before its first turn)." },
+    at: { type: 'integer', required: true, description: 'Epoch milliseconds recorded by the Host.' },
+  },
+} as const
+
 /** Canonical value of one Workspace row. */
 export type WorkspaceValue = InferValue<typeof WORKSPACE_VIEW_SCHEMA>
 
@@ -199,6 +224,9 @@ export type IsolationValue = InferValue<typeof ISOLATION_SCHEMA>
 
 /** Canonical value of one notification. */
 export type NotificationValue = InferValue<typeof NOTIFICATION_SCHEMA>
+
+/** Canonical value of one mid-turn report. */
+export type ReportValue = InferValue<typeof REPORT_SCHEMA>
 
 /** Project one Workspace view onto the canonical value. */
 export function workspaceValue(workspace: DevLeadWorkspaceView): WorkspaceValue {
@@ -280,6 +308,27 @@ export function notificationValue(notification: DevLeadNotification): Notificati
 }
 
 /**
+ * Project one report onto its canonical value, dropping absent optional fields.
+ * @param report - report from the core service.
+ * @returns the detached canonical value.
+ */
+export function reportValue(report: DevLeadReport): ReportValue {
+  return {
+    id: report.id,
+    kind: report.kind,
+    message: report.message,
+    senderSessionId: report.senderSessionId,
+    leadSessionId: report.leadSessionId,
+    turn: report.turn,
+    at: report.at,
+    ...report.summary === undefined ? {} : { summary: report.summary },
+    ...report.senderSessionTitle === undefined ? {} : { senderSessionTitle: report.senderSessionTitle },
+    ...report.senderWorkspaceId === undefined ? {} : { senderWorkspaceId: report.senderWorkspaceId },
+    ...report.senderWorkspaceTitle === undefined ? {} : { senderWorkspaceTitle: report.senderWorkspaceTitle },
+  }
+}
+
+/**
  * Copy the watched-Session set out of one projection.
  * @param projection - current wire projection of the lead Session.
  * @returns watched Session ids in add order.
@@ -339,6 +388,11 @@ export const GET_SESSION_OUTPUT = jsonOutput({
   additionalProperties: false,
   properties: {
     session: required(SESSION_VIEW_SCHEMA),
+    reports: {
+      type: 'array',
+      items: REPORT_SCHEMA,
+      description: 'When reading this lead Session itself, its newest retained mid-turn reports (oldest first).',
+    },
   },
 } as const)
 
@@ -370,7 +424,17 @@ export const NOTIFICATIONS_OUTPUT = jsonOutput({
   additionalProperties: false,
   properties: {
     notifications: required({ type: 'array', items: NOTIFICATION_SCHEMA }),
+    reports: required({ type: 'array', items: REPORT_SCHEMA }),
     watched: required({ type: 'array', items: { type: 'string' } }),
+  },
+} as const)
+
+/** Canonical value of `devlead_report`. */
+export const REPORT_OUTPUT = jsonOutput({
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    report: required(REPORT_SCHEMA),
   },
 } as const)
 

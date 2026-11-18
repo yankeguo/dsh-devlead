@@ -20,6 +20,7 @@ import {
   DEVLEAD_ERROR_EXCERPT_MAX,
   DEVLEAD_MODE_RECORD_TYPE,
   DEVLEAD_NOTIFICATION_RECORD_TYPE,
+  DEVLEAD_REPORT_RECORD_TYPE,
   DEVLEAD_RESET_RECORD_TYPE,
   DEVLEAD_WATCH_RECORD_TYPE,
   notificationId,
@@ -29,10 +30,13 @@ import {
   Config,
   DevLeadError,
   DevLeadService,
+  createDevLeadNoticeMessage,
   devLeadNotification,
+  devLeadReport,
   isDevLeadError,
   modeRecord,
   notificationRecord,
+  reportRecord,
   watchRecord,
 } from '../src/index.ts'
 import type { Config as DevLeadConfig, DevLeadErrorCode } from '../src/index.ts'
@@ -221,11 +225,13 @@ describe('mode selection', () => {
       enabled: false,
       sessions: [],
       notifications: [],
+      reports: [],
     })
     expect(projectionStateOf(harness.leadSession)).toEqual({
       enabled: false,
       sessions: [],
       notifications: [],
+      reports: [],
       failure: null,
     })
   })
@@ -492,6 +498,203 @@ describe('global single active mode', () => {
   })
 })
 
+describe('mid-turn reports', () => {
+  /** Boot one live lead watching one live child, ready for report calls. */
+  async function bootReporting(config: { notificationBatchMs?: number } = {}) {
+    const harness = await bootService({
+      enabled: true,
+      sessionIds: ['child-report'],
+      watched: ['child-report'],
+      config: { notificationBatchMs: 0, ...config },
+    })
+    const child = new FakeAgent(requireSession(harness, 'child-report'))
+    harness.agents.add(child)
+    harness.sessionTitle.set(String(harness.lead.id), 'Lead')
+    harness.sessionTitle.set(String(child.id), 'Child')
+    return { harness, child }
+  }
+
+  it('resolves exactly the supervising lead and is false for a lead or an unwatched Session', async () => {
+    const { harness, child } = await bootReporting()
+    expect(harness.service.supervisorOf(child.agent)).toBe(String(harness.lead.id))
+    expect(harness.service.isSupervised(child.agent)).toBe(true)
+    expect(harness.service.isSupervised(harness.lead.agent)).toBe(false)
+    const other = new FakeAgent(requireSession(harness, 'child-report'))
+    harness.agents.remove(child.id)
+    harness.agents.add(other)
+    await harness.service.watchSession(harness.lead.agent, String(child.id), false)
+    const unwatched = new FakeAgent(requireSession(harness, 'child-report'))
+    harness.agents.add(unwatched)
+    expect(harness.service.isSupervised(unwatched.agent)).toBe(false)
+  })
+
+  it('persists a report, exposes it on the projection and digest, and wakes the lead', async () => {
+    const { harness, child } = await bootReporting()
+    const report = await harness.service.reportProgress(child.agent, {
+      message: '  halfway through the parser  ',
+      kind: 'progress',
+      summary: ' parser progress ',
+    })
+    expect(report.senderSessionId).toBe(String(child.id))
+    expect(report.senderSessionTitle).toBe('Child')
+    expect(report.leadSessionId).toBe(String(harness.lead.id))
+    expect(report.message).toBe('halfway through the parser')
+    expect(report.summary).toBe('parser progress')
+    expect(harness.service.view(harness.lead.agent).reports).toEqual([report])
+    expect(harness.service.reports(harness.lead.agent)).toEqual([report])
+    const records = harness.leadSession.snapshotEvents().flatMap((event) => {
+      const record = pluginRecordOf(event)
+      return record?.type === DEVLEAD_REPORT_RECORD_TYPE ? [record.data] : []
+    })
+    expect(records).toHaveLength(1)
+    await flushMicrotasks()
+    expect(harness.lead.followups).toHaveLength(1)
+    const text = messageText(harness.lead.followups[0]!)
+    expect(text).toContain('[DEV LEAD REPORT]')
+    expect(text).toContain('parser progress')
+  })
+
+  it('reports to the single active lead while a second lead enable is refused', async () => {
+    const harness = await bootService({
+      enabled: true,
+      sessionIds: ['child-report', 'other-lead'],
+      watched: ['child-report'],
+      config: { notificationBatchMs: 0 },
+    })
+    const child = new FakeAgent(requireSession(harness, 'child-report'))
+    const other = new FakeAgent(requireSession(harness, 'other-lead'))
+    harness.agents.add(child)
+    harness.agents.add(other)
+    await expectCodeAsync(
+      () => harness.service.setEnabled(other.agent, true),
+      'DEVLEAD_ALREADY_ACTIVE',
+    )
+    expect(harness.service.supervisorOf(child.agent)).toBe(String(harness.lead.id))
+    const report = await harness.service.reportProgress(child.agent, { message: 'single lead update' })
+    expect(report.leadSessionId).toBe(String(harness.lead.id))
+    expect(harness.service.view(harness.lead.agent).reports).toEqual([report])
+  })
+
+  it('keeps a report queued behind an undelivered notice and delivers it when the inbox clears', async () => {
+    const { harness, child } = await bootReporting()
+    harness.lead.followup(createDevLeadNoticeMessage('existing queued notice'))
+    expect(harness.lead.followups).toHaveLength(1)
+    await harness.service.reportProgress(child.agent, {
+      message: 'queued behind a notice',
+      summary: 'queued report',
+    })
+    await flushMicrotasks()
+    // The existing notice must not be duplicated or dropped; the report batch
+    // waits for the bounded retry instead of producing a second notice.
+    expect(harness.lead.followups).toHaveLength(1)
+    harness.lead.drainInbox()
+    await new Promise(resolve => setTimeout(resolve, 1_100))
+    await flushMicrotasks()
+    expect(harness.lead.followups).toHaveLength(2)
+    expect(messageText(harness.lead.followups[1]!)).toContain('[DEV LEAD REPORT]')
+    expect(messageText(harness.lead.followups[1]!)).toContain('queued report')
+  })
+
+  it('deduplicates the same message in one turn and enforces the per-turn budget', async () => {
+    const { harness, child } = await bootReporting()
+    const first = await harness.service.reportProgress(child.agent, { message: 'same update' })
+    const duplicate = await harness.service.reportProgress(child.agent, { message: 'same update' })
+    expect(duplicate.id).toBe(first.id)
+    expect(harness.service.reports(harness.lead.agent)).toHaveLength(1)
+    for (const message of ['one', 'two', 'three']) {
+      await harness.service.reportProgress(child.agent, { message })
+    }
+    const error = await expectCodeAsync(
+      () => harness.service.reportProgress(child.agent, { message: 'four' }),
+      'DEVLEAD_REPORT_RATE_LIMITED',
+    )
+    expect(error.message).toContain('4')
+    expect(harness.service.reports(harness.lead.agent)).toHaveLength(4)
+  })
+
+  it('rejects empty, oversized, and malformed reports before writing', async () => {
+    const { harness, child } = await bootReporting()
+    await expectCodeAsync(
+      () => harness.service.reportProgress(child.agent, { message: '   ' }),
+      'DEVLEAD_INVALID_INPUT',
+    )
+    await expectCodeAsync(
+      () => harness.service.reportProgress(child.agent, { message: 'x'.repeat(4_001) }),
+      'DEVLEAD_INVALID_INPUT',
+    )
+    await expectCodeAsync(
+      () => harness.service.reportProgress(child.agent, {
+        message: 'update',
+        kind: 'urgent' as never,
+      }),
+      'DEVLEAD_INVALID_INPUT',
+    )
+    await expectCodeAsync(
+      () => harness.service.reportProgress(child.agent, {
+        message: 'update',
+        summary: 'x'.repeat(201),
+      }),
+      'DEVLEAD_INVALID_INPUT',
+    )
+    expect(harness.service.reports(harness.lead.agent)).toEqual([])
+  })
+
+  it('becomes unsupervised after unwatch, lead off, or lead archive', async () => {
+    const { harness, child } = await bootReporting()
+    await harness.service.watchSession(harness.lead.agent, String(child.id), false)
+    await expectCodeAsync(
+      () => harness.service.reportProgress(child.agent, { message: 'after unwatch' }),
+      'DEVLEAD_NOT_SUPERVISED',
+    )
+
+    const fresh = await bootReporting()
+    await fresh.harness.service.setEnabled(fresh.harness.lead.agent, false)
+    await expectCodeAsync(
+      () => fresh.harness.service.reportProgress(fresh.child.agent, { message: 'after off' }),
+      'DEVLEAD_NOT_SUPERVISED',
+    )
+
+    const registry = new FakeWorkspaceRegistry()
+    const archived = await bootService({
+      enabled: true,
+      sessionIds: ['child-report'],
+      watched: ['child-report'],
+      workspaceRegistry: registry,
+      config: { notificationBatchMs: 0 },
+    })
+    const archivedChild = new FakeAgent(requireSession(archived, 'child-report'))
+    archived.agents.add(archivedChild)
+    registry.archived = [String(archived.lead.id)]
+    expect(archived.service.isSupervised(archivedChild.agent)).toBe(false)
+    await expectCodeAsync(
+      () => archived.service.reportProgress(archivedChild.agent, { message: 'after archive' }),
+      'DEVLEAD_NOT_SUPERVISED',
+    )
+  })
+
+  it('replays a durable report receipt into the lead projection after restart', async () => {
+    const report = devLeadReport({
+      senderSessionId: 'child-replay',
+      senderSessionTitle: 'Replay child',
+      leadSessionId: 'lead-replay',
+      turn: 2,
+      kind: 'decision',
+      message: 'choose a database',
+      summary: 'needs a decision',
+      at: T0,
+    })
+    const harness = await bootService({
+      leadId: 'lead-replay',
+      seedLead: (session) => {
+        appendPluginRecord(session, DEVLEAD_MODE_RECORD_TYPE, modeRecord(true, T0))
+        appendPluginRecord(session, DEVLEAD_REPORT_RECORD_TYPE, reportRecord(report))
+      },
+    })
+    expect(harness.service.view(harness.lead.agent).reports).toEqual([report])
+    expect(harness.service.reports(harness.lead.agent)).toEqual([report])
+  })
+})
+
 describe('watch set', () => {
   it('adds and removes one Session with whole-value records', async () => {
     const harness = await bootService({ enabled: true, sessionIds: ['child-alpha'] })
@@ -661,9 +864,10 @@ describe('projection failure handling', () => {
       enabled: false,
       sessions: [],
       notifications: [],
+      reports: [],
       failure: null,
     })
-    expect(harness.service.view(harness.lead.agent)).toEqual({ enabled: false, sessions: [], notifications: [] })
+    expect(harness.service.view(harness.lead.agent)).toEqual({ enabled: false, sessions: [], notifications: [], reports: [] })
     // Idempotent: off on an already-off Session writes no extra record.
     const records = durableResetRecords(harness)
     await harness.service.setEnabled(harness.lead.agent, false)
@@ -673,7 +877,7 @@ describe('projection failure handling', () => {
   it('resets damaged state explicitly and can be called repeatedly', async () => {
     const harness = await bootFrozen()
     await expect(harness.service.reset(harness.lead.agent)).resolves.toBeUndefined()
-    expect(harness.service.view(harness.lead.agent)).toEqual({ enabled: false, sessions: [], notifications: [] })
+    expect(harness.service.view(harness.lead.agent)).toEqual({ enabled: false, sessions: [], notifications: [], reports: [] })
     await expect(harness.service.reset(harness.lead.agent)).resolves.toBeUndefined()
     expect(durableResetRecords(harness)).toHaveLength(2)
     // After the reset the Session is a clean disabled state: it can be enabled
@@ -686,7 +890,7 @@ describe('projection failure handling', () => {
     const harness = await bootService({ enabled: true, sessionIds: ['child-alpha'], watched: ['child-alpha'] })
     appendNotification(harness.leadSession, 'child-alpha', 1)
     await harness.service.reset(harness.lead.agent)
-    expect(harness.service.view(harness.lead.agent)).toEqual({ enabled: false, sessions: [], notifications: [] })
+    expect(harness.service.view(harness.lead.agent)).toEqual({ enabled: false, sessions: [], notifications: [], reports: [] })
   })
 
   it('requires a live Agent for reset', async () => {

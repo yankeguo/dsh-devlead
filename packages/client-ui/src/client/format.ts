@@ -12,10 +12,17 @@
 import {
   DEVLEAD_ERROR_EXCERPT_MAX,
   excerptLine,
+  isDevLeadReportKind,
   isDevLeadTransition,
   notificationLine,
+  reportLine,
 } from '@yankeguo/dsh-devlead-protocol/client'
-import type { DevLeadNotification, DevLeadTransition } from '@yankeguo/dsh-devlead-protocol/client'
+import type {
+  DevLeadNotification,
+  DevLeadReport,
+  DevLeadReportKind,
+  DevLeadTransition,
+} from '@yankeguo/dsh-devlead-protocol/client'
 
 /**
  * Dictionary keys of the transition chip, one per known transition plus the
@@ -168,4 +175,83 @@ export function summarizeWatched(
     if (status?.running ?? row?.running ?? false) running += 1
   }
   return { watched: seen.size, running, missing }
+}
+
+
+/**
+ * Dictionary keys of the report chip, one per known kind plus the wire-drift
+ * fallback. Kept separate from transition keys: a report is not a turn end.
+ */
+export type DevLeadReportKey =
+  | 'report.kind.progress'
+  | 'report.kind.blocked'
+  | 'report.kind.decision'
+  | 'report.kind.fyi'
+  | 'report.kind.unknown'
+
+/** Localized label key per known report kind. */
+const REPORT_LABEL_KEYS: Record<DevLeadReportKind, DevLeadReportKey> = {
+  progress: 'report.kind.progress',
+  blocked: 'report.kind.blocked',
+  decision: 'report.kind.decision',
+  fyi: 'report.kind.fyi',
+}
+
+/**
+ * Map one wire report kind to its localized label key.
+ * @param kind - kind value read from the projection.
+ * @returns the label key; unknown values fall back to the neutral report label.
+ */
+export function reportLabelKey(kind: string): DevLeadReportKey {
+  return isDevLeadReportKind(kind) ? REPORT_LABEL_KEYS[kind] : 'report.kind.unknown'
+}
+
+/** Rendered fields of the latest-report chip. */
+export interface DevLeadReportSummary {
+  /** Canonical Host digest line, used as the chip's technical tooltip. */
+  readonly tooltip: string
+  /** Reporting Session title, otherwise its raw id. */
+  readonly who: string
+  /** Raw kind value, forwarded to the DOM for the per-kind dot. */
+  readonly kind: string
+  /** Dictionary key of the localized kind label. */
+  readonly labelKey: DevLeadReportKey
+  /** Compact summary or message excerpt, when the report carries one. */
+  readonly detail: string | undefined
+  /** Epoch milliseconds used to compare with the latest notification. */
+  readonly at: number
+}
+
+/**
+ * Render one retained report as the strip's chip fields.
+ * @param report - retained report to summarize.
+ * @returns the localized chip fields plus the Host canonical tooltip.
+ */
+export function reportSummary(report: DevLeadReport): DevLeadReportSummary {
+  const title = typeof report.senderSessionTitle === 'string'
+    ? excerptLine(report.senderSessionTitle, DEVLEAD_ERROR_EXCERPT_MAX)
+    : undefined
+  const who = title ?? report.senderSessionId
+  const detail = typeof report.summary === 'string'
+    ? excerptLine(report.summary, DEVLEAD_ERROR_EXCERPT_MAX)
+    : typeof report.message === 'string'
+      ? excerptLine(report.message, DEVLEAD_ERROR_EXCERPT_MAX)
+      : undefined
+  return {
+    tooltip: isDevLeadReportKind(report.kind) ? reportLine(report) : `${who} — report ${String(report.kind)}`,
+    who,
+    kind: String(report.kind),
+    labelKey: reportLabelKey(report.kind),
+    detail,
+    at: typeof report.at === 'number' ? report.at : 0,
+  }
+}
+
+/**
+ * Latest retained report of one projection, or null while none is retained.
+ * @param reports - retained reports, oldest first.
+ * @returns the newest report.
+ */
+export function latestReport(reports: readonly DevLeadReport[]): DevLeadReport | null {
+  return reports.at(-1) ?? null
 }

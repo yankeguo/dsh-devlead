@@ -15,6 +15,7 @@
 import type { DevLeadService } from '@yankeguo/dsh-devlead'
 import type {
   DevLeadNotification,
+  DevLeadReport,
   DevLeadSessionView,
   DevLeadTransition,
   DevLeadWatchMutation,
@@ -228,6 +229,7 @@ export class FakeDevLead implements FakeDevLeadSurface {
     readonly enabled: boolean
     readonly sessions: readonly string[]
     readonly notifications: readonly DevLeadNotification[]
+    readonly reports: readonly DevLeadReport[]
   } {
     this.calls.push('view')
     if (this.frozenReason !== null) {
@@ -237,6 +239,7 @@ export class FakeDevLead implements FakeDevLeadSurface {
       enabled: this.enabled,
       sessions: [...this.watching],
       notifications: [...this.feed],
+      reports: [],
     }
   }
 

@@ -21,7 +21,9 @@ import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots
 import { DEVLEAD_PROJECTION_KEY } from '@yankeguo/dsh-devlead-protocol/client'
 import {
   latestNotification,
+  latestReport,
   notificationSummary,
+  reportSummary,
   summarizeWatched,
 } from './format.ts'
 
@@ -45,7 +47,13 @@ export function DevLeadBar({
 
   const summary = summarizeWatched(projection.sessions, rows, statuses)
   const latest = latestNotification(projection.notifications)
-  const notice = latest === null ? null : notificationSummary(latest)
+  const latestRep = latestReport(projection.reports ?? [])
+  // Both digest families share one strip: the newest retained row wins, and a
+  // report is a mid-turn update rather than a settled-turn transition.
+  const showReport = latestRep !== null && (latest === null || latestRep.at >= latest.at)
+  const notice = !showReport && latest !== null ? notificationSummary(latest) : null
+  const reportNotice = showReport && latestRep !== null ? reportSummary(latestRep) : null
+  const tooltip = reportNotice?.tooltip ?? notice?.tooltip ?? t('hint.enabled')
 
   return (
     <div
@@ -83,9 +91,22 @@ export function DevLeadBar({
           role="status"
           aria-live="polite"
           aria-atomic="true"
-          title={notice === null ? t('hint.enabled') : notice.tooltip}
+          title={tooltip}
         >
-          {notice === null ? (
+          {reportNotice !== null ? (
+            <span className="devlead-notification" data-report="true">
+              <span
+                className="devlead-notification-dot"
+                data-report-kind={reportNotice.kind}
+                aria-hidden="true"
+              />
+              <span className="devlead-notification-who">{reportNotice.who}</span>
+              <span className="devlead-notification-label">{t(reportNotice.labelKey)}</span>
+              {reportNotice.detail !== undefined && (
+                <span className="devlead-notification-error">{reportNotice.detail}</span>
+              )}
+            </span>
+          ) : notice === null ? (
             // An enabled Session with no retained notification keeps the help
             // hint visible instead of leaving the row visually empty.
             <span className="devlead-hint">{t('hint.enabled')}</span>

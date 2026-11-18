@@ -22,7 +22,7 @@ import { DEVLEAD_COMMAND_NAME } from '@yankeguo/dsh-devlead-protocol'
 import type { DevLeadSessionView } from '@yankeguo/dsh-devlead-protocol'
 import { COMMAND_GRAMMAR, USAGE, parseDevLeadCommand } from './parse.ts'
 import type { DevLeadCommand } from './parse.ts'
-import { RECENT_NOTIFICATION_LIMIT, errorResult, renderStatus } from './render.ts'
+import { RECENT_NOTIFICATION_LIMIT, RECENT_REPORT_LIMIT, errorResult, renderStatus } from './render.ts'
 import type { DevLeadStatusSnapshot } from './render.ts'
 import { formatCandidates, mergeCandidates, resolveSessionReference, sessionRefLabel } from './resolve.ts'
 import type { SessionCandidate } from './resolve.ts'
@@ -73,6 +73,7 @@ async function collectStatus(ctx: Context, invocation: CommandInvocation): Promi
     watched,
     missingWatched,
     notifications: view.notifications.slice(-RECENT_NOTIFICATION_LIMIT),
+    reports: view.reports.slice(-RECENT_REPORT_LIMIT),
   }
 }
 
@@ -324,6 +325,9 @@ function friendlyDevLeadError(error: DevLeadError): string {
     case 'DEVLEAD_NOT_ENABLED':
       return NOT_ENABLED_MESSAGE
     case 'DEVLEAD_ALREADY_ACTIVE':
+      return error.message
+    case 'DEVLEAD_NOT_SUPERVISED':
+    case 'DEVLEAD_REPORT_RATE_LIMITED':
       return error.message
     case 'DEVLEAD_AGENT_NOT_LIVE':
       return 'This Session is no longer live in this Host, so the command cannot run. '

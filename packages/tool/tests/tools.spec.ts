@@ -106,6 +106,7 @@ const TOOL_NAMES = [
   'devlead_prompt_session',
   'devlead_watch_session',
   'devlead_notifications',
+  'devlead_report',
   'devlead_remove_workspace',
   'devlead_archive_session',
   'devlead_unarchive_session',
@@ -123,6 +124,7 @@ const MINIMAL_ARGS: Record<(typeof TOOL_NAMES)[number], Record<string, unknown>>
   devlead_prompt_session: { session: 'session-1', prompt: 'continue' },
   devlead_watch_session: { session: 'session-1', watching: true },
   devlead_notifications: {},
+  devlead_report: { message: 'progress update' },
   devlead_remove_workspace: { workspace: 'ws-1' },
   devlead_archive_session: { session: 'session-1' },
   devlead_unarchive_session: { session: 'session-1' },
@@ -139,6 +141,7 @@ const CALLER_TOOLS = [
   'devlead_prompt_session',
   'devlead_watch_session',
   'devlead_notifications',
+  'devlead_report',
   'devlead_remove_workspace',
   'devlead_archive_session',
   'devlead_unarchive_session',
@@ -176,7 +179,7 @@ function expectValidOutput(harness: Harness, toolName: string, value: unknown): 
 }
 
 describe('registration', () => {
-  it('registers exactly the thirteen documented tools', () => {
+  it('registers exactly the fourteen documented tools', () => {
     const harness = boot()
     expect([...harness.tools.keys()].sort()).toEqual([...TOOL_NAMES].sort())
     for (const name of TOOL_NAMES) {
@@ -204,21 +207,28 @@ describe('registration', () => {
       .toContain('or the uuid prefix without the "session-" prefix')
   })
 
-  it('gates every tool on the caller having DevLead mode enabled', async () => {
+  it('gates lead tools on DevLead mode and the report tool on supervision', async () => {
     const harness = boot()
     const enabledAgent = makeAgent('agent-enabled')
     const disabledAgent = makeAgent('agent-disabled')
     harness.devLead.enabled.add(enabledAgent.id)
-    for (const name of TOOL_NAMES) {
+    const leadTools = TOOL_NAMES.filter(name => name !== 'devlead_report')
+    for (const name of leadTools) {
       await expect(harness.visible(enabledAgent, name)).resolves.toBe(true)
       await expect(harness.visible(disabledAgent, name)).resolves.toBe(false)
     }
+    // The report tool is the inverse surface: a watched non-enabled Session.
+    harness.devLead.supervised.add(disabledAgent.id)
+    await expect(harness.visible(disabledAgent, 'devlead_report')).resolves.toBe(true)
+    await expect(harness.visible(enabledAgent, 'devlead_report')).resolves.toBe(false)
   })
 
-  it('registers one devlead:policy section in the subagent tool ordering', () => {
+  it('registers the lead and child report policy sections in the subagent ordering', () => {
     const harness = boot()
     expect(harness.section.name).toBe('devlead:policy')
     expect(harness.section.order).toBe(2800)
+    expect(harness.reportSection.name).toBe('devlead:report-policy')
+    expect(harness.reportSection.order).toBe(2800)
   })
 
   it('toggles the policy text with the mode and stays empty without an Agent', () => {
@@ -230,7 +240,9 @@ describe('registration', () => {
     expect(text.length).toBeGreaterThan(0)
     expect(text).toContain('runtime notice')
     expect(text).toContain('/devlead on')
-    for (const name of TOOL_NAMES) expect(text).toContain(name)
+    for (const name of TOOL_NAMES.filter(candidate => candidate !== 'devlead_report')) {
+      expect(text).toContain(name)
+    }
     // The provider re-resolves on every assembly, so disabling the mode drops
     // the section on the next step without a re-registration.
     harness.devLead.enabled.delete(agent.id)
@@ -238,6 +250,21 @@ describe('registration', () => {
     const provider = harness.section.text
     if (typeof provider !== 'function') throw new Error('policy section must resolve its text per assembly')
     expect(provider({})).toBe('')
+  })
+
+  it('shows the one-way report policy only to a watched non-lead Session', () => {
+    const harness = boot()
+    const reporter = makeAgent('agent-reporter')
+    expect(harness.reportSectionText(reporter)).toBe('')
+    harness.devLead.supervised.add(reporter.id)
+    const text = harness.reportSectionText(reporter)
+    expect(text).toContain('devlead_report')
+    expect(text).toContain('one-way')
+    expect(text).toContain('four')
+    expect(text).toContain('DEVLEAD_REPORT_RATE_LIMITED')
+    // A DevLead-enabled Session must not see the child reporting guidance.
+    harness.devLead.enabled.add(reporter.id)
+    expect(harness.reportSectionText(reporter)).toBe('')
   })
 })
 
@@ -448,14 +475,23 @@ describe('policy', () => {
     expect(text).not.toContain('never clean up, archive, or remove anything on your own initiative')
   })
 
+  it('tells the lead how to handle incoming reports', () => {
+    const harness = bootEnabled()
+    const text = harness.sectionText(harness.agent)
+    expect(text).toContain('[DEV LEAD REPORT]')
+    expect(text).toContain('devlead_prompt_session')
+    expect(text).toContain('not as a reply channel')
+  })
+
   it('keeps the resident base policy within its +10% budget', () => {
-    // The policy is a resident system-prompt section. The published 0.2.2 text
-    // (8,653 characters) is the new baseline; a revision may add at most 10%
-    // (floor(8,653 x 1.1) = 9,518). The pre-0.2.2 baseline (7,896) was retired
-    // once that published text became the shipped voice. Measuring the
-    // exported base keeps the guard independent of the capability-conditional
-    // checkout paragraphs.
-    expect(DEVLEAD_POLICY_BASE.length).toBeLessThanOrEqual(9_518)
+    // The policy is a resident system-prompt section. The 0.2.4 text
+    // (9,516 characters) is the baseline for the incoming-report paragraph
+    // added with the watched-Session report tool; a revision may add at most
+    // 10% (floor(9,516 x 1.1) = 10,467). Earlier baselines (7,896 and 8,653)
+    // were retired when their text stopped being the shipped voice. Measuring
+    // the exported base keeps the guard independent of the capability-
+    // conditional checkout paragraphs.
+    expect(DEVLEAD_POLICY_BASE.length).toBeLessThanOrEqual(10_467)
   })
 
   it('stays hidden without DevLead mode even when the capability exists', () => {
@@ -1167,6 +1203,17 @@ describe('devlead_get_session', () => {
     expect(value).toEqual({ session: SESSION })
   })
 
+  it('includes the lead report digest when reading the lead itself', async () => {
+    const harness = boot()
+    const self = makeAgent('session-1')
+    const value = await harness.call(
+      'devlead_get_session',
+      { session: 'session-1' },
+      makeExec(self),
+    )
+    expect(value).toEqual({ session: SESSION, reports: harness.devLead.reportDigest })
+  })
+
   it('leaves prefix resolution to the core service', async () => {
     const harness = boot()
     await harness.call('devlead_get_session', { session: 'session-1' })
@@ -1258,7 +1305,11 @@ describe('devlead_notifications', () => {
     const [agent, options] = harness.devLead.callsOf('notifications')[0] ?? []
     expect(agent).toBe(harness.agent)
     expect(options).toEqual({ limit: 20 })
-    expect(value).toEqual({ notifications: [NOTIFICATION], watched: ['session-1'] })
+    expect(value).toEqual({
+      notifications: [NOTIFICATION],
+      reports: harness.devLead.reportDigest,
+      watched: ['session-1'],
+    })
   })
 
   it('forwards an explicit limit', async () => {
@@ -1280,6 +1331,46 @@ describe('devlead_notifications', () => {
     harness.devLead.failures.set('notifications', devLeadFailure('DEVLEAD_PROJECTION_INVALID'))
     const error = await failureOf(harness.call('devlead_notifications'))
     expect(error.code).toBe('DEVLEAD_PROJECTION_INVALID')
+  })
+})
+
+describe('devlead_report', () => {
+  it('forwards the caller, trimmed request, and signal and returns the receipt', async () => {
+    const harness = boot()
+    const value = await harness.call('devlead_report', {
+      message: '  need credentials  ',
+      kind: 'blocked',
+      summary: ' credential blocker ',
+    })
+    const [agent, request, signal] = harness.devLead.callsOf('reportProgress')[0] ?? []
+    expect(agent).toBe(harness.agent)
+    expect(request).toEqual({
+      message: '  need credentials  ',
+      kind: 'blocked',
+      summary: ' credential blocker ',
+    })
+    expect(signal).toBeInstanceOf(AbortSignal)
+    expect(value).toEqual({ report: harness.devLead.report })
+  })
+
+  it('defaults kind and summary when omitted', async () => {
+    const harness = boot()
+    await harness.call('devlead_report', { message: 'progress' })
+    const [, request] = harness.devLead.callsOf('reportProgress')[0] ?? []
+    expect(request).toEqual({ message: 'progress' })
+  })
+
+  it('translates a not-supervised refusal', async () => {
+    const harness = boot()
+    harness.devLead.failures.set('reportProgress', devLeadFailure('DEVLEAD_NOT_SUPERVISED'))
+    const error = await failureOf(harness.call('devlead_report', { message: 'progress' }))
+    expect(error.code).toBe('DEVLEAD_NOT_SUPERVISED')
+  })
+
+  it('keeps the caller required', async () => {
+    const harness = boot()
+    const error = await failureOf(harness.call('devlead_report', { message: 'progress' }, makeExec(undefined)))
+    expect(error.code).toBe('DEVLEAD_AGENT_NOT_LIVE')
   })
 })
 

@@ -12,6 +12,7 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
+import type { DevLeadReportKind } from '@yankeguo/dsh-devlead-protocol'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type {} from '@yankeguo/dsh-devlead'
 import {
@@ -27,7 +28,7 @@ import {
   requireWorkspaceRef,
 } from './arguments.ts'
 import { runTool } from './errors.ts'
-import { devLeadPolicy } from './policy.ts'
+import { DEVLEAD_REPORT_POLICY, devLeadPolicy } from './policy.ts'
 import {
   presentArchiveSessionCall,
   presentCreateSessionCall,
@@ -38,6 +39,7 @@ import {
   presentListWorkspacesCall,
   presentNotificationsCall,
   presentPromptSessionCall,
+  presentReportCall,
   presentRemoveWorkspaceCall,
   presentUnarchiveSessionCall,
   presentUseWorkspaceCall,
@@ -53,6 +55,7 @@ import {
   LIST_WORKSPACES_OUTPUT,
   NOTIFICATIONS_OUTPUT,
   PROMPT_SESSION_OUTPUT,
+  REPORT_OUTPUT,
   REMOVE_WORKSPACE_OUTPUT,
   UNARCHIVE_SESSION_OUTPUT,
   USE_WORKSPACE_OUTPUT,
@@ -63,6 +66,7 @@ import {
   modelCatalogValue,
   notificationValue,
   promptedSessionValue,
+  reportValue,
   removedWorkspaceValue,
   sessionValue,
   unarchivedSessionValue,
@@ -145,7 +149,8 @@ const GET_SESSION_DESCRIPTION =
   'Read one Session in detail: whether it is live and running, whether it is archived, and, when the Host can read '
   + 'the Session log, the latest turn number and outcome plus the latest error and assistant excerpts. Address it by '
   + 'full id, a unique id prefix, or the uuid prefix without the "session-" prefix. Use it to inspect state after a '
-  + 'wake-up or when the human explicitly asks, not to poll while waiting for a dispatched Session.'
+  + 'wake-up or when the human explicitly asks, not to poll while waiting for a dispatched Session. '
+  + 'When the target is this lead Session itself, the output also carries its newest retained mid-turn reports.'
 
 const PROMPT_SESSION_DESCRIPTION =
   'Admit a follow-up prompt into an existing Session, resuming a cold Session first. The prompt is attributed to this '
@@ -158,8 +163,18 @@ const WATCH_SESSION_DESCRIPTION =
 
 const NOTIFICATIONS_DESCRIPTION =
   'Read the retained notification digest of this DevLead Session together with the current watch set. Each entry names '
-  + 'a watched Session whose turn settled and how it ended. The digest is newest last. Read it after a wake-up or when '
-  + 'the human explicitly asks, not as a polling loop while waiting for a dispatched Session.'
+  + 'a watched Session whose turn settled and how it ended; the reports array carries mid-turn reports from watched '
+  + 'Sessions (kind, sender, summary/latest message). The digest is newest last. Read it after a wake-up or when the '
+  + 'human explicitly asks, not as a polling loop while waiting for a dispatched Session.'
+
+const REPORT_DESCRIPTION =
+  'Send a one-way mid-turn report to the single active DevLead Session that watches this Session. Use it for progress '
+  + 'worth acting on, a real blocker, a decision the lead or human must make, or an important finding, instead of '
+  + 'waiting for the turn to end. It is not a question or reply channel: the lead cannot answer through it, and you '
+  + 'should keep working unless the lead steers you. Your settled turn still reaches the lead through the normal '
+  + 'turn-end notification. Keep the message concise and actionable; at most four distinct reports are accepted per '
+  + 'turn, identical messages are deduplicated, and no target Session can be chosen. Selected kind: progress '
+  + '(default), blocked, decision, or fyi.'
 
 const REMOVE_WORKSPACE_DESCRIPTION =
   'Close (remove) a DSH Workspace registration: the DSH remove action, not a deletion. The directory, its files, and '
@@ -190,7 +205,8 @@ const UNARCHIVE_SESSION_DESCRIPTION =
   + 'wrapping up, or when the human asks to restore a Session; report the restored Session.'
 
 /**
- * Register the thirteen DevLead tools and their shared policy section.
+ * Register the thirteen lead tools, the watched-Session report tool, and
+ * their shared policy sections.
  *
  * The tools and the policy text follow the same condition: DevLead mode is
  * enabled for the assembling Agent. Because both are evaluated per step, toggling
@@ -206,6 +222,16 @@ export function apply(ctx: Context): void {
     order: ctx.systemPrompt.getSectionOrder('TOOL_SUBAGENT'),
     text: ({ agent }) => agent !== undefined && ctx.devLead.isEnabled(agent)
       ? devLeadPolicy({ worktreeIsolation: ctx.devLead.worktreeIsolationAvailable })
+      : '',
+  })
+  // A watched, non-DevLead Session gets the one-way reporting guidance instead
+  // of the lead policy. The condition is evaluated per step, so gaining or
+  // losing the watch relationship adds/removes both the tool and this text.
+  ctx.systemPrompt.section({
+    name: 'devlead:report-policy',
+    order: ctx.systemPrompt.getSectionOrder('TOOL_SUBAGENT'),
+    text: ({ agent }) => agent !== undefined && ctx.devLead.isSupervised(agent)
+      ? DEVLEAD_REPORT_POLICY
       : '',
   })
 
@@ -418,7 +444,13 @@ export function apply(ctx: Context): void {
       return runTool(async () => {
         const agent = requireAgent(exec.agent, 'devlead_get_session')
         const session = await ctx.devLead.getSession(agent, requireSessionRef(args.session), exec.signal)
-        return { session: sessionValue(session) }
+        const reports = String(session.sessionId) === String(agent.id)
+          ? ctx.devLead.reports(agent, { limit: 5 }).map(reportValue)
+          : undefined
+        return {
+          session: sessionValue(session),
+          ...(reports === undefined ? {} : { reports }),
+        }
       })
     },
   }), { when: ({ agent }) => ctx.devLead.isEnabled(agent) })
@@ -506,11 +538,46 @@ export function apply(ctx: Context): void {
         const limit = defaultedLimit(args.limit, 'limit', DEFAULT_NOTIFICATIONS_LIMIT)
         return {
           notifications: ctx.devLead.notifications(agent, { limit }).map(notificationValue),
+          reports: ctx.devLead.reports(agent, { limit }).map(reportValue),
           watched: watchedIds(ctx.devLead.view(agent)),
         }
       })
     },
   }), { when: ({ agent }) => ctx.devLead.isEnabled(agent) })
+
+  ctx.tools.register(defineTool({
+    name: 'devlead_report',
+    description: REPORT_DESCRIPTION,
+    parameters: {
+      message: {
+        type: 'string',
+        required: true,
+        description: 'Plain-text report: what happened, what it affects, and the next step or decision needed (max 4000 characters).',
+      },
+      kind: {
+        type: 'string',
+        enum: ['progress', 'blocked', 'decision', 'fyi'],
+        description: 'Why this report is being sent; defaults to progress.',
+      },
+      summary: {
+        type: 'string',
+        description: 'Optional short title for the lead’s digest row (max 200 characters).',
+      },
+    },
+    output: REPORT_OUTPUT,
+    presentCall: presentReportCall,
+    execute(args, exec) {
+      return runTool(async () => {
+        const agent = requireAgent(exec.agent, 'devlead_report')
+        const report = await ctx.devLead.reportProgress(agent, {
+          message: args.message,
+          ...args.kind === undefined ? {} : { kind: args.kind as DevLeadReportKind },
+          ...args.summary === undefined ? {} : { summary: args.summary },
+        }, exec.signal)
+        return { report: reportValue(report) }
+      })
+    },
+  }), { when: ({ agent }) => ctx.devLead.isSupervised(agent) })
 
   ctx.tools.register(defineTool({
     name: 'devlead_remove_workspace',

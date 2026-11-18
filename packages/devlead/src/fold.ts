@@ -22,9 +22,15 @@ import {
   DEVLEAD_MODE_RECORD_TYPE,
   DEVLEAD_NOTIFICATION_RECORD_TYPE,
   DEVLEAD_PROJECTION_KEY,
+  DEVLEAD_REPORT_KINDS,
+  DEVLEAD_REPORT_MESSAGE_MAX,
+  DEVLEAD_REPORT_RECORD_TYPE,
+  DEVLEAD_REPORT_RETENTION,
+  DEVLEAD_REPORT_SUMMARY_MAX,
   DEVLEAD_RESET_RECORD_TYPE,
   DEVLEAD_TRANSITIONS,
   DEVLEAD_WATCH_RECORD_TYPE,
+  devLeadReportId,
   notificationId,
 } from '@yankeguo/dsh-devlead-protocol'
 import type {
@@ -32,13 +38,21 @@ import type {
   DevLeadNotification,
   DevLeadProjection,
   DevLeadProjectionState,
+  DevLeadReport,
+  DevLeadReportKind,
   DevLeadTransition,
 } from '@yankeguo/dsh-devlead-protocol'
-import { decodeModeRecord, decodeNotificationRecord, decodeResetRecord, decodeWatchRecord } from './domain.ts'
+import {
+  decodeModeRecord,
+  decodeNotificationRecord,
+  decodeReportRecord,
+  decodeResetRecord,
+  decodeWatchRecord,
+} from './domain.ts'
 
-/** Empty projection state: disabled, watching nothing, no notifications. */
+/** Empty projection state: disabled, watching nothing, no notifications or reports. */
 export function emptyDevLeadProjectionState(): DevLeadProjectionState {
-  return { enabled: false, sessions: [], notifications: [], failure: null }
+  return { enabled: false, sessions: [], notifications: [], reports: [], failure: null }
 }
 
 /** One bounded, non-empty excerpt as persisted by the notification writer. */
@@ -69,6 +83,33 @@ const notificationSchema: ZodType<DevLeadNotification> = zod.object({
   { message: 'notification id must match sessionId, turn, and transition' },
 ) as ZodType<DevLeadNotification>
 
+/** Bounded non-empty report text, checked in Unicode code points. */
+const reportMessageSchema = zod.string().min(1).refine(
+  value => Array.from(value).length <= DEVLEAD_REPORT_MESSAGE_MAX,
+  { message: `report message must be at most ${DEVLEAD_REPORT_MESSAGE_MAX} code points` },
+)
+
+/** Wire schema validating one retained report before it leaves the Host. */
+const reportSchema: ZodType<DevLeadReport> = zod.object({
+  id: zod.string().min(1),
+  kind: zod.enum([...DEVLEAD_REPORT_KINDS] as [DevLeadReportKind, ...DevLeadReportKind[]]),
+  message: reportMessageSchema,
+  summary: zod.string().min(1).refine(
+    value => Array.from(value).length <= DEVLEAD_REPORT_SUMMARY_MAX,
+    { message: `report summary must be at most ${DEVLEAD_REPORT_SUMMARY_MAX} code points` },
+  ).optional(),
+  senderSessionId: zod.string().min(1),
+  senderSessionTitle: excerptSchema.optional(),
+  senderWorkspaceId: zod.string().min(1).optional(),
+  senderWorkspaceTitle: excerptSchema.optional(),
+  leadSessionId: zod.string().min(1),
+  turn: zod.number().int().nonnegative(),
+  at: zod.number().int().nonnegative().max(DEVLEAD_MAX_INSTANT),
+}).strict().refine(
+  report => report.id === devLeadReportId(report.senderSessionId, report.turn, report.kind, report.message),
+  { message: 'report id must match senderSessionId, turn, kind, and message' },
+) as ZodType<DevLeadReport>
+
 /**
  * Append one notification to a bounded digest, dropping an already-retained
  * identity so a replayed log converges on the same state.
@@ -85,6 +126,23 @@ function retainNotification(
   return next.length <= DEVLEAD_DEFAULT_NOTIFICATION_RETENTION
     ? next
     : next.slice(next.length - DEVLEAD_DEFAULT_NOTIFICATION_RETENTION)
+}
+
+/**
+ * Append one report to a bounded digest, dropping an already-retained identity.
+ * @param reports - retained reports, oldest first.
+ * @param report - report to retain.
+ * @returns the retained list, or the same reference when unchanged.
+ */
+function retainReport(
+  reports: readonly DevLeadReport[],
+  report: DevLeadReport,
+): readonly DevLeadReport[] {
+  if (reports.some(existing => existing.id === report.id)) return reports
+  const next = [...reports, report]
+  return next.length <= DEVLEAD_REPORT_RETENTION
+    ? next
+    : next.slice(next.length - DEVLEAD_REPORT_RETENTION)
 }
 
 /**
@@ -110,6 +168,12 @@ export const devLeadProjectionStateSchema: ZodType<DevLeadProjectionState> = zod
       notifications => new Set(notifications.map(notification => notification.id)).size === notifications.length,
       { message: 'notification ids must be unique' },
     ),
+  reports: zod.array(reportSchema)
+    .max(DEVLEAD_REPORT_RETENTION)
+    .refine(
+      reports => new Set(reports.map(report => report.id)).size === reports.length,
+      { message: 'report ids must be unique' },
+    ),
   failure: zod.string().min(1).nullable(),
 }).strict() as ZodType<DevLeadProjectionState>
 
@@ -122,6 +186,12 @@ export const devLeadProjectionSchema: ZodType<DevLeadProjection> = zod.object({
     .refine(
       notifications => new Set(notifications.map(notification => notification.id)).size === notifications.length,
       { message: 'notification ids must be unique' },
+    ),
+  reports: zod.array(reportSchema)
+    .max(DEVLEAD_REPORT_RETENTION)
+    .refine(
+      reports => new Set(reports.map(report => report.id)).size === reports.length,
+      { message: 'report ids must be unique' },
     ),
 }).strict() as ZodType<DevLeadProjection>
 
@@ -148,6 +218,7 @@ export function devLeadProjectionView(state: DevLeadProjectionState): DevLeadPro
     enabled: state.enabled,
     sessions: state.sessions,
     notifications: state.notifications,
+    reports: state.reports,
   }
   wireViews.set(state, view)
   return view
@@ -204,6 +275,11 @@ export function applyDevLeadProjection(
         const notifications = retainNotification(state.notifications, notification)
         return notifications === state.notifications ? state : { ...state, notifications }
       }
+      case DEVLEAD_REPORT_RECORD_TYPE: {
+        const report = decodeReportRecord(record.data)
+        const reports = retainReport(state.reports, report)
+        return reports === state.reports ? state : { ...state, reports }
+      }
       default:
         return state
     }
@@ -253,9 +329,9 @@ export const devLeadProjectionDefinition = {
     // conversation reads it: keep it out of every Session summary/list row.
     summary: false,
   },
-  // 1: the initial durable representation of the mode, watch set, and keyed
-  // notification records.
-  stateVersion: 1,
+  // 2: adds the retained `reports` array to the state; version 1 cache rows
+  // are discarded and refolded from the durable log.
+  stateVersion: 2,
 } satisfies ProjectionDefinition<'devLead', DevLeadProjectionState>
 
 /**
@@ -350,6 +426,9 @@ export function applyDevLeadModeProjection(
         return state
       case DEVLEAD_NOTIFICATION_RECORD_TYPE:
         decodeNotificationRecord(record.data)
+        return state
+      case DEVLEAD_REPORT_RECORD_TYPE:
+        decodeReportRecord(record.data)
         return state
       default:
         return state

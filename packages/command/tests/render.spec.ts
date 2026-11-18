@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { DevLeadNotification } from '@yankeguo/dsh-devlead-protocol'
+import type { DevLeadNotification, DevLeadReport } from '@yankeguo/dsh-devlead-protocol'
 import {
   HELP_LINE,
   errorResult,
@@ -20,6 +20,7 @@ function snapshot(overrides: Partial<DevLeadStatusSnapshot> = {}): DevLeadStatus
     watched: [],
     missingWatched: [],
     notifications: [],
+    reports: [],
     ...overrides,
   }
 }
@@ -91,10 +92,29 @@ describe('statusLines', () => {
       'Worktree isolation: unavailable',
       'Watched sessions: none',
       'Recent notifications: none',
+      'Recent reports: none',
       'DevLead mode is off: no notification wakes this Session until it is turned on again.',
       'Turn DevLead mode on with: /devlead on',
       HELP_LINE,
     ])
+  })
+
+  it('renders retained mid-turn reports with sender, kind, and summary', () => {
+    const report: DevLeadReport = {
+      id: 'session-beta:2:report:blocked:abc',
+      kind: 'blocked',
+      message: 'waiting for credentials',
+      summary: 'credential blocker',
+      senderSessionId: 'session-beta',
+      senderSessionTitle: 'api',
+      leadSessionId: 'session-lead',
+      turn: 2,
+      at: NOW,
+    }
+    const lines = statusLines(snapshot({ reports: [report] }))
+    expect(lines).toContain('Recent reports:')
+    expect(lines.some(line => line.includes('credential blocker') && line.includes('blocked'))).toBe(true)
+    expect(lines.some(line => line.startsWith('  - ') && line.includes('api (session-beta)'))).toBe(true)
   })
 
   it('reports whether optional worktree isolation is composed', () => {

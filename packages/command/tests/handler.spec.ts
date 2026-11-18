@@ -668,6 +668,8 @@ describe('devlead command friendly error mapping', () => {
     ['DEVLEAD_INVALID_INPUT', 'not usable'],
     ['DEVLEAD_NOT_ENABLED', 'DevLead mode is off for this Session'],
     ['DEVLEAD_ALREADY_ACTIVE', 'injected DEVLEAD_ALREADY_ACTIVE'],
+    ['DEVLEAD_NOT_SUPERVISED', 'injected DEVLEAD_NOT_SUPERVISED'],
+    ['DEVLEAD_REPORT_RATE_LIMITED', 'injected DEVLEAD_REPORT_RATE_LIMITED'],
     ['DEVLEAD_AGENT_NOT_LIVE', 'no longer live'],
     ['DEVLEAD_WORKSPACE_NOT_FOUND', 'Workspace could not be resolved'],
     ['DEVLEAD_DIRECTORY_MISSING', 'target directory is missing'],

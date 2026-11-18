@@ -189,9 +189,9 @@ client-ui 的 `index`/`client`；`bundle` 只有 patch 文件与 icon，不产�
 可选（本机，需要已安装的 DSH 桌面端）：真实 DSH 端到端冒烟：
 
 ```sh
-pnpm e2e                          # 默认组合（阶段 1 + 1b + 2 + 3，全过报 132/132）
+pnpm e2e                          # 默认组合（阶段 1 + 1b + 2 + 3，全过报 141/141）
 pnpm e2e --flow installed         # 已安装形态的安装流
-pnpm e2e --no-worktree            # 跳过实验 forge bundle 组合（报 109/109，阶段 1 + 1b + 3）
+pnpm e2e --no-worktree            # 跳过实验 forge bundle 组合（报 118/118，阶段 1 + 1b + 3）
 ```
 
 `release:dry` 的本地预检说明：
@@ -364,7 +364,7 @@ scripts/trusted-publishers.sh --list
   包补齐插件展示元数据，运行时行为不变；**0.2.2**（patch，本版）新增 3 个关闭工具
   （remove / archive / unarchive）、判断式自主关闭与有界可行性判断，当时共 11 个模型工具，
   无 breaking；**0.2.3**（patch）新增 `devlead_list_models`（12 个）；**0.2.4**（patch）新增
-  `devlead_list_agent_presets`（13 个），并把 DSH 兼容面扩到 0.2.2-rc.1 – rc.4、修复审计缺陷。
+  `devlead_list_agent_presets`（13 个主工具 + 1 个 `devlead_report`），并把 DSH 兼容面扩到 0.2.2-rc.1 – rc.4、修复审计缺陷。
   各版发布时同步 README / README.zh 与 `docs/releases/v<version>.md`；0.2.0 另复核
   旧 core + 新 tool 混装时 `isolation` 的防御性降级（tool 对缺失字段回退
   `{requested:'none',status:'none'}`）。

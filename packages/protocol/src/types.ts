@@ -25,6 +25,9 @@ export const DEVLEAD_WATCH_RECORD_TYPE = 'plugin:devlead/watch'
 /** Persistent `plugin:` record carrying one watched-session notification. */
 export const DEVLEAD_NOTIFICATION_RECORD_TYPE = 'plugin:devlead/notification'
 
+/** Persistent `plugin:` record carrying one watched Session's report to its lead. */
+export const DEVLEAD_REPORT_RECORD_TYPE = 'plugin:devlead/report'
+
 /**
  * Persistent `plugin:` record that discards every earlier DevLead record of the
  * Session and resets the projections to their empty state.
@@ -69,6 +72,18 @@ export const DEVLEAD_DEFAULT_NOTIFICATION_RETENTION = 64
 /** Longest single-line error/excerpt field stored on one notification. */
 export const DEVLEAD_ERROR_EXCERPT_MAX = 240
 
+/** Longest report message accepted from a watched Session, in Unicode code points. */
+export const DEVLEAD_REPORT_MESSAGE_MAX = 4_000
+
+/** Longest optional report summary accepted from a watched Session, in code points. */
+export const DEVLEAD_REPORT_SUMMARY_MAX = 200
+
+/** Most reports one watched Session may send during one turn. */
+export const DEVLEAD_REPORT_MAX_PER_TURN = 4
+
+/** Retained report count per lead, matching the notification digest retention. */
+export const DEVLEAD_REPORT_RETENTION = 64
+
 /**
  * Largest epoch-millisecond instant a JavaScript `Date` can represent. Persisted
  * instants are validated against it so renderers cannot throw `RangeError`.
@@ -111,6 +126,48 @@ export interface DevLeadNotification {
   readonly error?: string
   /** Compact single-line excerpt of the latest assistant message before the turn settled. */
   readonly summary?: string
+}
+
+/** Semantic kind of one mid-turn report from a watched Session. */
+export type DevLeadReportKind = 'progress' | 'blocked' | 'decision' | 'fyi'
+
+/** Every accepted report kind, in reporting order. */
+export const DEVLEAD_REPORT_KINDS: readonly DevLeadReportKind[] = ['progress', 'blocked', 'decision', 'fyi']
+
+/** One mid-turn report a watched Session sends to its active DevLead. */
+export interface DevLeadReport {
+  /** Deterministic identity derived from sender, turn, kind, and message. */
+  readonly id: string
+  /** Why the reporter sent this update. */
+  readonly kind: DevLeadReportKind
+  /** Full plain-text report, bounded by {@link DEVLEAD_REPORT_MESSAGE_MAX}. */
+  readonly message: string
+  /** Optional short title for notification rows. */
+  readonly summary?: string
+  /** Reporting Session identity. */
+  readonly senderSessionId: string
+  /** Reporting Session title at report time, when available. */
+  readonly senderSessionTitle?: string
+  /** Reporting Session's Workspace identity, when grouped. */
+  readonly senderWorkspaceId?: string
+  /** Reporting Session's Workspace title, when grouped. */
+  readonly senderWorkspaceTitle?: string
+  /** The unique active DevLead Session this report was addressed to. */
+  readonly leadSessionId: string
+  /** Reporter's current 1-based turn, or 0 before its first turn. */
+  readonly turn: number
+  /** Epoch milliseconds recorded by the Host. */
+  readonly at: number
+}
+
+/** Durable payload appending one report to a lead's retained report digest. */
+export interface DevLeadReportRecord {
+  /** Record discriminator. */
+  readonly kind: 'devlead/report'
+  /** Durable payload version; the fold rejects any other value. */
+  readonly version: typeof DEVLEAD_RECORD_VERSION
+  /** Report appended to the lead's retained report digest. */
+  readonly report: DevLeadReport
 }
 
 /** Durable record payload selecting DevLead mode for one Session. */
@@ -169,6 +226,7 @@ export type DevLeadRecord =
   | DevLeadModeRecord
   | DevLeadWatchRecord
   | DevLeadNotificationRecord
+  | DevLeadReportRecord
   | DevLeadResetRecord
 
 /** Strict Host fold state of one Session's DevLead records. */
@@ -179,6 +237,8 @@ export interface DevLeadProjectionState {
   readonly sessions: readonly string[]
   /** Retained notifications, oldest first. */
   readonly notifications: readonly DevLeadNotification[]
+  /** Retained mid-turn reports, oldest first. */
+  readonly reports: readonly DevLeadReport[]
   /** First rejected persisted record, or null while the state is valid. */
   readonly failure: string | null
 }
@@ -191,6 +251,8 @@ export interface DevLeadProjection {
   readonly sessions: readonly string[]
   /** Retained notifications, oldest first. */
   readonly notifications: readonly DevLeadNotification[]
+  /** Retained mid-turn reports, oldest first. */
+  readonly reports: readonly DevLeadReport[]
 }
 
 /**

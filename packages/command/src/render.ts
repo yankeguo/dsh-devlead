@@ -13,13 +13,17 @@ import type { CommandResult } from '@deepseek-ai/dsh-commands'
 import {
   formatInstant,
   notificationLine,
+  reportLine,
   transitionLabel,
 } from '@yankeguo/dsh-devlead-protocol'
-import type { DevLeadNotification, DevLeadSessionView } from '@yankeguo/dsh-devlead-protocol'
+import type { DevLeadNotification, DevLeadReport, DevLeadSessionView } from '@yankeguo/dsh-devlead-protocol'
 import { sessionRefLabel } from './resolve.ts'
 
 /** How many retained notifications the status view shows. */
 export const RECENT_NOTIFICATION_LIMIT = 5
+
+/** How many retained mid-turn reports the status view shows. */
+export const RECENT_REPORT_LIMIT = 5
 
 /** One-line command reminder shown at the bottom of every status view. */
 export const HELP_LINE =
@@ -40,6 +44,8 @@ export interface DevLeadStatusSnapshot {
   readonly missingWatched: readonly string[]
   /** Retained notifications, oldest first. */
   readonly notifications: readonly DevLeadNotification[]
+  /** Retained mid-turn reports, oldest first. */
+  readonly reports: readonly DevLeadReport[]
 }
 
 /** Human label of the mode switch. */
@@ -106,6 +112,16 @@ function notificationLines(snapshot: DevLeadStatusSnapshot): string[] {
   return lines
 }
 
+/** Render the retained mid-turn report block lines, newest last. */
+function reportLines(snapshot: DevLeadStatusSnapshot): string[] {
+  if (snapshot.reports.length === 0) return ['Recent reports: none']
+  const lines = ['Recent reports:']
+  for (const report of snapshot.reports) {
+    lines.push(`  - ${formatInstant(report.at)} ${reportLine(report)}`)
+  }
+  return lines
+}
+
 /**
  * Render the shared body of every `/devlead` success view.
  * @param snapshot - current mode, watch set, and notification digest.
@@ -117,6 +133,7 @@ export function statusLines(snapshot: DevLeadStatusSnapshot): string[] {
     `Worktree isolation: ${snapshot.worktreeIsolation ? 'available' : 'unavailable'}`,
     ...watchedLines(snapshot),
     ...notificationLines(snapshot),
+    ...reportLines(snapshot),
   ]
   if (!snapshot.enabled) {
     lines.push(

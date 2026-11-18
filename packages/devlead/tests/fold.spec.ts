@@ -15,6 +15,8 @@ import {
   DEVLEAD_MODE_RECORD_TYPE,
   DEVLEAD_NOTIFICATION_RECORD_TYPE,
   DEVLEAD_PROJECTION_KEY,
+  DEVLEAD_REPORT_RECORD_TYPE,
+  DEVLEAD_REPORT_RETENTION,
   DEVLEAD_RESET_RECORD_TYPE,
   DEVLEAD_WATCH_RECORD_TYPE,
 } from '@yankeguo/dsh-devlead-protocol'
@@ -38,6 +40,8 @@ import {
   notification,
   notificationEvent,
   pluginRecordEvent,
+  report,
+  reportEvent,
   turnStartEvent,
   unmarkedEvent,
   watchEvent,
@@ -77,6 +81,7 @@ describe('empty state and projection definition', () => {
       enabled: false,
       sessions: [],
       notifications: [],
+      reports: [],
       failure: null,
     })
     expect(fold([])).toEqual(emptyDevLeadProjectionState())
@@ -85,7 +90,7 @@ describe('empty state and projection definition', () => {
   it('exposes the registered projection unit contract', () => {
     expect(devLeadProjectionDefinition.key).toBe(DEVLEAD_PROJECTION_KEY)
     expect(devLeadProjectionDefinition.key).toBe('devLead')
-    expect(devLeadProjectionDefinition.stateVersion).toBe(1)
+    expect(devLeadProjectionDefinition.stateVersion).toBe(2)
     expect(devLeadProjectionDefinition.apply).toBe(applyDevLeadProjection)
     expect(devLeadProjectionDefinition.init()).toEqual(emptyDevLeadProjectionState())
     // Every init call hands out an independent empty state: the registry seeds
@@ -413,6 +418,55 @@ describe('failure handling', () => {
   })
 })
 
+describe('report records', () => {
+  it('retains a report, deduplicates its identity on replay, and publishes it', () => {
+    const value = report()
+    const state = fold([
+      modeEvent(0, true),
+      reportEvent(1, value),
+      reportEvent(2, value),
+    ])
+    expect(state.reports).toEqual([value])
+    const view = devLeadProjectionView(state)
+    expect(view.reports).toEqual([value])
+    expect(view.reports).toBe(state.reports)
+    expect('failure' in view).toBe(false)
+  })
+
+  it('caps the retained report digest at the shared retention', () => {
+    const events = [modeEvent(0, true)]
+    for (let index = 0; index < DEVLEAD_REPORT_RETENTION + 1; index += 1) {
+      events.push(reportEvent(index + 1, report({ message: `update ${index}` })))
+    }
+    const state = fold(events)
+    expect(state.reports).toHaveLength(DEVLEAD_REPORT_RETENTION)
+    expect(state.reports[0]?.message).toBe('update 1')
+  })
+
+  it('clears reports on reset', () => {
+    const state = fold([
+      modeEvent(0, true),
+      reportEvent(1, report()),
+      pluginRecordEvent(2, DEVLEAD_RESET_RECORD_TYPE, resetRecord(T0)),
+    ])
+    expect(state.reports).toEqual([])
+  })
+
+  it('freezes on a malformed report receipt', () => {
+    const value = { ...report(), id: 'forged' }
+    const state = fold([
+      modeEvent(0, true),
+      pluginRecordEvent(1, DEVLEAD_REPORT_RECORD_TYPE, {
+        kind: 'devlead/report',
+        version: 1,
+        report: value,
+      }),
+    ])
+    expect(state.failure).toContain(DEVLEAD_REPORT_RECORD_TYPE)
+    expect(state.reports).toEqual([])
+  })
+})
+
 describe('wire view and schemas', () => {
   it('omits the host-only failure field and reuses the retained arrays', () => {
     const state = fold([
@@ -425,6 +479,7 @@ describe('wire view and schemas', () => {
       enabled: true,
       sessions: ['session-alpha'],
       notifications: [notification({ sessionId: 'session-alpha', turn: 1 })],
+      reports: [],
     })
     expect('failure' in view).toBe(false)
     expect(view.sessions).toBe(state.sessions)
@@ -454,6 +509,7 @@ describe('wire view and schemas', () => {
       enabled: state.enabled,
       sessions: state.sessions,
       notifications: [outOfRange],
+      reports: [],
     }).success).toBe(false)
 
     const tooMany = Array.from(
@@ -497,6 +553,7 @@ describe('wire view and schemas', () => {
       enabled: false,
       sessions: [],
       notifications: [{ ...notification(), sessionTitle: '' }],
+      reports: [],
     }
     expect(devLeadProjectionSchema.safeParse(view).success).toBe(false)
     expect(devLeadProjectionSchema.safeParse({ enabled: false, sessions: [''], notifications: [] }).success).toBe(false)
@@ -505,6 +562,7 @@ describe('wire view and schemas', () => {
         enabled: false,
         sessions: [],
         notifications: [{ ...notification(), summary: '' }],
+        reports: [],
       }).success,
     ).toBe(false)
   })

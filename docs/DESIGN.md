@@ -77,6 +77,7 @@ DSH 的所有读取路径会保留并重放这些记录，但不会把它们投�
 | `plugin:devlead/mode` | `DevLeadModeRecord` | 整个开关状态（`{ kind, version:1, enabled, at }`） |
 | `plugin:devlead/watch` | `DevLeadWatchRecord` | **完整**监督集合（`{ sessions: string[] }`，whole-value 替换） |
 | `plugin:devlead/notification` | `DevLeadNotificationRecord` | 追加一条通知（`{ notification }`） |
+| `plugin:devlead/report` | `DevLeadReportRecord` | 追加一条被监督会话的中途汇报（`{ report }`） |
 | `plugin:devlead/reset` | `DevLeadResetRecord` | 丢弃该会话**更早**的全部 DevLead 记录，两个 projection 回到空状态（`{ kind, version:1, at }`；见下） |
 
 - 记录 payload 必须 JSON-safe、带 `kind` + `version`；fold 对未知 `kind`/`version` **以及
@@ -94,6 +95,13 @@ DSH 的所有读取路径会保留并重放这些记录，但不会把它们投�
 - notification 的 `id` 必须等于 `notificationId(sessionId, turn, transition)`；`sessionTitle` /
   `error` / `summary` 必须是 ≤240 码点的非空字符串；一条 projection 最多保留 64 条通知。这些
   不变量同时由 decoder、state schema 与 wire schema 守卫。
+- report 的 `id` 必须等于 `devLeadReportId(senderSessionId, turn, kind, message)`；`kind` 是
+  `progress|blocked|decision|fyi`；`message` 1–4000 码点，`summary` 1–200 码点，sender/lead id
+  非空；`turn` 允许 0（命令调用常发生在首个 turn 之前）。最多保留 64 条 report，按 `id` 去重。
+- 新类型 `plugin:devlead/report` 对旧版本是未知插件记录：旧 fold 忽略、不冻结，因此回滚不会
+  因新记录损坏日志；旧版本也读不到 report（预期降级）。`devLead` projection 的
+  `stateVersion` 从 1 升到 2（state 新增 `reports`），旧 projection-cache 行会失效并从 durable
+  log 重新 fold；`devLeadMode` 未变，保持 1。
 - 每次变更都是**先追加日志，后发通知**。
 - 通知条数在 projection 里按常量 `DEVLEAD_DEFAULT_NOTIFICATION_RETENTION`（64）截断：
   fold 必须是**纯函数**，不能依赖部署 config，否则重放会分叉。
@@ -101,11 +109,12 @@ DSH 的所有读取路径会保留并重放这些记录，但不会把它们投�
 ### `devLead` Session projection
 
 - key：`devLead`（常量 `DEVLEAD_PROJECTION_KEY`），wire 值
-  `DevLeadProjection = { enabled, sessions, notifications }`。
+  `DevLeadProjection = { enabled, sessions, notifications, reports }`。
 - Host 侧 fold state 额外带 `failure: string | null`（首条损坏记录），wire 不带；只有
   `failure` 变化时复用上一次 wire view 对象，让 registry 的 `Object.is` 比较抑制无意义推送。
 - projection 标记为 `SessionProjectionSummaryExcluded` 且 unit 声明 `wire.summary: false`：
-  保留的通知摘要（≤64 条）只服务打开中的会话，不进入 Session 列表 / summary payload。
+  保留的通知摘要（≤64 条）与中途汇报（≤64 条）只服务打开中的会话，不进入 Session 列表 /
+  summary payload。
 - 浏览器通过 `useProjection('devLead')` 读取；无需自定义 Remote API（第三方插件无法走 Typert
   生成管线）。
 
@@ -434,6 +443,42 @@ Call devlead_notifications for the retained digest, or devlead_get_session for o
 通知记录携带 `summary`（turn 结束前最后一条 assistant 文本的 240 字符摘要），
 DevLead 无需额外工具调用即可判断是否要介入。
 
+### 4.1.2 中途汇报（watched child → active lead）
+
+被监督、但**不是** DevLead 的 Session 需要一个不阻塞自己的上行动道。`devlead_report` 是唯一
+入口，参数只有 `message`、`kind?`、`summary?`，没有 target：目标由服务端从当前全局单活约束与
+watch 关系解析，绝不能由模型指定。
+
+可见性：
+
+- tool registration 的 `when` 为 `ctx.devLead.isSupervised(agent)`；该查询是同步的：
+  `!isEnabled(agent)` + hub 反向索引中恰好一个未被归档的 active lead（多于一个时优先
+  `activeSessionId`，否则视为无唯一监督者）。
+- 系统提示另有 `devlead:report-policy` 段，只对被监督的普通会话注入；内容明确「单向、不是
+  提问/等待回复通道、最终 turn 结束仍走原通知、每轮最多 4 条」。
+- lead 侧 policy 增加收到 `[DEV LEAD REPORT]` 后的处理口径：当作 runtime fact，必要时用
+  `devlead_prompt_session` steering，不用汇报通道回复。
+
+投递状态机（`DevLeadService.reportProgress` → `DevLeadNotificationHub.report`）：
+
+1. 校验 live / 非 DevLead / 唯一 supervisor；解析 reporter 的当前 turn（命令调用可为 0）。
+2. 校验 message 非空且 ≤4000 码点、kind 枚举、summary ≤200；同轮同一 message 返回已有 report
+   （幂等），不同消息超过 4 条返回 `DEVLEAD_REPORT_RATE_LIMITED`。
+3. 构造 sender id/title、workspace id/title、lead id、`at`，把 receipt 写入 **lead** 的日志（sender
+   信息在 payload 中）：
+   - lead 日志已 attached：`appendPluginRecord(leadSession, 'plugin:devlead/report', ...)` 后进入
+     `pendingReports`；
+   - lead cold：进入 `unsavedReports`，由同一 flush 水泵 resume 后补写；无法 resume 时保留在
+     内存队列（与通知的既有弱语义一致）。
+4. `scheduleFlush` 与 turn 通知共用合并窗口 / `hasQueuedNotice` 避让 / 1s 重试。lead 空闲时
+   followup 唤醒；lead 运行中 followup 排到下一步；如果已有未消费的 DevLead notice，本批保留，
+   不丢。报告与通知同批时合并到一条 `[DEV LEAD NOTIFICATION] + [DEV LEAD REPORT]` 文本。
+5. `report` 记录驱动 `devLead` projection，状态条、`/devlead` status、`devlead_notifications`
+   读取同一份 durable digest；重启后从 lead 日志折叠恢复。
+
+释放关系：unwatch / mode off / reset / lead 归档后 `supervisorOf` 返回 undefined，下一次 tool
+`when` 隐藏，伪造调用返回 `DEVLEAD_NOT_SUPERVISED`；已经写入的 report 仍保留到 retention。
+
 ### 4.2 状态视图
 
 `DevLeadSessionView` 由 `DevLeadService` 组装，列表路径刻意分成「便宜事实 → 排序截断 →
@@ -560,7 +605,7 @@ Session 的工作目录切到独立分支/检出，DevLead 用它**可选地**�
   工具）都在 core 中重新校验 live + 模式。`devlead_use_workspace` 0.2.0 起转发 live lead Agent
   给 core 的 `useWorkspace(agent, request, signal)`，`create` 默认
   `false`，仅当人类明确要求建目录时才传 `create: true`（工具 schema 与 policy 文案同步）。
-- 关闭语义工具（共 3 个；0.2.0 时工具数 8 → 12，后续新增 `devlead_list_agent_presets` 后为 13）：`devlead_remove_workspace` 执行 DSH **remove**：
+- 关闭语义工具（共 3 个；0.2.0 时工具数 8 → 12，后续新增 `devlead_list_agent_presets` 后为 13 个主工具；本次另增 1 个 `devlead_report`，总计 14）：`devlead_remove_workspace` 执行 DSH **remove**：
   只注销 Workspace 记录，目录、文件与 Session 日志保留，其 Session 变未分组；返回注销前快照
   与 `removed`。`devlead_archive_session` 执行 DSH **archive**：日志保留、可恢复；带运行中
   工作（turn / subagent / job / schedule）的 Session 默认报 `DEVLEAD_SESSION_ACTIVE`，
@@ -575,6 +620,17 @@ Session 的工作目录切到独立分支/检出，DevLead 用它**可选地**�
   已完成的 Session、保留其 Workspace 注册，注销影响面更大所以仅限陈旧/重复/空置/自己创建；
   `stop_running` 等于主动取消运行中工作；每次自主关闭都要汇报关闭了什么、为什么、影响面
   （哪些 Session 变未分组、是否停止运行中工作）与可恢复性。
+- **中途汇报工具** `devlead_report` 是唯一不要求 DevLead 模式的工具：`when` 为
+  `ctx.devLead.isSupervised(agent)`（非 enabled + 唯一 active lead 的 watch），schema 只有
+  `message` / `kind?` / `summary?`，没有 target。描述明确单向、不等待回复、最终 turn 仍走原
+  通知、每轮最多 4 条、同轮相同消息幂等；执行转发 `reportProgress` 并把 receipt 投影成
+  `{ report }`。`devlead_get_session` 读取 lead 自身时额外返回 `reports`（最近 5 条），
+  读取其他 Session 时输出形状不变。参数长度/kind 由 core 再校验，错误码 `DEVLEAD_INVALID_INPUT` /
+  `DEVLEAD_NOT_SUPERVISED` / `DEVLEAD_REPORT_RATE_LIMITED` 由统一翻译层转成 `HarnessError`。
+- `systemPrompt` 另注册 `devlead:report-policy` 段，条件为 `ctx.devLead.isSupervised(agent)`；
+  文案明确单向汇报、不是提问通道、完成仍走 turn 通知、每轮 4 条与限流错误码。lead 的
+  `devlead:policy` 增加接收 `[DEV LEAD REPORT]` 后的处理口径（事实、按需 steering、不通过
+  汇报通道回复）。
 - 工具把领域失败翻译成 `HarnessError(message, code)`；需要调用者的工具在 `exec.agent` 缺失
   （条件可见性被绕过）时也走结构化错误 `DEVLEAD_AGENT_NOT_LIVE`，基础设施错误原样重抛。所有异步写调用转发
   `exec.signal`（`create_session` / `prompt_session` / `watch_session` / `remove_workspace` /
@@ -626,7 +682,7 @@ Session 的工作目录切到独立分支/检出，DevLead 用它**可选地**�
 `/devlead` 语法：
 
 ```
-/devlead                  # 状态：模式状态、worktree 能力、监督的会话（标题/状态）、最近通知、帮助
+/devlead                  # 状态：模式状态、worktree 能力、监督的会话（标题/状态）、最近通知/汇报、帮助
 /devlead on               # 打开当前会话的 DevLead 模式
 /devlead off              # 关闭；fold 冻结时也会强制关闭并清理冻结状态（见下）
 /devlead reset            # 人类专属恢复：丢弃该会话的全部 DevLead 持久状态并回到默认 disabled
@@ -667,6 +723,11 @@ Session 的工作目录切到独立分支/检出，DevLead 用它**可选地**�
 - UI 开关只调用 `/devlead on|off`（`ctx.remote.commands.execute`），因此命令是唯一的人类入口。
 
 ## 7. 浏览器 UI（`@yankeguo/dsh-client-ui-devlead`）
+
+状态条在原有最新通知 chip 之外合并 `projection.reports` 的最新一条：按 `at` 比较通知与
+report，新者胜出；report chip 显示 sender、`report.kind.*` 本地化 kind、summary 或 message
+摘要，tooltip 为 `reportLine`，并以 `data-report-kind` 提供 kind 色点。这样 UI 无需新增通道就
+能看到最近一次中途汇报，同时保留原有 transition chip。
 
 UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
 
@@ -732,9 +793,11 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
 
 | code | 含义 |
 | --- | --- |
-| `DEVLEAD_INVALID_INPUT` | 参数不可用：空 prompt、相对路径、文件路径、空引用、`limit` 非法、前缀歧义、非法 prompt 目标等 |
+| `DEVLEAD_INVALID_INPUT` | 参数不可用：空 prompt、相对路径、文件路径、空引用、`limit` 非法、前缀歧义、非法 prompt 目标、空/超长 report message、超长 summary、未知 report kind 等 |
 | `DEVLEAD_NOT_ENABLED` | 当前会话未开启 DevLead 模式 |
 | `DEVLEAD_ALREADY_ACTIVE` | 另一个 Session 已占用 Host 级 DevLead 模式；消息含占用者 `title (id)`（或裸 id）与“先 /devlead off”的指引；archived 且无法自动释放时给出专门恢复文案 |
+| `DEVLEAD_NOT_SUPERVISED` | 当前 Session 不是「非 DevLead + 被唯一 active lead watch」；包括自身是 lead、lead off/归档、unwatch、或历史多 watcher 无唯一 supervisor |
+| `DEVLEAD_REPORT_RATE_LIMITED` | 被监督 Session 同一 turn 已发送 4 条不同报告；同轮相同 message 幂等，不计数 |
 | `DEVLEAD_AGENT_NOT_LIVE` | 传入的 Agent 不是注册表中的 live 实例（工具侧绕过 `when` 时也走该码） |
 | `DEVLEAD_WORKSPACE_NOT_FOUND` | 指定 Workspace 引用无法解析，或 Host 未组合 Workspace registry |
 | `DEVLEAD_DIRECTORY_MISSING` | 目录不存在且未显式允许创建（文案提示 retry with `create: true`），或允许创建但创建失败 |
@@ -781,7 +844,7 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   `activeSessionLabel` 与两种 refusal 文案。
 - `tool`：用 fake `ctx.devLead` + fake `ctx.tools`/`ctx.systemPrompt` 捕获工具定义，验证
   `when` gating、参数校验、值渲染、编译期 schema↔protocol 一致性、运行时 output schema
-  校验、错误翻译、13 个工具的 execute 转发与取消信号转发（含 `listAgentPresets` 的 roster /
+  校验、错误翻译、13 个主工具 + 1 个汇报工具的 execute 转发与取消信号转发（含 `listAgentPresets` 的 roster /
   unavailable / 失败投影）、presentCall replay 纯净性，以及
   policy 文案的角色边界契约（默认调度、写入归属、归属未明时先问或注册、无空会话）与派发后的
   等待契约（结束本轮、不 shell `sleep` / 不轮询 / 不用 `wait_agent`、唤醒以新 turn 恢复本
@@ -848,7 +911,7 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   scratch workspace 被初始化成真实 git 仓库（一次 seed commit），因此是真实 Git happy path。
   阶段 3 停实例 → 链接同一个 probe 包并叠加 probe patch 重启（关闭工具不需要实验 bundle，
   因此 `--no-worktree` 也会运行）→ probe 的 `devlead-e2e-inspect` 用真实
-  `ctx.tools.resolve` 报告该 Agent 一步可见的工具集（模式开启时恰好 13 个 `devlead_*`，
+  `ctx.tools.resolve` 报告该 Agent 一步可见的工具集（模式开启时恰好 13 个主 `devlead_*`，被监督子会话恰好 1 个 `devlead_report`，
   模式关闭时为 0），用 `ctx.systemPrompt.assemble` 取 `devlead:policy` section（判断式自主
   关闭、安全边界、有限可行性判断/开放问题/深挖交接；关闭时为空文本）；`devlead-e2e-close`
   通过 `ctx.devLead` 归档一个已 prompt 的子会话（durable archive 集合 + archived 视图/列表行、
@@ -869,20 +932,20 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   `team/mode` 与 false 关闭。版本与探测不一致会直接失败（rc.1 出现服务或 rc.2+ 缺少服务都能
   暴露）。
   patch 与 installed 两条加载流都跑完整多阶段；`--no-worktree` 跳过阶段 2（阶段 1、1b、3 仍
-  运行，调试用）。两条加载流各 **132/132**（阶段 1 27 + 阶段 1b 12 + 阶段 2 23 + 阶段 3 70，
-  阶段 3 新增 agent preset roster 检查）；跳过阶段 2 时 **109/109**（阶段 1 + 1b + 3）。
-- 本轮最终验证数字（工作树）：`pnpm verify` = typecheck 通过 + **24 文件 / 689 tests** +
+  运行，调试用）。两条加载流各 **141/141**（阶段 1 27 + 阶段 1b 12 + 阶段 2 23 + 阶段 3 79，
+  阶段 3 新增 agent preset roster 检查）；跳过阶段 2 时 **118/118**（阶段 1 + 1b + 3）。
+- 本轮最终验证数字（工作树）：`pnpm verify` = typecheck 通过 + **24 文件 / 723 tests** +
   7 个构建产物；`node scripts/check-packages.mjs` → `OK (6 packages)`；E2E 本轮重跑
-  patch / installed 各 **132/132**（阶段 1 27 + 阶段 1b 12 + 阶段 2 23 + 阶段 3 70）。
+  patch / installed 各 **141/141**（阶段 1 27 + 阶段 1b 12 + 阶段 2 23 + 阶段 3 79）。
 - **DSH 版本兼容矩阵（本轮真实 E2E，npm 临时安装 CLI + `DSH_BIN`）**：
 
   | DSH | flow | checks | Team 分支 / 其他 |
   | --- | --- | --- | --- |
-  | 0.2.2-rc.1 | installed（`--no-worktree`） | **109/109** | 预期不可用：`DEVLEAD_TEAM_UNAVAILABLE`、无 Session、文案含 rc.2 |
-  | 0.2.2-rc.2 | installed（`--no-worktree`） | **109/109** | 成功：child enabled、durable `team/mode`、false 关闭 |
-  | 0.2.2-rc.3 | installed（`--no-worktree`） | **109/109** | 成功（同上） |
-  | 0.2.2-rc.4 | installed（完整） | **132/132** | 成功；含实验 worktree 阶段 23/23 |
-  | 0.2.2-rc.4 | patch（完整） | **132/132** | 成功；含实验 worktree 阶段 23/23 |
+  | 0.2.2-rc.1 | installed（`--no-worktree`） | **118/118** | 预期不可用：`DEVLEAD_TEAM_UNAVAILABLE`、无 Session、文案含 rc.2 |
+  | 0.2.2-rc.2 | installed（`--no-worktree`） | **118/118** | 成功：child enabled、durable `team/mode`、false 关闭 |
+  | 0.2.2-rc.3 | installed（`--no-worktree`） | **118/118** | 成功（同上） |
+  | 0.2.2-rc.4 | installed（完整） | **141/141** | 成功；含实验 worktree 阶段 23/23 |
+  | 0.2.2-rc.4 | patch（完整） | **141/141** | 成功；含实验 worktree 阶段 23/23 |
 
   每条版本使用独立 throwaway `DSH_HOME`，结束后清理；rc.1–rc.3 跳过 phase 2（实验组合不与
   内置 worktree bundle 绑定，阶段 1/1b/3 全跑），rc.4 两条加载流都跑完整四个阶段。所有版本

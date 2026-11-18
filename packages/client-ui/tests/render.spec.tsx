@@ -26,8 +26,9 @@ import type { SessionListState } from '@deepseek-ai/dsh-api-session-controller/c
 import {
   DEVLEAD_MODE_PROJECTION_KEY,
   notificationLine,
+  reportLine,
 } from '@yankeguo/dsh-devlead-protocol/client'
-import type { DevLeadNotification, DevLeadProjection } from '@yankeguo/dsh-devlead-protocol/client'
+import type { DevLeadNotification, DevLeadProjection, DevLeadReport } from '@yankeguo/dsh-devlead-protocol/client'
 import { DevLeadBar, type DevLeadBarProps } from '../src/client/DevLeadBar.tsx'
 import {
   DevLeadIconToggle,
@@ -156,6 +157,7 @@ const ENABLED_PROJECTION: DevLeadProjection = {
   enabled: true,
   sessions: [],
   notifications: [],
+  reports: [],
 }
 
 /** Projection of a disabled Session. */
@@ -163,6 +165,7 @@ const DISABLED_PROJECTION: DevLeadProjection = {
   enabled: false,
   sessions: [],
   notifications: [],
+  reports: [],
 }
 
 /** Session-list rows keyed by id; tests provide only the summary facts read. */
@@ -324,6 +327,7 @@ describe('DevLeadBar', () => {
       enabled: true,
       sessions: ['session-a', 'session-b', 'session-c'],
       notifications: [],
+      reports: [],
     }
     const renderer = await mount(
       <DevLeadBar
@@ -379,6 +383,7 @@ describe('DevLeadBar', () => {
       enabled: true,
       sessions: ['session-b'],
       notifications: [NOTIFICATION],
+      reports: [],
     }
     const renderer = await mount(<DevLeadBar {...barProps({ projection })} />)
     const notice = renderer.root.findByProps({ className: 'devlead-notice' })
@@ -389,6 +394,56 @@ describe('DevLeadBar', () => {
     // The chip's technical tooltip is the canonical Host digest line.
     expect(notice.props['title']).toBe(notificationLine(NOTIFICATION))
     expect(renderer.root.findAllByProps({ className: 'devlead-hint' })).toHaveLength(0)
+  })
+
+  it('renders the newest report with sender, kind, and summary', async () => {
+    const report: DevLeadReport = {
+      id: 'session-b:2:report:blocked:abc',
+      kind: 'blocked',
+      message: 'waiting for credentials',
+      summary: 'credential blocker',
+      senderSessionId: 'session-b',
+      senderSessionTitle: 'Ship the parser',
+      leadSessionId: 'lead-1',
+      turn: 2,
+      at: NOTIFICATION.at + 1,
+    }
+    const projection: DevLeadProjection = {
+      enabled: true,
+      sessions: ['session-b'],
+      notifications: [NOTIFICATION],
+      reports: [report],
+    }
+    const renderer = await mount(<DevLeadBar {...barProps({ projection })} />)
+    const notice = renderer.root.findByProps({ className: 'devlead-notice' })
+    const text = textOf(notice)
+    expect(text).toContain('Ship the parser')
+    expect(text).toContain(zh['report.kind.blocked'])
+    expect(text).toContain('credential blocker')
+    expect(text).not.toContain(zh['transition.completed'])
+    expect(notice.props['title']).toBe(reportLine(report))
+    expect(renderer.root.findByProps({ 'data-report-kind': 'blocked' })).toBeDefined()
+  })
+
+  it('keeps a newer turn notification ahead of an older report', async () => {
+    const projection: DevLeadProjection = {
+      enabled: true,
+      sessions: ['session-b'],
+      notifications: [NOTIFICATION],
+      reports: [{
+        id: 'session-b:2:report:progress:abc',
+        kind: 'progress',
+        message: 'earlier update',
+        senderSessionId: 'session-b',
+        leadSessionId: 'lead-1',
+        turn: 2,
+        at: NOTIFICATION.at - 1,
+      }],
+    }
+    const renderer = await mount(<DevLeadBar {...barProps({ projection })} />)
+    const text = textOf(renderer.root.findByProps({ className: 'devlead-notice' }))
+    expect(text).toContain(zh['transition.completed'])
+    expect(text).not.toContain(zh['report.kind.progress'])
   })
 
   it('renders the English dictionary through the same injected t seat', async () => {

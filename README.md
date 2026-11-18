@@ -9,7 +9,7 @@ interface that the human can see and interact with.
 **English** · [简体中文](README.zh.md)
 
 - **A DevLead session = an ordinary session + one durable switch.** Once enabled, that session
-  gains 13 `devlead_*` tools, a DevLead system prompt, and a status strip above the composer.
+  gains 13 lead `devlead_*` tools (plus one report tool for watched Sessions), a DevLead system prompt, and a status strip above the composer.
   **Only one Session can hold DevLead mode at a time**, across every Workspace; enabling a second
   one is refused until the incumbent is turned off.
   The switch itself is a **human-only action**; no tool can enable it. While the mode is off,
@@ -54,7 +54,7 @@ Documentation: [Design notes (中文)](docs/DESIGN.md) · [Publishing guide (中
 | Role model | Dispatch-first: determine the owning Workspace from registered metadata, send a self-contained brief to a Session there, watch it, review the delivery, report; read-only inspection is bounded feasibility triage (ownership, current behavior at a high level, verification) plus checking a specific claim during review, while the deeper investigation and implementation stay in the owning Workspace's Session (including the lead's own workspace; direct work only when the human explicitly authorizes it in this conversation; record-file upkeep may follow the lead's repository instructions) |
 | Standard DSH entities | Child sessions are ordinary Sessions (visible in the sidebar; humans can open and take them over); Workspaces go through `workspaceRegistry`, not subagents |
 | Optional worktree isolation | When the Host composes DSH's experimental Git worktree service (`ctx.worktrees`), `devlead_create_session` can request `isolation: "worktree"` so a writing Session gets its own branch and checkout instead of sharing the Workspace checkout; detection is optional and a missing capability degrades to the shared checkout with a reported status, never an error (see [Optional worktree isolation](#optional-worktree-isolation)) |
-| 13 model tools | Register/list/remove Workspaces, list Host models and Agent presets, create (model/Agent Teams inherited or pinned)/read/continue/archive/restore/watch Sessions, read the notification digest (see [Model tools](#model-tools)) |
+| 13 lead tools + 1 report tool | Register/list/remove Workspaces, list Host models and Agent presets, create (model/Agent Teams inherited or pinned)/read/continue/archive/restore/watch Sessions, read the notification/report digest; watched non-lead Sessions can send a one-way `devlead_report` update (see [Model tools](#model-tools)) |
 | Human commands | `/devlead` (status), `/devlead on\|off`, `/devlead reset` (damaged-state recovery), `/devlead watch\|unwatch <session>`; sessions are addressable by full id or unique prefix |
 | Notification loop | A watched session's `turn/end` writes a durable notification and wakes an indexed DevLead through a coalescing window (configurable window; cold leads are resumed by default); the watch index is rebuilt from durable records after a Host restart, and a disposed lead keeps observing (see [Notification loop](#notification-loop)) |
 | Event sourcing | Mode / watch set / notifications / reset are ignorable `plugin:devlead/*` records with strict replay validation; survive restart / resume / fork |
@@ -141,7 +141,7 @@ A pnpm workspace under `packages/*`:
 packages/
   protocol/    @yankeguo/dsh-devlead-protocol     pure types + constants + formatting (shared by host and browser), devLead/devLeadMode projection types
   devlead/     @yankeguo/dsh-devlead              core service: mode, Workspace/Session orchestration, watch index, notification delivery, strict fold
-  tool/        @yankeguo/dsh-tool-devlead         13 model tools + conditional system prompt
+  tool/        @yankeguo/dsh-tool-devlead         13 lead tools + 1 report tool + conditional prompt
   command/     @yankeguo/dsh-command-devlead      the /devlead human command
   client-ui/   @yankeguo/dsh-client-ui-devlead    browser UI: toolbar toggle + DevLeadBar status strip + sidebar row mark
   bundle/      @yankeguo/dsh-devlead-bundle       bundle: cordis.patch.yml + dependencies
@@ -195,7 +195,7 @@ accept every 0.2.2 release candidate instead of reporting unmet peers on rc.2+.
 
 | Capability | rc.1 | rc.2 | rc.3 | rc.4 | Notes |
 | --- | --- | --- | --- | --- | --- |
-| Plugin load, 13 `devlead_*` tools, `/devlead`, Web UI | yes | yes | yes | yes | base plugin surface |
+| Plugin load, 13 lead tools + 1 report tool, `/devlead`, Web UI | yes | yes | yes | yes | base plugin surface |
 | `devlead_list_agent_presets` | yes | yes | yes | yes | `dsh-web-app` composes `agent-presets` from rc.1; tested through the real roster (`standard` default) on every version |
 | Dispatch model selection + `reasoning_effort` (`agent.model.select`) | yes | yes | yes | yes | Session-level only; never rewrites the profile default |
 | `devlead_list_models` (`sessionController.modelCatalog()`) | yes | yes | yes | yes | read-only compact catalog |
@@ -225,12 +225,12 @@ requires Node ≥ 24.9):
 
 | DSH CLI | Command | Result |
 | --- | --- | --- |
-| `0.2.2-rc.1` | `DSH_BIN=<tmp>/rc.1/node_modules/.bin/dsh node scripts/e2e-smoke.mjs --flow installed --no-worktree` | **109/109** (Team-unavailable branch) |
-| `0.2.2-rc.2` | same, `rc.2` | **109/109** (Team success branch) |
-| `0.2.2-rc.3` | same, `rc.3` | **109/109** (Team success branch) |
-| `0.2.2-rc.4` | same, `rc.4` | **109/109** (Team success branch) |
-| `0.2.2-rc.4` | `DSH_BIN=<tmp>/rc.4/node_modules/.bin/dsh node scripts/e2e-smoke.mjs --flow installed` | **132/132** (includes the experimental worktree phase) |
-| `0.2.2-rc.4` | same, `--flow patch` | **132/132** |
+| `0.2.2-rc.1` | `DSH_BIN=<tmp>/rc.1/node_modules/.bin/dsh node scripts/e2e-smoke.mjs --flow installed --no-worktree` | **118/118** (Team-unavailable branch) |
+| `0.2.2-rc.2` | same, `rc.2` | **118/118** (Team success branch) |
+| `0.2.2-rc.3` | same, `rc.3` | **118/118** (Team success branch) |
+| `0.2.2-rc.4` | same, `rc.4` | **118/118** (Team success branch) |
+| `0.2.2-rc.4` | `DSH_BIN=<tmp>/rc.4/node_modules/.bin/dsh node scripts/e2e-smoke.mjs --flow installed` | **141/141** (includes the experimental worktree phase) |
+| `0.2.2-rc.4` | same, `--flow patch` | **141/141** |
 
 Three positive model-selection checks per flow are reported as SKIP on this credential-less
 Host (the real reason is printed); the negative model path and `devlead_list_models` run on every
@@ -449,8 +449,9 @@ follow up on failures instead of claiming success.
 
 ### Model tools
 
-All tools carry `when: ({ agent }) => ctx.devLead.isEnabled(agent)` and are only visible in a
-DevLead session:
+The thirteen lead tools carry `when: ({ agent }) => ctx.devLead.isEnabled(agent)` and are only
+visible in a DevLead session. `devlead_report` is the inverse surface: it is visible only in a
+non-DevLead Session watched by the unique active lead.
 
 | Tool | Arguments | Returns (canonical JSON) |
 | --- | --- | --- |
@@ -460,13 +461,22 @@ DevLead session:
 | `devlead_use_workspace` | `path` (required, absolute), `title?`, `create?` (default false: a missing directory is an error; `true` creates it with `mkdir -p` after the human asked) | `{ workspace }` |
 | `devlead_list_sessions` | `workspace?`, `watched_only?`, `limit?` | `{ sessions, watched }` |
 | `devlead_create_session` | `workspace?`, `prompt?`, `title?`, `watch?` (default true), `preset?` (Host-defined id; blank/omitted falls back to the plugin default then the Host default), `isolation?` (default `none`; `worktree` = best-effort isolated checkout), `provider?`+`model?` (paired; optional `reasoning_effort?`), `agent_teams?` | creation result (including the `isolation` outcome, and the applied `model`/`agentTeams` when requested) |
-| `devlead_get_session` | `session` (required) | `{ session }` |
+| `devlead_get_session` | `session` (required) | `{ session, reports? }` — when reading this lead itself, `reports` carries its newest retained reports |
 | `devlead_prompt_session` | `session`, `prompt` (required), `watch?` (default true) | prompt result |
 | `devlead_watch_session` | `session`, `watching` (required bool) | watch mutation result |
-| `devlead_notifications` | `limit?` (default 20) | `{ notifications, watched }` |
+| `devlead_notifications` | `limit?` (default 20) | `{ notifications, reports, watched }` |
+| `devlead_report` | `message` (required, plain text, max 4000 code points), `kind?` (`progress` default / `blocked` / `decision` / `fyi`), `summary?` (max 200) | `{ report }` — visible only in a watched non-lead Session; one-way, never waits for a reply |
 | `devlead_remove_workspace` | `workspace` (required: id or registered path) | `{ workspace, removed }` (pre-removal snapshot) |
 | `devlead_archive_session` | `session` (required), `stop_running?` (default false) | `{ sessionId, archived: true, stopped }` |
 | `devlead_unarchive_session` | `session` (required) | `{ sessionId, archived: false }` |
+
+Reports are durable receipts in the lead's own Session log (`plugin:devlead/report`) and appear in
+the `devLead` projection, the status strip, `/devlead` status, and `devlead_notifications`. The
+lead is woken through the same coalesced notice path as a turn notification; a running lead gets
+the report at its next reachable step. The child is not blocked and cannot choose a target. At
+most four distinct reports are accepted per child turn; identical messages in one turn are
+idempotent; a fifth report fails `DEVLEAD_REPORT_RATE_LIMITED`. A report remains readable after a
+restart because it is folded from the lead's durable log.
 
 Tools translate the core's `DevLeadError` into a `HarnessError` with a stable code. When reading
 state, trust `lastTurn` / `lastTransition` / `lastError` / `lastAssistant` instead of guessing.
@@ -766,6 +776,9 @@ without it keeps the default single-checkout behavior and reports `unavailable`.
 | `pnpm dev:patch` reports profile not found / already enables bundle | a dedicated dev profile is required: `dsh devlead --from-default-profile web --dump-config`; a profile that enables this bundle cannot take a second loader row with the same id |
 | Passing `title` to an already-registered Workspace has no effect | expected: `title` only applies when registering a new Workspace record; an existing record keeps its title |
 | `/devlead on` reports `DEVLEAD_ALREADY_ACTIVE` | another Session already holds the Host-wide DevLead mode. The error names it; run `/devlead off` in that Session (or archive/delete it) before enabling this one. |
+| `devlead_report` reports `DEVLEAD_NOT_SUPERVISED` | the Session is a DevLead itself, the lead stopped watching it, the lead is archived, the lead's mode is off, or several historical watchers leave no unique supervisor. Re-watch it from the active lead. |
+| `devlead_report` reports `DEVLEAD_REPORT_RATE_LIMITED` | the child already sent four distinct reports in this turn. Wait for its next turn; the lead can still steer it with `devlead_prompt_session`. |
+| `devlead_report` reports `DEVLEAD_INVALID_INPUT` | the message is empty or over 4000 code points, the summary is over 200, or the kind is not `progress` / `blocked` / `decision` / `fyi`. |
 | `/devlead` / tools report `DEVLEAD_PROJECTION_INVALID` | a `plugin:devlead/*` record in this Session's log is corrupt and replay froze. Run `/devlead reset` (human-only; discards the mode, watch set, and notification digest) — `/devlead off` does that implicitly, `/devlead on` refuses until the reset. Old plugin versions cannot recover. |
 | `devlead_use_workspace` reports `DEVLEAD_DIRECTORY_MISSING` | the directory does not exist and creation is not allowed by default. Create it first, or retry with `create: true` once the human explicitly asked for that directory |
 | A cold lead was resumed unexpectedly after a restart | expected default: `wakeColdSession` is `true` since 0.2.0; set it to `false` to keep queued notifications in memory until a human opens the lead Session |
@@ -812,7 +825,7 @@ non-empty `path`/`branch`/`baseCommit`; `git worktree list` and the branch exist
 equals the checkout `HEAD`; the child's effective cwd is the worktree path while its header cwd
 still points at the Workspace; the Session still belongs to that Workspace); phase 3 links the
 same private probe package and restarts (the worktree bundle is not required) to drive the close
-tools through the real Host: a real step-time tool activation shows exactly the thirteen
+tools through the real Host: a real step-time tool activation shows exactly the thirteen lead
 `devlead_*` tools while the mode is on and none while it is off, the assembled `devlead:policy`
 section carries judgment-based closing with its safety boundaries and the
 triage/open-question handoff, archiving a prompted child updates the durable archive set and
@@ -829,13 +842,13 @@ unavailable model rejected before any Session exists, and the profile default mo
 unchanged), and `devlead_list_models` returns the compact Host catalog view (default,
 providers, failures). When a credential-less Host exposes no model catalog, the positive model
 checks are reported as SKIP with the reason instead of being faked. Per-phase and total check
-counts are **132/132 per flow** (phase 1 = 27, phase 1b = 12, phase 2 = 23, phase 3 = 70);
+counts are **141/141 per flow** (phase 1 = 27, phase 1b = 12, phase 2 = 23, phase 3 = 79);
 `--no-worktree` skips only the experimental phase, reporting
-**109/109** (phases 1 + 1b + 3) for debugging. Compatibility runs with npm-installed
-`0.2.2-rc.1` through `0.2.2-rc.4` CLIs (`DSH_BIN`, `--no-worktree`) report **109/109** each: on
+**118/118** (phases 1 + 1b + 3) for debugging. Compatibility runs with npm-installed
+`0.2.2-rc.1` through `0.2.2-rc.4` CLIs (`DSH_BIN`, `--no-worktree`) report **118/118** each: on
 rc.1 the Team success checks become expected-unavailable assertions (`DEVLEAD_TEAM_UNAVAILABLE`,
 no Session created), while rc.2–rc.4 run the Team success path; the rc.4 installed and patch
-flows also pass **132/132** with the worktree phase. The probe is a private
+flows also pass **141/141** with the worktree phase. The probe is a private
 test-only package under `scripts/e2e-probe/`, not a published or workspace package. The profile
 mutations happen only in the throwaway profile under `os.tmpdir()`; no pnpm install, network, or
 lockfile change is involved.

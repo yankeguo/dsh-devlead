@@ -10,13 +10,21 @@ import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import {
   DEVLEAD_MODE_RECORD_TYPE,
   DEVLEAD_NOTIFICATION_RECORD_TYPE,
+  DEVLEAD_REPORT_RECORD_TYPE,
   DEVLEAD_WATCH_RECORD_TYPE,
 } from '@yankeguo/dsh-devlead-protocol'
-import type { DevLeadNotification, DevLeadTransition } from '@yankeguo/dsh-devlead-protocol'
+import type {
+  DevLeadNotification,
+  DevLeadReport,
+  DevLeadReportKind,
+  DevLeadTransition,
+} from '@yankeguo/dsh-devlead-protocol'
 import {
   devLeadNotification,
+  devLeadReport,
   modeRecord,
   notificationRecord,
+  reportRecord,
   watchRecord,
 } from '../src/domain.ts'
 
@@ -156,4 +164,46 @@ export function unmarkedEvent(seq: number, time: number = T0): SessionEvent {
     time,
     data: modeRecord(true, time),
   } as unknown as SessionEvent
+}
+
+
+/** Explicit overrides accepted by {@link report}. */
+export interface ReportOverrides {
+  senderSessionId?: string
+  senderSessionTitle?: string
+  leadSessionId?: string
+  turn?: number
+  kind?: DevLeadReportKind
+  message?: string
+  summary?: string
+  at?: number
+}
+
+/**
+ * Build one deterministic report fixture.
+ * @param overrides - explicit field overrides.
+ * @returns the report.
+ */
+export function report(overrides: ReportOverrides = {}): DevLeadReport {
+  return devLeadReport({
+    senderSessionId: overrides.senderSessionId ?? 'session-alpha',
+    ...overrides.senderSessionTitle === undefined ? {} : { senderSessionTitle: overrides.senderSessionTitle },
+    leadSessionId: overrides.leadSessionId ?? 'lead-1',
+    turn: overrides.turn ?? 1,
+    kind: overrides.kind ?? 'progress',
+    message: overrides.message ?? 'halfway through the parser',
+    ...overrides.summary === undefined ? {} : { summary: overrides.summary },
+    at: overrides.at ?? T0,
+  })
+}
+
+/**
+ * Build one committed durable report receipt event.
+ * @param seq - log position.
+ * @param value - report payload.
+ * @param time - event timestamp.
+ * @returns the committed event.
+ */
+export function reportEvent(seq: number, value: DevLeadReport, time: number = T0): SessionEvent {
+  return pluginRecordEvent(seq, DEVLEAD_REPORT_RECORD_TYPE, reportRecord(value), time)
 }

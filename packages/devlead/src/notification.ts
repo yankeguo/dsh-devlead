@@ -34,11 +34,18 @@ import {
   DEVLEAD_MESSAGE_KIND,
   DEVLEAD_MODE_RECORD_TYPE,
   DEVLEAD_NOTIFICATION_RECORD_TYPE,
+  DEVLEAD_REPORT_RECORD_TYPE,
+  DEVLEAD_REPORT_RETENTION,
   DEVLEAD_WATCH_RECORD_TYPE,
   isDevLeadTransition,
   notificationLine,
+  reportLine,
 } from '@yankeguo/dsh-devlead-protocol'
-import type { DevLeadNotification, DevLeadProjectionState } from '@yankeguo/dsh-devlead-protocol'
+import type {
+  DevLeadNotification,
+  DevLeadProjectionState,
+  DevLeadReport,
+} from '@yankeguo/dsh-devlead-protocol'
 import {
   assistantExcerpt,
   createDevLeadNoticeMessage,
@@ -46,6 +53,7 @@ import {
   devLeadNotification,
   failureExcerpt,
   notificationRecord,
+  reportRecord,
   representableInstant,
 } from './domain.ts'
 import { thrownMessage } from './error.ts'
@@ -73,12 +81,16 @@ interface LeadRuntime {
   watched: Set<string>
   /** Notifications already written to the lead's durable log, waiting for their wake digest. */
   pending: DevLeadNotification[]
+  /** Reports already written to the lead's durable log, waiting for their wake digest. */
+  pendingReports: DevLeadReport[]
   /**
    * Notifications observed while the lead Session was cold, so the durable
    * record could not be appended yet. Bounded like the durable digest; the
    * oldest entry is discarded first.
    */
   unsaved: DevLeadNotification[]
+  /** Reports observed while the lead was cold; their durable receipts are not written yet. */
+  unsavedReports: DevLeadReport[]
   /** Pending coalescing/retry timer. */
   timer: ReturnType<typeof setTimeout> | undefined
   /** Whether a zero-delay microtask flush is queued (the `batchMs: 0` path). */
@@ -137,6 +149,25 @@ export function renderDevLeadNotice(
 }
 
 /**
+ * Render one coalesced batch of mid-turn reports as the lead wake text.
+ * @param reports - reports delivered in this batch, oldest first.
+ * @returns the prompt text for one follow-up.
+ */
+export function renderDevLeadReportNotice(reports: readonly DevLeadReport[]): string {
+  const shown = reports.slice(-MAX_DIGEST_LINES)
+  const omitted = reports.length - shown.length
+  const lines = shown.map(report => `- ${reportLine(report)}`)
+  if (omitted > 0) lines.unshift(`- (${omitted} earlier report(s) omitted; call devlead_notifications for the digest)`)
+  return [
+    '[DEV LEAD REPORT]',
+    'A watched Session sent a mid-turn report. This is a one-way update, not a question; there is no reply channel in it.',
+    ...lines,
+    'Call devlead_notifications for the retained digest, or devlead_get_session for detail. '
+    + 'If the report needs a decision or steering, use devlead_prompt_session to continue that Session; otherwise keep working.',
+  ].join('\n')
+}
+
+/**
  * Keep the reverse index and delivery queues for watched Sessions.
  *
  * One hub instance is owned by the core service and disposed with it.
@@ -190,7 +221,8 @@ export class DevLeadNotificationHub {
         if (status !== 'idle') return
         const runtime = this.leads.get(String(agent.id))
         if (runtime === undefined) return
-        if (runtime.pending.length === 0 && runtime.unsaved.length === 0) return
+        if (runtime.pending.length === 0 && runtime.pendingReports.length === 0
+          && runtime.unsaved.length === 0 && runtime.unsavedReports.length === 0) return
         void this.flush(runtime)
       })
       this.ctx.on('session/event', (session, event) => { this.onSessionEvent(session, event) })
@@ -231,6 +263,76 @@ export class DevLeadNotificationHub {
     const runtime = this.leads.get(leadSessionId)
     if (runtime === undefined) return
     await this.flush(runtime)
+  }
+
+  /**
+   * List the active DevLead Sessions currently watching one Session.
+   * A runtime exists only for an enabled lead, and `setWatched` keeps its
+   * reverse index exact, so no durable read is needed on this hot path.
+   * @param sessionId - candidate watched Session identity.
+   * @returns watching lead identities, in insertion order.
+   */
+  supervisorsOf(sessionId: string): string[] {
+    if (this.stopping) return []
+    const watchers = this.watchers.get(sessionId)
+    if (watchers === undefined) return []
+    return [...watchers].filter(leadId => this.leads.has(leadId))
+  }
+
+  /**
+   * Persist and queue one report from a watched Session.
+   *
+   * The report receipt is appended to the lead's own Session log, exactly like
+   * a turn notification, so the fold and the retained digest survive a restart.
+   * When the lead is cold the receipt waits in `unsavedReports` and the normal
+   * flush path resumes the lead (when `wakeColdSession` is enabled) before
+   * writing it. The call returns after the queue decision, never after the
+   * lead's wake-up turn, so the reporter is not blocked.
+   * @param report - report addressed to one active lead.
+   * @returns whether the report belongs to an indexed watch relationship.
+   */
+  report(report: DevLeadReport): boolean {
+    if (this.stopping) return false
+    const runtime = this.leads.get(report.leadSessionId)
+    if (runtime === undefined || !runtime.watched.has(report.senderSessionId)) return false
+    if (runtime.pendingReports.some(existing => existing.id === report.id)
+      || runtime.unsavedReports.some(existing => existing.id === report.id)) return true
+    const session = this.ctx.sessions.get(toSessionId(report.leadSessionId))
+    if (session !== undefined) {
+      const state = this.stateOf(session)
+      if (state === undefined || !state.enabled) return false
+      if (state.reports.some(existing => existing.id === report.id)) return true
+      if (this.appendReportRecord(session, report)) {
+        runtime.pendingReports = [...runtime.pendingReports, report].slice(-DEVLEAD_REPORT_RETENTION)
+      }
+      else {
+        runtime.unsavedReports = [...runtime.unsavedReports, report].slice(-DEVLEAD_REPORT_RETENTION)
+      }
+    }
+    else {
+      runtime.unsavedReports = [...runtime.unsavedReports, report].slice(-DEVLEAD_REPORT_RETENTION)
+    }
+    this.scheduleFlush(runtime)
+    return true
+  }
+
+  /**
+   * Append one report receipt and fire-and-forget its durability checkpoint.
+   * @param session - attached lead Session log receiving the record.
+   * @param report - report to persist.
+   * @returns whether the append succeeded.
+   */
+  private appendReportRecord(session: Session, report: DevLeadReport): boolean {
+    try {
+      appendPluginRecord(session, DEVLEAD_REPORT_RECORD_TYPE, reportRecord(report))
+    } catch (error: unknown) {
+      this.ctx.logger.warn(
+        `devlead: could not record a report for lead "${report.leadSessionId}": ${thrownMessage(error)}`,
+      )
+      return false
+    }
+    void this.checkpoint(session, report.leadSessionId)
+    return true
   }
 
   /** Index every live lead Session at plugin load. */
@@ -290,7 +392,8 @@ export class DevLeadNotificationHub {
     const runtime = this.ensureLead(sessionId)
     runtime.resumeAttempts = 0
     this.setWatched(runtime, state.sessions)
-    if (runtime.pending.length > 0 || runtime.unsaved.length > 0) {
+    if (runtime.pending.length > 0 || runtime.pendingReports.length > 0
+      || runtime.unsaved.length > 0 || runtime.unsavedReports.length > 0) {
       // The live index supersedes any cold-resume retry that was armed while
       // this Agent was still cold; the coalescing timer below replaces it.
       this.clearTimer(runtime)
@@ -310,7 +413,9 @@ export class DevLeadNotificationHub {
       sessionId,
       watched: new Set(),
       pending: [],
+      pendingReports: [],
       unsaved: [],
+      unsavedReports: [],
       timer: undefined,
       scheduled: false,
       flushing: false,
@@ -363,7 +468,12 @@ export class DevLeadNotificationHub {
     // built from notifications observed before the change.
     runtime.pending = runtime.pending.filter(notification => next.has(notification.sessionId))
     runtime.unsaved = runtime.unsaved.filter(notification => next.has(notification.sessionId))
-    if (runtime.pending.length === 0 && runtime.unsaved.length === 0) this.clearTimer(runtime)
+    runtime.pendingReports = runtime.pendingReports.filter(report => next.has(report.senderSessionId))
+    runtime.unsavedReports = runtime.unsavedReports.filter(report => next.has(report.senderSessionId))
+    if (runtime.pending.length === 0 && runtime.pendingReports.length === 0
+      && runtime.unsaved.length === 0 && runtime.unsavedReports.length === 0) {
+      this.clearTimer(runtime)
+    }
   }
 
   /**
@@ -388,7 +498,9 @@ export class DevLeadNotificationHub {
         }
       }
       runtime.pending = []
+      runtime.pendingReports = []
       runtime.unsaved = []
+      runtime.unsavedReports = []
       this.leads.delete(leadId)
     }
     this.resuming.delete(leadId)
@@ -558,8 +670,9 @@ export class DevLeadNotificationHub {
    * @param runtime - lead runtime row.
    */
   private persistUnsaved(session: Session, runtime: LeadRuntime): void {
-    if (runtime.unsaved.length === 0) return
+    if (runtime.unsaved.length === 0 && runtime.unsavedReports.length === 0) return
     const remaining: DevLeadNotification[] = []
+    const remainingReports: DevLeadReport[] = []
     let appended = false
     for (const notification of runtime.unsaved) {
       try {
@@ -574,9 +687,23 @@ export class DevLeadNotificationHub {
       appended = true
       runtime.pending = [...runtime.pending, notification].slice(-DEVLEAD_DEFAULT_NOTIFICATION_RETENTION)
     }
+    for (const report of runtime.unsavedReports) {
+      try {
+        appendPluginRecord(session, DEVLEAD_REPORT_RECORD_TYPE, reportRecord(report))
+      } catch (error: unknown) {
+        this.ctx.logger.warn(
+          `devlead: could not record a report for lead "${runtime.sessionId}": ${thrownMessage(error)}`,
+        )
+        remainingReports.push(report)
+        continue
+      }
+      appended = true
+      runtime.pendingReports = [...runtime.pendingReports, report].slice(-DEVLEAD_REPORT_RETENTION)
+    }
     runtime.unsaved = remaining
+    runtime.unsavedReports = remainingReports
     if (appended) void this.checkpoint(session, runtime.sessionId)
-    if (remaining.length > 0) this.scheduleRetry(runtime)
+    if (remaining.length > 0 || remainingReports.length > 0) this.scheduleRetry(runtime)
   }
 
   /**
@@ -624,7 +751,8 @@ export class DevLeadNotificationHub {
     // disposal drops the runtime but cannot cancel the microtask.
     if (this.leads.get(runtime.sessionId) !== runtime) return
     if (runtime.flushing) return
-    if (runtime.pending.length === 0 && runtime.unsaved.length === 0) return
+    if (runtime.pending.length === 0 && runtime.pendingReports.length === 0
+      && runtime.unsaved.length === 0 && runtime.unsavedReports.length === 0) return
     const leadSessionId = toSessionId(runtime.sessionId)
     // An archived lead is paused, and that must win over the cold-wake policy: a
     // cold archived lead is never auto-resumed just to receive a digest. When
@@ -642,6 +770,7 @@ export class DevLeadNotificationHub {
         // row was never written. It is retried when the lead is unarchived and
         // opened (syncLead schedules the flush).
         runtime.pending = []
+        runtime.pendingReports = []
       }
       this.clearTimer(runtime)
       return
@@ -652,7 +781,7 @@ export class DevLeadNotificationHub {
       return
     }
     this.persistUnsaved(agent.session, runtime)
-    if (runtime.pending.length === 0) return
+    if (runtime.pending.length === 0 && runtime.pendingReports.length === 0) return
     if (this.hasQueuedNotice(agent)) {
       // The batch stays pending: a notice already in the inbox will point the
       // model at the durable digest. Re-check on the bounded retry timer, and
@@ -662,12 +791,18 @@ export class DevLeadNotificationHub {
       return
     }
     const batch = runtime.pending
+    const reportBatch = runtime.pendingReports
     runtime.pending = []
+    runtime.pendingReports = []
     this.clearTimer(runtime)
     runtime.flushing = true
     let failed = false
     try {
-      agent.followup(createDevLeadNoticeMessage(renderDevLeadNotice(batch)))
+      const text = [
+        batch.length === 0 ? '' : renderDevLeadNotice(batch),
+        reportBatch.length === 0 ? '' : renderDevLeadReportNotice(reportBatch),
+      ].filter(part => part.length > 0).join('\n\n')
+      agent.followup(createDevLeadNoticeMessage(text))
       try {
         // False means no durability participant is composed (headless/SDK),
         // not a persistence failure; only a composed participant's rejection
@@ -679,13 +814,15 @@ export class DevLeadNotificationHub {
     } catch (error: unknown) {
       this.ctx.logger.warn(`devlead: could not wake lead "${runtime.sessionId}": ${thrownMessage(error)}`)
       runtime.pending = [...batch, ...runtime.pending].slice(-DEVLEAD_DEFAULT_NOTIFICATION_RETENTION)
+      runtime.pendingReports = [...reportBatch, ...runtime.pendingReports].slice(-DEVLEAD_REPORT_RETENTION)
       failed = true
     } finally {
       runtime.flushing = false
     }
-    if ((runtime.pending.length > 0 || runtime.unsaved.length > 0)
+    if ((runtime.pending.length > 0 || runtime.pendingReports.length > 0
+        || runtime.unsaved.length > 0 || runtime.unsavedReports.length > 0)
       && this.leads.get(runtime.sessionId) === runtime) {
-      if (failed || runtime.unsaved.length > 0) {
+      if (failed || runtime.unsaved.length > 0 || runtime.unsavedReports.length > 0) {
         this.scheduleRetry(runtime)
       } else {
         this.scheduleFlush(runtime)

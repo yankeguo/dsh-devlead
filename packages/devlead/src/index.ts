@@ -26,7 +26,13 @@ import type {} from '@deepseek-ai/dsh-session-query'
 import type {} from '@deepseek-ai/dsh-session-title'
 import type {} from '@deepseek-ai/dsh-workspace'
 import type { SessionActivity, Workspace, WorkspaceRegistry } from '@deepseek-ai/dsh-workspace'
-import { DEVLEAD_DEFAULT_MAX_WATCHED } from '@yankeguo/dsh-devlead-protocol'
+import {
+  DEVLEAD_DEFAULT_MAX_WATCHED,
+  DEVLEAD_REPORT_MAX_PER_TURN,
+  DEVLEAD_REPORT_MESSAGE_MAX,
+  DEVLEAD_REPORT_SUMMARY_MAX,
+  isDevLeadReportKind,
+} from '@yankeguo/dsh-devlead-protocol'
 import type {
   DevLeadAgentPresetCatalog,
   DevLeadArchivedSession,
@@ -41,6 +47,8 @@ import type {
   DevLeadProjection,
   DevLeadProjectionState,
   DevLeadPromptedSession,
+  DevLeadReport,
+  DevLeadReportKind,
   DevLeadRemovedWorkspace,
   DevLeadSessionView,
   DevLeadUnarchivedSession,
@@ -53,6 +61,7 @@ import {
   DEVLEAD_RESET_RECORD_TYPE,
   DEVLEAD_WATCH_RECORD_TYPE,
   createDevLeadPromptMessage,
+  devLeadReport,
   modeRecord,
   resetRecord,
   watchRecord,
@@ -365,6 +374,16 @@ function describeSessionActivity(activity: readonly SessionActivity[]): string {
   }).join('; ')
 }
 
+/** One mid-turn report request from a watched Session. */
+export interface DevLeadReportRequest {
+  /** Full plain-text update; trimmed, non-empty, at most 4000 code points. */
+  readonly message: string
+  /** Semantic kind, defaulting to `progress`. */
+  readonly kind?: DevLeadReportKind
+  /** Optional short title for digest rows; at most 200 code points. */
+  readonly summary?: string
+}
+
 /**
  * DevLead service (`ctx.devLead`): durable mode selection, Workspace and
  * Session orchestration, and watched-session notifications for one Session
@@ -430,6 +449,17 @@ export class DevLeadService extends Service {
 
   /** Whether the service finished its first activation-phase reconciliation. */
   private initialized = false
+
+  /**
+   * Per-reporter report budget and idempotency window for the current turn.
+   * Process-local by design; a restart resets the window, while the lead's
+   * durable report digest remains the audit authority.
+   */
+  private readonly reportState = new Map<string, {
+    readonly turn: number
+    readonly leadSessionId: string
+    readonly messages: Map<string, DevLeadReport>
+  }>()
 
   /**
    * Disposers of the armed readiness retry: the optional-service injection fiber
@@ -1561,6 +1591,174 @@ export class DevLeadService extends Service {
     const limit = options.limit ?? 20
     const effective = Number.isSafeInteger(limit) && limit > 0 ? limit : 20
     return state.notifications.slice(-effective)
+  }
+
+  /**
+   * Resolve the unique active DevLead Session supervising one reporter.
+   *
+   * The hub's reverse index already reflects durable watch/mode state (live and
+   * cold rehydrated leads). Archived leads are excluded, and when historical
+   * state leaves more than one watcher the current global incumbent wins; with
+   * no unique answer the reporter is treated as unsupervised instead of
+   * broadcasting to an arbitrary lead.
+   * @param agent - candidate watched Session Agent.
+   * @returns the supervising lead Session id, or undefined.
+   */
+  supervisorOf(agent: Agent): string | undefined {
+    if (this.hub === undefined) return undefined
+    if (this.ctx.agents.get(agent.id) !== agent) return undefined
+    if (this.isEnabled(agent)) return undefined
+    const archived = new Set(
+      (this.ctx.get('workspaceRegistry')?.archivedSessionIds ?? []).map(id => String(id)),
+    )
+    const candidates = this.hub.supervisorsOf(String(agent.id)).filter(id => !archived.has(id))
+    if (candidates.length === 0) return undefined
+    if (candidates.length === 1) return candidates[0]
+    return this.activeSessionId !== undefined && candidates.includes(this.activeSessionId)
+      ? this.activeSessionId
+      : undefined
+  }
+
+  /**
+   * Whether one Session may send mid-turn reports to an active DevLead.
+   * @param agent - candidate reporter Agent.
+   * @returns whether the reporter has exactly one usable supervisor.
+   */
+  isSupervised(agent: Agent): boolean {
+    return this.supervisorOf(agent) !== undefined
+  }
+
+  /**
+   * Send one mid-turn report from a watched Session to its active DevLead.
+   *
+   * The durable receipt is appended to the lead's own Session log (or queued
+   * for a cold lead by the hub), then the lead is woken through the same
+   * coalesced notice path as turn notifications. This method returns after the
+   * receipt/queue decision and never waits for the lead's next turn, so the
+   * reporter is not blocked. Same-message reports in one turn are idempotent;
+   * more than {@link DEVLEAD_REPORT_MAX_PER_TURN} distinct reports in one turn
+   * are refused.
+   * @param agent - exact live reporter Agent.
+   * @param request - report text, kind, and optional summary.
+   * @param signal - cancellation checked before durable work.
+   * @returns the durable report receipt.
+   * @throws {@link DevLeadError} `DEVLEAD_NOT_SUPERVISED` when no unique active
+   *   lead watches the reporter, `DEVLEAD_INVALID_INPUT` for unusable fields,
+   *   and `DEVLEAD_REPORT_RATE_LIMITED` when the per-turn budget is exhausted.
+   */
+  async reportProgress(
+    agent: Agent,
+    request: DevLeadReportRequest,
+    signal?: AbortSignal,
+  ): Promise<DevLeadReport> {
+    this.assertLive(agent)
+    signal?.throwIfAborted()
+    if (this.isEnabled(agent)) {
+      throw new DevLeadError(
+        'this Session is the active DevLead; a DevLead Session cannot report to itself',
+        'DEVLEAD_NOT_SUPERVISED',
+      )
+    }
+    const leadSessionId = this.supervisorOf(agent)
+    if (leadSessionId === undefined) {
+      throw new DevLeadError(
+        'this Session is not watched by the unique active DevLead Session, so it cannot send a report',
+        'DEVLEAD_NOT_SUPERVISED',
+      )
+    }
+    const message = request.message.trim()
+    if (message.length === 0) {
+      throw new DevLeadError('report message must not be empty', 'DEVLEAD_INVALID_INPUT')
+    }
+    if (message.length > DEVLEAD_REPORT_MESSAGE_MAX * 2
+      || Array.from(message).length > DEVLEAD_REPORT_MESSAGE_MAX) {
+      throw new DevLeadError(
+        `report message must be at most ${DEVLEAD_REPORT_MESSAGE_MAX} code points`,
+        'DEVLEAD_INVALID_INPUT',
+      )
+    }
+    const kind = request.kind ?? 'progress'
+    if (!isDevLeadReportKind(kind)) {
+      throw new DevLeadError(
+        `report kind ${JSON.stringify(kind)} is not recognized; use progress, blocked, decision, or fyi`,
+        'DEVLEAD_INVALID_INPUT',
+      )
+    }
+    const summary = request.summary?.trim()
+    if (summary !== undefined && (summary.length === 0
+      || summary.length > DEVLEAD_REPORT_SUMMARY_MAX * 2
+      || Array.from(summary).length > DEVLEAD_REPORT_SUMMARY_MAX)) {
+      throw new DevLeadError(
+        `report summary must be 1-${DEVLEAD_REPORT_SUMMARY_MAX} code points when present`,
+        'DEVLEAD_INVALID_INPUT',
+      )
+    }
+    const reporterId = String(agent.id)
+    const turn = this.ctx.agents.turnBoundaryOf(agent.session).lastTurn
+    const previous = this.reportState.get(reporterId)
+    const state = previous !== undefined && previous.turn === turn && previous.leadSessionId === leadSessionId
+      ? previous
+      : { turn, leadSessionId, messages: new Map<string, DevLeadReport>() }
+    if (previous === undefined || previous.turn !== turn || previous.leadSessionId !== leadSessionId) {
+      this.reportState.set(reporterId, state)
+    }
+    const duplicate = state.messages.get(message)
+    if (duplicate !== undefined) return duplicate
+    if (state.messages.size >= DEVLEAD_REPORT_MAX_PER_TURN) {
+      throw new DevLeadError(
+        `this Session already sent ${DEVLEAD_REPORT_MAX_PER_TURN} reports in turn ${turn}; `
+        + 'wait for the next turn or let the DevLead continue',
+        'DEVLEAD_REPORT_RATE_LIMITED',
+      )
+    }
+    const title = this.ctx.get('sessionTitle')?.get(agent.session)?.title
+    let senderWorkspaceId: string | undefined
+    let senderWorkspaceTitle: string | undefined
+    for (const workspace of this.ctx.get('workspaceRegistry')?.list() ?? []) {
+      if (!workspace.sessionIds.some(id => String(id) === reporterId)) continue
+      senderWorkspaceId = workspace.id
+      senderWorkspaceTitle = workspace.title
+      break
+    }
+    const report = devLeadReport({
+      senderSessionId: reporterId,
+      ...(title === undefined ? {} : { senderSessionTitle: title }),
+      ...(senderWorkspaceId === undefined ? {} : { senderWorkspaceId }),
+      ...(senderWorkspaceTitle === undefined ? {} : { senderWorkspaceTitle }),
+      leadSessionId,
+      turn,
+      kind,
+      message,
+      ...(summary === undefined ? {} : { summary }),
+      at: Date.now(),
+    })
+    signal?.throwIfAborted()
+    if (!this.hub?.report(report)) {
+      throw new DevLeadError(
+        'the active DevLead Session stopped watching this Session before the report could be queued',
+        'DEVLEAD_NOT_SUPERVISED',
+      )
+    }
+    state.messages.set(message, report)
+    if (this.reportState.size > 512) {
+      const oldest = this.reportState.keys().next().value
+      if (oldest !== undefined) this.reportState.delete(oldest)
+    }
+    return report
+  }
+
+  /**
+   * Read the retained mid-turn report digest of one live lead.
+   * @param agent - exact live lead Agent.
+   * @param options - optional newest-row limit, defaulting to 20.
+   * @returns detached reports, oldest first.
+   */
+  reports(agent: Agent, options: { limit?: number } = {}): DevLeadReport[] {
+    this.assertReady(agent)
+    const state = this.strictStateOf(agent.session)
+    const limit = options.limit ?? 20
+    const effective = Number.isSafeInteger(limit) && limit > 0 ? limit : 20
+    return state.reports.slice(-effective)
   }
 
   // ---------------------------------------------------------------------------

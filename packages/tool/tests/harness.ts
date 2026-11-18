@@ -29,6 +29,7 @@ import type {
   DevLeadPromptedSession,
   DevLeadProjection,
   DevLeadRemovedWorkspace,
+  DevLeadReport,
   DevLeadSessionView,
   DevLeadUnarchivedSession,
   DevLeadUseWorkspaceRequest,
@@ -181,6 +182,35 @@ export class FakeDevLead {
   /** Watch set reported through {@link view}. */
   watched: string[] = ['session-1']
 
+  /** Session ids the fake Host currently treats as watched by an active lead. */
+  readonly supervised = new Set<string>(['agent-lead'])
+
+  /** Report digest reported through {@link reports} and {@link view}. */
+  reportDigest: DevLeadReport[] = [
+    {
+      id: 'report-1',
+      kind: 'progress',
+      message: 'halfway through the migration',
+      summary: 'migration progress',
+      senderSessionId: 'session-1',
+      leadSessionId: 'lead-1',
+      turn: 1,
+      at: 1_700_000_000_000,
+    },
+  ]
+
+  /** Result returned by {@link reportProgress}. */
+  report: DevLeadReport = {
+    id: 'report-2',
+    kind: 'blocked',
+    message: 'waiting on credentials',
+    summary: 'credential blocker',
+    senderSessionId: 'session-1',
+    leadSessionId: 'lead-1',
+    turn: 1,
+    at: 1_700_000_000_001,
+  }
+
   /** Result returned by {@link removeWorkspace}. */
   removed: DevLeadRemovedWorkspace = { workspace: WORKSPACE, removed: true }
 
@@ -220,9 +250,33 @@ export class FakeDevLead {
     return this.enabled.has(agent.id)
   }
 
+  isSupervised(agent: Agent): boolean {
+    return this.supervised.has(agent.id) && !this.enabled.has(agent.id)
+  }
+
   view(agent: Agent): DevLeadProjection {
     this.enter('view', agent)
-    return { enabled: true, sessions: [...this.watched], notifications: this.digest }
+    return {
+      enabled: true,
+      sessions: [...this.watched],
+      notifications: this.digest,
+      reports: this.reportDigest,
+    }
+  }
+
+  reports(agent: Agent, options: { limit?: number } = {}): DevLeadReport[] {
+    this.enter('reports', agent, options)
+    const limit = options.limit ?? 20
+    return this.reportDigest.slice(-limit)
+  }
+
+  async reportProgress(
+    agent: Agent,
+    request: { message: string; kind?: string; summary?: string },
+    signal?: AbortSignal,
+  ): Promise<DevLeadReport> {
+    this.enter('reportProgress', agent, request, signal)
+    return this.report
   }
 
   async listWorkspaces(signal?: AbortSignal): Promise<DevLeadWorkspaceView[]> {
@@ -330,6 +384,8 @@ export interface Harness {
   readonly tools: ReadonlyMap<string, CapturedTool>
   /** Captured `devlead:policy` prompt section. */
   readonly section: PromptSection
+  /** Captured `devlead:report-policy` prompt section. */
+  readonly reportSection: PromptSection
   /** Default calling Agent. */
   readonly agent: Agent
   /** Default run context of one tool call. */
@@ -342,6 +398,8 @@ export interface Harness {
   visible(agent?: Agent, toolName?: string): Promise<boolean>
   /** Resolve the policy section text for one assembling Agent. */
   sectionText(agent?: Agent): string
+  /** Resolve the child report-policy text for one assembling Agent. */
+  reportSectionText(agent?: Agent): string
 }
 
 /**
@@ -371,7 +429,7 @@ export function makeExec(agent: Agent | undefined, signal: AbortSignal = new Abo
 export function boot(): Harness {
   const devLead = new FakeDevLead()
   const registered = new Map<string, CapturedTool>()
-  let section: PromptSection | undefined
+  const sections = new Map<string, PromptSection>()
   const agent = makeAgent()
   const exec = makeExec(agent)
 
@@ -385,15 +443,22 @@ export function boot(): Harness {
     },
     systemPrompt: {
       section: (value: PromptSection) => {
-        section = value
+        sections.set(value.name, value)
         return () => {}
       },
       getSectionOrder: () => 2800,
     },
   } as unknown as Context
   apply(ctx)
-  if (section === undefined) throw new Error('apply() did not register the devlead:policy section')
-  const policySection = section
+  const policySection = sections.get('devlead:policy')
+  if (policySection === undefined) throw new Error('apply() did not register the devlead:policy section')
+  const reportPolicySection = sections.get('devlead:report-policy')
+  if (reportPolicySection === undefined) throw new Error('apply() did not register the devlead:report-policy section')
+  const sectionTextOf = (section: PromptSection, value: Agent | undefined): string => {
+    const provider = section.text
+    if (typeof provider !== 'function') throw new Error('prompt section must resolve its text per assembly')
+    return provider({ agent: value } as never)
+  }
 
   const tool = (name: string): CapturedTool => {
     const captured = registered.get(name)
@@ -405,6 +470,7 @@ export function boot(): Harness {
     devLead,
     tools: registered,
     section: policySection,
+    reportSection: reportPolicySection,
     agent,
     exec,
     tool,
@@ -422,9 +488,10 @@ export function boot(): Harness {
       return when === undefined ? true : await when(activation)
     },
     sectionText(candidate = agent) {
-      const text = policySection.text
-      if (typeof text === 'string') return text
-      return text({ agent: candidate } as unknown as Parameters<typeof text>[0])
+      return sectionTextOf(policySection, candidate)
+    },
+    reportSectionText(candidate = agent) {
+      return sectionTextOf(reportPolicySection, candidate)
     },
   }
 }

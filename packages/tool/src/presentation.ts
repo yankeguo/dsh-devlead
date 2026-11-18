@@ -18,6 +18,7 @@ import type {
   NotificationsArgs,
   PromptSessionArgs,
   RemoveWorkspaceArgs,
+  ReportArgs,
   UnarchiveSessionArgs,
   UseWorkspaceArgs,
   WatchSessionArgs,
@@ -105,6 +106,11 @@ export function presentWatchSessionCall(args: WatchSessionArgs): GenericCallView
 /** Pending card of `devlead_notifications`. */
 export function presentNotificationsCall(args: NotificationsArgs): GenericCallView {
   return present('Read DevLead notifications', 'read', args.limit)
+}
+
+/** Pending card of `devlead_report`. */
+export function presentReportCall(args: ReportArgs): GenericCallView {
+  return present('Report progress to DevLead', 'other', firstText(args.summary, args.message))
 }
 
 /** Pending card of `devlead_remove_workspace`. */

@@ -80,8 +80,11 @@
  *             bundle is not required) and drives the close lifecycle through
  *             `ctx.devLead`:
  *               - a real step-time tool activation (`ctx.tools.resolve`) admits
- *                 exactly the thirteen `devlead_*` tools while the mode is on and
- *                 none while it is off, both before and after a toggle;
+ *                 exactly the thirteen lead `devlead_*` tools while the mode is on
+ *                 and none while it is off, both before and after a toggle;
+ *               - a real watched non-lead child step admits exactly
+ *                 `devlead_report`, receives the one-way report policy, and a
+ *                 real `reportProgress` call lands in the lead's durable digest;
  *               - the assembled `devlead:policy` section carries judgment-based
  *                 closing, its safety boundaries, and the feasibility-triage /
  *                 open-question handoff to the dispatched Session;
@@ -115,15 +118,15 @@
  *                 Agent Teams is version-adaptive: rc.2+ (default composition)
  *                 must apply it, while an rc.1 Host must reject the explicit
  *                 request with DEVLEAD_TEAM_UNAVAILABLE and create nothing.
- *             70 checks.
+ *             79 checks.
  *
  * `--no-worktree` skips phase 2 only (debugging escape hatch when the
  * experimental composition cannot boot on this machine); phases 1, 1b, and 3
  * still run.
  *
- * Check counts: phase 1 = 27, phase 1b = 12, phase 2 = 23, phase 3 = 70, so
- * every flow reports 132/132 checks when all four phases pass (`--no-worktree`
- * skips phase 2: 109/109). Run both flows before a release:
+ * Check counts: phase 1 = 27, phase 1b = 12, phase 2 = 23, phase 3 = 79, so
+ * every flow reports 141/141 checks when all four phases pass (`--no-worktree`
+ * skips phase 2: 118/118). Run both flows before a release:
  *
  *   node scripts/e2e-smoke.mjs --flow patch
  *   node scripts/e2e-smoke.mjs --flow installed
@@ -200,6 +203,10 @@ const PROBE_INSPECT_COMMAND = 'devlead-e2e-inspect'
 const PROBE_CLOSE_COMMAND = 'devlead-e2e-close'
 /** Dispatch-settings command: creation-time model selection + Agent Teams. */
 const PROBE_DISPATCH_COMMAND = 'devlead-e2e-dispatch'
+/** Create one idle watched child for report-surface checks. */
+const PROBE_WATCH_CHILD_COMMAND = 'devlead-e2e-watch-child'
+/** Send one real report from inside the watched child. */
+const PROBE_REPORT_COMMAND = 'devlead-e2e-report'
 /** Exact DevLead tool surface an enabled lead step admits. */
 const DEVLEAD_TOOL_NAMES = [
   'devlead_archive_session',
@@ -1380,6 +1387,69 @@ async function runCloseChecks(client, paths, dshVersion) {
     'phase 3 policy carries none of the old hard-line close wording',
     !policy.includes('never clean up')
       && !policy.includes('only when the human explicitly asked, in this conversation, to close'),
+  )
+
+  // Watched-child report surface: the child is not a DevLead, so it must see
+  // exactly the reporting tool (plus its own normal tools), not the lead
+  // toolbox; a real report call must append the lead receipt and digest row.
+  const watchedChild = await runProbeCommand(client, leadId, PROBE_WATCH_CHILD_COMMAND, DISPATCH_PROBE_TIMEOUT_MS)
+  checks.expect(
+    'phase 3 watched-child probe settles success',
+    watchedChild.execution?.result?.kind === 'success',
+    watchedChild.text.slice(0, 500),
+  )
+  const watchedChildId = typeof watchedChild.report?.childId === 'string' ? watchedChild.report.childId : ''
+  checks.expect(
+    'phase 3 watched-child probe returns a live watched child',
+    watchedChildId.length > 0
+      && watchedChild.report?.watched === true
+      && watchedChild.report?.live === true,
+    JSON.stringify(watchedChild.report),
+  )
+  const childInspect = await runProbeCommand(client, watchedChildId, PROBE_INSPECT_COMMAND, DISPATCH_PROBE_TIMEOUT_MS)
+  checks.expect(
+    'phase 3 watched child inspect settles success',
+    childInspect.execution?.result?.kind === 'success',
+    childInspect.text.slice(0, 500),
+  )
+  checks.expect(
+    'phase 3 watched child is not DevLead-enabled and is supervised',
+    childInspect.report?.enabled === false && childInspect.report?.supervised === true,
+    JSON.stringify({ enabled: childInspect.report?.enabled, supervised: childInspect.report?.supervised }),
+  )
+  checks.expect(
+    'phase 3 watched child exposes exactly the report tool',
+    JSON.stringify(childInspect.report?.devleadTools) === JSON.stringify(['devlead_report']),
+    JSON.stringify(childInspect.report?.devleadTools),
+  )
+  checks.expect(
+    'phase 3 watched child receives the one-way report policy',
+    typeof childInspect.report?.reportPolicy === 'string'
+      && childInspect.report.reportPolicy.includes('one-way')
+      && childInspect.report.reportPolicy.includes('four'),
+    String(childInspect.report?.reportPolicy ?? '').slice(0, 300),
+  )
+  const reportProbe = await runProbeCommand(client, watchedChildId, PROBE_REPORT_COMMAND, DISPATCH_PROBE_TIMEOUT_MS)
+  checks.expect(
+    'phase 3 watched-child report settles success',
+    reportProbe.execution?.result?.kind === 'success',
+    reportProbe.text.slice(0, 500),
+  )
+  const reportId = typeof reportProbe.report?.report?.id === 'string' ? reportProbe.report.report.id : ''
+  const leadReports = Array.isArray(reportProbe.report?.leadReports) ? reportProbe.report.leadReports : []
+  checks.expect(
+    'phase 3 report names the supervisor and returns a durable receipt',
+    reportProbe.report?.supervised === true
+      && typeof reportProbe.report?.leadId === 'string'
+      && reportId.length > 0
+      && reportProbe.report?.report?.kind === 'progress'
+      && reportProbe.report?.report?.senderSessionId === watchedChildId,
+    JSON.stringify(reportProbe.report),
+  )
+  checks.expect(
+    'phase 3 report appears in the lead report digest',
+    leadReports.some(row => row?.id === reportId && row?.senderSessionId === watchedChildId),
+    JSON.stringify(leadReports),
   )
 
   // Creation-time dispatch settings: the probe creates real Sessions with a

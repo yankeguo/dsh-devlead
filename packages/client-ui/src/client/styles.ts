@@ -253,6 +253,18 @@ export const styles = `
   background: var(--dsw-alias-state-warn-primary, #a15c00);
 }
 
+.devlead-notification-dot[data-report-kind="progress"] {
+  background: var(--dsw-alias-state-success-primary, #2e7d32);
+}
+
+.devlead-notification-dot[data-report-kind="blocked"] {
+  background: var(--dsw-alias-state-error-primary, #c0392b);
+}
+
+.devlead-notification-dot[data-report-kind="decision"] {
+  background: var(--dsw-alias-state-warn-primary, #a15c00);
+}
+
 .devlead-notification-who {
   flex: 0 1 auto;
   min-width: 0;

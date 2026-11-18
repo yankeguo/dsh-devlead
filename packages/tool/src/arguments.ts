@@ -86,6 +86,13 @@ export interface PromptSessionArgs {
   readonly watch?: boolean
 }
 
+/** Arguments of `devlead_report`. */
+export interface ReportArgs {
+  readonly message: string
+  readonly kind?: string
+  readonly summary?: string
+}
+
 /** Arguments of `devlead_watch_session`. */
 export interface WatchSessionArgs {
   readonly session: string

@@ -12,7 +12,7 @@ kind: "package-bundle"
 
 ## 特性
 
-- **DevLead 模式**：每个会话一个持久开关；打开后获得 13 个 `devlead_*` 工具、DevLead 系统
+- **DevLead 模式**：每个会话一个持久开关；打开后获得 13 个主 `devlead_*` 工具（被监督会话另有 1 个 `devlead_report`）、DevLead 系统
   提示，以及两态 UI：composer 工具条里的 DevLead 图标 + 文本按钮在两种状态下都常驻并负责
   开启/关闭，开启后 composer 上方才出现只读状态条。
   已开启的会话还会在侧边栏会话行显示 DevLead 标记，关掉会话后仍可辨识（DSH rc.1 对
@@ -38,7 +38,7 @@ kind: "package-bundle"
 | entry id | 包 | 作用 |
 | --- | --- | --- |
 | `devlead` | `@yankeguo/dsh-devlead` | 核心服务 `ctx.devLead`：模式、Workspace/Session 编排、通知投递、`devLead` projection |
-| `devlead-tool` | `@yankeguo/dsh-tool-devlead` | 13 个模型工具与条件 system prompt |
+| `devlead-tool` | `@yankeguo/dsh-tool-devlead` | 13 个主工具 + 1 个汇报工具与条件 system prompt |
 | `devlead-command` | `@yankeguo/dsh-command-devlead` | `/devlead` 人类命令 |
 | `devlead-ui` | `@yankeguo/dsh-client-ui-devlead` | 浏览器两态 UI：常驻工具条开关（图标 + 文本）+ 开启后的只读 DevLeadBar + 侧边栏会话行标记 |
 
@@ -108,8 +108,8 @@ profile，且 `desktop` profile 已启用本 bundle（重复插入相同 row id 
 `os.tmpdir()` DSH_HOME 验收本地加载路径（需要本机已安装 DSH，因此不在 CI 中运行）。
 0.2.0 起 E2E 分多阶段：阶段 1 保持默认组合断言（含 `Worktree isolation: unavailable`），
 阶段 1b 用同一加载流/scratch home 重启验证冷 lead 索引重建，阶段 2 在同一 scratch profile 里
-追加官方实验 forge bundle 并验证 worktree happy path；两条加载流各 **132/132**（阶段 1 27 +
-阶段 1b 12 + 阶段 2 23 + 阶段 3 70），`--no-worktree` 跳过阶段 2（**109/109**，阶段 1 + 1b + 3）。
+追加官方实验 forge bundle 并验证 worktree happy path；两条加载流各 **141/141**（阶段 1 27 +
+阶段 1b 12 + 阶段 2 23 + 阶段 3 79），`--no-worktree` 跳过阶段 2（**118/118**，阶段 1 + 1b + 3）。
 
 ### 前置条件
 
@@ -188,7 +188,7 @@ bundle 的 patch 行没有显式写配置，核心服务使用 DESIGN 默认值�
 ## English summary
 
 `@yankeguo/dsh-devlead-bundle` installs the whole DevLead suite - the core `ctx.devLead` service,
-thirteen `devlead_*` tools, the `/devlead` human command, and the Web UI (composer-toolbar toggle
+thirteen lead `devlead_*` tools plus the watched-child `devlead_report` tool, the `/devlead` human command, and the Web UI (composer-toolbar toggle
 plus a status-only strip and sidebar marks). The suite targets the default DSH Web composition
 (`dsh-base` + `dsh-web-app`) and has no hard dependency on experimental plugins. Full docs:
 [README.md](https://github.com/yankeguo/dsh-devlead/blob/main/README.md) (English), [README.zh.md](https://github.com/yankeguo/dsh-devlead/blob/main/README.zh.md) (中文), and

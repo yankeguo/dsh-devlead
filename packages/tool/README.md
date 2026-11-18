@@ -1,10 +1,12 @@
 # @yankeguo/dsh-tool-devlead
 
-The thirteen model-facing `devlead_*` tools and the conditional DevLead system-prompt section.
+The thirteen model-facing lead tools, one watched-Session report tool, and the conditional DevLead system-prompt sections.
 
-The tools are registered with `when: ({ agent }) => ctx.devLead.isEnabled(agent)`, so an ordinary
-Session never sees them. They become visible only after a human enables DevLead mode with
-`/devlead on` or the composer-toolbar toggle (shown in both states).
+The thirteen lead tools are registered with `when: ({ agent }) => ctx.devLead.isEnabled(agent)`,
+so an ordinary Session never sees them. They become visible only after a human enables DevLead mode
+with `/devlead on` or the composer-toolbar toggle (shown in both states). `devlead_report` is the
+inverse condition: `ctx.devLead.isSupervised(agent)` — a non-DevLead Session watched by the unique
+active lead.
 
 ## Tools
 
@@ -15,16 +17,17 @@ Session never sees them. They become visible only after a human enables DevLead 
 - `devlead_list_sessions`
 - `devlead_create_session` (optional `isolation: "none" | "worktree"`; creation-time
   `provider`/`model`/`reasoning_effort` and `agent_teams`)
-- `devlead_get_session`
+- `devlead_get_session` (when reading the lead itself, includes its newest report digest)
 - `devlead_prompt_session`
 - `devlead_watch_session`
-- `devlead_notifications`
+- `devlead_notifications` (notification digest + mid-turn report digest)
+- `devlead_report` (watched child only: one-way `message`, `kind?`, `summary?`)
 - `devlead_remove_workspace` (DSH remove: unregister only, Sessions become ungrouped)
 - `devlead_archive_session` (DSH archive; `stop_running` asks the Host to stop running work)
 - `devlead_unarchive_session` (restore to the recorded Workspace position)
 
-Every tool requires an enabled DevLead mode; every tool except `devlead_list_workspaces` also
-requires a live calling Agent (`exec.agent`). Since 0.2.0 `devlead_use_workspace` forwards the live Agent to the core
+Every lead tool requires an enabled DevLead mode; `devlead_report` requires the inverse supervised
+state. Every tool except `devlead_list_workspaces` also requires a live calling Agent (`exec.agent`). Since 0.2.0 `devlead_use_workspace` forwards the live Agent to the core
 `useWorkspace(agent, { path, title?, create? }, signal)`; `create` defaults to `false` (a missing
 directory is `DEVLEAD_DIRECTORY_MISSING`), and `create: true` is only for a human-explicit request
 to create the directory. Domain failures are translated to `HarnessError` with a stable
@@ -64,6 +67,20 @@ with running work as `DEVLEAD_SESSION_ACTIVE` unless `stop_running` is true;
 `devlead_unarchive_session` reports `{ sessionId, archived: false }`. A lead Session cannot archive
 itself (`DEVLEAD_INVALID_INPUT`).
 
+`devlead_report` sends a one-way mid-turn update from a watched, non-DevLead Session to the
+single active lead that watches it. It has no target argument: the core resolves the supervisor
+from the durable watch/mode state and refuses with `DEVLEAD_NOT_SUPERVISED` when the caller is a
+lead, is no longer watched, the lead is off/archived, or several historical watchers leave no
+unique supervisor. The message is plain text (max 4000 code points), `kind` is
+`progress|blocked|decision|fyi` (default progress), and `summary` is an optional 200-code-point
+title. Reports are durable receipts in the lead's log; they appear in the status strip,
+`/devlead` status, and `devlead_notifications`. Delivery reuses the notification hub's coalescing,
+queueing, and cold-lead wake path, so the reporter returns immediately and never waits for a reply.
+Identical messages in one turn are idempotent; more than four distinct reports in a turn fails
+`DEVLEAD_REPORT_RATE_LIMITED`; empty/oversized fields fail `DEVLEAD_INVALID_INPUT`. A separate
+`devlead:report-policy` prompt section tells the child when to use it and that the final turn still
+uses the normal turn-end notification; the lead policy explains how to act on incoming reports.
+
 ## Install
 
 Normally installed as part of the bundle:
@@ -82,9 +99,7 @@ supported platform.
 
 ## 中文
 
-`@yankeguo/dsh-tool-devlead` 提供 13 个模型工具 `devlead_*` 与条件 system prompt，只在 DevLead
-模式开启时可见。所有工具都要求 DevLead 模式开启；除 `devlead_list_workspaces` 外还需要 live
-调用者（`exec.agent`）。0.2.0 起
+`@yankeguo/dsh-tool-devlead` 提供 13 个主工具 + 1 个 `devlead_report` 与两段条件 system prompt。主工具只在 DevLead 模式开启时可见；`devlead_report` 只在非 DevLead、被唯一 active lead 监督的会话可见。除 `devlead_list_workspaces` 外都需要 live 调用者（`exec.agent`）。0.2.0 起
 `devlead_use_workspace` 把 live Agent 转发给 core 的 `useWorkspace(agent, request, signal)`，
 `create` 默认 `false`（缺目录报 `DEVLEAD_DIRECTORY_MISSING`，只有人类明确要求建目录时才传
 `true`）。`devlead_create_session` 还支持创建时指定 `provider`+`model`（可选
@@ -94,7 +109,11 @@ supported platform.
 `default` 有效默认标记、`broken` 原因；Host 未组合 roster 时返回 `available: false` 与原因，
 不虚构 id）。`preset` 是 Host 定义的 id；省略/空白先回退插件 `defaultAgentPreset`，再回退
 Host 默认/selectedDefault；无效 id 在创建阶段返回结构化错误，不会被静默忽略。领域错误翻译为
-稳定的 `DEVLEAD_*` code。关闭类工具（remove / archive / unarchive）
+稳定的 `DEVLEAD_*` code。`devlead_report` 是被监督子会话的单向上报：`message`（≤4000 码点）、
+可选 `kind`（progress/blocked/decision/fyi）与 `summary`（≤200），无 target 参数；相同消息同轮
+幂等，每轮最多 4 条，超限报 `DEVLEAD_REPORT_RATE_LIMITED`，关系不成立报
+`DEVLEAD_NOT_SUPERVISED`。报告写入 lead 的 durable receipt，进入状态条、`/devlead` 状态与
+`devlead_notifications`，并复用通知的合并唤醒/冷启动队列。关闭类工具（remove / archive / unarchive）
 都不是破坏性操作，且采用判断式自主：合理收尾时可自行关闭自己创建/派发且已完成的 Session、
 明显陈旧/重复/空置或由自己创建的 Workspace 注册；但不得关闭人类正在使用/对话的 Session 或
 Workspace、不得用关闭掩盖失败，并且每次自主关闭都要汇报原因与影响面。remove 只注销 Workspace、

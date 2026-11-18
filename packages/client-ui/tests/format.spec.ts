@@ -1,13 +1,21 @@
 /** Unit tests for the pure strip helpers of the DevLeadBar dock. */
 
 import { describe, expect, it } from 'vitest'
-import { DEVLEAD_TRANSITIONS, notificationLine } from '@yankeguo/dsh-devlead-protocol/client'
-import type { DevLeadNotification } from '@yankeguo/dsh-devlead-protocol/client'
+import {
+  DEVLEAD_TRANSITIONS,
+  notificationLine,
+  reportLine,
+} from '@yankeguo/dsh-devlead-protocol/client'
+import type { DevLeadNotification, DevLeadReport } from '@yankeguo/dsh-devlead-protocol/client'
 import {
   latestNotification,
+  latestReport,
   notificationSummary,
+  reportLabelKey,
+  reportSummary,
   summarizeWatched,
   transitionLabelKey,
+  type DevLeadReportKey,
   type DevLeadTransitionKey,
 } from '../src/client/format.ts'
 
@@ -176,5 +184,60 @@ describe('summarizeWatched', () => {
     // watched entry is still reported as missing while its running fact counts.
     const statuses = new Map([['ghost', { running: true }]])
     expect(summarizeWatched(['ghost'], {}, statuses)).toEqual({ watched: 1, running: 1, missing: 1 })
+  })
+})
+
+
+/** One report fixture; individual tests override fields. */
+const BASE_REPORT: DevLeadReport = {
+  id: 'session-1:3:report:progress:abc',
+  kind: 'progress',
+  message: 'halfway through the parser',
+  summary: 'parser progress',
+  senderSessionId: 'session-1',
+  senderSessionTitle: 'Fix the parser',
+  leadSessionId: 'lead-1',
+  turn: 3,
+  at: Date.UTC(2026, 0, 5, 12, 0, 1),
+}
+
+describe('reportLabelKey', () => {
+  it('maps every known report kind and falls back for wire drift', () => {
+    expect(reportLabelKey('progress')).toBe('report.kind.progress')
+    expect(reportLabelKey('blocked')).toBe('report.kind.blocked')
+    expect(reportLabelKey('decision')).toBe('report.kind.decision')
+    expect(reportLabelKey('fyi')).toBe('report.kind.fyi')
+    expect(reportLabelKey('urgent')).toBe('report.kind.unknown')
+    expect(reportLabelKey('')).toBe('report.kind.unknown')
+  })
+
+  it('covers the whole report vocabulary', () => {
+    const keys: DevLeadReportKey[] = ['progress', 'blocked', 'decision', 'fyi'].map(reportLabelKey)
+    expect(new Set(keys).size).toBe(4)
+  })
+})
+
+describe('reportSummary', () => {
+  it('uses the folded title, kind, summary, and canonical tooltip', () => {
+    expect(reportSummary(BASE_REPORT)).toEqual({
+      tooltip: reportLine(BASE_REPORT),
+      who: 'Fix the parser',
+      kind: 'progress',
+      labelKey: 'report.kind.progress',
+      detail: 'parser progress',
+      at: BASE_REPORT.at,
+    })
+  })
+
+  it('falls back to the message and raw sender when optional fields are absent', () => {
+    const { summary: _summary, ...withoutSummary } = BASE_REPORT
+    const summary = reportSummary({ ...withoutSummary, senderSessionTitle: '   ' })
+    expect(summary.who).toBe('session-1')
+    expect(summary.detail).toBe('halfway through the parser')
+  })
+
+  it('returns the newest retained report', () => {
+    expect(latestReport([])).toBeNull()
+    expect(latestReport([BASE_REPORT])).toBe(BASE_REPORT)
   })
 })

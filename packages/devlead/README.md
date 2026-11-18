@@ -2,7 +2,7 @@
 
 Core Host service of the DevLead suite (`ctx.devLead`): the durable mode switch, damage-recovery
 `reset()`, Workspace and Session orchestration (including `useWorkspace(agent, request, signal?)`
-with directory creation opt-in), the watched-session notification hub with cold-lead rehydration,
+with directory creation opt-in), the watched-session notification hub with cold-lead rehydration, the mid-turn report channel for watched Sessions,
 and the `devLead` / `devLeadMode` Session projections.
 
 DevLead mode is **globally single-active**: at most one Session (across every Workspace) may be
@@ -10,6 +10,16 @@ enabled. `setEnabled(agent, true)` throws `DEVLEAD_ALREADY_ACTIVE` naming the oc
 Session holds it; `off`/`reset` release immediately, archiving or deleting the holder makes it
 releasable, and a restart/rehydration reconciles historical duplicates and keeps one Session.
 Admission is serialized in-process and scans live projections plus the durable corpus.
+
+`reportProgress(agent, { message, kind?, summary? }, signal?)` lets a watched, non-DevLead Session
+send a one-way report to its unique active lead. It resolves the supervisor through the hub's
+reverse index, validates size/kind, deduplicates identical messages within a turn, enforces four
+distinct reports per turn (`DEVLEAD_REPORT_RATE_LIMITED`), and otherwise refuses with
+`DEVLEAD_NOT_SUPERVISED`. The receipt is a `plugin:devlead/report` record in the lead's Session log,
+folded into the `devLead` projection's `reports` digest; delivery reuses the notification pump's
+coalescing, pending/unsaved queues, and cold-lead wake path. `supervisorOf(agent)` /
+`isSupervised(agent)` are synchronous tool-gating queries; `reports(agent, { limit? })` reads the
+lead digest.
 
 Normally installed as part of the bundle:
 
