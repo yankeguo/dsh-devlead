@@ -11,7 +11,7 @@ DSH 端到端验证。
 > 25/25 checks）记录的是当时的工作树。此后工作树新增了可选 worktree 隔离与依赖姿态审计
 > （0.1.1），并完成了 **0.2.0** 的六个决策项与 nits（见 §10.2）。最新验证数字与结论见
 > [`DESIGN.md`](DESIGN.md) §12 与 [`OPTIONAL-DEPENDENCIES.md`](OPTIONAL-DEPENDENCIES.md)
-> （本文件 §1–§9 是历史快照；当前为 26 文件 / 755 tests，E2E rc.4 installed/patch 各 143/143，rc.1–rc.3 `--no-worktree` 各 120/120）。
+> （本文件 §1–§9 是历史快照；当前为 26 文件 / 755 tests。rc.5 补测：installed/patch 各 143/143、`--no-worktree` 120/120；rc.4 同；rc.1–rc.3 `--no-worktree` 各 120/120。完整矩阵见 [COMPATIBILITY.md](COMPATIBILITY.md)）。
 
 ## 1. 结论摘要
 

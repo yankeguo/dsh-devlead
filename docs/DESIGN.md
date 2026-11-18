@@ -6,9 +6,9 @@
 人类可见、可参与的标准界面里统管多个仓库。
 
 设计与实现的**唯一强信源**是官方 DeepSeek Harness 源码
-（`/Users/guoyk/Workspace/src/deepseek-harness`，以及 npm 上 `0.2.2-rc.1` – `0.2.2-rc.4`
+（`/Users/guoyk/Workspace/src/deepseek-harness`，以及 npm 上 `0.2.2-rc.1` – `0.2.2-rc.5`
 的已安装 `@deepseek-ai/*` 声明）。类型检查以 rc.1 devDependencies 为准（最旧支持面），
-运行验证覆盖 rc.1–rc.4（见 §12.3）。任何第三方插件——包括早期参考过的
+运行验证覆盖 rc.1–rc.5（见 §12.3）。任何第三方插件——包括早期参考过的
 `dsh-infini-goal`——只算线索，不作为依据；每条 DSH API 行为都以官方源码或已安装的
 `@deepseek-ai/*` 声明为准。
 
@@ -1018,14 +1018,21 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   | 0.2.2-rc.3 | installed（`--no-worktree`） | **120/120** | 成功（同上） |
   | 0.2.2-rc.4 | installed（完整） | **143/143** | 成功；含实验 worktree 阶段 23/23 |
   | 0.2.2-rc.4 | patch（完整） | **143/143** | 成功；含实验 worktree 阶段 23/23 |
+  | 0.2.2-rc.5 | installed（`--no-worktree`） | **120/120** | 成功；phase 1 27 + 1b 12 + 3 81 |
+  | 0.2.2-rc.5 | installed（完整） | **143/143** | 成功；含实验 worktree 阶段 23/23 |
+  | 0.2.2-rc.5 | patch（完整） | **143/143** | 成功；含实验 worktree 阶段 23/23 |
 
   每条版本使用独立 throwaway `DSH_HOME`，结束后清理；rc.1–rc.3 跳过 phase 2（实验组合不与
-  内置 worktree bundle 绑定，阶段 1/1b/3 全跑），rc.4 两条加载流都跑完整四个阶段。所有版本
+  内置 worktree bundle 绑定，阶段 1/1b/3 全跑），rc.4 / rc.5 两条加载流都跑完整四个阶段。所有版本
   均因无 provider 凭据有 3 条正向模型检查 SKIP；`devlead_list_models` 与
   `devlead_list_agent_presets` 在所有版本通过。rc.3→rc.4 的 `dsh-base` / `dsh-web-app`
   组合文件逐字节一致，唯一 upgrade-guide 条目是 LLM 错误码 `CONTENT_REFUSED`（DevLead 不
-  分类该码），因此 rc.4 无降级项。依据：`agent-team` 仅 rc.2+ 发布、rc.1 的 `dsh-base`
-  无对应组合行、rc.2–rc.4 实现相同；模型 API（`modelCatalog`、`Agent.model.select`、
+  分类该码），因此 rc.4 无降级项。rc.5 只改 web search provider 选择：`dsh-web` 未配置
+  provider 时对 DeepSeek 路由走服务端 Messages search、对其他路由走 `deepseek-search-api`，
+  `WebSearchRequest` 新增可选 `llmProvider`；DevLead 不 import `dsh-web` / `dsh-tool-web`，
+  也没有 web search 代码或配置路径，rc.5 完整 E2E 通过，无降级项。依据：`agent-team` 仅
+  rc.2+ 发布、rc.1 的 `dsh-base`
+  无对应组合行、rc.2–rc.5 实现相同；模型 API（`modelCatalog`、`Agent.model.select`、
   `model/selection`、`llm.*`）rc.1 已具备（devDeps 固定 rc.1，按最旧类型检查）。
 - 手动验收路径：开一个会话 → `/devlead on`（或点开关）→ 让模型
   `devlead_use_workspace` 注册一个仓库 → `devlead_create_session` 创建子会话并下发任务 →

@@ -160,7 +160,7 @@ staged 发布辅助脚本（`stage-release.mjs`、`promote-release.mjs`、`trust
 
 | 项 | 要求 |
 | --- | --- |
-| DSH | `0.2.2-rc.1` – `0.2.2-rc.4`（插件 / bundle 包声明 `engines.dsh: >=0.2.2-rc.1 <0.3.0`） |
+| DSH | `0.2.2-rc.1` – `0.2.2-rc.5`（插件 / bundle 包声明 `engines.dsh: >=0.2.2-rc.1 <0.3.0`） |
 | Node.js | ≥ 24.9（仅本地构建 / 发布需要；从 npm 安装插件不需要本机 Node） |
 | pnpm | 12.x（CI 固定 `pnpm@12.16.1`） |
 | Web UI | DSH 桌面端或 `dsh web`；DevLead 界面只在 Web 端渲染 |
@@ -168,18 +168,20 @@ staged 发布辅助脚本（`stage-release.mjs`、`promote-release.mjs`、`trust
 
 ### DSH 版本兼容矩阵
 
+完整矩阵、rc.5 web search 影响审计与命令见 [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md)。
+
 6 个包同一版本，`engines.dsh` 保持 `>=0.2.2-rc.1 <0.3.0`，所有 `@deepseek-ai/dsh-*` peer
 也声明为同一范围。DSH 加载器只按 `engines.dsh` 判定兼容性；范围（而不是精确 pin
 `0.2.2-rc.1`）让 profile 的 pnpm peer 检查在 rc.2+ 上不再报 unmet peer。
 
-| 能力 | rc.1 | rc.2 | rc.3 | rc.4 | 说明 |
-| --- | --- | --- | --- | --- | --- |
-| 插件加载、13 个主工具 + 1 个汇报工具、`/devlead`、Web UI | 支持 | 支持 | 支持 | 支持 | 基础插件面 |
-| `devlead_list_agent_presets` | 支持 | 支持 | 支持 | 支持 | `dsh-web-app` 从 rc.1 起组合 agent-presets；每个版本都通过真实 roster 验证（`standard` 为默认） |
-| 派发模型选择 + `reasoning_effort`（`agent.model.select`） | 支持 | 支持 | 支持 | 支持 | 仅 Session 级；不改 profile 默认 |
-| `devlead_list_models`（`sessionController.modelCatalog()`） | 支持 | 支持 | 支持 | 支持 | 只读精简目录 |
-| 可选 worktree 隔离 | 可选 bundle | 可选 bundle | 可选 bundle | 可选 bundle | E2E 阶段 2 在 rc.4 上用官方实验 forge bundle 验证 happy path |
-| `agent_teams: true` | **不支持** — `DEVLEAD_TEAM_UNAVAILABLE`，不创建 Session | 支持\* | 支持\* | 支持\* | \*Host 需组合 `agent-team`；`dsh-base` 从 rc.2 起默认包含。`false`/省略在 rc.1 正常工作 |
+| 能力 | rc.1 | rc.2 | rc.3 | rc.4 | rc.5 | 说明 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 插件加载、13 个主工具 + 1 个汇报工具、`/devlead`、Web UI | 支持 | 支持 | 支持 | 支持 | 支持 | 基础插件面 |
+| `devlead_list_agent_presets` | 支持 | 支持 | 支持 | 支持 | 支持 | `dsh-web-app` 从 rc.1 起组合 agent-presets；每个版本都通过真实 roster 验证（`standard` 为默认） |
+| 派发模型选择 + `reasoning_effort`（`agent.model.select`） | 支持 | 支持 | 支持 | 支持 | 支持 | 仅 Session 级；不改 profile 默认 |
+| `devlead_list_models`（`sessionController.modelCatalog()`） | 支持 | 支持 | 支持 | 支持 | 支持 | 只读精简目录 |
+| 可选 worktree 隔离 | 可选 bundle | 可选 bundle | 可选 bundle | 可选 bundle | 可选 bundle | E2E 阶段 2 在 rc.4 / rc.5 上用官方实验 forge bundle 验证 happy path |
+| `agent_teams: true` | **不支持** — `DEVLEAD_TEAM_UNAVAILABLE`，不创建 Session | 支持\* | 支持\* | 支持\* | 支持\* | \*Host 需组合 `agent-team`；`dsh-base` 从 rc.2 起默认包含。`false`/省略在 rc.1 正常工作 |
 
 rc.4 已发布到 npm（该版本的全部 `@deepseek-ai/*` 包；npm 的 `latest` tag 仍指向
 `0.2.2-rc.1`，rc.4 在 `next` tag 下，也可按精确版本安装）。它是一个小修复版本：upgrade guide
@@ -188,9 +190,16 @@ DevLead 不分类 LLM 错误码。rc.3 与 rc.4 的
 `dsh-base` / `dsh-web-app` `cordis.patch.yml` 逐字节一致；DevLead 引用的 `@deepseek-ai/*`
 包中只有 `dsh-llm` 增加了这个错误码。因此不需要按版本分支或降级。
 
+rc.5 是 web search 行为版本：未配置 `web.searchProvider` 时，`dsh-web` 对
+`deepseek-official` / `deepseek-account` 路由选择 DeepSeek 服务端 Messages search，其他路由用
+`deepseek-search-api`；`WebSearchRequest` 新增可选 `llmProvider`。DevLead 不 import
+`dsh-web` / `dsh-tool-web`，也没有 web search 代码或配置路径，因此该变更不进入 DevLead 的
+工具、dispatch、watch/notification 或 UI 路径。import 面与 6 个包的 peer 范围未变；rc.5 仍在
+现有 `engines.dsh` 范围内。
+
 Team 行依据：`@deepseek-ai/dsh-agent-team` 自 `0.2.2-rc.2` 才有首个版本（rc.1 不存在）；
 rc.1 的 `dsh-base` 没有 agent-team 行，rc.2 起包含 `agent-team` + `tool-agent-team`；
-rc.2–rc.4 的 agent-team 实现相同（`isEnabled(agent)`、`setEnabled(agent, enabled, signal?)`、
+rc.2–rc.5 的 agent-team 实现相同（`isEnabled(agent)`、`setEnabled(agent, enabled, signal?)`、
 durable `team/mode`）。模型 API（`modelCatalog`、`Agent.model.select`、`model/selection`、
 `llm.listProviders/listModels/resolveCallConfig`）在 rc.1 已存在（本仓库 devDeps 固定 rc.1，
 以最旧 API 做类型检查）。Team 能力通过 duck-typing `ctx.get('agentTeams')` 探测，**没有**
@@ -207,6 +216,9 @@ durable `team/mode`）。模型 API（`modelCatalog`、`Agent.model.select`、`m
 | `0.2.2-rc.4` | 同上，`rc.4` | **120/120**（Team 成功分支） |
 | `0.2.2-rc.4` | `DSH_BIN=<tmp>/rc.4/node_modules/.bin/dsh node scripts/e2e-smoke.mjs --flow installed` | **143/143**（含实验 worktree 阶段） |
 | `0.2.2-rc.4` | 同上，`--flow patch` | **143/143** |
+| `0.2.2-rc.5` | 同上，`rc.5` | **120/120**（Team 成功分支） |
+| `0.2.2-rc.5` | `DSH_BIN=<cache>/rc5/install/node_modules/@deepseek-ai/dsh/lib/bin.js node scripts/e2e-smoke.mjs --flow installed` | **143/143**（含实验 worktree 阶段） |
+| `0.2.2-rc.5` | 同上，`--flow patch` | **143/143** |
 
 每条 flow 有 3 条正向模型选择检查因本机无 provider 凭据记为 SKIP（打印真实原因）；负向
 model 路径与 `devlead_list_models` 在每个版本都真实运行。单元测试使用 rc.1 devDependencies，
@@ -721,9 +733,9 @@ dispatch 设置也走真实 Host：从 `modelCatalog()` 选模型（目录为空
 并报告原因（不伪造）；`devlead_list_models` 返回精简 Host 目录（default/providers/failures）。
 两条加载流各 **143/143**（阶段 1 27 + 阶段 1b 12 + 阶段 2 23 + 阶段 3 81）；调试时可加
 `--no-worktree` 跳过阶段 2（**120/120**，阶段 1 + 1b + 3）；用 npm 安装的 `0.2.2-rc.1` –
-`0.2.2-rc.4` CLI（`DSH_BIN`）跑同样 flow 也各 **120/120**：rc.1 上 Team 成功检查改为
-「预期不可用」（`DEVLEAD_TEAM_UNAVAILABLE`、不创建 Session），rc.2–rc.4 走 Team 成功路径；
-rc.4 的 installed / patch 完整 flow 各 **143/143**。probe 是
+`0.2.2-rc.5` CLI（`DSH_BIN`）跑同样 flow 也各 **120/120**：rc.1 上 Team 成功检查改为
+「预期不可用」（`DEVLEAD_TEAM_UNAVAILABLE`、不创建 Session），rc.2–rc.5 走 Team 成功路径；
+rc.4 / rc.5 的 installed 与 patch 完整 flow 各 **143/143**。probe 是
 `scripts/e2e-probe/` 下的私有测试包，不发布、不属于 workspace 包；profile 变更只发生在
 `os.tmpdir()` 下的一次性 profile，不涉及 pnpm install / 网络 / lockfile。
 

@@ -37,7 +37,7 @@ dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 
 ## Requirements
 
-- DSH `0.2.2-rc.1`–`0.2.2-rc.4` (the package declares `engines.dsh: >=0.2.2-rc.1 <0.3.0`; this checkout's devDependencies pin rc.1 for the oldest-API typecheck).
+- DSH `0.2.2-rc.1`–`0.2.2-rc.5` (the package declares `engines.dsh: >=0.2.2-rc.1 <0.3.0`; this checkout's devDependencies pin rc.1 for the oldest-API typecheck).
 - Peer services `agents`, `sessions`, `sessionProjections` (provided by the default `dsh-base`
   composition).
 - Optional, probed at call time: `workspaceRegistry`, `sessionController`, `sessionTitle`,
