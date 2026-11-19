@@ -457,3 +457,110 @@ default 注解+只读并发+kind 单一来源；`cc1a23b` refactor(tool) 描述�
 fix(command,protocol) 标签折叠/引号诊断/drift；`10681d7` fix(devlead) 4 个 P0；`5956095`
 fix(client-ui) 中性色/唤醒文案/竞态/缓存；`af7901c` docs 一致性；`2c84ee3` refactor(devlead)
 normalize 共享+report 守卫。**不 push、不打 tag、不发布**（遵守发布纪律）。
+
+## 13. DeepSeek v4.1 Flash 独立二审（2026-11-19）
+
+本轮是换模型后的**独立二审**：由 DeepSeek v4.1 Flash 路由（本机唯一注册的 DeepSeek 模型；
+Max 路由未注册）在 HEAD `2dfd5cd`、版本 `0.3.0-rc.1` 上重新审计 6 个包、脚本、文档与真实
+DSH 运行行为，不以 §12 的结论为前提。审计先只读进行，再按包边界拆分修复；未改版本、未打
+tag、未执行任何 stage/approve/publish/GitHub Release 动作。
+
+### 13.1 结论摘要
+
+- 找到并修复 **1 个高严重度授权缺陷**：`subagent_fork` 会逐字继承父会话已完成 turn 的日志，
+  其中包含 `plugin:devlead/mode` / `watch` / `reset` 记录。三个 projection 原先忽略
+  `init(header, inheritedEventCount)` 的继承前缀长度，导致 forked subagent 继承 DevLead
+  模式、watch 集与全部 `devlead_*` 工具；准入扫描又跳过 `origin: 'subagent'`，形成不可见的
+  第二个 lead。修复为三个 unit 都记录并跳过 `event.seq < inheritedEventCount` 的继承事件
+  （`stateVersion` 3/2/2），并在 `isEnabled` / `setEnabled` / hub 索引处增加 subagent 防线。
+- 修复 **2 个 P1 核心可靠性问题**：准入扫描在持久语料 listing 失败、或 cache 明确标为 active
+  的日志读取失败时原先 best-effort 放行（可能产生第二个 active lead），现在严格模式 fail
+  closed；interrupt 后 inbox 恢复失败原先会丢掉替换 prompt 并回滚 watch，现在降级为 warning
+  并继续投递替换 prompt。
+- 修复 **4 个 P2 核心问题**：outbox 7 天保留只在 replay 触发时执行（冷 lead 持续 report 可
+  无限增长）；冻结 fold 的 `/devlead off` 恢复不丢弃 outbox 行；attach-only lead 被释放后
+  hub 反向索引残留；storageDomain 晚挂载与 disposal 竞态泄漏 domain。
+- 修复 **2 个 P1 工具面问题**：human-directed turn 判定会被 `time-context` /
+  `agent-instructions` / `working-directory` 等注入消息打断，导致人类在场的
+  `ask_user_question` 被错误转发；未声明参数（如 `promt`、`stopRunning`）被静默丢弃，可能
+  创建空 Session、归档但不停止工作、或丢弃排队输入。
+- 修复 **4 个 UI/协议问题**：DevLeadBar 不显示 completed 通知的 assistant 摘要（与 README
+  不符）；`DEVLEAD_ALREADY_ACTIVE` 的占用者标题未折叠为单行且浏览器解析可被标题中的指令
+  文本误导；DevLeadBar 对 wire drift 的 `sessions`/`notifications` 无防御；`excerptLine`
+  未剥离 C0/C1 控制字符（ANSI/OSC 注入面）。
+- 打包/文档：6 个发布包补齐 LICENSE 文本；根 `packageManager` 固定 pnpm 12.16.1；删除
+  pnpm 12 已忽略的 `.npmrc` 安装键；修正 COMPATIBILITY 对根 `engines.dsh` 的错误描述与
+  5 处 live 工具数（13 → 14）。
+
+### 13.2 修复项
+
+| ID | 严重度 | 问题 | 处置 |
+| --- | --- | --- | --- |
+| SEC-1 | 高 | fork 子会话继承 DevLead mode/watch/工具面，且准入扫描跳过 subagent | 三个 projection 记录 `inheritedEventCount` 并跳过继承前缀；`stateVersion` 3/2/2；`isEnabled`/`setEnabled`/hub `syncSession` 拒绝 subagent；新增 fold 与 service 回归测试 |
+| CORE-1 | P1 | 持久语料 listing / cache-active 日志读取失败时准入放行 | `scanActiveSessions(..., strict)`；`blockingOccupant` fail closed 为 `DEVLEAD_SESSION_UNAVAILABLE`；测试覆盖两种失败 |
+| CORE-2 | P1 | interrupt 后 `restoreInputs` 抛错会跳过 `followup` 并回滚 watch | restore 降级为 warning，替换 prompt 继续投递；新增 prepend 失败测试 |
+| CORE-3 | P2 | outbox retention 只在 open/replay 时执行 | report 写入路径增加 1 小时节流 prune；新增过期行清理测试 |
+| CORE-4 | P2 | 冻结 fold 的 `setEnabled(false)` 不丢弃该 lead 的 outbox 行 | 抽出 `discardLeadReportState`，reset 与 frozen-off 共用；新增测试 |
+| CORE-5 | P2 | attach-only lead 释放后 hub watch 索引残留 | hub 新增无 Agent 的 `syncSession` 对账；新增 attach-only 释放测试 |
+| CORE-6 | P2 | 晚挂载 storageDomain 与 disposal 竞态泄漏 handle | open 前后检查 `disposed` 并关闭竞态 handle；disposer 等待 `outboxOpening`；新增 deferred-open 测试 |
+| SEC-3 | P2 | tombstone 的 ignored holder 仍留在 hub 索引，可继续 supervise/report | `rememberIgnored` 调用 `hub.forgetLead`；release 失败时重新墓碑；新增非归档 tombstone 测试 |
+| TOOL-1 | P1 | human-directed 判定被注入 context 打断，人类在场的问题被错误转发 | 识别 `user`/`user-question-reply`/`user-approval`；跳过已知 context kind 与 context form；未知 kind fail closed |
+| TOOL-2 | P1 | 未声明参数被静默忽略 | 15 个工具统一 `assertKnownArguments`；未知 key 返回 `DEVLEAD_INVALID_INPUT` 且不调用 core |
+| TOOL-3/4/5 | P2 | `queuedInputs`/`resumed`/`watch=false`/`durable:false` 文案与实现不符 | 工具描述与输出字段描述同步实现 |
+| UI-1 | P2 | DevLeadBar 不渲染 completed 通知的 assistant 摘要 | `notificationSummary` 增加 sanitized `summary`；无 error 时用中性 detail 渲染 |
+| UI-2 | P2 | `/devlead status` 文档承诺 cold 行的 latest turn，但列表不读 cold 日志 | 文档改为 “latest turn when known”；详情仍由 `devlead_get_session` 提供 |
+| UI-3 | P2 | 占用者标题可多行/超长，且客户端按 `indexOf` 解析可被标题欺骗 | `activeSessionLabel` 走 protocol `sessionRefLabel`；客户端改 `lastIndexOf` + 完整 tail 校验 |
+| UI-4 | P2 | DevLeadBar 对 wire drift 的集合无防御 | `Array.isArray` 降级 + `latestNotification`/`latestReport`/`summarizeWatched` 容忍 undefined |
+| SEC-5 | P2 | `excerptLine` 保留 ANSI/OSC 控制字符 | 折叠空白后剥离 C0/C1；新增 ESC/BEL/CSI 测试 |
+| PKG-1 | P2 | `.npmrc` 的 pnpm 安装键在 pnpm 12 下不生效 | 删除死键并记录原因，避免继续误导 |
+| PKG-3 | P2 | 5 处 live 文档仍写 13 个主工具 | 改为 14（历史 release 文档保留 13） |
+| PKG-4 | P2 | `corepack enable` 不能固定 12.16.1 | 根 `packageManager: pnpm@12.16.1`，并由 check-packages 校验 |
+| PKG-5 | P2 | 6 个发布包 tarball 不含 LICENSE 文本 | 每包复制根 LICENSE 并加入 `files`；check-packages 校验字节一致 |
+| PKG-6 | P2 | COMPATIBILITY 误称根 package.json 声明 `engines.dsh` | 改为只有 6 个发布包声明 |
+
+### 13.3 未改项与理由
+
+- **question report 无每轮上限**（安全审计 SEC-2）：当前设计刻意让 question 豁免普通 report
+  的每轮 4 条预算，以保证受关注子会话的提问总能到达 lead；digest 仍有 64 条上限，子会话被
+  明确要求提问后结束 turn。给 question 增加独立上限属于产品语义收紧，留待下个 minor 评估，
+  本轮不引入。
+- **准入扫描的 64 条 unknown 读上限**（SEC-3）：cache 缺失或旧行不可分类时，扫描仍有界；
+  strict 模式只覆盖“可验证但失败”的路径。改成对 capped 也 fail closed 会让没有 projection
+  cache 的大历史 Host 无法开启 DevLead，属于可用性与严格性的取舍，保留 warning 并记录。
+- **裸 `source.kind === 'user'` 仍被当作人类在场**（SEC-4）：DSH 的 source 是 merge-extensible
+  开放集，某些插件（timeline、claude-code-mods、headless/SDK）也会以 `user` 注入内容。本轮
+  已跳过已知 context kind/form 并让未知 kind fail closed；默认 Web 组合下 `user` 仍代表人类
+  入口。要完全消除该假设需要 Host 提供不可伪造的 client/human 标记，属于 DSH 侧改动。
+- **Host 级破坏性工具只靠 mode + policy 约束**（SEC-6）：`archive(stop_running)`、
+  `remove_workspace`、`use_workspace(create)`、`prompt_session(interrupt)` 没有逐次审批。
+  这是 DevLead 的既有设计（人类显式开启模式即授予该委托面），本轮不改；若未来要更强隔离，
+  建议在 `tools/pre-execute` 加 Host approval，或记录 lead 创建的 Session/Workspace 并限制
+  关闭范围。该改动会改变交互，需人类产品决策。
+- **lead 日志被删除后的 ghost supervisor**（SEC-7）：hub 为支持冷 lead 故意不在
+  `agent/disposed` 时移除索引；若持久日志被外部删除且同一进程内没有重建事件，索引可能残留。
+  未找到可靠的 “Session 被删除” 信号，本轮不猜；重启后持久扫描自然清除。
+- **`/devlead` status 的重复全局扫描**（UI-5）：mutation 结果也会调用 `archivedOccupants`，
+  在无 cache 的 Host 上多做一次最多 64 条日志读取。它只影响人类显式命令的延迟，且 mutation
+  结果需要展示 archived holder 诊断；本轮保留。
+- **`listSessions` 两遍持久化 listing**、**index.ts 拆分**：§12.4 已记录，仍属独立性能/重构
+  轮，不在本轮扩大改动面。
+- **`subagent_fork` 的 projection 继承语义**：本轮只让 DevLead 自己的三个 unit 忽略继承前缀；
+  其他插件是否应继承父状态不在本仓库边界内。
+
+### 13.4 验证矩阵
+
+- `pnpm install --frozen-lockfile`：通过（pnpm 12.16.1；新 lockfile 记录 packageManager）。
+- `pnpm verify`：通过；typecheck + **26 文件 / 868 tests** + 6 个构建产物（基线 845，净增 23）。
+- `pnpm check:packages`：`OK (6 packages)`（新增 LICENSE / packageManager 断言）。
+- `pnpm e2e`（本机安装版 DSH **0.2.2-rc.5**，真实 Web）：
+  - `--flow patch`：phase 1 27/27 + 1b 12/12 + 2 23/23 + 3 88/88 = **150/150**；
+  - `--flow installed`：同 **150/150**（3 条正向 model 检查因无 provider 凭据 SKIP）。
+- 隔离 profile 浏览器验收（临时 `DSH_HOME`，不碰 desktop profile）：
+  - 关闭态只有 composer 工具栏的 DevLead 图标 + 文本开关；
+  - 开启后 `DevLeadBar` 出现，开关保持原位并变 pressed；
+  - 真实创建并关注一个子 Session、子 turn 完成后，bar 显示
+    `已关注 1 个会话 • 运行中 0 • <id> 第 1 轮 完成 UI summary check complete`，
+    证明 UI-1 的 assistant 摘要渲染生效；
+  - 侧栏 active lead 行有强调色 `::after` ring、无行尾图标；watched 行有弱化准星；
+  - 点回开关后 `aria-pressed=false` 且 `DevLeadBar` 消失；临时 home 已删除。
+- 审计边界：未修改 `@deepseek-ai/*` 源码、未解压 app.asar、未触碰其他仓库或 release Session。

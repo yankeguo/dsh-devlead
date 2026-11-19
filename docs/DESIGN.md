@@ -121,8 +121,9 @@ DSH 的所有读取路径会保留并重放这些记录，但不会把它们投�
   非空；`turn` 允许 0（命令调用常发生在首个 turn 之前）。最多保留 64 条 report，按 `id` 去重。
 - 新类型 `plugin:devlead/report` 对旧版本是未知插件记录：旧 fold 忽略、不冻结，因此回滚不会
   因新记录损坏日志；旧版本也读不到 report（预期降级）。`devLead` projection 的
-  `stateVersion` 从 1 升到 2（state 新增 `reports`），旧 projection-cache 行会失效并从 durable
-  log 重新 fold；`devLeadMode` 未变，保持 1。
+  `stateVersion` 现为 3（2 新增 `reports`，3 新增 fork 继承前缀长度），`devLeadWatch` 为 2、
+  `devLeadMode` 为 2（都新增 fork 继承前缀长度）；旧 projection-cache 行会失效并从 durable
+  log 重新 fold。
 - 每次变更都是**先追加日志，后发通知**。
 - 通知条数在 projection 里按常量 `DEVLEAD_DEFAULT_NOTIFICATION_RETENTION`（64）截断：
   fold 必须是**纯函数**，不能依赖部署 config，否则重放会分叉。
@@ -131,8 +132,12 @@ DSH 的所有读取路径会保留并重放这些记录，但不会把它们投�
 
 - key：`devLead`（常量 `DEVLEAD_PROJECTION_KEY`），wire 值
   `DevLeadProjection = { enabled, sessions, notifications, reports }`。
-- Host 侧 fold state 额外带 `failure: string | null`（首条损坏记录），wire 不带；只有
-  `failure` 变化时复用上一次 wire view 对象，让 registry 的 `Object.is` 比较抑制无意义推送。
+- Host 侧 fold state 额外带 `failure: string | null`（首条损坏记录）与
+  `inheritedEventCount`（fork 继承前缀长度），wire 不带；只有 `failure` 变化时复用上一次 wire
+  view 对象，让 registry 的 `Object.is` 比较抑制无意义推送。fold 在 `event.seq <
+  inheritedEventCount` 时直接返回原 state：`subagent_fork` 逐字复制父会话已完成 turn 的日志
+  （含 `plugin:devlead/mode` / `watch` / `reset`），继承的记录属于父会话，子会话必须从
+  disabled、空关注集开始。`devLeadWatch` / `devLeadMode` 两个 summary projection 遵循同一规则。
 - projection 标记为 `SessionProjectionSummaryExcluded` 且 unit 声明 `wire.summary: false`：
   保留的通知摘要（≤64 条）与中途汇报（≤64 条）只服务打开中的会话，不进入 Session 列表 /
   summary payload。
@@ -271,7 +276,9 @@ default: boolean; broken? }[]; reason? }`；`default` 是 Host 有效默认（`s
   `setEnabled(true)` 抛 `DEVLEAD_PROJECTION_INVALID` 并提示先运行 `/devlead reset`（不隐式
   丢弃人类可能还想检查的记录）；`reset(agent)` 只 `assertLive`，追加 reset 记录后 flush。
   恢复后投影回到默认 disabled、关注关系索引清空，需要重新 watch；持久日志里的旧记录保留但不再
-  fold。hub 在 `session/event` 看到 reset 记录时也 `syncLead`（状态变 disabled → `removeLead`）。
+  fold。hub 在 `session/event` 看到 owned mode/watch/reset 记录时也 `syncSession` 对账：有 Agent
+  与 attach-only（有 Session、无 Agent）都能同步，状态变 disabled/reset → `removeLead`；被
+  admission tombstone 的 holder 走 `forgetLead`，不再接收通知或被选为 report 目标。
 - **全局单活准入**：DevLead 模式是 Host 级资源，同一时刻最多一个 Session 可 enabled（跨全部
   Workspace）。`setEnabled(true)` 在 Host 服务内的 `admissionTail` 临界区里执行“扫描占用者 →
   必要时释放 archived 占用者 → 写 mode 记录”，因此同一进程内两个并发 `on` 只有一个能成功；
@@ -279,7 +286,10 @@ default: boolean; broken? }[]; reason? }`；`default` 是 Host 有效默认（`s
   - live Session/Agent 直接读 `projectionHandle.stateOf`（权威）；
   - 持久语料经 `sessionQuery.listSessions()` 遍历；projection cache 的 active 行（`devLead`
     enabled，含空 watch）精确 fold，inactive 行零 I/O 跳过，其余行有界读取（64 条上限）并
-    warning；
+    warning。准入扫描是 **fail closed** 的：语料 listing 失败，或 cache 明确标为 active 的行
+    读取失败，都返回 `DEVLEAD_SESSION_UNAVAILABLE`，不会在无法证明单活时放行；reconcile /
+    status 仍走 best-effort。unknown 行的 64 条读取上限是既有的可用性取舍（极老的历史会话
+    仍可能不被扫描），由 warning 暴露；
   - 启动阶段的冷语料由 rehydration 扫描顺带产出 active 列表（不重复读），与 live 扫描合并。
 
   错误码 `DEVLEAD_ALREADY_ACTIVE`，消息给出占用者 `title (sessionId)` 或裸 id，并提示先执行
@@ -288,10 +298,13 @@ default: boolean; broken? }[]; reason? }`；`default` 是 Host 有效默认（`s
 - **释放与重启恢复**：`off`/`reset` 立即释放；**archived 占用者视为非 active**：准入/启动
   仍 best-effort 写 mode-off（live 直接写；冷 Session 尝试 `sessionController.resolveAgent`
   后写），但写不掉时只 warning、写入 tombstone，并继续准入，**绝不因 archived 占用者永久拒绝
-  新 lead**。tombstone 持久在 outbox domain 的 `ignored` 表，重启后仍生效；被忽略的 Session
-  若 unarchive/打开，`agent/created` 触发 reconciliation，能在 live Session 上写 mode-off 时
-  自动关闭并清除 tombstone，避免双活。未归档且 cold、无法 resume 的占用者仍会阻塞准入（它是
-  真实 enabled lead，不打开无法改写状态）；archived 分支是无需运行 Session 即可解除的路径。
+  新 lead**。tombstone 持久在 outbox domain 的 `ignored` 表，重启后仍生效；写入 tombstone 时
+  同时从 hub 的 watch 索引移除该 lead，避免它继续接收通知或被选为 report 目标。被忽略的
+  Session 若 unarchive/打开，`agent/created` 触发 reconciliation，能在 live Session 上写
+  mode-off 时自动关闭并清除 tombstone，避免双活。未归档、未 tombstone 且 cold、无法 resume 的
+  占用者仍会阻塞准入（它是真实 enabled lead，不打开无法改写状态）；archived 分支是无需运行
+  Session 即可解除的路径，tombstoned 的 unarchived cold holder 不阻塞准入但其索引已被移除，
+  打开时再对账。
   永久删除的 Session 因扫描不可见而自然释放；turn 结束、
   冷 detach、Agent dispose **不释放**（durable 模式仍在）。启动时 `reconcileActiveSessions`
   合并 live + rehydration active，archived/已 tombstone 的占用者只尝试释放但不参与
@@ -1098,7 +1111,7 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   scratch workspace 被初始化成真实 git 仓库（一次 seed commit），因此是真实 Git happy path。
   阶段 3 停实例 → 链接同一个 probe 包并叠加 probe patch 重启（关闭工具不需要实验 bundle，
   因此 `--no-worktree` 也会运行）→ probe 的 `devlead-e2e-inspect` 用真实
-  `ctx.tools.resolve` 报告该 Agent 一步可见的工具集（模式开启时恰好 13 个主 `devlead_*`，已关注子会话恰好 1 个 `devlead_report`，
+  `ctx.tools.resolve` 报告该 Agent 一步可见的工具集（模式开启时恰好 14 个主 `devlead_*`，已关注子会话恰好 1 个 `devlead_report`，
   模式关闭时为 0），用 `ctx.systemPrompt.assemble` 取 `devlead:policy` section（判断式自主
   关闭、安全边界、有限可行性判断/开放问题/深挖交接；关闭时为空文本）；`devlead-e2e-close`
   通过 `ctx.devLead` 归档一个已 prompt 的子会话（durable archive 集合 + archived 视图/列表行、
@@ -1123,7 +1136,7 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   + 阶段 3 88，阶段 3 含 agent preset roster、watched-Session 问题路由与排队 inbox 检查）；跳过阶段 2 时
   **127/127**（阶段 1 + 1b + 3）。
 - 本轮最终验证数字（工作树，排队 inbox 输入能力轮）：`pnpm verify` =
-  typecheck 通过 + **26 文件 / 845 tests** + 7 个构建产物；`node scripts/check-packages.mjs` →
+  typecheck 通过 + **26 文件 / 868 tests** + 7 个构建产物；`node scripts/check-packages.mjs` →
   `OK (6 packages)`；E2E 在安装版 rc.5 实跑 installed 与 patch **完整双流各 150/150**
   （phase 1 27 + 1b 12 + 2 23 + 3 88），`--no-worktree` **127/127**。上一轮（0.2.6+ 工具面审计，
   见 [AUDIT](AUDIT.md) §12）为 821 tests / 146/146。

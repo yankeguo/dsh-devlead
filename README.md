@@ -9,7 +9,7 @@ interface that the human can see and interact with.
 **English** · [简体中文](README.zh.md)
 
 - **A DevLead session = an ordinary session + one durable switch.** Once enabled, that session
-  gains 13 lead `devlead_*` tools (plus one report tool for watched Sessions), a DevLead system prompt, and a status strip above the composer.
+  gains 14 lead `devlead_*` tools (plus one report tool for watched Sessions), a DevLead system prompt, and a status strip above the composer.
   **Only one Session can hold DevLead mode at a time**, across every Workspace; enabling a second
   one is refused until the incumbent is turned off.
   The switch itself is a **human-only action**; no tool can enable it. While the mode is off,
@@ -58,7 +58,7 @@ Documentation: [Design notes (中文)](docs/DESIGN.md) · [Publishing guide (中
 | 14 lead tools + 1 report tool | Register/list/remove Workspaces, list Host models and Agent presets, create (model/Agent Teams inherited or pinned)/read/continue/archive/restore/watch Sessions, inspect/retract queued inbox inputs, read the notification/report digest; watched non-lead Sessions can send a one-way `devlead_report` update (see [Model tools](#model-tools)) |
 | Human commands | `/devlead` (status), `/devlead on\|off`, `/devlead reset` (damaged-state recovery), `/devlead watch\|unwatch <session>`; sessions are addressable by full id or unique prefix |
 | Notification loop | A watched session's `turn/end` writes a durable notification and wakes an indexed DevLead through a coalescing window (configurable window; cold leads are resumed by default); the watch index is rebuilt from durable records after a Host restart, and a disposed lead keeps observing (see [Notification loop](#notification-loop)) |
-| Event sourcing | Mode / watch set / notifications / reports / reset are ignorable `plugin:devlead/*` records with strict replay validation; survive restart / resume / fork |
+| Event sourcing | Mode / watch set / notifications / reports / reset are ignorable `plugin:devlead/*` records with strict replay validation; survive restart / resume (a fork copies the log but inherited records are ignored, so a forked subagent never inherits the mode) |
 | Damaged-state recovery | A corrupt `plugin:devlead/*` record freezes the fold, but the human-only `/devlead reset` (or `/devlead off` on a frozen fold) appends a `plugin:devlead/reset` record that restarts all three projections from the default disabled state (see [Notification loop](#notification-loop)) |
 | Session projection | The `devLead` projection (`{ enabled, sessions, notifications, reports }`) syncs state to the browser without a custom Remote API; summary-sized companions `devLeadMode` (`{ enabled }`) and `devLeadWatch` (`{ sessions }`) ride every Session-list summary so sidebar rows can render the active lead and watched marks |
 | UI | A labelled composer-toolbar DevLead toggle (icon + text) is present in both states and sends `/devlead on` or `/devlead off`. On: a status-only DevLeadBar above the composer shows the watched/running counts and the latest notification; the bar has no switch, so turning the mode off never hides the control that did it. The active lead row gets an accent ring (no trailing glyph), and watched Session rows get a quiet target glyph |
@@ -361,7 +361,11 @@ be enabled, regardless of Workspace. `on` in a second Session fails with
 `DEVLEAD_ALREADY_ACTIVE`; the error names the occupying Session (title and id when available) and
 tells the human to run `/devlead off` there first. The refused Session's own projection stays
 `enabled: false`, so its toolbar button stays off and the status strip does not appear; the
-composer-toolbar failure channel shows the reason.
+composer-toolbar failure channel shows the reason. Subagent Sessions (including `subagent_fork`
+children) are never eligible: fork-inherited mode records are ignored, and the tool/policy surfaces
+stay hidden. If the Host cannot verify persisted occupancy (the corpus listing fails, or a
+cache-positive holder log cannot be read), admission fails closed with
+`DEVLEAD_SESSION_UNAVAILABLE` instead of risking a second active lead.
 
 Release and recovery semantics:
 
@@ -394,7 +398,7 @@ projection.
 
 | Command | Purpose |
 | --- | --- |
-| `/devlead` | status: mode, whether optional worktree isolation is available, watched sessions (title / live / running / latest turn), latest notifications, help line |
+| `/devlead` | status: mode, whether optional worktree isolation is available, watched sessions (title / live / running / latest turn when known), latest notifications, help line |
 | `/devlead status` | alias of `/devlead` |
 | `/devlead on` | enable DevLead mode for the current session |
 | `/devlead off` | disable DevLead mode for the current session; on a frozen (damaged) fold this also performs the implicit reset and recovers the session |

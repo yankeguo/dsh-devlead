@@ -7,7 +7,7 @@
 **Session**（会话），创建/续写其他会话、读取会话状态、在会话状态变化时被唤醒，从而在一个
 人类可见、可参与的标准界面里统管多个仓库。
 
-- **DevLead 会话 = 普通会话 + 一个持久开关**：打开后该会话额外获得 13 个 `devlead_*` 主工具（已关注会话另有 1 个汇报工具）、
+- **DevLead 会话 = 普通会话 + 一个持久开关**：打开后该会话额外获得 14 个 `devlead_*` 主工具（已关注会话另有 1 个汇报工具）、
   一段 DevLead 系统提示，composer 上方出现状态条 UI；开关本身是**人类专属操作**，模型不能
   自行打开。界面始终在 composer 工具条提供一个带 DevLead 文本的小按钮作为开关；开启后
   才会在 composer 上方出现状态条，不会在每个会话上显示常驻状态条。
@@ -46,7 +46,7 @@
 | 14 个主工具 + 1 个汇报工具 | 注册/列出/关闭 Workspace，列出 Host 模型与 Agent preset，创建（继承或固定模型/Agent Teams）/读取/续写/归档/恢复/关注 Session，查看/撤回排队 inbox 输入，读取通知/汇报摘要；已关注的非 DevLead 会话可用 `devlead_report` 单向汇报（见[模型工具](#模型工具)） |
 | 人类命令 | `/devlead`（状态）、`/devlead on\|off`、`/devlead reset`（损坏状态恢复）、`/devlead watch\|unwatch <session>`；会话支持完整 id 或唯一前缀 |
 | 通知回路 | 已关注会话的 `turn/end` 写入持久通知记录，按合并窗口唤醒 DevLead（可配置窗口；冷 lead 默认 resume）；关注关系索引在 Host 重启后从持久记录重建，已 dispose 的 lead 继续观察（见[通知机制](#通知机制)） |
-| 事件溯源 | 模式/关注集合/通知/中途汇报/reset 全部是可忽略的 `plugin:devlead/*` 记录，严格回放校验，可跨重启 / 恢复 / fork |
+| 事件溯源 | 模式/关注集合/通知/中途汇报/reset 全部是可忽略的 `plugin:devlead/*` 记录，严格回放校验，可跨重启 / 恢复（fork 会复制日志，但被继承的记录不参与 fold，forked subagent 不会继承模式） |
 | 损坏状态恢复 | 损坏的 `plugin:devlead/*` 记录会冻结 fold；人类专属 `/devlead reset`（或冻结时的 `/devlead off`）追加 `plugin:devlead/reset` 记录，让三个 projection 回到默认 disabled 状态（见[通知机制](#通知机制)） |
 | Session projection | `devLead` projection（`{ enabled, sessions, notifications, reports }`）把状态同步到浏览器，无需自定义 Remote API；summary 级的 `devLeadMode`（`{ enabled }`）与 `devLeadWatch`（`{ sessions }`）随每个 Session 列表行下发，供侧边栏渲染激活 lead 与已关注标记 |
 | 界面 | composer 工具条里带 DevLead 文本的图标按钮是唯一开关，两态都存在（关闭态发 `/devlead on`、开启态发 `/devlead off`）；开启后 composer 上方出现只读 DevLeadBar：已关注会话数/运行中数、最近一条通知；状态条不带开关；激活 lead 行有强调色 ring（无行尾图标），已关注行有弱化准星图标 |
@@ -325,7 +325,10 @@ DSH 跳过。
 Session 开启。第二个 Session 执行 `/devlead on` 会以 `DEVLEAD_ALREADY_ACTIVE` 被拒绝，错误
 信息给出当前占用者的标题与 id，并提示先在那里执行 `/devlead off`。被拒绝的 Session 自身
 projection 保持 `enabled: false`，工具条按钮保持 off、状态条不出现；失败原因通过 composer
-工具条的失败通道（tooltip / live region）展示。
+工具条的失败通道（tooltip / live region）展示。Subagent Session（包括 `subagent_fork` 子
+会话）永远不具备资格：fork 继承的 mode 记录会被忽略，工具与 policy 也不会出现。若 Host
+无法确认持久占用状态（语料 listing 失败，或 cache 明确标为 active 的占用者日志读取失败），
+准入以 `DEVLEAD_SESSION_UNAVAILABLE` fail closed，而不是冒险产生第二个 active lead。
 
 释放与恢复语义：
 
@@ -350,7 +353,7 @@ projection 保持 `enabled: false`，工具条按钮保持 off、状态条不出
 
 | 命令 | 作用 |
 | --- | --- |
-| `/devlead` | 状态：模式、可选 worktree 隔离是否可用、已关注会话（标题 / live / running / 最近 turn）、最近通知、帮助行 |
+| `/devlead` | 状态：模式、可选 worktree 隔离是否可用、已关注会话（标题 / live / running / 最近 turn（可得时））、最近通知、帮助行 |
 | `/devlead status` | 同 `/devlead` |
 | `/devlead on` | 打开当前会话的 DevLead 模式；若其他 Session 已占用则报 `DEVLEAD_ALREADY_ACTIVE` |
 | `/devlead off` | 关闭当前会话的 DevLead 模式并释放全局槽位；fold 冻结时同时执行隐式 reset 完成恢复 |
@@ -779,7 +782,7 @@ resume 后 `/devlead status` 与 `/devlead off` 正常）；阶段 2 向**一次
 'worktree'` 且 `path`/`branch`/`baseCommit` 非空；`git worktree list` 与分支存在；`baseCommit`
 等于 checkout 的 `HEAD`；子会话有效工作目录是 worktree 路径而 header cwd 仍指向 Workspace；
 Session 仍归属该 Workspace）；阶段 3 链接同一个私有 probe 包后重启（不需要 worktree bundle），
-通过真实 Host 驱动关闭工具：真实的一步工具激活在模式开启时恰好可见 13 个主 `devlead_*`、关闭时
+通过真实 Host 驱动关闭工具：真实的一步工具激活在模式开启时恰好可见 14 个主 `devlead_*`、关闭时
 为 0；组装出的 `devlead:policy` section 含判断式自主关闭、安全边界与「有限可行性判断/开放
 问题/深挖交接」；归档一个已 prompt 的子会话后 durable archive 集合与 archived 视图/列表行
 生效，重复归档是幂等 no-op，unarchive 恢复且日志保持完整；临时 activity provider 让活跃

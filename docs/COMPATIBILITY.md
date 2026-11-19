@@ -1,7 +1,8 @@
 # DSH 兼容性矩阵
 
-本仓库的目标兼容面是 **DeepSeek Harness `0.2.2-rc.1` – `0.2.2-rc.5`**。6 个可发布包与根
-`package.json` 的 `engines.dsh` 均为 `>=0.2.2-rc.1 <0.3.0`，所有
+本仓库的目标兼容面是 **DeepSeek Harness `0.2.2-rc.1` – `0.2.2-rc.5`**。6 个可发布包的
+`engines.dsh` 均为 `>=0.2.2-rc.1 <0.3.0`（根 `package.json` 是 private 包，不声明
+`engines.dsh`，只声明 `engines.node`），所有
 `@deepseek-ai/dsh-*` peer 使用同一范围；本地 devDependencies 仍固定 rc.1，用最旧 API 做
 类型检查。
 

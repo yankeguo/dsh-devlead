@@ -12,7 +12,7 @@ kind: "package-bundle"
 
 ## 特性
 
-- **DevLead 模式**：每个会话一个持久开关；打开后获得 13 个主 `devlead_*` 工具（已关注会话另有 1 个 `devlead_report`）、DevLead 系统
+- **DevLead 模式**：每个会话一个持久开关；打开后获得 14 个主 `devlead_*` 工具（已关注会话另有 1 个 `devlead_report`）、DevLead 系统
   提示，以及两态 UI：composer 工具条里的 DevLead 图标 + 文本按钮在两种状态下都常驻并负责
   开启/关闭，开启后 composer 上方才出现只读状态条。
   当前激活的 DevLead 行会显示强调色 ring（无行尾图标），被关注 Session 行显示弱化准星，关掉会话后仍可辨识（DSH rc.1 对
