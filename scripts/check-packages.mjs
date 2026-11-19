@@ -5,8 +5,9 @@
  * optional dependencies and no experimental packages), peer completeness for
  * DSH linked-root resolution, browser/client-inject coverage, tsconfig/vitest
  * alias coverage, lockfile importers, the pinned/contracted CI workflows, the
- * staged-publishing contract, and each publishable package's locale display
- * metadata (DSH plugin manager titles/descriptions).
+ * staged-publishing contract, each publishable package's locale display
+ * metadata (DSH plugin manager titles/descriptions), the shipped license text,
+ * and the root `packageManager` pin.
  *
  * This is read-only (it imports only the semver devDependency); it is safe to run
  * in CI after `pnpm build` and is wired into both verify.yml and publish.yml. Run:
@@ -42,7 +43,7 @@ const PINNED_ACTIONS = ['actions/checkout@', 'pnpm/action-setup@', 'actions/setu
 
 const argv = process.argv.slice(2)
 if (argv.includes('--help') || argv.includes('-h')) {
-  console.log('Usage: node scripts/check-packages.mjs\n\nRead-only workspace packaging checks: version/engine lockstep, dependency placement,\npeer completeness for DSH linked-root resolution, alias coverage, lockfile importers,\nCI workflow pins, the staged-publishing contract, and plugin locale display metadata.')
+  console.log('Usage: node scripts/check-packages.mjs\n\nRead-only workspace packaging checks: version/engine lockstep, dependency placement,\npeer completeness for DSH linked-root resolution, alias coverage, lockfile importers,\nCI workflow pins, the staged-publishing contract, plugin locale display metadata,\nshipped LICENSE text, and the root packageManager pin.')
   process.exit(0)
 }
 if (argv.length > 0) {
@@ -437,6 +438,40 @@ for (const { dir, dirPath, manifest } of manifests) {
       else seen.set(value, label)
     }
   }
+}
+
+// ---- license text and toolchain pin ---------------------------------------
+// npm/pnpm only auto-include a LICENSE that sits in the package directory, so
+// the single repository-root LICENSE never reaches a published tarball unless
+// every package carries a copy and lists it in `files`. Byte equality is the
+// point: a stale copy is worse than none, because `license: "MIT"` would then
+// point at text that no longer matches the repository.
+const rootLicensePath = join(ROOT, 'LICENSE')
+const rootLicense = existsSync(rootLicensePath) ? readFileSync(rootLicensePath) : undefined
+if (rootLicense === undefined) fail('LICENSE: the repository-root LICENSE is missing')
+for (const { dir, dirPath, manifest } of manifests) {
+  if (manifest.private === true) continue
+  const label = `packages/${dir}`
+  const files = Array.isArray(manifest.files) ? manifest.files.map(file => String(file).replace(/^\.\//u, '')) : []
+  if (!files.includes('LICENSE')) {
+    fail(`${label}: package.json "files" must include "LICENSE" so the published tarball carries the license text`)
+  }
+  const licensePath = join(dirPath, 'LICENSE')
+  if (!existsSync(licensePath)) {
+    fail(`${label}: missing LICENSE (copy the repository-root LICENSE verbatim)`)
+    continue
+  }
+  if (rootLicense !== undefined && !readFileSync(licensePath).equals(rootLicense)) {
+    fail(`${label}: LICENSE is not byte-identical to the repository-root LICENSE`)
+  }
+}
+
+// The root `packageManager` is what `corepack` pins and what the release
+// scripts tell a maintainer to install; it must be the pnpm the workflows pin
+// (PNPM_VERSION below), or a local `pnpm pack` can differ from the CI tarball.
+const expectedPackageManager = `pnpm@${PNPM_VERSION}`
+if (rootManifest.packageManager !== expectedPackageManager) {
+  fail(`root package.json "packageManager" must be "${expectedPackageManager}" (found ${JSON.stringify(rootManifest.packageManager ?? null)})`)
 }
 
 // ---- lockfile importers ----------------------------------------------------

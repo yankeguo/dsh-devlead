@@ -17,6 +17,7 @@
     "./package.json": "./package.json"
   },
   "files": [
+    "LICENSE",
     "cordis.patch.yml",
     "icon.svg",
     "locale/*.json",

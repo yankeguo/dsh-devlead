@@ -552,8 +552,8 @@ function main () {
     }
 
     // A neutral working directory keeps npm from reading this repository's
-    // pnpm-only .npmrc (node-linker/auto-install-peers), which npm would report
-    // as unknown project config.
+    // .npmrc (pnpm-only or project-local keys such as a registry override),
+    // which npm would report as unknown project config.
     workDir = mkdtempSync(join(tmpdir(), 'dsh-devlead-stage-'))
     const neutralDir = workDir
     const packDir = join(workDir, 'packs')
