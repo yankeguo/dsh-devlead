@@ -717,7 +717,7 @@ describe('devlead command friendly error mapping', () => {
     ['DEVLEAD_SESSION_NOT_FOUND', 'could not find that Session'],
     ['DEVLEAD_SESSION_ARCHIVED', 'archived'],
     ['DEVLEAD_SESSION_ACTIVE', 'still active'],
-    ['DEVLEAD_SESSION_UNAVAILABLE', 'cannot be resumed right now'],
+    ['DEVLEAD_SESSION_UNAVAILABLE', 'could not complete the DevLead request'],
     ['DEVLEAD_WATCH_LIMIT', 'maximum number of watched Sessions'],
     ['DEVLEAD_SELF_WATCH', 'cannot watch itself'],
     ['DEVLEAD_PROJECTION_INVALID', 'records are damaged'],

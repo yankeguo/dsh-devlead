@@ -64,7 +64,13 @@ export function notificationId(sessionId: string, turn: number, transition: DevL
  * @returns the collapsed excerpt, or undefined when nothing remains or the budget is unusable.
  */
 export function excerptLine(text: string, max: number): string | undefined {
-  const collapsed = text.replace(/\s+/gu, ' ').trim()
+  // Whitespace runs first become one space; remaining C0/C1 controls (ESC, BEL,
+  // CSI, …) are stripped so a child-controlled title/summary cannot inject
+  // terminal escapes or hyperlinks into a prompt, command line, or UI chip.
+  const collapsed = text
+    .replace(/\s+/gu, ' ')
+    .replace(/[\u0000-\u001f\u007f-\u009f]/gu, '')
+    .trim()
   if (collapsed.length === 0) return undefined
   const budget = Number.isFinite(max) ? Math.floor(max) : Number.POSITIVE_INFINITY
   if (budget < 1) return undefined

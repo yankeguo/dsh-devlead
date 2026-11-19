@@ -137,6 +137,24 @@ function requireView(views: readonly DevLeadSessionView[], id: string): DevLeadS
   return view
 }
 
+/**
+ * Seed one pending outbox row into a fake storage table, exactly as a previous
+ * Host incarnation would have left it.
+ * @param storage - fake storage-domain facility backing the service.
+ * @param report - durable report payload.
+ * @param enqueuedAt - epoch milliseconds when the row was first written.
+ */
+function seedOutboxRow(
+  storage: FakeStorageDomain,
+  report: ReturnType<typeof devLeadReport>,
+  enqueuedAt: number,
+): void {
+  storage.table('devlead_report_outbox', 'pending').records.set(
+    Buffer.from(`${report.leadSessionId}\u0000${report.id}`, 'utf8').toString('base64url'),
+    { report, enqueuedAt },
+  )
+}
+
 /** Append one durable notification record to a Session log. */
 function appendNotification(
   session: Session,
@@ -235,6 +253,7 @@ describe('mode selection', () => {
       notifications: [],
       reports: [],
       failure: null,
+      inheritedEventCount: 0,
     })
   })
 
@@ -328,6 +347,30 @@ describe('mode selection', () => {
     })
     expect(durableModeRecords(harness)).toEqual([])
   })
+
+  it('never lets a subagent Session hold or expose DevLead mode', async () => {
+    const harness = await bootService({ sessionIds: ['sec-child'] })
+    const child = new FakeAgent(requireSession(harness, 'sec-child'))
+    harness.agents.add(child)
+    const subSession = harness.ctx.sessions.create(
+      SessionId('session-subagent-lead'),
+      { meta: { origin: 'subagent' } },
+    )
+    const sub = new FakeAgent(subSession)
+    harness.agents.add(sub)
+    // A fork/hand-edited log could carry an enabled mode and a watch set.
+    appendPluginRecord(subSession, DEVLEAD_MODE_RECORD_TYPE, modeRecord(true, T0))
+    appendPluginRecord(subSession, DEVLEAD_WATCH_RECORD_TYPE, watchRecord(['sec-child'], T0))
+    harness.ctx.emit('agent/created', { agent: sub.agent, source: 'resume' })
+    await flushMicrotasks(64)
+
+    expect(harness.service.isEnabled(sub.agent)).toBe(false)
+    expect(harness.service.isSupervised(child.agent)).toBe(false)
+    await expectCodeAsync(
+      () => harness.service.setEnabled(sub.agent, true),
+      'DEVLEAD_INVALID_INPUT',
+    )
+  })
 })
 
 describe('global single active mode', () => {
@@ -410,6 +453,34 @@ describe('global single active mode', () => {
     expect(sessions.filter(session => projectionStateOf(session).enabled)).toHaveLength(1)
   })
 
+  it('drops the watch index of an attach-only duplicate released during boot reconciliation', async () => {
+    const harness = await bootService({
+      leadId: 'lead-attach-only',
+      enabled: true,
+      sessionIds: ['attach-only-child', 'attach-only-dup'],
+      extraAgents: (agents) => {
+        // Keep the primary lead ahead of the attach-only duplicate in the
+        // recovery ranking so this test exercises releasing the duplicate.
+        agents.resolve(SessionId('lead-attach-only'))?.setRunning(true)
+      },
+      seedSessions: (sessions) => {
+        appendPluginRecord(sessions['attach-only-dup']!, DEVLEAD_MODE_RECORD_TYPE, modeRecord(true, T0 + 1))
+        appendPluginRecord(sessions['attach-only-dup']!, DEVLEAD_WATCH_RECORD_TYPE, watchRecord(['attach-only-child'], T0 + 1))
+      },
+    })
+    const duplicate = requireSession(harness, 'attach-only-dup')
+    // Startup reconciliation wrote the durable mode-off without an Agent.
+    expect(projectionStateOf(duplicate).enabled).toBe(false)
+
+    const child = new FakeAgent(requireSession(harness, 'attach-only-child'))
+    harness.agents.add(child)
+    expect(harness.service.isSupervised(child.agent)).toBe(false)
+
+    appendTurnEnd(child.session, 1)
+    await flushMicrotasks(256)
+    expect(notificationRecords(duplicate)).toEqual([])
+  })
+
   it('rejects a live activation when a cold persisted Session holds the mode', async () => {
     const query = new FakeSessionQuery()
     const cache = new FakeProjectionCache()
@@ -425,6 +496,44 @@ describe('global single active mode', () => {
     )
     expect(error.message).toContain('cold-holder')
     expect(harness.service.isEnabled(child.agent)).toBe(false)
+  })
+
+  it('fails closed when the persisted corpus listing cannot be verified during admission', async () => {
+    const query = new FakeSessionQuery()
+    const cache = new FakeProjectionCache()
+    await seedPersistedLead(query, { sessionId: 'cold-holder' })
+    cache.setDevLead('cold-holder', { enabled: true })
+    const harness = await bootService({ sessionIds: ['child-b'], sessionQuery: query, projectionCache: cache })
+    const child = new FakeAgent(requireSession(harness, 'child-b'))
+    harness.agents.add(child)
+    query.listError = new Error('index unavailable')
+
+    const error = await expectCodeAsync(
+      () => harness.service.setEnabled(child.agent, true),
+      'DEVLEAD_SESSION_UNAVAILABLE',
+    )
+    expect(error.message).toContain('could not verify global DevLead occupancy')
+    expect(harness.service.isEnabled(child.agent)).toBe(false)
+    expect(projectionStateOf(child.session).enabled).toBe(false)
+  })
+
+  it('fails closed when a cache-active holder log cannot be read during admission', async () => {
+    const query = new FakeSessionQuery()
+    const cache = new FakeProjectionCache()
+    await seedPersistedLead(query, { sessionId: 'cold-holder' })
+    cache.setDevLead('cold-holder', { enabled: true })
+    const harness = await bootService({ sessionIds: ['child-b'], sessionQuery: query, projectionCache: cache })
+    const child = new FakeAgent(requireSession(harness, 'child-b'))
+    harness.agents.add(child)
+    query.readError = new Error('log unavailable')
+
+    const error = await expectCodeAsync(
+      () => harness.service.setEnabled(child.agent, true),
+      'DEVLEAD_SESSION_UNAVAILABLE',
+    )
+    expect(error.message).toContain('could not verify global DevLead occupancy')
+    expect(harness.service.isEnabled(child.agent)).toBe(false)
+    expect(projectionStateOf(child.session).enabled).toBe(false)
   })
 
   it('frees the slot when the cold holder disappears from persistence', async () => {
@@ -531,6 +640,41 @@ describe('global single active mode', () => {
     ])
     expect(warn.mock.calls.some(call => String(call[0]).includes('ignored for admission'))).toBe(true)
     warn.mockRestore()
+  })
+
+  it('drops a tombstoned holder from the report index even when it is not archived', async () => {
+    const storage = new FakeStorageDomain()
+    const seeded = await storage.open({
+      name: 'devlead_report_outbox',
+      tables: { pending: {}, ignored: {} },
+    })
+    seeded.table('ignored').records.set(
+      Buffer.from('cold-holder', 'utf8').toString('base64url'),
+      { sessionId: 'cold-holder', at: T0 },
+    )
+    await seeded.close()
+    const query = new FakeSessionQuery()
+    const cache = new FakeProjectionCache()
+    const persistence = new FakeSessionPersistence()
+    const registry = new FakeWorkspaceRegistry()
+    await seedPersistedLead(query, { sessionId: 'cold-holder', watched: ['child-b'] })
+    cache.setDevLead('cold-holder', { enabled: true, sessions: ['child-b'] })
+    persistence.ids = ['cold-holder']
+    const harness = await bootService({
+      sessionIds: ['child-b'],
+      sessionQuery: query,
+      projectionCache: cache,
+      sessionPersistence: persistence,
+      workspaceRegistry: registry,
+      storageDomain: storage,
+      config: { notificationBatchMs: 0 },
+    })
+    const child = new FakeAgent(requireSession(harness, 'child-b'))
+    harness.agents.add(child)
+    // The holder is not archived but carries a tombstone and cannot be resumed
+    // (no controller): it stays out of admission, and its hub index must be
+    // dropped so it cannot supervise the child's reports.
+    expect(harness.service.supervisorOf(child.agent)).toBeUndefined()
   })
 })
 
@@ -711,6 +855,70 @@ describe('mid-turn reports', () => {
     expect(after.warning).toBeUndefined()
   })
 
+  it('prunes over-age outbox rows on a throttled report write sweep', async () => {
+    const storage = new FakeStorageDomain()
+    const harness = await bootService({
+      leadId: 'lead-prune',
+      enabled: true,
+      sessionIds: ['child-prune'],
+      watched: ['child-prune'],
+      storageDomain: storage,
+      // Force the new report to stay queued so both rows are observable.
+      flushFailure: new Error('simulated persistence failure'),
+    })
+    const child = new FakeAgent(requireSession(harness, 'child-prune'))
+    harness.agents.add(child)
+    const base = Date.now()
+    const stale = devLeadReport({
+      senderSessionId: 'child-prune',
+      leadSessionId: 'lead-prune',
+      turn: 1,
+      kind: 'progress',
+      message: 'over-age row',
+      at: T0,
+    })
+    seedOutboxRow(storage, stale, base - 8 * 24 * 60 * 60 * 1_000)
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(base + 2 * 60 * 60 * 1_000)
+    try {
+      const receipt = await harness.service.reportProgress(child.agent, { message: 'fresh row' })
+      expect(receipt.durable).toBe(true)
+      expect(receipt.queued).toBe(true)
+    } finally {
+      clock.mockRestore()
+    }
+    const rows = [...storage.table('devlead_report_outbox', 'pending').records.values()] as Array<{
+      report: { message: string }
+    }>
+    expect(rows.map(row => row.report.message)).toEqual(['fresh row'])
+  })
+
+  it('closes a late outbox open that races disposal and reopens cleanly', async () => {
+    const storage = new FakeStorageDomain()
+    const first = await bootService({
+      enabled: true,
+      sessionIds: ['child-late-open'],
+      watched: ['child-late-open'],
+    })
+    let release!: () => void
+    storage.openGate = new Promise<void>((resolve) => { release = resolve })
+    first.ctx.provide('storageDomain' as never, storage.asService() as never)
+    for (let attempt = 0; attempt < 16 && !storage.isOpen('devlead_report_outbox'); attempt += 1) {
+      await nextTask()
+    }
+    expect(storage.isOpen('devlead_report_outbox')).toBe(true)
+
+    const disposing = first.dispose()
+    release()
+    await disposing
+    // The handle opened while disposal was already running must be closed, or
+    // the reload below would be refused as `already-open`.
+    expect(storage.isOpen('devlead_report_outbox')).toBe(false)
+
+    storage.openGate = undefined
+    const second = await bootService({ storageDomain: storage })
+    expect(second.service.reportOutboxAvailable).toBe(true)
+  })
+
   it('leaves the outbox row when the lead flush fails and replays it after restart', async () => {
     const storage = new FakeStorageDomain()
     const flushFailure = new Error('simulated persistence failure')
@@ -760,6 +968,35 @@ describe('mid-turn reports', () => {
     await harness.service.reportProgress(child.agent, { message: 'discard me' })
     expect(storage.table('devlead_report_outbox', 'pending').records.size).toBe(1)
     await harness.service.reset(harness.lead.agent)
+    expect(storage.table('devlead_report_outbox', 'pending').records.size).toBe(0)
+  })
+
+  it('drops queued outbox rows when a frozen fold is recovered by turning the mode off', async () => {
+    const storage = new FakeStorageDomain()
+    const harness = await bootService({
+      leadId: 'lead-frozen-off',
+      enabled: true,
+      storageDomain: storage,
+      seedLead: (session) => {
+        appendPluginRecord(session, DEVLEAD_MODE_RECORD_TYPE, {
+          kind: 'devlead/mode',
+          version: 1,
+          enabled: 'yes',
+          at: T0,
+        } as never)
+      },
+    })
+    const stale = devLeadReport({
+      senderSessionId: 'child-frozen',
+      leadSessionId: 'lead-frozen-off',
+      turn: 1,
+      kind: 'progress',
+      message: 'stale frozen row',
+      at: T0,
+    })
+    seedOutboxRow(storage, stale, Date.now())
+    await harness.service.setEnabled(harness.lead.agent, false)
+    expect(durableResetRecords(harness)).toHaveLength(1)
     expect(storage.table('devlead_report_outbox', 'pending').records.size).toBe(0)
   })
 
@@ -1084,6 +1321,7 @@ describe('projection failure handling', () => {
       notifications: [],
       reports: [],
       failure: null,
+      inheritedEventCount: 0,
     })
     expect(harness.service.view(harness.lead.agent)).toEqual({ enabled: false, sessions: [], notifications: [], reports: [] })
     // Idempotent: off on an already-off Session writes no extra record.
@@ -4068,6 +4306,25 @@ describe('interrupt inbox policies', () => {
     // The restore happened before the failed admission and survives it.
     expect(target.inbox.nextTurn[0]).toBe(own)
     expect(target.inbox.nextTurn[1]).toBe(human)
+    expect(harness.service.view(harness.lead.agent).sessions).toEqual(['target'])
+  })
+
+  it('admits the replacement prompt when the inbox restore fails after the stop', async () => {
+    const { harness, target } = await bootRunning()
+    seed(target, String(harness.lead.id))
+    target.inbox.prependFailure = new Error('inbox is closed')
+    const stops = recordStops(harness, target)
+    const receipt = await harness.service.promptSession(harness.lead.agent, 'target', 'replacement', {
+      interrupt: true,
+      interruptInbox: 'keep',
+    })
+    expect(stops).toEqual(['target'])
+    // The restore could not run, so no retention count is reported.
+    expect(receipt.interrupted).toBe(true)
+    expect(receipt.retainedInputs).toBeUndefined()
+    // The stop is committed: the replacement prompt still runs and the watch
+    // this call added is not rolled back.
+    expect(target.followups.map(messageText).some(text => text.includes('replacement'))).toBe(true)
     expect(harness.service.view(harness.lead.agent).sessions).toEqual(['target'])
   })
 })

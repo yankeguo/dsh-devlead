@@ -83,6 +83,7 @@ describe('empty state and projection definition', () => {
       notifications: [],
       reports: [],
       failure: null,
+      inheritedEventCount: 0,
     })
     expect(fold([])).toEqual(emptyDevLeadProjectionState())
   })
@@ -90,7 +91,7 @@ describe('empty state and projection definition', () => {
   it('exposes the registered projection unit contract', () => {
     expect(devLeadProjectionDefinition.key).toBe(DEVLEAD_PROJECTION_KEY)
     expect(devLeadProjectionDefinition.key).toBe('devLead')
-    expect(devLeadProjectionDefinition.stateVersion).toBe(2)
+    expect(devLeadProjectionDefinition.stateVersion).toBe(3)
     expect(devLeadProjectionDefinition.apply).toBe(applyDevLeadProjection)
     expect(devLeadProjectionDefinition.init()).toEqual(emptyDevLeadProjectionState())
     // Every init call hands out an independent empty state: the registry seeds
@@ -106,6 +107,20 @@ describe('empty state and projection definition', () => {
     // must stay out of Session summaries (the protocol map carries the matching
     // SessionProjectionSummaryExcluded mark).
     expect(devLeadProjectionDefinition.wire.summary).toBe(false)
+  })
+
+  it('ignores mode/watch/reset records inherited by a forked Session', () => {
+    // A subagent_fork seed copies the parent's completed-turn prefix verbatim,
+    // including plugin:devlead records. Those events describe the parent, not
+    // the child: the child must start disabled with an empty watch set.
+    let state = devLeadProjectionDefinition.init(undefined, 3)
+    state = apply(state, modeEvent(0, true))
+    state = apply(state, watchEvent(1, ['session-parent-watch']))
+    state = apply(state, pluginRecordEvent(2, DEVLEAD_RESET_RECORD_TYPE, resetRecord(T0)))
+    expect(state).toEqual(emptyDevLeadProjectionState(3))
+    state = apply(state, modeEvent(3, true))
+    expect(state.enabled).toBe(true)
+    expect(state.inheritedEventCount).toBe(3)
   })
 })
 
@@ -622,7 +637,7 @@ describe('reset records', () => {
       emptyDevLeadModeProjectionState(),
       pluginRecordEvent(0, DEVLEAD_MODE_RECORD_TYPE, { kind: 'devlead/mode', version: 1, enabled: true, at: T0 }),
     )
-    expect(enabled).toEqual({ enabled: true, failure: null })
+    expect(enabled).toEqual({ enabled: true, failure: null, inheritedEventCount: 0 })
     const reset = applyDevLeadModeProjection(
       enabled,
       pluginRecordEvent(1, DEVLEAD_RESET_RECORD_TYPE, resetRecord(T0)),

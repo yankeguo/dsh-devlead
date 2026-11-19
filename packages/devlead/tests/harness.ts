@@ -97,8 +97,7 @@ export function notificationRecords(session: Session): DevLeadNotification[] {
   })
 }
 
-/**
- * In-memory Inbox stand-in with the per-message operations the core uses
+/** One in-memory Inbox stand-in with the per-message operations the core uses
  * (`prepend`/`remove`) on top of the plain boundary arrays the specs script.
  * Mutations are not durable here; specs that assert enqueue instants append
  * the real `agent/inbox/spliced` event to the Session log themselves.
@@ -108,6 +107,8 @@ export class FakeInbox {
   readonly nextTurn: UserMessage[] = []
   /** Input awaiting the next step boundary. */
   readonly nextStep: UserMessage[] = []
+  /** When set, the next {@link prepend} throws this failure (one-shot). */
+  prependFailure: Error | undefined
 
   /** Whether either boundary holds work. */
   get hasPending(): boolean {
@@ -132,6 +133,11 @@ export class FakeInbox {
 
   /** Prepend one message to a boundary. */
   prepend(target: 'next-turn' | 'next-step', message: UserMessage): void {
+    if (this.prependFailure !== undefined) {
+      const failure = this.prependFailure
+      this.prependFailure = undefined
+      throw failure
+    }
     this.list(target).unshift(message)
   }
 
@@ -1559,6 +1565,11 @@ class FakeStorageDomainHandle {
 export class FakeStorageDomain {
   /** Persisted domains by name. */
   readonly domains = new Map<string, FakeStorageDomainHandle>()
+  /**
+   * When set, {@link open} reserves the domain and then awaits this gate before
+   * returning the handle, so a spec can hold a storage mount in flight.
+   */
+  openGate: Promise<void> | undefined
 
   async open(spec: unknown): Promise<FakeStorageDomainHandle> {
     const name = (spec as { name?: unknown }).name
@@ -1574,7 +1585,14 @@ export class FakeStorageDomain {
     } else {
       domain.opened = true
     }
+    const gate = this.openGate
+    if (gate !== undefined) await gate
     return domain
+  }
+
+  /** Whether one named domain currently has an open handle. */
+  isOpen(name: string): boolean {
+    return this.domains.get(name)?.opened === true
   }
 
   /** Table of one persisted domain, for direct assertions. */

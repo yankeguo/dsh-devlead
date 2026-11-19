@@ -30,16 +30,16 @@ function fold(events: readonly SessionEvent[]) {
 
 describe('devLeadWatch projection', () => {
   it('starts empty and exposes its unit contract', () => {
-    expect(emptyDevLeadWatchProjectionState()).toEqual({ sessions: [], failure: null })
+    expect(emptyDevLeadWatchProjectionState()).toEqual({ sessions: [], failure: null, inheritedEventCount: 0 })
     expect(devLeadWatchProjectionDefinition.key).toBe(DEVLEAD_WATCH_PROJECTION_KEY)
-    expect(devLeadWatchProjectionDefinition.stateVersion).toBe(1)
+    expect(devLeadWatchProjectionDefinition.stateVersion).toBe(2)
     expect(devLeadWatchProjectionDefinition.init()).toEqual(emptyDevLeadWatchProjectionState())
     expect(devLeadWatchProjectionDefinition.apply).toBe(applyDevLeadWatchProjection)
   })
 
   it('follows whole-value watch records and keeps the view array stable', () => {
     const state = fold([watchEvent(1, ['session-a']), watchEvent(2, ['session-a', 'session-b'])])
-    expect(state).toEqual({ sessions: ['session-a', 'session-b'], failure: null })
+    expect(state).toEqual({ sessions: ['session-a', 'session-b'], failure: null, inheritedEventCount: 0 })
     const view = devLeadWatchProjectionView(state)
     expect(view).toEqual({ sessions: ['session-a', 'session-b'] })
     expect(view.sessions).toBe(state.sessions)
@@ -48,7 +48,7 @@ describe('devLeadWatch projection', () => {
 
   it('tracks an unwatch back to the empty set', () => {
     const state = fold([watchEvent(1, ['session-a', 'session-b']), watchEvent(2, [])])
-    expect(state).toEqual({ sessions: [], failure: null })
+    expect(state).toEqual({ sessions: [], failure: null, inheritedEventCount: 0 })
   })
 
   it('ignores repeated watch values, mode changes, and unrelated events by reference', () => {
@@ -58,12 +58,21 @@ describe('devLeadWatch projection', () => {
     expect(applyDevLeadWatchProjection(state, turnStartEvent(4))).toBe(state)
   })
 
+  it('ignores watch records inherited by a forked Session', () => {
+    let state = devLeadWatchProjectionDefinition.init(undefined, 2)
+    state = applyDevLeadWatchProjection(state, watchEvent(0, ['session-parent']))
+    state = applyDevLeadWatchProjection(state, pluginRecordEvent(1, DEVLEAD_RESET_RECORD_TYPE, resetRecord(T0)))
+    expect(state).toEqual(emptyDevLeadWatchProjectionState(2))
+    state = applyDevLeadWatchProjection(state, watchEvent(2, ['session-child']))
+    expect(state).toEqual({ sessions: ['session-child'], failure: null, inheritedEventCount: 2 })
+  })
+
   it('clears on reset and freezes on a malformed watch record', () => {
     const reset = fold([
       watchEvent(1, ['session-a']),
       pluginRecordEvent(2, DEVLEAD_RESET_RECORD_TYPE, resetRecord(T0)),
     ])
-    expect(reset).toEqual({ sessions: [], failure: null })
+    expect(reset).toEqual({ sessions: [], failure: null, inheritedEventCount: 0 })
 
     const frozen = fold([
       pluginRecordEvent(1, DEVLEAD_WATCH_RECORD_TYPE, {

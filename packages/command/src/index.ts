@@ -344,7 +344,7 @@ function friendlyDevLeadError(error: DevLeadError): string {
       return `That Session is still active, so it cannot be closed: ${error.message}. `
         + 'Stop its running work first, then retry.'
     case 'DEVLEAD_SESSION_UNAVAILABLE':
-      return `That Session cannot be resumed right now: ${error.message}`
+      return `The Host could not complete the DevLead request right now: ${error.message}`
     case 'DEVLEAD_WATCH_LIMIT':
       return 'The maximum number of watched Sessions has been reached. '
         + 'Stop watching one with /devlead unwatch <session> first.'

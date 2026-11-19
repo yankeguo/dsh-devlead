@@ -267,6 +267,13 @@ describe('excerptLine', () => {
   it('returns undefined when nothing remains', () => {
     expect(excerptLine('', 10)).toBeUndefined()
     expect(excerptLine(' \n\t\r ', 10)).toBeUndefined()
+    expect(excerptLine('\u001b\u0007', 10)).toBeUndefined()
+  })
+
+  it('strips C0/C1 control characters so a title cannot inject terminal escapes', () => {
+    expect(excerptLine('safe\u001b[2Jtitle', 40)).toBe('safe[2Jtitle')
+    expect(excerptLine('a\u0007b\u009bc', 40)).toBe('abc')
+    expect(excerptLine('line\u001b]8;;https://evil\u0007label', 80)).toBe('line]8;;https://evillabel')
   })
 
   it('returns the text unchanged when it fits', () => {

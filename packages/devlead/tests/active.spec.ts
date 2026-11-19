@@ -83,6 +83,14 @@ describe('single-active copy', () => {
     expect(activeSessionLabel(occupant('session-1', { title: '   ' }))).toBe('session-1')
   })
 
+  it('folds the occupant title to one bounded line before it reaches a human error', () => {
+    expect(activeSessionLabel(occupant('session-1', { title: 'Web\napp' }))).toBe('Web app (session-1)')
+    const long = activeSessionLabel(occupant('session-1', { title: 'x'.repeat(400) }))
+    expect(long.endsWith(' (session-1)')).toBe(true)
+    expect(long.length).toBeLessThan(260)
+    expect(long).not.toContain('\n')
+  })
+
   it('tells the human which Session holds the mode and how to switch', () => {
     const message = alreadyActiveMessage(occupant('session-1', { title: 'Webapp' }))
     expect(message).toContain('Webapp (session-1)')

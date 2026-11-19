@@ -10,7 +10,7 @@
  */
 
 import { pluginRecordOf } from '@deepseek-ai/dsh-session'
-import type { SessionEvent } from '@deepseek-ai/dsh-session'
+import type { SessionEvent, SessionHeader } from '@deepseek-ai/dsh-session'
 import type { ProjectionDefinition } from '@deepseek-ai/dsh-session-projection'
 import { z as zod } from 'zod'
 import type { ZodType } from 'zod'
@@ -52,9 +52,21 @@ import {
   decodeWatchRecord,
 } from './domain.ts'
 
-/** Empty projection state: disabled, watching nothing, no notifications or reports. */
-export function emptyDevLeadProjectionState(): DevLeadProjectionState {
-  return { enabled: false, sessions: [], notifications: [], reports: [], failure: null }
+/**
+ * Empty projection state: disabled, watching nothing, no notifications or
+ * reports.
+ * @param inheritedEventCount - exact fork-inherited prefix length to ignore.
+ * @returns the empty state for one Session.
+ */
+export function emptyDevLeadProjectionState(inheritedEventCount = 0): DevLeadProjectionState {
+  return {
+    enabled: false,
+    sessions: [],
+    notifications: [],
+    reports: [],
+    failure: null,
+    inheritedEventCount,
+  }
 }
 
 /** One bounded, non-empty excerpt as persisted by the notification writer. */
@@ -177,6 +189,7 @@ export const devLeadProjectionStateSchema: ZodType<DevLeadProjectionState> = zod
       { message: 'report ids must be unique' },
     ),
   failure: zod.string().min(1).nullable(),
+  inheritedEventCount: zod.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
 }).strict() as ZodType<DevLeadProjectionState>
 
 /** Client wire schema of the `devLead` projection value. */
@@ -248,12 +261,15 @@ export function applyDevLeadProjection(
   state: DevLeadProjectionState,
   event: SessionEvent,
 ): DevLeadProjectionState {
+  // Fork-inherited events are the parent's history, not this Session's state.
+  // A forked subagent must never inherit DevLead mode or its watch set.
+  if (event.seq < state.inheritedEventCount) return state
   const record = pluginRecordOf(event)
   if (record === undefined) return state
   if (record.type === DEVLEAD_RESET_RECORD_TYPE) {
     try {
       decodeResetRecord(record.data)
-      return emptyDevLeadProjectionState()
+      return emptyDevLeadProjectionState(state.inheritedEventCount)
     } catch (error: unknown) {
       if (state.failure !== null) return state
       return freezeProjection(state, event, record.type, error)
@@ -320,9 +336,10 @@ function freezeProjection(
 export const devLeadProjectionDefinition = {
   key: DEVLEAD_PROJECTION_KEY,
   stateSchema: devLeadProjectionStateSchema,
-  // The unit owns no Session-metadata-derived state, so it ignores the header
-  // and inherited-prefix arguments the registry passes.
-  init: emptyDevLeadProjectionState,
+  // The unit owns no Session-metadata-derived state (the header is unused), but
+  // it must remember the fork-inherited prefix length so inherited mode/watch
+  // records never describe the forked Session.
+  init: (_header?: SessionHeader, inheritedEventCount = 0) => emptyDevLeadProjectionState(inheritedEventCount),
   apply: applyDevLeadProjection,
   wire: {
     viewSchema: devLeadProjectionSchema,
@@ -331,9 +348,9 @@ export const devLeadProjectionDefinition = {
     // conversation reads it: keep it out of every Session summary/list row.
     summary: false,
   },
-  // 2: adds the retained `reports` array to the state; version 1 cache rows
-  // are discarded and refolded from the durable log.
-  stateVersion: 2,
+  // 3: adds the fork-inherited prefix length (version 2 added reports); older
+  // cache rows are discarded and refolded from the durable log.
+  stateVersion: 3,
 } satisfies ProjectionDefinition<'devLead', DevLeadProjectionState>
 
 /**
@@ -347,11 +364,17 @@ export interface DevLeadWatchProjectionState {
   readonly sessions: readonly string[]
   /** First rejected persisted record, or null while the state is valid. */
   readonly failure: string | null
+  /** Fork-inherited prefix length; inherited events never change the watch set. */
+  readonly inheritedEventCount: number
 }
 
-/** Empty watch-projection state: no watched Sessions, no failure. */
-export function emptyDevLeadWatchProjectionState(): DevLeadWatchProjectionState {
-  return { sessions: [], failure: null }
+/**
+ * Empty watch-projection state: no watched Sessions, no failure.
+ * @param inheritedEventCount - exact fork-inherited prefix length to ignore.
+ * @returns the empty watch state for one Session.
+ */
+export function emptyDevLeadWatchProjectionState(inheritedEventCount = 0): DevLeadWatchProjectionState {
+  return { sessions: [], failure: null, inheritedEventCount }
 }
 
 /** Persisted watch-projection state schema; seeds a fold and validates cached rows. */
@@ -361,6 +384,7 @@ export const devLeadWatchProjectionStateSchema: ZodType<DevLeadWatchProjectionSt
     { message: 'watch sessions must be unique' },
   ),
   failure: zod.string().min(1).nullable(),
+  inheritedEventCount: zod.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
 }).strict() as ZodType<DevLeadWatchProjectionState>
 
 /** Client wire schema of the `devLeadWatch` projection value. */
@@ -397,12 +421,13 @@ export function applyDevLeadWatchProjection(
   state: DevLeadWatchProjectionState,
   event: SessionEvent,
 ): DevLeadWatchProjectionState {
+  if (event.seq < state.inheritedEventCount) return state
   const record = pluginRecordOf(event)
   if (record === undefined) return state
   if (record.type === DEVLEAD_RESET_RECORD_TYPE) {
     try {
       decodeResetRecord(record.data)
-      return emptyDevLeadWatchProjectionState()
+      return emptyDevLeadWatchProjectionState(state.inheritedEventCount)
     } catch (error: unknown) {
       if (state.failure !== null) return state
       const message = error instanceof Error ? error.message : String(error)
@@ -419,7 +444,7 @@ export function applyDevLeadWatchProjection(
         const watch = decodeWatchRecord(record.data)
         return sameSessionIds(state.sessions, watch.sessions)
           ? state
-          : { sessions: watch.sessions, failure: null }
+          : { sessions: watch.sessions, failure: null, inheritedEventCount: state.inheritedEventCount }
       }
       case DEVLEAD_MODE_RECORD_TYPE:
         decodeModeRecord(record.data)
@@ -446,14 +471,15 @@ export function applyDevLeadWatchProjection(
 export const devLeadWatchProjectionDefinition = {
   key: DEVLEAD_WATCH_PROJECTION_KEY,
   stateSchema: devLeadWatchProjectionStateSchema,
-  init: emptyDevLeadWatchProjectionState,
+  init: (_header?: SessionHeader, inheritedEventCount = 0) => emptyDevLeadWatchProjectionState(inheritedEventCount),
   apply: applyDevLeadWatchProjection,
   wire: {
     viewSchema: devLeadWatchProjectionSchema,
     view: devLeadWatchProjectionView,
   },
-  // 1: the initial summary representation of the watch set.
-  stateVersion: 1,
+  // 2: adds the fork-inherited prefix length; version 1 was the initial
+  // summary representation.
+  stateVersion: 2,
 } satisfies ProjectionDefinition<'devLeadWatch', DevLeadWatchProjectionState>
 
 /**
@@ -468,17 +494,24 @@ export interface DevLeadModeProjectionState {
   readonly enabled: boolean
   /** First rejected persisted record, or null while the state is valid. */
   readonly failure: string | null
+  /** Fork-inherited prefix length; inherited mode records never select this Session. */
+  readonly inheritedEventCount: number
 }
 
-/** Empty mode-projection state: disabled, no failure. */
-export function emptyDevLeadModeProjectionState(): DevLeadModeProjectionState {
-  return { enabled: false, failure: null }
+/**
+ * Empty mode-projection state: disabled, no failure.
+ * @param inheritedEventCount - exact fork-inherited prefix length to ignore.
+ * @returns the empty mode state for one Session.
+ */
+export function emptyDevLeadModeProjectionState(inheritedEventCount = 0): DevLeadModeProjectionState {
+  return { enabled: false, failure: null, inheritedEventCount }
 }
 
 /** Persisted mode-projection state schema; seeds a fold and validates cached rows. */
 export const devLeadModeProjectionStateSchema: ZodType<DevLeadModeProjectionState> = zod.object({
   enabled: zod.boolean(),
   failure: zod.string().min(1).nullable(),
+  inheritedEventCount: zod.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
 }).strict() as ZodType<DevLeadModeProjectionState>
 
 /** Client wire schema of the `devLeadMode` projection value. */
@@ -519,12 +552,13 @@ export function applyDevLeadModeProjection(
   state: DevLeadModeProjectionState,
   event: SessionEvent,
 ): DevLeadModeProjectionState {
+  if (event.seq < state.inheritedEventCount) return state
   const record = pluginRecordOf(event)
   if (record === undefined) return state
   if (record.type === DEVLEAD_RESET_RECORD_TYPE) {
     try {
       decodeResetRecord(record.data)
-      return emptyDevLeadModeProjectionState()
+      return emptyDevLeadModeProjectionState(state.inheritedEventCount)
     } catch (error: unknown) {
       if (state.failure !== null) return state
       const message = error instanceof Error ? error.message : String(error)
@@ -539,7 +573,7 @@ export function applyDevLeadModeProjection(
     switch (record.type) {
       case DEVLEAD_MODE_RECORD_TYPE: {
         const mode = decodeModeRecord(record.data)
-        return mode.enabled === state.enabled ? state : { enabled: mode.enabled, failure: null }
+        return mode.enabled === state.enabled ? state : { enabled: mode.enabled, failure: null, inheritedEventCount: state.inheritedEventCount }
       }
       case DEVLEAD_WATCH_RECORD_TYPE:
         // Watch and notification records do not contribute to this projection;
@@ -575,14 +609,13 @@ export function applyDevLeadModeProjection(
 export const devLeadModeProjectionDefinition = {
   key: DEVLEAD_MODE_PROJECTION_KEY,
   stateSchema: devLeadModeProjectionStateSchema,
-  // The unit owns no Session-metadata-derived state, so it ignores the header
-  // and inherited-prefix arguments the registry passes.
-  init: emptyDevLeadModeProjectionState,
+  init: (_header?: SessionHeader, inheritedEventCount = 0) => emptyDevLeadModeProjectionState(inheritedEventCount),
   apply: applyDevLeadModeProjection,
   wire: {
     viewSchema: devLeadModeProjectionSchema,
     view: devLeadModeProjectionView,
   },
-  // 1: the initial durable representation of the compact mode selection.
-  stateVersion: 1,
+  // 2: adds the fork-inherited prefix length; version 1 was the initial durable
+  // representation of the compact mode selection.
+  stateVersion: 2,
 } satisfies ProjectionDefinition<'devLeadMode', DevLeadModeProjectionState>

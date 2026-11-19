@@ -52,14 +52,14 @@ function corruptEvent(seq: number, type: string, payload: Record<string, unknown
 
 describe('mode projection unit contract', () => {
   it('starts disabled with no failure', () => {
-    expect(emptyDevLeadModeProjectionState()).toEqual({ enabled: false, failure: null })
+    expect(emptyDevLeadModeProjectionState()).toEqual({ enabled: false, failure: null, inheritedEventCount: 0 })
     expect(fold([])).toEqual(emptyDevLeadModeProjectionState())
   })
 
   it('registers under its own key with the default summary membership', () => {
     expect(devLeadModeProjectionDefinition.key).toBe(DEVLEAD_MODE_PROJECTION_KEY)
     expect(devLeadModeProjectionDefinition.key).toBe('devLeadMode')
-    expect(devLeadModeProjectionDefinition.stateVersion).toBe(1)
+    expect(devLeadModeProjectionDefinition.stateVersion).toBe(2)
     expect(devLeadModeProjectionDefinition.apply).toBe(applyDevLeadModeProjection)
     expect(devLeadModeProjectionDefinition.init()).toEqual(emptyDevLeadModeProjectionState())
     // Every init call hands out an independent empty state: the registry seeds
@@ -74,19 +74,20 @@ describe('mode projection unit contract', () => {
   })
 
   it('keeps the persisted state schema strict', () => {
-    expect(devLeadModeProjectionStateSchema.parse({ enabled: true, failure: null }))
-      .toEqual({ enabled: true, failure: null })
-    expect(() => devLeadModeProjectionStateSchema.parse({ enabled: true, failure: null, extra: 1 })).toThrow()
-    expect(() => devLeadModeProjectionStateSchema.parse({ enabled: 'yes', failure: null })).toThrow()
+    expect(devLeadModeProjectionStateSchema.parse({ enabled: true, failure: null, inheritedEventCount: 0 }))
+      .toEqual({ enabled: true, failure: null, inheritedEventCount: 0 })
+    expect(() => devLeadModeProjectionStateSchema.parse({ enabled: true, failure: null, inheritedEventCount: 0, extra: 1 })).toThrow()
+    expect(() => devLeadModeProjectionStateSchema.parse({ enabled: 'yes', failure: null, inheritedEventCount: 0 })).toThrow()
+    expect(() => devLeadModeProjectionStateSchema.parse({ enabled: true, failure: null })).toThrow()
   })
 })
 
 describe('mode fold', () => {
   it('enables and disables the selection', () => {
     const enabled = fold([modeEvent(0, true)])
-    expect(enabled).toEqual({ enabled: true, failure: null })
+    expect(enabled).toEqual({ enabled: true, failure: null, inheritedEventCount: 0 })
     const disabled = applyDevLeadModeProjection(enabled, modeEvent(1, false))
-    expect(disabled).toEqual({ enabled: false, failure: null })
+    expect(disabled).toEqual({ enabled: false, failure: null, inheritedEventCount: 0 })
   })
 
   it('keeps the state reference when the selection is unchanged', () => {
@@ -103,9 +104,18 @@ describe('mode fold', () => {
     expect(applyDevLeadModeProjection(state, foreignPluginEvent(3))).toBe(state)
   })
 
+  it('ignores mode records inherited by a forked Session', () => {
+    let state = devLeadModeProjectionDefinition.init(undefined, 2)
+    state = applyDevLeadModeProjection(state, modeEvent(0, true))
+    state = applyDevLeadModeProjection(state, modeEvent(1, true))
+    expect(state).toEqual(emptyDevLeadModeProjectionState(2))
+    state = applyDevLeadModeProjection(state, modeEvent(2, true))
+    expect(state).toEqual({ enabled: true, failure: null, inheritedEventCount: 2 })
+  })
+
   it('ignores valid watch and notification records without changing the selection', () => {
     const state = fold([modeEvent(0, true), watchEvent(1, ['session-alpha']), notificationEvent(2, notification())])
-    expect(state).toEqual({ enabled: true, failure: null })
+    expect(state).toEqual({ enabled: true, failure: null, inheritedEventCount: 0 })
   })
 
   it('freezes the last valid selection when an owned record is corrupt', () => {
@@ -126,15 +136,15 @@ describe('mode fold', () => {
 
 describe('mode view', () => {
   it('hands out identity-stable enabled/disabled views', () => {
-    const enabled = devLeadModeProjectionView({ enabled: true, failure: null })
-    const disabled = devLeadModeProjectionView({ enabled: false, failure: null })
+    const enabled = devLeadModeProjectionView({ enabled: true, failure: null, inheritedEventCount: 0 })
+    const disabled = devLeadModeProjectionView({ enabled: false, failure: null, inheritedEventCount: 0 })
     expect(enabled).toEqual({ enabled: true })
     expect(disabled).toEqual({ enabled: false })
     // The registry suppresses a push on Object.is-equal views; a fresh object
     // per read would republish the same value on every Session event.
-    expect(devLeadModeProjectionView({ enabled: true, failure: null })).toBe(enabled)
-    expect(devLeadModeProjectionView({ enabled: true, failure: 'boom' })).toBe(enabled)
-    expect(devLeadModeProjectionView({ enabled: false, failure: null })).toBe(disabled)
+    expect(devLeadModeProjectionView({ enabled: true, failure: null, inheritedEventCount: 0 })).toBe(enabled)
+    expect(devLeadModeProjectionView({ enabled: true, failure: 'boom', inheritedEventCount: 0 })).toBe(enabled)
+    expect(devLeadModeProjectionView({ enabled: false, failure: null, inheritedEventCount: 0 })).toBe(disabled)
     expect(devLeadModeProjectionSchema.parse(enabled)).toEqual({ enabled: true })
   })
 })

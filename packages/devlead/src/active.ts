@@ -17,6 +17,7 @@ import type {} from './domain.ts'
 import {
   DEVLEAD_MODE_RECORD_TYPE,
   DEVLEAD_RESET_RECORD_TYPE,
+  sessionRefLabel,
 } from '@yankeguo/dsh-devlead-protocol'
 
 /** One Session discovered as DevLead-enabled during a global occupancy scan. */
@@ -102,8 +103,11 @@ export function rankActiveSessions(
  * @returns the compact label.
  */
 export function activeSessionLabel(occupant: DevLeadActiveSession): string {
-  const title = occupant.title?.trim() ?? ''
-  return title.length === 0 ? occupant.sessionId : `${title} (${occupant.sessionId})`
+  // The title is durable record/log data that reaches a human error and the
+  // browser's localized refusal parser: use the shared single-line excerpt so a
+  // newline, an oversized title, or an embedded instruction suffix cannot break
+  // either surface.
+  return sessionRefLabel(occupant.sessionId, occupant.title)
 }
 
 /**

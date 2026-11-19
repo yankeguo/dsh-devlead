@@ -447,9 +447,28 @@ export class DevLeadNotificationHub {
    * @param agent - live Agent that may lead.
    */
   private syncLead(agent: Agent): void {
+    this.syncSession(agent.session)
+  }
+
+  /**
+   * Reconcile one Session's durable DevLead state with the hub index, with or
+   * without a live Agent.
+   *
+   * Owned mode/watch/reset records can be appended to a Session that is
+   * attached to the store but has no Agent (for example an archived attach-only
+   * holder whose mode-off the admission path just wrote). Such a Session must
+   * still leave the watch index, or it keeps receiving notifications and can
+   * still be selected as a report target. Subagent Sessions are never indexed.
+   * @param session - Session whose owned record was appended.
+   */
+  private syncSession(session: Session): void {
     if (this.stopping) return
-    const sessionId = String(agent.id)
-    const state = this.stateOf(agent.session)
+    const sessionId = String(session.id)
+    if (session.header.origin === 'subagent') {
+      this.removeLead(sessionId)
+      return
+    }
+    const state = this.stateOf(session)
     if (state === undefined || !state.enabled) {
       this.removeLead(sessionId)
       return
@@ -598,9 +617,33 @@ export class DevLeadNotificationHub {
       // A mode/watch/reset record can be the first DevLead record of a Session
       // whose runtime row does not exist yet, so resolve the Agent instead of
       // only updating an already-registered lead. A reset record disables the
-      // Session, so this resync drops its stale watch index.
+      // Session, so this resync drops its stale watch index. An attached
+      // Session without an Agent (cold or attach-only) still has a durable
+      // projection to reconcile: a disabling record drops the index
+      // synchronously, while an enabling record is deferred to a microtask so a
+      // synchronous mode+watch replay settles before the watch set is compared
+      // (a transient empty set would drop queued observations).
       const agent = this.ctx.agents.get(session.id)
       if (agent !== undefined) this.syncLead(agent)
+      else if (session.header.origin === 'subagent') this.removeLead(sessionId)
+      else {
+        const state = this.stateOf(session)
+        if (state === undefined || !state.enabled) {
+          this.removeLead(sessionId)
+        } else {
+          queueMicrotask(() => {
+            if (this.stopping) return
+            try {
+              this.syncSession(session)
+            } catch (error: unknown) {
+              // A detached or late-disposed Session must not surface as an
+              // unhandled microtask failure; the durable record remains and a
+              // later live index reconciles it.
+              this.ctx.logger.warn(`devlead: could not reconcile a DevLead record after append: ${thrownMessage(error)}`)
+            }
+          })
+        }
+      }
     }
     if (event.type === 'assistant/message') {
       if (this.watchers.has(sessionId)) this.rememberAssistant(sessionId, event.data.message.content)
@@ -954,6 +997,20 @@ export class DevLeadNotificationHub {
       const source = message.source as { kind?: unknown; form?: unknown } | undefined
       return source?.kind === DEVLEAD_MESSAGE_KIND && source?.form === 'notice'
     })
+  }
+
+  /**
+   * Drop one lead runtime and its watch index without touching durable state.
+   *
+   * Admission uses this when a tombstoned occupant is ignored: an archived (or
+   * otherwise unreleasable) holder must not keep receiving notifications or be
+   * selected as a report target. A later live index (`agent/created` after the
+   * human opens it) re-registers the durable state and reconciles it.
+   * @param leadId - lead Session identity to forget.
+   */
+  forgetLead(leadId: string): void {
+    if (this.stopping) return
+    this.removeLead(leadId)
   }
 
   /**

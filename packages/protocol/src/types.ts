@@ -254,6 +254,13 @@ export interface DevLeadProjectionState {
   readonly reports: readonly DevLeadReport[]
   /** First rejected persisted record, or null while the state is valid. */
   readonly failure: string | null
+  /**
+   * Exact fork-inherited prefix length of the Session log. Events below this
+   * offset were copied from the parent Session by a fork and never describe
+   * this Session's own DevLead state; the fold ignores them. Host-only: never
+   * published on the client wire view.
+   */
+  readonly inheritedEventCount: number
 }
 
 /** Client view published through the `devLead` Session projection. */
