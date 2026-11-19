@@ -133,6 +133,22 @@ describe('parseDevLeadCommand', () => {
     }
   })
 
+  it('diagnoses reversed quote pairs and a trailing opener as unmatched quotes', () => {
+    for (const line of ['watch ”session-alpha“', 'watch session-alpha“', 'unwatch ’session-beta‘']) {
+      const command = parseDevLeadCommand(line)
+      expect(command.kind).toBe('invalid')
+      expect(command.kind === 'invalid' ? command.message : '').toContain('unmatched quote')
+    }
+  })
+
+  it('strips zero-width paste noise from a Session reference', () => {
+    expect(parseDevLeadCommand('watch session-alpha\u200B')).toEqual({ kind: 'watch', session: 'session-alpha' })
+    expect(parseDevLeadCommand('watch \u200Bsession-alpha\u200D')).toEqual({ kind: 'watch', session: 'session-alpha' })
+    const empty = parseDevLeadCommand('watch \u200C')
+    expect(empty.kind).toBe('invalid')
+    expect(empty.kind === 'invalid' ? empty.message : '').toContain('requires a Session id')
+  })
+
   it('exposes one stable usage line and its advertised grammar', () => {
     expect(USAGE).toBe(`Usage: /devlead ${COMMAND_GRAMMAR}`)
     for (const token of ['on', 'off', 'reset', 'watch <session>', 'unwatch <session>']) {

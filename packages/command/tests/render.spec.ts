@@ -126,6 +126,26 @@ describe('statusLines', () => {
     expect(lines.some(line => line.includes('old lead (session-old)') && line.includes('/devlead off'))).toBe(true)
   })
 
+  it('folds a multiline or oversized archived-holder title like every other Session label', () => {
+    const lines = statusLines(snapshot({
+      archivedOccupants: [
+        { sessionId: 'session-old', title: 'old\nlead' },
+        { sessionId: 'session-long', title: 'x'.repeat(300) },
+      ],
+    }))
+    const holderLines = lines.filter(line => line.includes('unarchive and run /devlead off'))
+    expect(holderLines).toHaveLength(2)
+    expect(holderLines[0]).toContain('old lead (session-old)')
+    expect(holderLines[1]).toContain(`${'x'.repeat(239)}… (session-long)`)
+  })
+
+  it('shows queued inbox input on an idle Session, not only a running one', () => {
+    const lines = statusLines(snapshot({
+      watched: [sessionView('session-alpha', { live: true, pendingInputs: 2 })],
+    }))
+    expect(lines.some(line => line.includes('idle · 2 queued'))).toBe(true)
+  })
+
   it('reports whether optional worktree isolation is composed', () => {
     expect(statusLines(snapshot({ worktreeIsolation: true }))).toContain('Worktree isolation: available')
     expect(statusLines(snapshot({ worktreeIsolation: false }))).toContain('Worktree isolation: unavailable')

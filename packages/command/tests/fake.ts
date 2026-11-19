@@ -16,10 +16,12 @@ import type { DevLeadService } from '@yankeguo/dsh-devlead'
 import type {
   DevLeadNotification,
   DevLeadReport,
+  DevLeadReportKind,
   DevLeadSessionView,
   DevLeadTransition,
   DevLeadWatchMutation,
 } from '@yankeguo/dsh-devlead-protocol'
+import { devLeadReportId } from '@yankeguo/dsh-devlead-protocol'
 
 /** The exact live-Agent type the core service accepts. */
 export type DevLeadCommandAgent = Parameters<DevLeadService['isEnabled']>[0]
@@ -41,6 +43,7 @@ type FakeDevLeadSurface = Pick<
   | 'listSessions'
   | 'getSession'
   | 'watchSession'
+  | 'archivedOccupants'
   | 'notifications'
   | 'worktreeIsolationAvailable'
 >
@@ -84,7 +87,7 @@ export function sessionView(
     watched: false,
     archived: false,
     ...overrides,
-  } as DevLeadSessionView
+  }
 }
 
 /** Build one durable notification fixture with a deterministic identity. */
@@ -112,6 +115,35 @@ export function notification(
   }
 }
 
+/** Build one durable report fixture with a deterministic identity. */
+export function report(
+  input: {
+    readonly senderSessionId?: string
+    readonly title?: string
+    readonly turn?: number
+    readonly kind?: DevLeadReportKind
+    readonly message?: string
+    readonly summary?: string
+    readonly at?: number
+  } = {},
+): DevLeadReport {
+  const senderSessionId = input.senderSessionId ?? 'session-alpha'
+  const turn = input.turn ?? 1
+  const kind = input.kind ?? 'progress'
+  const message = input.message ?? 'fake report message'
+  return {
+    id: devLeadReportId(senderSessionId, turn, kind, message),
+    kind,
+    message,
+    senderSessionId,
+    leadSessionId: 'lead-agent',
+    turn,
+    at: input.at ?? NOW,
+    ...(input.title === undefined ? {} : { senderSessionTitle: input.title }),
+    ...(input.summary === undefined ? {} : { summary: input.summary }),
+  }
+}
+
 /**
  * In-memory `ctx.devLead` stand-in with the semantics the command relies on.
  * Every service call is appended to {@link calls} so specs can assert exact
@@ -127,6 +159,10 @@ export class FakeDevLead implements FakeDevLeadSurface {
   watching: string[] = []
   /** Retained notification digest, oldest first. */
   feed: DevLeadNotification[] = []
+  /** Retained mid-turn report digest, oldest first. */
+  reportFeed: DevLeadReport[] = []
+  /** Archived Sessions that still carry a durable enabled mode. */
+  occupants: Array<{ readonly sessionId: string; readonly title?: string }> = []
   /** Every Session the host can list. */
   sessions: DevLeadSessionView[] = []
   /** Sessions the core can resolve but the bounded listing does not return. */
@@ -144,6 +180,12 @@ export class FakeDevLead implements FakeDevLeadSurface {
   readonly listSessionsOptions: DevLeadListSessionsOptions[] = []
   /** Signals of every `getSession` call, in call order. */
   readonly getSessionSignals: (AbortSignal | undefined)[] = []
+  /** Signals of every `setEnabled` call, in call order. */
+  readonly setEnabledSignals: (AbortSignal | undefined)[] = []
+  /** Signals of every `watchSession` call, in call order. */
+  readonly watchSessionSignals: (AbortSignal | undefined)[] = []
+  /** Signals of every `archivedOccupants` call, in call order. */
+  readonly archivedOccupantsSignals: (AbortSignal | undefined)[] = []
 
   /**
    * Replace the retained feed with one fixture list.
@@ -152,6 +194,26 @@ export class FakeDevLead implements FakeDevLeadSurface {
    */
   withNotifications(notifications: readonly DevLeadNotification[]): this {
     this.feed = [...notifications]
+    return this
+  }
+
+  /**
+   * Replace the retained report digest with one fixture list.
+   * @param reports - reports in oldest-first order.
+   * @returns this fake, for chaining.
+   */
+  withReports(reports: readonly DevLeadReport[]): this {
+    this.reportFeed = [...reports]
+    return this
+  }
+
+  /**
+   * Replace the archived-holder list.
+   * @param occupants - archived Sessions with a durable enabled mode.
+   * @returns this fake, for chaining.
+   */
+  withArchivedOccupants(occupants: ReadonlyArray<{ readonly sessionId: string; readonly title?: string }>): this {
+    this.occupants = [...occupants]
     return this
   }
 
@@ -192,8 +254,9 @@ export class FakeDevLead implements FakeDevLeadSurface {
   }
 
   /** @inheritdoc */
-  async setEnabled(_agent: DevLeadCommandAgent, enabled: boolean, _signal?: AbortSignal): Promise<void> {
+  async setEnabled(_agent: DevLeadCommandAgent, enabled: boolean, signal?: AbortSignal): Promise<void> {
     this.calls.push(`setEnabled:${enabled}`)
+    this.setEnabledSignals.push(signal)
     if (this.frozenReason !== null) {
       // Mirrors the core recovery contract: dropping into disabled is the one
       // direction a frozen fold can keep honoring (it appends a reset record);
@@ -221,6 +284,7 @@ export class FakeDevLead implements FakeDevLeadSurface {
     this.enabled = false
     this.watching = []
     this.feed = []
+    this.reportFeed = []
     this.frozenReason = null
   }
 
@@ -239,14 +303,15 @@ export class FakeDevLead implements FakeDevLeadSurface {
       enabled: this.enabled,
       sessions: [...this.watching],
       notifications: [...this.feed],
-      reports: [],
+      reports: [...this.reportFeed],
     }
   }
 
   /** @inheritdoc */
-  async archivedOccupants(): Promise<Array<{ readonly sessionId: string; readonly title?: string }>> {
+  async archivedOccupants(signal?: AbortSignal): Promise<Array<{ readonly sessionId: string; readonly title?: string }>> {
     this.calls.push('archivedOccupants')
-    return []
+    this.archivedOccupantsSignals.push(signal)
+    return [...this.occupants]
   }
 
   /** @inheritdoc */
@@ -293,8 +358,10 @@ export class FakeDevLead implements FakeDevLeadSurface {
     agent: DevLeadCommandAgent,
     sessionId: string,
     watching: boolean,
+    signal?: AbortSignal,
   ): Promise<DevLeadWatchMutation> {
     this.calls.push(`watchSession:${sessionId}:${watching}`)
+    this.watchSessionSignals.push(signal)
     if (!this.enabled) throw new FakeDevLeadError('DEVLEAD_NOT_ENABLED', 'devlead mode is not enabled')
     // DSH mints one identity for the Session and its Agent; the core compares
     // the resolved Session id against `agent.id` for the self-watch guard.

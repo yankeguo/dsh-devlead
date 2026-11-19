@@ -56,6 +56,31 @@ describe('resolveSessionReference', () => {
     expect(resolveSessionReference('  session-alpha  ', [bare('session-alpha')]))
       .toEqual({ kind: 'resolved', sessionId: 'session-alpha' })
   })
+
+  it('resolves a bare uuid head with the session- prefix re-added, like the core resolver', () => {
+    const candidates = [
+      titled('session-e59ab350-65be-4c0d-9a1e-000000000001', 'webapp'),
+      bare('session-beta'),
+    ]
+    expect(resolveSessionReference('e59ab350', candidates))
+      .toEqual({ kind: 'resolved', sessionId: 'session-e59ab350-65be-4c0d-9a1e-000000000001', title: 'webapp' })
+  })
+
+  it('keeps a bare uuid head ambiguous when several uuids share it', () => {
+    const candidates = [
+      titled('session-e59ab350-65be-4c0d-9a1e-000000000001', 'webapp'),
+      titled('session-e59ab350-65be-4c0d-9a1e-000000000002', 'docs'),
+    ]
+    const resolution = resolveSessionReference('e59ab350', candidates)
+    expect(resolution.kind).toBe('ambiguous')
+    expect(resolution.kind === 'ambiguous' ? resolution.candidates.map(candidate => candidate.title) : [])
+      .toEqual(['webapp', 'docs'])
+  })
+
+  it('does not double-match a reference that already carries the session- prefix', () => {
+    const candidates = [bare('session-session-alpha')]
+    expect(resolveSessionReference('session-alpha', candidates)).toEqual({ kind: 'missing' })
+  })
 })
 
 describe('candidateOf', () => {

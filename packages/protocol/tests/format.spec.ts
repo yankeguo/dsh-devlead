@@ -17,6 +17,7 @@ import {
   DEVLEAD_RECORD_VERSION,
   DEVLEAD_REPORT_KINDS,
   DEVLEAD_REPORT_RECORD_TYPE,
+  DEVLEAD_RESET_RECORD_TYPE,
   DEVLEAD_TOOL_PREFIX,
   DEVLEAD_TRANSITIONS,
   DEVLEAD_WATCH_RECORD_TYPE,
@@ -30,6 +31,7 @@ import {
   notificationLine,
   reportDigest,
   reportLine,
+  sessionRefLabel,
   transitionLabel,
 } from '@yankeguo/dsh-devlead-protocol'
 import type {
@@ -320,6 +322,9 @@ describe('protocol constants', () => {
     expect(DEVLEAD_MODE_RECORD_TYPE).toBe('plugin:devlead/mode')
     expect(DEVLEAD_WATCH_RECORD_TYPE).toBe('plugin:devlead/watch')
     expect(DEVLEAD_NOTIFICATION_RECORD_TYPE).toBe('plugin:devlead/notification')
+    // The reset marker is the only recovery path of a frozen log; renaming it
+    // silently orphans every existing reset record.
+    expect(DEVLEAD_RESET_RECORD_TYPE).toBe('plugin:devlead/reset')
     expect(DEVLEAD_COMMAND_NAME).toBe('devlead')
     expect(DEVLEAD_MESSAGE_KIND).toBe('devlead')
     expect(DEVLEAD_TOOL_PREFIX).toBe('devlead_')
@@ -380,9 +385,35 @@ describe('reportLine', () => {
     expect(reportLine(bare)).toBe('session-alpha — report progress: halfway through the parser')
   })
 
-  it('renders the digest oldest-last', () => {
-    expect(reportDigest([report(), report({ id: 'two', summary: 'second' })]))
-      .toHaveLength(2)
+  it('renders the digest oldest-last, line by line', () => {
+    expect(reportDigest([report(), report({ id: 'two', summary: 'second' })])).toEqual([
+      'Fix the parser (session-alpha) — report progress: parser progress',
+      'Fix the parser (session-alpha) — report progress: second',
+    ])
     expect(reportDigest([])).toEqual([])
+  })
+
+  it('degrades drifted fields instead of throwing inside a digest line', () => {
+    // A mixed-version Host or a damaged projection can hand the renderer a
+    // non-string message or an unknown kind; the line must still render.
+    const drifted = report({ message: undefined as never, summary: undefined as never })
+    expect(reportLine(drifted)).toBe('Fix the parser (session-alpha) — report progress')
+    const unknownKind = report({ kind: 'urgent' as never, summary: undefined as never })
+    expect(reportLine(unknownKind)).toBe('Fix the parser (session-alpha) — report urgent: halfway through the parser')
+  })
+})
+
+describe('sessionRefLabel', () => {
+  it('renders title (id), folds newlines, and falls back to the bare id', () => {
+    expect(sessionRefLabel('session-alpha', 'Fix the parser')).toBe('Fix the parser (session-alpha)')
+    expect(sessionRefLabel('session-alpha', 'line one\nline two')).toBe('line one line two (session-alpha)')
+    expect(sessionRefLabel('session-alpha', '   ')).toBe('session-alpha')
+    expect(sessionRefLabel('session-alpha', undefined)).toBe('session-alpha')
+  })
+
+  it('bounds an oversized title with the shared excerpt budget', () => {
+    const long = 'x'.repeat(DEVLEAD_ERROR_EXCERPT_MAX + 50)
+    const label = sessionRefLabel('session-alpha', long)
+    expect(label).toBe(`${'x'.repeat(DEVLEAD_ERROR_EXCERPT_MAX - 1)}… (session-alpha)`)
   })
 })

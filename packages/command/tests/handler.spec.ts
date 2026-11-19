@@ -3,13 +3,15 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { CommandInvocation, CommandResult } from '@deepseek-ai/dsh-commands'
 import type { DevLeadErrorCode } from '@yankeguo/dsh-devlead'
 import { apply, inject, name } from '../src/index.ts'
-import { RECENT_NOTIFICATION_LIMIT } from '../src/render.ts'
+import { HELP_LINE, RECENT_NOTIFICATION_LIMIT, RECENT_REPORT_LIMIT } from '../src/render.ts'
+import { COMMAND_GRAMMAR } from '../src/parse.ts'
 import {
   NOW,
   FakeDevLead,
   FakeDevLeadError,
   fakeAgent,
   notification,
+  report,
   sessionView,
 } from './fake.ts'
 
@@ -223,6 +225,42 @@ describe('devlead command status', () => {
     expect(text(result)).not.toContain('session-0')
     expect(text(result)).not.toContain('session-1')
     expect(text(result)).toContain(`session-${RECENT_NOTIFICATION_LIMIT + 1}`)
+  })
+
+  it('shows only the most recent mid-turn reports', async () => {
+    const { handler, service } = boot()
+    service.enabled = true
+    service.withReports(Array.from({ length: RECENT_REPORT_LIMIT + 2 }, (_, index) => report({
+      senderSessionId: `session-${index}`,
+      turn: index + 1,
+      summary: `report ${index}`,
+      at: NOW + index,
+    })))
+    const result = await run(handler, '')
+    expect(text(result)).toContain('Recent reports:')
+    expect(text(result)).not.toContain('report 0')
+    expect(text(result)).not.toContain('report 1')
+    expect(text(result)).toContain(`report ${RECENT_REPORT_LIMIT + 1}`)
+  })
+
+  it('forwards the invocation signal to the mode switch, watch mutation, and occupant scan', async () => {
+    const { handler, service } = boot()
+    const controller = new AbortController()
+    service.sessions = [sessionView('session-alpha', { title: 'webapp' })]
+    await run(handler, 'on', fakeAgent(), controller.signal)
+    expect(service.setEnabledSignals).toEqual([controller.signal])
+    await run(handler, 'watch session-alpha', fakeAgent(), controller.signal)
+    expect(service.watchSessionSignals).toEqual([controller.signal])
+    await run(handler, '', fakeAgent(), controller.signal)
+    // Every status snapshot (including the ones after on/watch) scans occupants.
+    expect(service.archivedOccupantsSignals).toEqual([controller.signal, controller.signal, controller.signal])
+  })
+
+  it('keeps the help line and the advertised grammar naming the same subcommands', () => {
+    for (const token of ['status', 'on', 'off', 'reset', 'watch <session>', 'unwatch <session>']) {
+      expect(COMMAND_GRAMMAR).toContain(token)
+      expect(HELP_LINE).toContain(token)
+    }
   })
 
   it('keeps showing the watch set after mode is turned off', async () => {

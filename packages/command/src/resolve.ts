@@ -10,10 +10,13 @@
  */
 
 import {
-  DEVLEAD_ERROR_EXCERPT_MAX,
-  excerptLine,
+  sessionRefLabel,
   type DevLeadSessionView,
 } from '@yankeguo/dsh-devlead-protocol'
+
+// The label rule lives in the protocol so command views and digest lines name
+// a Session identically; re-exported here for the command's existing callers.
+export { sessionRefLabel }
 
 /** One addressable Session: identity plus the folded title when the host knows one. */
 export interface SessionCandidate {
@@ -57,9 +60,15 @@ export function mergeCandidates(
   return [...candidates.values()]
 }
 
+/** Prefix every ordinary DSH Session id carries in front of its uuid. */
+const SESSION_ID_PREFIX = 'session-'
+
 /**
  * Resolve one reference: an exact id wins over any prefix match, a unique id
- * prefix resolves, and anything else is ambiguous or missing.
+ * prefix resolves, and anything else is ambiguous or missing. A reference that
+ * omits the `session-` prefix also matches the uuid head with that prefix
+ * re-added, mirroring the core resolver so a truncated uuid pasted by a human
+ * gets the same friendly titled candidates instead of a bare-id core message.
  * @param query - trimmed human-supplied reference.
  * @param candidates - currently addressable Sessions.
  * @returns the resolution outcome; never throws.
@@ -76,7 +85,12 @@ export function resolveSessionReference(
       ? { kind: 'resolved', sessionId: candidate.sessionId }
       : { kind: 'resolved', sessionId: candidate.sessionId, title: candidate.title }
   }
-  const matches = candidates.filter(candidate => candidate.sessionId.startsWith(reference))
+  const mayOmitPrefix = !reference.startsWith(SESSION_ID_PREFIX)
+  const matches = candidates.filter(candidate =>
+    candidate.sessionId.startsWith(reference)
+    || (mayOmitPrefix
+      && candidate.sessionId.startsWith(SESSION_ID_PREFIX)
+      && candidate.sessionId.slice(SESSION_ID_PREFIX.length).startsWith(reference)))
   const first = matches[0]
   if (first === undefined) return { kind: 'missing' }
   if (matches.length === 1) {
@@ -89,21 +103,6 @@ export function resolveSessionReference(
 
 /** Shortest candidate list rendered for one ambiguous reference. */
 const MAX_RENDERED_CANDIDATES = 10
-
-/**
- * Render one Session reference as `title (session-id)` when a non-blank title
- * is known, or the bare id otherwise. Shared by candidate lists, status rows,
- * and mutation titles so every surface names a Session the same way. The title
- * is folded through the shared single-line excerpt rule: a hand-edited log or a
- * future title writer must not be able to inject Newlines into command output.
- * @param sessionId - exact Session identity.
- * @param title - folded title, possibly absent or blank.
- * @returns the human-readable reference.
- */
-export function sessionRefLabel(sessionId: string, title: string | undefined): string {
-  const line = title === undefined ? undefined : excerptLine(title, DEVLEAD_ERROR_EXCERPT_MAX)
-  return line === undefined ? sessionId : `${line} (${sessionId})`
-}
 
 /**
  * Render one candidate as a bullet line: `title (session-id)` when the title is

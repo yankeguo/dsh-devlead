@@ -74,6 +74,15 @@ function isClosingQuote(value: string): boolean {
   return QUOTE_PAIRS.some(([, close]) => close === value)
 }
 
+/**
+ * Whether one character is any recognized opening quote.
+ * @param value - candidate character.
+ * @returns whether it opens a quote pair.
+ */
+function isOpeningQuote(value: string): boolean {
+  return QUOTE_PAIRS.some(([open]) => open === value)
+}
+
 /** Build the invalid result of one known subcommand that takes no argument. */
 function unexpectedArgument(subcommand: string): DevLeadCommand {
   return invalid(`The /devlead ${subcommand} subcommand does not take an argument.`)
@@ -93,7 +102,9 @@ function unexpectedArgument(subcommand: string): DevLeadCommand {
  * @returns the parsed command or an invalid result with a specific explanation.
  */
 function parseSessionArgument(subcommand: 'watch' | 'unwatch', text: string): DevLeadCommand {
-  const raw = text.trim()
+  // Zero-width characters survive trim() and /\s/u, so a pasted reference
+  // carrying them would silently fail resolution; strip them as paste noise.
+  const raw = text.trim().replace(/[\u200B\u200C\u200D\uFEFF]/gu, '')
   if (raw.length === 0) {
     return invalid(
       `/devlead ${subcommand} requires a Session id or a unique id prefix. `
@@ -127,8 +138,11 @@ function parseSessionArgument(subcommand: 'watch' | 'unwatch', text: string): De
     }
     return { kind: subcommand, session }
   }
-  // A closing quote with no opener is the other half of the same paste mistake.
-  if (isClosingQuote(raw[raw.length - 1] ?? '')) {
+  // A closing quote with no opener is the other half of the same paste mistake;
+  // so are a reversed pair (”abc“) and a trailing opener (abc“).
+  const first = raw[0] ?? ''
+  const last = raw[raw.length - 1] ?? ''
+  if (isClosingQuote(first) || isClosingQuote(last) || isOpeningQuote(last)) {
     return invalid(
       `The /devlead ${subcommand} Session reference has an unmatched quote; `
       + 'wrap the whole reference in one matching pair of quotes.',

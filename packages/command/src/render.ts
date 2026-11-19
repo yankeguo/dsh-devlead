@@ -84,7 +84,9 @@ export function sessionStateLabel(view: DevLeadSessionView): string {
         ? 'idle'
         : 'cold'
   const parts = [state]
-  if (view.running && (view.pendingInputs ?? 0) > 0) parts.push(`${view.pendingInputs} queued`)
+  // Queued inbox input is a live-Agent fact, not a running-turn fact: an idle
+  // Session with a queued prompt is exactly the "why has it not moved" state.
+  if ((view.pendingInputs ?? 0) > 0) parts.push(`${view.pendingInputs} queued`)
   if (view.lastTurn !== undefined) {
     const outcome = view.lastTransition === undefined ? '' : ` ${transitionLabel(view.lastTransition)}`
     parts.push(`last turn ${view.lastTurn}${outcome}`)
@@ -122,12 +124,8 @@ function archivedOccupantLines(snapshot: DevLeadStatusSnapshot): string[] {
   if (snapshot.archivedOccupants.length === 0) return []
   return [
     `Archived DevLead holders (ignored for admission): ${String(snapshot.archivedOccupants.length)}`,
-    ...snapshot.archivedOccupants.map((occupant) => {
-      const label = occupant.title === undefined
-        ? occupant.sessionId
-        : `${occupant.title} (${occupant.sessionId})`
-      return `  - ${label} — unarchive and run /devlead off, or delete it`
-    }),
+    ...snapshot.archivedOccupants.map(occupant =>
+      `  - ${sessionRefLabel(occupant.sessionId, occupant.title)} — unarchive and run /devlead off, or delete it`),
   ]
 }
 

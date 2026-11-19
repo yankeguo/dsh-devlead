@@ -103,8 +103,26 @@ export function transitionLabel(transition: DevLeadTransition): string {
  * @returns the bounded single-line text, or undefined when there is none.
  */
 function presentLine(value: string | undefined): string | undefined {
-  if (value === undefined) return undefined
+  // Wire drift can hand a renderer a non-string where the type says string;
+  // degrade to "absent" instead of throwing inside a digest line.
+  if (typeof value !== 'string') return undefined
   return excerptLine(value, DEVLEAD_ERROR_EXCERPT_MAX)
+}
+
+/**
+ * Render one Session reference as `title (session-id)` when a non-blank title
+ * is known, or the bare id otherwise. Shared by command candidate lists, status
+ * rows, mutation titles, and notification/report digest lines so every surface
+ * names a Session the same way. The title is folded through the shared
+ * single-line excerpt rule: a hand-edited log or a future title writer must not
+ * be able to inject newlines into command output or a digest.
+ * @param sessionId - exact Session identity.
+ * @param title - folded title, possibly absent or blank.
+ * @returns the human-readable reference.
+ */
+export function sessionRefLabel(sessionId: string, title: string | undefined): string {
+  const line = presentLine(title)
+  return line === undefined ? sessionId : `${line} (${sessionId})`
 }
 
 /**
@@ -114,8 +132,7 @@ function presentLine(value: string | undefined): string | undefined {
  * recorded failure excerpt (which wins) or assistant summary when one exists.
  */
 export function notificationLine(notification: DevLeadNotification): string {
-  const title = presentLine(notification.sessionTitle)
-  const who = title === undefined ? notification.sessionId : `${title} (${notification.sessionId})`
+  const who = sessionRefLabel(notification.sessionId, notification.sessionTitle)
   // Only a real excerpt wins over the assistant summary: a blank failure text
   // must fall through instead of suppressing the recorded summary.
   const error = presentLine(notification.error)
@@ -169,6 +186,13 @@ export function isDevLeadReportKind(value: unknown): value is DevLeadReportKind 
  * Same sender, turn, kind, and message map to the same id, so a retried tool
  * call or a replayed durable record cannot duplicate the lead's digest. The
  * message is hashed rather than embedded to keep ids compact.
+ *
+ * The hash is a 32-bit FNV-1a variant: two different messages of the same
+ * sender/turn/kind can theoretically collide (~2^-32 per pair, at most a handful
+ * of reports per turn), and the fold would treat the second as a duplicate.
+ * That residual risk is accepted deliberately: the id is a durable-record
+ * contract, so widening the hash later would orphan existing records and must
+ * ride a record-version change rather than a silent algorithm swap.
  * @param senderSessionId - reporting Session identity.
  * @param turn - reporter's current turn (0 before the first turn).
  * @param kind - report kind.
@@ -195,11 +219,12 @@ export function devLeadReportId(
  * @returns a single line naming the sender, kind, and summary/message excerpt.
  */
 export function reportLine(report: DevLeadReport): string {
-  const title = presentLine(report.senderSessionTitle)
-  const who = title === undefined ? report.senderSessionId : `${title} (${report.senderSessionId})`
-  const detail = presentLine(report.summary) ?? excerptLine(report.message, DEVLEAD_ERROR_EXCERPT_MAX)
+  const who = sessionRefLabel(report.senderSessionId, report.senderSessionTitle)
+  const detail = presentLine(report.summary) ?? presentLine(report.message)
   const suffix = detail === undefined ? '' : `: ${detail}`
-  return `${who} — report ${REPORT_KIND_LABELS[report.kind]}${suffix}`
+  // A drifted kind still renders as a neutral line instead of "report undefined".
+  const kind = REPORT_KIND_LABELS[report.kind] ?? String(report.kind)
+  return `${who} — report ${kind}${suffix}`
 }
 
 /**
