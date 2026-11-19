@@ -17,6 +17,17 @@
 - 浏览器端的视觉行为不能只靠单测判断，按
   [docs/UI-VERIFICATION.md](docs/UI-VERIFICATION.md) 在隔离 profile 里验收。
 
+## DSH 源码核对
+
+- 本机只读源码克隆 `/Users/guoyk/Workspace/src/deepseek-harness` 必须始终跟踪最新
+  `master`：可以 `git fetch --all --tags` + `git pull --ff-only` 更新到最新，但不要把主
+  checkout 切到旧 tag/分支，也不要在其中修改源码。
+- 核对特定版本（如 `dsh-v0.2.2-rc.1` – `dsh-v0.2.2-rc.5`）的实现差异时，用
+  `git worktree add <独立目录> <tag>` 检出到仓库外的独立目录查阅；用完执行
+  `git worktree remove <独立目录>` 清理，不要用 checkout/switch 污染主 clone。
+- 运行行为以本机安装版 DSH 为准；安装版与源码 `master` 有版本差异时，在交付说明中注明
+  实际版本，并说明兼容结论的依据。
+
 ## 发布纪律（硬门禁）
 
 - **没有人类明确指示，不 push、不打 tag、不 stage/approve、不创建 GitHub Release。**
