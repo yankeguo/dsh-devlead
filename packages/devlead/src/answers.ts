@@ -85,6 +85,42 @@ export class DevLeadAnswerTracker {
    * @param entry - admitted answer facts.
    */
   remember(entry: AnswerMemoryEntry): void {
+    this.insert(entry)
+  }
+
+  /**
+   * Seed the latest durable answer fact of one question. The caller passes the
+   * newest record per question (not every audit row), so a discarded answer
+   * seeds as discarded and the question stays open after a restart. A live
+   * memory entry is never rewound: a same-messageId admission keeps any observed
+   * claim/presentation, a durable terminal discard wins over a stale admission,
+   * and a newer different-messageId fact replaces an older one.
+   * @param answer - newest durable answer lifecycle record of the question.
+   */
+  seed(answer: DevLeadReportAnswer): void {
+    const key = questionKey(answer.leadSessionId, answer.reportId)
+    const existing = this.byQuestion.get(key)
+    if (existing !== undefined) {
+      if (existing.messageId === answer.messageId) {
+        // Same answer: a durable terminal discard/failed is authoritative; an
+        // admitted/claimed record never rewinds an observed claim/presentation.
+        if (answer.status === 'discarded' || answer.status === 'failed') {
+          existing.status = answer.status
+          existing.at = answer.at
+        }
+        return
+      }
+      // A different answer message: only a strictly newer durable fact replaces
+      // the live entry (the durable audit is append-only, newest last).
+      if (existing.at >= answer.at) return
+      this.byMessage.delete(messageKey(existing.sessionId, existing.messageId))
+      this.byQuestion.delete(key)
+    }
+    this.insert(entryOfRecord(answer))
+  }
+
+  /** Insert one entry under both indexes and trim to the bounded size. */
+  private insert(entry: AnswerMemoryEntry): void {
     const key = questionKey(entry.leadSessionId, entry.reportId)
     const previous = this.byQuestion.get(key)
     if (previous !== undefined) this.byMessage.delete(messageKey(previous.sessionId, previous.messageId))
@@ -98,36 +134,6 @@ export class DevLeadAnswerTracker {
       this.byQuestion.delete(oldest)
       if (evicted !== undefined) this.byMessage.delete(messageKey(evicted.sessionId, evicted.messageId))
     }
-  }
-
-  /**
-   * Seed one durable answer fact when no live memory entry exists for its
-   * question. Memory only ever advances a seeded admission, so a re-seed of
-   * the same durable fact never rewinds an observed claim/presentation.
-   * @param answer - durable answer lifecycle record.
-   */
-  seed(answer: DevLeadReportAnswer): void {
-    const key = questionKey(answer.leadSessionId, answer.reportId)
-    if (this.byQuestion.has(key)) return
-    if (answer.status !== 'admitted' && answer.status !== 'claimed') return
-    const entry: AnswerMemoryEntry = {
-      reportId: answer.reportId,
-      leadSessionId: answer.leadSessionId,
-      sessionId: answer.sessionId,
-      messageId: answer.messageId,
-      status: answer.status,
-      at: answer.at,
-      firstAdmittedAt: answer.answeredAt ?? answer.at,
-      ...(answer.presentedAt === undefined ? {} : { presentedAt: answer.presentedAt }),
-      ...(answer.idempotencyKey === undefined ? {} : { idempotencyKey: answer.idempotencyKey }),
-      textHash: answer.textHash,
-      ...(answer.textExcerpt === undefined ? {} : { textExcerpt: answer.textExcerpt }),
-      primitive: answer.primitive ?? 'steer',
-      boundary: answer.boundary ?? 'next-step',
-      wakeRequested: answer.wakeRequested ?? true,
-    }
-    this.byQuestion.set(key, entry)
-    this.byMessage.set(messageKey(entry.sessionId, entry.messageId), entry)
   }
 
   /**
@@ -238,6 +244,57 @@ export function discardedAnswerOf(entry: AnswerMemoryEntry, at: number): DevLead
     status: 'discarded',
     textHash: entry.textHash,
     answeredAt: entry.firstAdmittedAt,
+    ...(entry.idempotencyKey === undefined ? {} : { idempotencyKey: entry.idempotencyKey }),
+    ...(entry.textExcerpt === undefined ? {} : { textExcerpt: entry.textExcerpt }),
+    primitive: entry.primitive,
+    boundary: entry.boundary,
+    wakeRequested: entry.wakeRequested,
+  }
+}
+
+/**
+ * Project one durable answer record into a memory entry, preserving its status
+ * (including terminal discarded/failed/presented) so a restart seeds the exact
+ * durable state.
+ * @param answer - durable answer lifecycle record.
+ * @returns the equivalent memory entry.
+ */
+export function entryOfRecord(answer: DevLeadReportAnswer): AnswerMemoryEntry {
+  return {
+    reportId: answer.reportId,
+    leadSessionId: answer.leadSessionId,
+    sessionId: answer.sessionId,
+    messageId: answer.messageId,
+    status: answer.status,
+    at: answer.at,
+    firstAdmittedAt: answer.answeredAt ?? answer.at,
+    ...(answer.presentedAt === undefined ? {} : { presentedAt: answer.presentedAt }),
+    ...(answer.idempotencyKey === undefined ? {} : { idempotencyKey: answer.idempotencyKey }),
+    textHash: answer.textHash,
+    ...(answer.textExcerpt === undefined ? {} : { textExcerpt: answer.textExcerpt }),
+    primitive: answer.primitive ?? 'steer',
+    boundary: answer.boundary ?? 'next-step',
+    wakeRequested: answer.wakeRequested ?? true,
+  }
+}
+
+/**
+ * Project one memory entry back into the durable record shape, so the service
+ * can merge a live observation with the durable audit on equal footing.
+ * @param entry - tracked answer entry.
+ * @returns the equivalent record value.
+ */
+export function recordOfEntry(entry: AnswerMemoryEntry): DevLeadReportAnswer {
+  return {
+    reportId: entry.reportId,
+    leadSessionId: entry.leadSessionId,
+    sessionId: entry.sessionId,
+    messageId: entry.messageId,
+    at: entry.at,
+    status: entry.status,
+    textHash: entry.textHash,
+    answeredAt: entry.firstAdmittedAt,
+    ...(entry.presentedAt === undefined ? {} : { presentedAt: entry.presentedAt }),
     ...(entry.idempotencyKey === undefined ? {} : { idempotencyKey: entry.idempotencyKey }),
     ...(entry.textExcerpt === undefined ? {} : { textExcerpt: entry.textExcerpt }),
     primitive: entry.primitive,

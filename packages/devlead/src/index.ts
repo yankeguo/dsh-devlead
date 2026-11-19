@@ -88,7 +88,7 @@ import {
   resetRecord,
   watchRecord,
 } from './domain.ts'
-import { DevLeadAnswerTracker, discardedAnswerOf } from './answers.ts'
+import { DevLeadAnswerTracker, discardedAnswerOf, recordOfEntry } from './answers.ts'
 import type { AnswerMemoryEntry } from './answers.ts'
 import {
   planLeadToChild,
@@ -114,6 +114,7 @@ import {
   isAnswerMessage,
   isOwnRetractable,
   keptInputsOf,
+  locatedInputs,
   pendingAnswersOf,
   queuedInputsOf,
   restoreInputs,
@@ -127,7 +128,6 @@ import {
   devLeadProjectionView,
   emptyDevLeadProjectionState,
   latestAnswerOf,
-  questionAnswerViewOf,
 } from './fold.ts'
 import {
   alreadyActiveMessage,
@@ -282,6 +282,9 @@ interface IdempotencyWindowEntry {
 
 /** Maximum remembered idempotency keys per Host process; FIFO eviction bounds it. */
 const MAX_IDEMPOTENCY_WINDOW = 512
+
+/** Maximum queued answer discards per cold lead; the newest are kept. */
+const MAX_PENDING_ANSWER_DISCARDS = 128
 
 /**
  * Admission failure after the interrupt stop was already requested. The stop
@@ -688,6 +691,15 @@ export class DevLeadService extends Service {
    * pre-stop snapshot instead.
    */
   private readonly interrupting = new Set<string>()
+
+  /**
+   * Answer discard records that could not be appended yet because the lead's
+   * Session log was cold/detached (or a write failed). They are drained when the
+   * lead becomes live again, so a discard observed while the lead was cold still
+   * reaches the durable audit and the question stays open across a restart.
+   * Bounded per lead; the newest discards are kept.
+   */
+  private readonly pendingAnswerDiscards = new Map<string, DevLeadReportAnswer[]>()
 
   /** Durable report outbox; undefined when the Host composes no storage-domain. */
   private outbox: DevLeadReportOutbox | undefined
@@ -2053,8 +2065,10 @@ export class DevLeadService extends Service {
         ...(questionId === undefined ? {} : { questionId }),
         ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
       }
+      let answerWarning: string | undefined
       if (intent === 'answer' && questionId !== undefined) {
-        this.recordAnswerAdmission(agent, targetId, questionId, text, idempotencyKey, admission.delivery)
+        const recorded = await this.recordAnswerAdmission(agent, targetId, questionId, text, idempotencyKey, admission.delivery)
+        answerWarning = recorded.warning
       }
       if (windowKey !== undefined) {
         this.idempotencyWindow.delete(windowKey)
@@ -2072,6 +2086,7 @@ export class DevLeadService extends Service {
         interrupted: admission.interrupted,
         ...(admission.retainedInputs === undefined ? {} : { retainedInputs: admission.retainedInputs }),
         delivery,
+        ...(answerWarning === undefined ? {} : { warning: answerWarning }),
       }
     })
   }
@@ -3583,10 +3598,13 @@ export class DevLeadService extends Service {
    * prompt is admitted immediately afterwards, and the Agent reclassifies a
    * wake after an aborted phase to the next turn and latches it until the
    * aborted activity converges, so the prompt cannot enter the cancelling turn.
-   * The inbox retention restore is best-effort. A `clear-all` stop discards
-   * pending answers (recording them discarded so their questions reopen);
-   * `keep`/`clear-own` retain them. A new answer replaces any still-pending
-   * older answer of the same question.
+   * The inbox retention restore is best-effort. A `clear-all` stop discards the
+   * pending answers it actually removed (recording them discarded so their
+   * questions reopen); an answer the stop left pending is not discarded.
+   * `keep`/`clear-own` retain pending answers. A new answer to an OPEN question
+   * discards a stale pending answer message of that question; it cannot replace
+   * an active answer (the policy rejects a different answer to an answered
+   * question before admission — use `clear-all` to discard and reopen).
    *
    * The result's `boundary` reflects where the message actually landed: DSH may
    * reclassify a waking steer to next-turn on an aborted phase, so the inbox is
@@ -3690,14 +3708,24 @@ export class DevLeadService extends Service {
       }
     }
     if (interrupted && clearsAll) {
+      // Only discard answers the stop actually removed. A stop provider that
+      // failed or did not clear the inbox leaves the answer pending, so it must
+      // not be marked discarded (its question stays answered).
+      const stillPending = new Set(locatedInputs(target).map(entry => String(entry.message.id)))
       for (const pending of answersBeforeClear) {
         if (pending.senderSessionId !== leadId) continue
+        if (stillPending.has(String(pending.message.id))) continue
         this.discardPendingAnswer(targetId, pending.message.id, pending.questionId, leadId)
       }
     }
-    // A new answer replaces any still-pending older answer of the same question
-    // (for example one a keep/clear-own restore brought back after a reopen), so
-    // two answers never coexist and the newest record is authoritative.
+    // Replacement edge: an OPEN question may still carry a stale pending answer
+    // message (for example one a keep/clear-own restore brought back after a
+    // reopen). A new answer to that open question discards the stale message so
+    // two answers never coexist. This does NOT bypass the answered-question
+    // guard: an active pending answer makes the question answered, and the
+    // policy rejects a different new answer (or replays an idempotent retry)
+    // before admission ever reaches here — interrupt+answer cannot replace an
+    // active answer; use interrupt_inbox:"clear-all" to discard it and reopen.
     if (options.intent === 'answer' && options.questionId !== undefined) {
       for (const pending of pendingAnswersOf(target)) {
         if (pending.questionId !== options.questionId || pending.senderSessionId !== leadId) continue
@@ -3853,8 +3881,48 @@ export class DevLeadService extends Service {
   }
 
   /**
-   * Read the derived question/answer state of one question report, overlaying
-   * the runtime's in-memory inbox observation on the durable fold.
+   * Resolve the newest answer fact of one question by merging the durable audit
+   * (authoritative for which answer is latest and whether it was discarded) with
+   * the in-memory inbox observation (which only advances an admitted answer to
+   * claimed/presented). This is never unconditional memory-first: a durable
+   * discard reopens the question even if a stale memory entry still says
+   * admitted, and a newer durable re-answer replaces an older memory entry, so a
+   * restart restores the exact durable state.
+   * @param agent - exact live lead Agent.
+   * @param reportId - question report identity.
+   * @returns the newest merged answer record, or undefined when unanswered.
+   */
+  private resolvedAnswer(agent: Agent, reportId: string): DevLeadReportAnswer | undefined {
+    const leadId = String(agent.id)
+    const record = latestAnswerOf(this.strictStateOf(agent.session).answers, reportId)
+    const entry = this.answers.entryOfQuestion(leadId, reportId)
+    if (record === undefined) return entry === undefined ? undefined : recordOfEntry(entry)
+    if (entry === undefined) return record
+    if (entry.messageId !== record.messageId) {
+      // Different answer messages: the strictly newer fact wins; a tie keeps the
+      // durable record (the append-only audit is authoritative).
+      return entry.at > record.at ? recordOfEntry(entry) : record
+    }
+    // Same answer message: a memory discard the audit may not yet carry wins
+    // (the answer really left the inbox); a durable terminal discard wins over a
+    // stale memory admission; otherwise memory may advance admitted →
+    // claimed/presented.
+    if (entry.status === 'discarded' || entry.status === 'failed') return recordOfEntry(entry)
+    if (record.status === 'discarded' || record.status === 'failed') return record
+    if (record.status === 'admitted' && (entry.status === 'claimed' || entry.status === 'presented')) {
+      return {
+        ...record,
+        status: entry.status,
+        at: entry.at,
+        ...(entry.presentedAt === undefined ? {} : { presentedAt: entry.presentedAt }),
+      }
+    }
+    return record
+  }
+
+  /**
+   * Read the derived question/answer state of one question report from the
+   * merged durable + in-memory answer fact.
    * @param agent - exact live lead Agent.
    * @param reportId - question report identity.
    * @returns the question/answer view, or undefined when the report is not a retained question.
@@ -3863,22 +3931,22 @@ export class DevLeadService extends Service {
   questionAnswerView(agent: Agent, reportId: string): DevLeadQuestionAnswerView | undefined {
     this.assertLive(agent)
     const state = this.strictStateOf(agent.session)
-    const foldView = questionAnswerViewOf(state, reportId)
-    if (foldView === undefined) return undefined
-    const entry = this.answers.entryOfQuestion(String(agent.id), reportId)
-    if (entry === undefined) return foldView
+    const report = state.reports.find(existing => existing.id === reportId)
+    if (report === undefined || report.kind !== 'question') return undefined
+    const fact = this.resolvedAnswer(agent, reportId)
+    if (fact === undefined) return { questionStatus: 'open' }
     return {
-      questionStatus: entry.status === 'discarded' || entry.status === 'failed' ? 'open' : 'answered',
-      answerStatus: entry.status,
-      answerMessageId: entry.messageId,
-      answeredAt: entry.firstAdmittedAt,
-      ...(entry.presentedAt === undefined ? {} : { presentedAt: entry.presentedAt }),
+      questionStatus: fact.status === 'discarded' || fact.status === 'failed' ? 'open' : 'answered',
+      answerStatus: fact.status,
+      answerMessageId: fact.messageId,
+      ...(fact.answeredAt === undefined ? {} : { answeredAt: fact.answeredAt }),
+      ...(fact.presentedAt === undefined ? {} : { presentedAt: fact.presentedAt }),
     }
   }
 
   /**
-   * Read the newest answer fact of one question (memory first, then the durable
-   * audit) for retry recognition and conflict messages.
+   * Read the newest answer fact of one question for retry recognition and
+   * conflict messages.
    * @param agent - exact live lead Agent.
    * @param reportId - question report identity.
    * @returns the newest answer's retry/excerpt facts, or undefined when unanswered.
@@ -3887,9 +3955,7 @@ export class DevLeadService extends Service {
     agent: Agent,
     reportId: string,
   ): { readonly textHash: string; readonly idempotencyKey?: string; readonly textExcerpt?: string } | undefined {
-    const entry = this.answers.entryOfQuestion(String(agent.id), reportId)
-    if (entry !== undefined) return entry
-    return latestAnswerOf(this.strictStateOf(agent.session).answers, reportId)
+    return this.resolvedAnswer(agent, reportId)
   }
 
   /**
@@ -3901,8 +3967,7 @@ export class DevLeadService extends Service {
    * @throws {@link DevLeadError} `DEVLEAD_QUESTION_NOT_FOUND` when no answer fact exists.
    */
   private answerReceiptOf(agent: Agent, questionId: string): DevLeadPromptDelivery {
-    const entry = this.answers.entryOfQuestion(String(agent.id), questionId)
-    const fact = entry ?? latestAnswerOf(this.strictStateOf(agent.session).answers, questionId)
+    const fact = this.resolvedAnswer(agent, questionId)
     if (fact === undefined) {
       throw new DevLeadError(
         `question "${questionId}" has no answer receipt to replay; read devlead_notifications`,
@@ -3921,23 +3986,27 @@ export class DevLeadService extends Service {
 
   /**
    * Record one successfully admitted answer: append the durable `admitted`
-   * fact to the lead's log (a write failure is a warning, not a failed answer)
-   * and register the in-memory lifecycle entry.
+   * fact to the lead's log, await its durability checkpoint, and register the
+   * in-memory lifecycle entry. The answer message is already in the child inbox,
+   * so a durable-write failure cannot un-admit it; instead the failure is
+   * surfaced as a receipt warning (the question state may not survive a
+   * restart) rather than silently claiming a durable answer.
    * @param agent - exact live lead Agent.
    * @param targetId - child Session identity.
    * @param questionId - question report identity.
    * @param text - trimmed answer prompt (hashed without the runtime prefix).
    * @param idempotencyKey - lead-supplied key, when provided.
    * @param delivery - the admission receipt.
+   * @returns a warning when the durable answer record could not be persisted.
    */
-  private recordAnswerAdmission(
+  private async recordAnswerAdmission(
     agent: Agent,
     targetId: string,
     questionId: string,
     text: string,
     idempotencyKey: string | undefined,
     delivery: DevLeadPromptDelivery,
-  ): void {
+  ): Promise<{ readonly warning?: string }> {
     const at = Date.now()
     const leadId = String(agent.id)
     const textHash = answerTextHash(text)
@@ -3961,14 +4030,6 @@ export class DevLeadService extends Service {
       boundary: delivery.boundary,
       wakeRequested: delivery.wakeRequested,
     }
-    try {
-      appendPluginRecord(agent.session, DEVLEAD_REPORT_ANSWER_RECORD_TYPE, reportAnswerRecord(answer))
-    } catch (error: unknown) {
-      this.ctx.logger.warn(
-        `devlead: could not record the answer to question "${questionId}" for lead "${leadId}": ${thrownMessage(error)}`,
-      )
-    }
-    void this.flushDurably(agent.session, `answer record for question "${questionId}"`)
     this.answers.remember({
       reportId: questionId,
       leadSessionId: leadId,
@@ -3984,27 +4045,104 @@ export class DevLeadService extends Service {
       boundary: delivery.boundary,
       wakeRequested: delivery.wakeRequested,
     })
+    let warning: string | undefined
+    try {
+      appendPluginRecord(agent.session, DEVLEAD_REPORT_ANSWER_RECORD_TYPE, reportAnswerRecord(answer))
+    } catch (error: unknown) {
+      warning = `the answer was delivered to the child inbox but its durable record could not be written `
+        + `(${thrownMessage(error)}); the question state may not survive a Host restart`
+      this.ctx.logger.warn(`devlead: could not record the answer to question "${questionId}" for lead "${leadId}": ${thrownMessage(error)}`)
+    }
+    try {
+      await this.ctx.sessions.flush(agent.session)
+    } catch (error: unknown) {
+      warning ??= `the answer record for question "${questionId}" could not be flushed to persistence `
+        + `(${thrownMessage(error)}); a later checkpoint may still persist it`
+      this.ctx.logger.warn(`devlead: answer record for question "${questionId}" could not be flushed: ${thrownMessage(error)}`)
+    }
+    return warning === undefined ? {} : { warning }
   }
 
   /**
-   * Append one durable discard fact for a tracked answer and flush best-effort.
-   * A cold/detached lead log cannot accept the record yet; the in-memory status
-   * still reopened the question, and a later live index reconciles the audit.
+   * Append one durable discard fact for a tracked answer and await its flush. A
+   * cold/detached lead log (or a failed write) cannot accept the record yet, so
+   * the discard is queued and drained when the lead becomes live again
+   * ({@link reconcileAnswerDiscards}); the in-memory status already reopened the
+   * question, and the queue keeps that reopen durable across a restart.
    * @param entry - the discarded answer entry.
    * @param at - discard instant.
    */
   private async writeAnswerDiscard(entry: AnswerMemoryEntry, at: number): Promise<void> {
-    const leadSession = this.ctx.sessions.get(toSessionId(entry.leadSessionId))
-    if (leadSession === undefined) return
-    try {
-      appendPluginRecord(leadSession, DEVLEAD_REPORT_ANSWER_RECORD_TYPE, reportAnswerRecord(discardedAnswerOf(entry, at)))
-    } catch (error: unknown) {
-      this.ctx.logger.warn(
-        `devlead: could not record the discard of answer "${entry.messageId}": ${thrownMessage(error)}`,
-      )
+    await this.persistAnswerDiscard(discardedAnswerOf(entry, at))
+  }
+
+  /**
+   * Persist one discard record to its lead's log, queueing it for reconciliation
+   * when the lead is cold/detached or the write fails.
+   * @param discard - the discard record value.
+   */
+  private async persistAnswerDiscard(discard: DevLeadReportAnswer): Promise<void> {
+    const leadSession = this.ctx.sessions.get(toSessionId(discard.leadSessionId))
+    if (leadSession === undefined) {
+      this.queueAnswerDiscard(discard)
       return
     }
-    await this.flushDurably(leadSession, `answer discard for question "${entry.reportId}"`)
+    try {
+      appendPluginRecord(leadSession, DEVLEAD_REPORT_ANSWER_RECORD_TYPE, reportAnswerRecord(discard))
+    } catch (error: unknown) {
+      this.ctx.logger.warn(
+        `devlead: could not record the discard of answer "${discard.messageId}": ${thrownMessage(error)}`,
+      )
+      this.queueAnswerDiscard(discard)
+      return
+    }
+    try {
+      await this.ctx.sessions.flush(leadSession)
+    } catch (error: unknown) {
+      this.ctx.logger.warn(
+        `devlead: answer discard for question "${discard.reportId}" could not be flushed: ${thrownMessage(error)}`,
+      )
+    }
+  }
+
+  /** Queue one discard for a cold lead, bounded per lead (newest kept). */
+  private queueAnswerDiscard(discard: DevLeadReportAnswer): void {
+    const queue = this.pendingAnswerDiscards.get(discard.leadSessionId) ?? []
+    const deduped = queue.filter(existing => !(existing.reportId === discard.reportId
+      && existing.messageId === discard.messageId && existing.status === discard.status))
+    deduped.push(discard)
+    this.pendingAnswerDiscards.set(discard.leadSessionId, deduped.slice(-MAX_PENDING_ANSWER_DISCARDS))
+  }
+
+  /**
+   * Drain the queued answer discards of one lead now that its Session log is
+   * live, so a discard observed while the lead was cold reaches the durable
+   * audit. Called when the lead becomes live ({@link seedAnswersForAgent}).
+   * @param leadId - lead Session identity.
+   */
+  private async reconcileAnswerDiscards(leadId: string): Promise<void> {
+    const queue = this.pendingAnswerDiscards.get(leadId)
+    if (queue === undefined || queue.length === 0) return
+    this.pendingAnswerDiscards.delete(leadId)
+    const leadSession = this.ctx.sessions.get(toSessionId(leadId))
+    if (leadSession === undefined) {
+      // Still cold: keep the queue for the next live index.
+      this.pendingAnswerDiscards.set(leadId, queue)
+      return
+    }
+    for (const discard of queue) {
+      try {
+        appendPluginRecord(leadSession, DEVLEAD_REPORT_ANSWER_RECORD_TYPE, reportAnswerRecord(discard))
+      } catch (error: unknown) {
+        this.ctx.logger.warn(`devlead: could not reconcile answer discard "${discard.messageId}": ${thrownMessage(error)}`)
+        this.queueAnswerDiscard(discard)
+      }
+    }
+    try {
+      await this.ctx.sessions.flush(leadSession)
+    } catch (error: unknown) {
+      this.ctx.logger.warn(`devlead: reconciled answer discards for lead "${leadId}" could not be flushed: ${thrownMessage(error)}`)
+    }
   }
 
   /**
@@ -4048,13 +4186,6 @@ export class DevLeadService extends Service {
       ...(record.boundary === undefined ? {} : { boundary: record.boundary }),
       ...(record.wakeRequested === undefined ? {} : { wakeRequested: record.wakeRequested }),
     }
-    try {
-      appendPluginRecord(leadSession, DEVLEAD_REPORT_ANSWER_RECORD_TYPE, reportAnswerRecord(discarded))
-    } catch (error: unknown) {
-      this.ctx.logger.warn(`devlead: could not record the discard of answer "${messageId}": ${thrownMessage(error)}`)
-      return
-    }
-    void this.flushDurably(leadSession, `answer discard for question "${questionId}"`)
     this.answers.remember({
       reportId: questionId,
       leadSessionId: leadId,
@@ -4070,6 +4201,7 @@ export class DevLeadService extends Service {
       boundary: record.boundary ?? 'next-step',
       wakeRequested: record.wakeRequested ?? true,
     })
+    void this.persistAnswerDiscard(discarded)
   }
 
   /**
@@ -4111,13 +4243,22 @@ export class DevLeadService extends Service {
       if (leadSession === undefined) continue
       const state = this.projectionHandle.stateOf(leadSession)
       if (state.failure !== null) continue
+      // Seed only the newest record per question targeting this Session, so a
+      // discarded answer seeds as discarded (question open) rather than replaying
+      // an earlier admitted row.
+      const latest = new Map<string, DevLeadReportAnswer>()
       for (const answer of state.answers) {
-        if (answer.sessionId === sessionId) this.answers.seed(answer)
+        if (answer.sessionId === sessionId) latest.set(answer.reportId, answer)
       }
+      for (const answer of latest.values()) this.answers.seed(answer)
     }
     const ownState = this.projectionHandle.stateOf(agent.session)
     if (ownState.failure === null && ownState.enabled) {
-      for (const answer of ownState.answers) this.answers.seed(answer)
+      const latest = new Map<string, DevLeadReportAnswer>()
+      for (const answer of ownState.answers) latest.set(answer.reportId, answer)
+      for (const answer of latest.values()) this.answers.seed(answer)
+      // The lead is live now: drain any discards queued while it was cold.
+      void this.reconcileAnswerDiscards(sessionId)
     }
   }
 

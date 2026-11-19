@@ -1053,17 +1053,24 @@ the `devlead_report` conclude/durable/memory-only paths with a writability-recov
 claim), and two real prompted child turns against a scripted `llm/stream` script (real turn/step/tool
 events): the concluding question batch still runs a committed next-step marker in a later step before
 the single completed `turn/end`, and a gate deny does not stop the model continuing (case 33).
+The Phase 1d round adds the answer-routing evidence: a real scripted child turn where the lead
+answers a running child via `intent:"answer"` steer (presented in a later real step before the single
+completed `turn/end`, same-key/same-text retry returns the original receipt, a different answer
+conflicts, durable answer record + answered/presented view), plus the answer inbox lifecycle
+(queuedInputs metadata, retract refusing the answer, clear-own keeping the pending answer, clear-all
+discarding it and reopening the question).
 Per-phase totals are pinned (a deleted check fails the phase) and PASS/SKIP print separately:
-**174/174 per flow** (phase 1 = 27, phase 1b = 12, phase 2 = 23, phase 3 = 112; 171 PASS + 3
+**188/188 per flow** (phase 1 = 27, phase 1b = 12, phase 2 = 23, phase 3 = 126; 185 PASS + 3
 credential-less SKIP), baseline DSH 0.2.2-rc.5; `--no-worktree` skips only the experimental phase,
-reporting **151/151** (phases 1 + 1b + 3) for debugging. The compatibility runs above used each
+reporting **165/165** (phases 1 + 1b + 3) for debugging. The compatibility runs above used each
 release's harness: npm-installed `0.2.2-rc.1` through `0.2.2-rc.5` CLIs (`DSH_BIN`, `--no-worktree`)
 reported **120/120** each — on rc.1 the Team success checks become expected-unavailable assertions
 (`DEVLEAD_TEAM_UNAVAILABLE`, no Session created), while rc.2–rc.5 run the Team success path — and
 the rc.4 / rc.5 installed and patch flows passed **143/143** with the worktree phase. The 0.2.6+
 audit round reran rc.5 on the then-current harness (`--no-worktree` 123/123, full flows 146/146);
 the queued-input round reran rc.5 on its harness: `--no-worktree` **127/127** and the
-installed/patch full flows **150/150** each. The probe is a private
+installed/patch full flows **150/150** each; the Phase 1c evidence round pinned **174/174** and the
+Phase 1d answer-routing round pinned **188/188** (installed/patch full flows each). The probe is a private
 test-only package under `scripts/e2e-probe/`, not a published or workspace package. The profile
 mutations happen only in the throwaway profile under `os.tmpdir()`; no pnpm install, network, or
 lockfile change is involved.

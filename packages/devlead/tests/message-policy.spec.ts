@@ -405,16 +405,25 @@ describe('question and answer admission constraints', () => {
     }))).toMatchObject({ status: 'rejected', reason: 'question-already-answered' })
   })
 
-  it.each(['admitted', 'claimed', 'presented'] as const)('replays the same idempotency key without redelivery (%s)', answerStatus => {
+  it.each(['admitted', 'claimed', 'presented'] as const)('replays the same idempotency key + same text without redelivery (%s)', answerStatus => {
     const plan = planLeadToChild(answerInput('running', {
       question: answeredQuestion(answerStatus),
-      answerRetry: { sameIdempotencyKey: true, sameText: false },
+      answerRetry: { sameIdempotencyKey: true, sameText: true },
     }))
     expect(plan).toEqual({
       status: 'idempotent-replay', lane: 'action-required', primitive: null, boundary: null,
       wakeRequested: false, resumeRequired: false, cancelRequested: false,
       turnEndRequested: false, header: null, reason: 'same-idempotency-key', diagnostics: [],
     })
+  })
+
+  it.each(['admitted', 'claimed', 'presented'] as const)('conflicts on the same key with different text (%s)', answerStatus => {
+    // The idempotency key never authorizes a different answer: same key but
+    // different text is a conflict, not a replay.
+    expect(planLeadToChild(answerInput('running', {
+      question: answeredQuestion(answerStatus),
+      answerRetry: { sameIdempotencyKey: true, sameText: false },
+    }))).toMatchObject({ status: 'rejected', reason: 'question-already-answered' })
   })
 
   it('replays identical answer text without claiming that the answer was presented', () => {

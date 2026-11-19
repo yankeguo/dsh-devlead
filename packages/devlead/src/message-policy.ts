@@ -64,7 +64,12 @@ export type QuestionPolicyState =
   | { readonly questionStatus: 'answered'; readonly answerStatus: 'admitted' | 'claimed' | 'presented' }
   | { readonly questionStatus: 'expired' | 'cancelled'; readonly answerStatus?: AnswerStatus }
 
-/** Facts used only to recognize a retry of an already admitted answer. */
+/**
+ * Facts used only to recognize a retry of an already admitted answer. A retry
+ * replays only when `sameText` is true (the answer text matches); a matching
+ * `sameIdempotencyKey` with the same text is recognized as a key replay. A
+ * different text is a conflict even when the key matches.
+ */
 export interface AnswerRetryPolicy {
   readonly sameIdempotencyKey?: boolean
   readonly sameText?: boolean
@@ -400,8 +405,13 @@ export function planLeadToChild(input: LeadToChildPolicyInput): DeliveryPlan {
       return rejected('question-not-open')
     }
     if (input.question.questionStatus === 'answered') {
-      if (input.answerRetry?.sameIdempotencyKey === true) return idempotentReplay('same-idempotency-key')
-      if (input.answerRetry?.sameText === true) return idempotentReplay('same-text')
+      // An idempotent retry must carry the SAME answer text. A matching key with
+      // the same text is a key replay; the same text alone is a text replay. A
+      // different text is always a conflict, even under the same idempotency key
+      // (the key never authorizes a different answer).
+      if (input.answerRetry?.sameText === true) {
+        return idempotentReplay(input.answerRetry.sameIdempotencyKey === true ? 'same-idempotency-key' : 'same-text')
+      }
       return rejected('question-already-answered')
     }
   }

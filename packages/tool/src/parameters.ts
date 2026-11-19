@@ -177,16 +177,17 @@ export const TOOL_PARAMETERS = {
       type: 'string',
       description: 'Required for intent "answer": the question report id from the [DEV LEAD QUESTION] wake or '
         + 'devlead_notifications. Only valid with intent "answer". An open question accepts a new answer; an '
-        + 'already-answered question accepts only a same-text/same-idempotency_key retry (returns the original '
-        + 'receipt); a different answer fails with DEVLEAD_QUESTION_ALREADY_ANSWERED. An unknown/expired/cancelled '
-        + 'question fails with DEVLEAD_QUESTION_NOT_FOUND — continue with a normal instruction then.',
+        + 'already-answered question accepts only a retry with the SAME answer text (returns the original '
+        + 'receipt); a different text fails with DEVLEAD_QUESTION_ALREADY_ANSWERED even under the same '
+        + 'idempotency_key. An unknown/expired/cancelled question fails with DEVLEAD_QUESTION_NOT_FOUND — '
+        + 'continue with a normal instruction then.',
     },
     idempotency_key: {
       type: 'string',
       description: 'Optional key (max 200 code points) making a retry safe: resending the same key with the same '
         + 'prompt text returns the original admission receipt without a second delivery; a different text under '
-        + 'the same key is rejected. For answers the question_id already deduplicates; this key is mainly for '
-        + 'instruction/correction/background retries.',
+        + 'the same key is rejected. For answers the same text is required regardless of the key (a matching key '
+        + 'with the same text is a key replay); the key is mainly for instruction/correction/background retries.',
     },
     watch: {
       type: 'boolean',

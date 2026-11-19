@@ -2738,6 +2738,21 @@ describe('devlead_prompt_session intent surface (Phase 1d)', () => {
     expectValidOutput(harness, 'devlead_prompt_session', value)
   })
 
+  it('projects a durable-write warning when the core reports one', async () => {
+    const harness = boot()
+    harness.devLead.prompted = {
+      sessionId: 'session-1',
+      watched: true,
+      resumed: false,
+      interrupted: false,
+      delivery: { primitive: 'steer', boundary: 'next-step', wakeRequested: true, messageId: 'msg-answer', questionId: 'report-q' },
+      warning: 'the answer record could not be persisted',
+    }
+    const value = await harness.call('devlead_prompt_session', { session: 'session-1', prompt: 'use staging', intent: 'answer', question_id: 'report-q' })
+    expect((value as { warning: string }).warning).toBe('the answer record could not be persisted')
+    expectValidOutput(harness, 'devlead_prompt_session', value)
+  })
+
   it('translates the question error codes from the core', async () => {
     const harness = boot()
     harness.devLead.failures.set('promptSession', devLeadFailure('DEVLEAD_QUESTION_NOT_FOUND'))

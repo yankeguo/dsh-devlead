@@ -864,16 +864,22 @@ Phase 1c 轮补齐完整 question 证据：结构化 gate payload 与完整 wake
 `devlead_report` conclude/durable/memory-only 路径与只证明恢复可写性的 recovery report（不宣称
 replay），以及两条 scripted `llm/stream` 驱动的**真实 prompted child turn**（真实 turn/step/tool
 事件）：conclude 的 question batch 之后已提交 next-step marker 仍在后续 step 执行、先于唯一
-completed `turn/end`；gate deny 不阻止模型继续（用例 33）。每阶段总数已 pin（删 check 会失败），
-PASS/SKIP 分开输出：两条加载流各 **174/174**（阶段 1 27 + 阶段 1b 12 + 阶段 2 23 + 阶段 3 112；
-171 PASS + 3 条无凭据 SKIP），基线 DSH 0.2.2-rc.5；调试时可加 `--no-worktree` 跳过阶段 2
-（**151/151**，阶段 1 + 1b + 3）。上面的兼容运行
+completed `turn/end`；gate deny 不阻止模型继续（用例 33）。Phase 1d 轮补齐 answer routing 证据：
+一条真实 scripted child turn，lead 在 glob dispatch 期间用 `intent:"answer"` steer 回答运行中的
+child（答案在后续真实 step presented、先于唯一 completed `turn/end`；同键/同文本重试返回原
+receipt；不同答案冲突；durable answer record + answered/presented 视图），以及 answer inbox 生命周期
+（queuedInputs 元数据、retract 拒绝 answer、clear-own 保留 pending answer、clear-all 丢弃并重新 open
+question）。每阶段总数已 pin（删 check 会失败），
+PASS/SKIP 分开输出：两条加载流各 **188/188**（阶段 1 27 + 阶段 1b 12 + 阶段 2 23 + 阶段 3 126；
+185 PASS + 3 条无凭据 SKIP），基线 DSH 0.2.2-rc.5；调试时可加 `--no-worktree` 跳过阶段 2
+（**165/165**，阶段 1 + 1b + 3）。上面的兼容运行
 使用各自发布时点的 harness：用 npm 安装的 `0.2.2-rc.1` – `0.2.2-rc.5` CLI（`DSH_BIN`）各报告
 **120/120**——rc.1 上 Team 成功检查改为「预期不可用」（`DEVLEAD_TEAM_UNAVAILABLE`、不创建
 Session），rc.2–rc.5 走 Team 成功路径；rc.4 / rc.5 的 installed 与 patch 完整 flow 各通过
 **143/143**。0.2.6+ 审计轮曾按当时 harness 重跑 rc.5（`--no-worktree` 123/123、完整双流 146/146）；
 排队输入轮按其 harness 重跑 rc.5：`--no-worktree` **127/127**，installed/patch 完整双流各
-**150/150**。probe 是
+**150/150**；Phase 1c 证据轮 pin **174/174**，Phase 1d answer routing 轮 pin **188/188**
+（installed/patch 完整双流各）。probe 是
 `scripts/e2e-probe/` 下的私有测试包，不发布、不属于 workspace 包；profile 变更只发生在
 `os.tmpdir()` 下的一次性 profile，不涉及 pnpm install / 网络 / lockfile。
 

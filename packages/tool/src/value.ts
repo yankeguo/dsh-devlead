@@ -556,6 +556,10 @@ export const PROMPT_SESSION_OUTPUT = jsonOutput({
       description: 'Pending inputs restored after the stop under interrupt_inbox keep/clear-own; absent for clear-all and every no-op interrupt.',
     },
     delivery: required(DELIVERY_SCHEMA),
+    warning: {
+      type: 'string',
+      description: 'Present when an answer was delivered to the child inbox but its durable record could not be persisted/flushed; the question state may not survive a Host restart. The delivery itself still happened.',
+    },
   },
 } as const)
 
@@ -855,6 +859,7 @@ export function promptedSessionValue(prompted: DevLeadPromptedSession): InferVal
       ...delivery.questionId === undefined ? {} : { questionId: delivery.questionId },
       ...delivery.idempotencyKey === undefined ? {} : { idempotencyKey: delivery.idempotencyKey },
     },
+    ...prompted.warning === undefined ? {} : { warning: prompted.warning },
   }
 }
 

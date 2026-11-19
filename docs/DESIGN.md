@@ -1008,7 +1008,7 @@ blocked/decision/review 分支＋ `background`（progress/fyi）＋ source metad
   wake**；之后 followup/steer 打开 turn 时会一并 claim。它是 durable user-role context，
   不是 ephemeral，也不是「已注入上下文」的完成态。
 - `question_id` 仅在 `questionStatus:'open'` 时接受新的 answer；如果 answer 已在
-  `admitted`/`claimed`/`presented`，同 `idempotency_key` 或同文本的重试返回原 receipt。
+  `admitted`/`claimed`/`presented`，同文本的重试返回原 receipt（同键需同文本；不同文本即使同键也冲突）。
 - `watch:false`：允许，但结果 `watched:false` 并在描述里警告「你不会收到它的后续通知」。
   它不解除 target 被另一个 lead 监督时的拒绝规则。
 - `idempotency_key` 重复：Phase 1 仅做内存窗口去重；Phase 2 落 durable delivery record
@@ -1080,7 +1080,7 @@ blocked/decision/review 分支＋ `background`（progress/fyi）＋ source metad
 | `session` | string | 必填 | 现有 id / 唯一前缀解析不变 |
 | `prompt` | string | 必填 | 现有非空校验不变 |
 | `intent` | `'instruction' \| 'answer' \| 'correction' \| 'background'` | `'instruction'` | 语义意图；runtime 按 §4.4.4 映射到 followup/steer/inject |
-| `question_id` | string | 无 | 仅 `intent:'answer'` 使用；指向一个 question report。`questionStatus:'open'` 时接受新 answer；已 answered 时只允许同 `idempotency_key`/同文本的幂等重试 |
+| `question_id` | string | 无 | 仅 `intent:'answer'` 使用；指向一个 question report。`questionStatus:'open'` 时接受新 answer；已 answered 时只允许同文本的幂等重试（同键需同文本，不同文本即使同键也冲突） |
 | `idempotency_key` | string | 无 | 可选幂等键；Phase 1 内存窗口，Phase 2 durable delivery record |
 | `watch` | boolean | `true` | 不变 |
 | `interrupt` | boolean | `false` | 不变；`background` 时非法 |
@@ -1411,9 +1411,10 @@ If you need the human, ask them first with ask_user_question, then relay.
   1. report 存在、`kind:'question'`、`senderSessionId` 匹配 target、`leadSessionId === caller`、
      未 `expired`/`cancelled`；不满足 → `DEVLEAD_QUESTION_NOT_FOUND`。
   2. `questionStatus:'open'` → 接受新 answer。
-  3. `questionStatus:'answered'`（answer 已在 `admitted`/`claimed`/`presented`）→ 只允许同
-     `idempotency_key` 或同文本的幂等重试，返回原 receipt；不同文本 →
-     `DEVLEAD_QUESTION_ALREADY_ANSWERED`。
+  3. `questionStatus:'answered'`（answer 已在 `admitted`/`claimed`/`presented`）→ 只允许**同文本**
+     的幂等重试，返回原 receipt（同 `idempotency_key` + 同文本记为 key replay，仅同文本记为 text
+     replay）；不同文本 → `DEVLEAD_QUESTION_ALREADY_ANSWERED`，**即使 `idempotency_key` 相同也冲突**
+     （key 不授权不同 answer）。
   4. `questionStatus:'expired'`/`'cancelled'` → 拒绝，提示 lead 用普通 instruction。
 - 目标状态：answer 默认总是 `steer`：
   - running → `steer`（next-step）。
@@ -1426,9 +1427,9 @@ If you need the human, ask them first with ask_user_question, then relay.
 - answer record 在 admission 成功后写入，`answerStatus:'admitted'`；之后由
   `agent/inbox/claimed` 推进到 `claimed`，由进入 entered step 的 `user/message` 推进到
   `presented`。只有 `presented` 才算投递完成。
-- 重复 answer：校验顺序见上；同 `question_id` + 同 `idempotency_key`/同 prompt 返回原
+- 重复 answer：校验顺序见上；同 `question_id` + 同 prompt（可带同 `idempotency_key`）返回原
   receipt，不重复投递；不同 prompt 报 `DEVLEAD_QUESTION_ALREADY_ANSWERED` 并附已有 answer
-  摘要。lead 若确实要更正，发一条不带 `question_id` 的 instruction/correction。
+  摘要，同键不同文本同样冲突。lead 若确实要更正，发一条不带 `question_id` 的 instruction/correction。
 - `interrupt:true` + answer：先 cancel 当前 work，再 `followup` answer；answer record 写
   `admitted`，questionStatus `answered`，后续仍按 `claimed`/`presented` 推进。用于 child
   卡在长 tool batch、steer 送不到的场景。如果 inbox 中已有同一 question 的旧 answer，
@@ -1578,7 +1579,7 @@ Phase 1 前的 hub 只有一个 `pending` / `pendingReports` 队列和一个全�
 | question | 同上 + `plugin:devlead/report-answer` | report receipt durable；answer 在 admission 成功后 append | questionStatus/answerStatus 可恢复 |
 | lead prompt | child Session log `agent/inbox/spliced` + lead tool result | admission 成功即写 log；`flushDurably` 失败只 warning，不改变成功回执 | send/resume 失败返回错误；flush 失败不是重试信号（Phase 2 delivery record 才提供强持久化回执） |
 | lead background | child Session log `agent/inbox/spliced` | admission 成功即写 log；`flushDurably` 失败只 warning | send/resume 失败返回错误；flush 失败不是重试信号 |
-| answer | child inbox + lead answer record | 先 admission，成功后再写 answer record；`presented` 由 `user/message` 事件确认 | answer record 写失败只 warning，不改变 answerStatus（仍按 inbox 事件推进）；重试可能重复（`idempotency_key` 缓解）；discard/fail 时 question 回 open |
+| answer | child inbox + lead answer record | 先 admission，成功后写 answer record 并 **await flush**；`presented` 由 `user/message` 事件确认 | answer record append/flush 失败把警告反映到 prompt receipt 的 `warning`（投递已发生，question 状态可能不抗重启），不静默宣称 durable；cold/detached lead 的 discard 入队、lead 变 live 时对账落 durable；重试可能重复（`idempotency_key` 缓解）；discard/fail 时 question 回 open |
 | delivery receipt | lead tool result | tool result durable | 结果里有 `messageId`/`primitive`/`boundary`/`wakeRequested`；不是 `presented` 确认 |
 
 **at-least-once 与去重**
@@ -1874,7 +1875,7 @@ Phase 1 前的 hub 只有一个 `pending` / `pendingReports` 队列和一个全�
 | 15 | answer cold | resume + `steer` |
 | 16 | answer archived | `DEVLEAD_SESSION_ARCHIVED`，不写 answer record |
 | 17 | answer pre-step reject | answerStatus discarded；questionStatus open；lead 重答 |
-| 18 | duplicate answer | 同 question_id + 同 idempotency_key/文本返回原 receipt；不同文本 already answered |
+| 18 | duplicate answer | 同 question_id + 同文本（可带同 idempotency_key）返回原 receipt；不同文本 already answered（同键不同文本也冲突） |
 | 19 | answer + interrupt | cancel + `followup`；answer record；question answered |
 | 20 | background idle/running/cold | queued / inject / error；`wakeRequested:false`；后续 followup/steer 能 present |
 | 21 | correction idle/running | steer；idle 开 turn；结果 boundary next-step；明确可能与旧 next-turn 同 request |
@@ -1942,14 +1943,30 @@ Phase 1 前的 hub 只有一个 `pending` / `pendingReports` 队列和一个全�
 | Phase 1a（已完成） | 抽出纯策略表模块 + 单测；不改变现有行为 | 否 | `pnpm verify` |
 | Phase 1b（已完成） | question `action-required`：完整 payload、结构化 questions、跳过 400ms/queued turn notice、窄化双 wake 规则；16/pair 显式 cap、结构化内容幂等、idle/aborted parked-wake 防死锁/防重 | 否 | `pnpm verify` + fake harness 用例 7/10/11/12/33/34 与 durable inbox 生命周期回归 |
 | Phase 1c（已完成） | `devlead_report({kind:'question'})` `turnEndRequested` + durable 检查 + 结果/policy；F7 gate memory-only 重述提示；N1 cap 竞态孤儿 outbox 行修复（含 delete 失败分支）；N2 outbox schema 回归（含 open-time backup-and-skip） | 否 | 用例 8/9（含 durable+queued）；真实 DSH question E2E（结构化 digest/wake payload 深比对、action-required wake、conclude/durable/recovery、scripted `llm/stream` 真实 child turn：next-step marker 后续 step 执行 + 用例 33 模型继续） |
-| Phase 1d（已完成） | `devlead_prompt_session` intent/`question_id`/`idempotency_key` + answer/correction steering + answer record + `answerStatus` admitted/claimed/presented（内存观测）+ `delivery` 结果 + retract/clear-own/source | 否 | 用例 13–25；`pnpm verify` + `pnpm check:packages` + 真实 DSH rc.5 answer E2E（scripted child answer 真实 step + 幂等重试 + 冲突 + clear-own/clear-all，patch/installed 两 flow 188/188） |
-| Phase 1e | T2/P1–P4 路径、questionStatus/answerStatus、notifications/get_session 输出、policy/UI 文案、指标 | 否 | 全量单测/集成/E2E；`pnpm e2e`；UI 验收 |
+| Phase 1d（已完成） | `devlead_prompt_session` intent/`question_id`/`idempotency_key` + answer/correction steering + answer record + `answerStatus` admitted/claimed/presented（内存观测）+ `delivery` 结果 + retract/clear-own/source + **minimal output**（notifications/get_session 的 question report 带 questionStatus/answerStatus/answerMessageId/answeredAt/presentedAt，queuedInputs 带 intent/questionId/wakeRequested/deliveryState） | 否 | 用例 13–25；`pnpm verify` + `pnpm check:packages` + 真实 DSH rc.5 answer E2E（scripted child answer 真实 step + 幂等重试 + 冲突 + clear-own/clear-all，patch/installed 两 flow 188/188） |
+| Phase 1e | T2/P1–P4 路径、notifications/get_session **全量**输出与 UI 呈现（1d 已落 minimal output，见上行）、policy/UI 文案、指标 | 否 | 全量单测/集成/E2E；`pnpm e2e`；UI 验收 |
 | Phase 2 | `idempotency_key` durable、claimed/presented/discarded 的 durable replay/backfill、replay open question、multi-lead 硬门禁、answer TTL、background 背压、`possibleQuestion`、blocking bridge 指标评估（不写原型） | 否 | 全量 + 兼容性 + 指标复盘 |
 | Phase 3 | 仅当 Phase 2 指标支持时：blocking bridge 原型（capability flag）；以及 DSH 上游通用 ordinary-Session mailbox / ephemeral context / blocking question primitive / turn-boundary hooks | 部分是 | 上游设计 review；dsh-devlead 保留 fallback |
 
 **MVP**：Phase 1a–1e。全部在 `dsh-devlead` 内完成，不改 DSH 源码、不改工具数量、不新增
 DSH peer 依赖。最小可交付闭环是 1b + 1c + 1d：question 快、answer 能 steer、双 wake 规则
 不吞状态。
+
+**Phase 1d 复核修复（1d 范围内的例外/收紧，不进入 1e）**：
+- **跨重启 seed**：`seedAnswersForAgent` 按 question 取**最新** answer record（按 record order）再
+  seed，`seed` 接受 terminal 状态且走 bounded insert/trim；`questionAnswerView`/`latestAnswerFact`/
+  `answerReceiptOf` 经 `resolvedAnswer` 按最新 `at`/status 合并 durable audit 与内存观测，**不无条件
+  memory-first**——durable discard 重新 open question，新 durable re-answer 覆盖旧内存 entry。
+- **durable audit 非 best-effort**：admission 的 answer record append 后 **await flush**，append/flush
+  失败把警告反映到 prompt receipt 的 `warning`（投递已发生）；cold/detached lead 的 discard 入
+  `pendingAnswerDiscards` 队列，lead 变 live（`agent/created`）时 `reconcileAnswerDiscards` 对账落
+  durable。claimed/presented 的 durable backfill 仍属 Phase 2。
+- **same-key + different-text**：answer 幂等重试要求**同文本**；同键不同文本冲突（策略表先改 +
+  单测，再接线）。
+- **stop failure / replacement**：clear-all 只对 stop **实际移除**的 answer 写 discard（stop 失败/未清
+  时 answer 仍 pending、question 仍 answered）；interrupt+answer **不能**替换 active pending answer
+  （policy 在 plan 阶段先拒 answered question），replacement 仅处理 open question 的 stale pending
+  message。
 
 **明确不做**：
 
@@ -2406,10 +2423,12 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   暴露）。
   patch 与 installed 两条加载流都跑完整多阶段；`--no-worktree` 跳过阶段 2（阶段 1、1b、3 仍
   运行，调试用）。每阶段 check 总数已 pin（`EXPECTED_CHECKS`，删/增 check 未更新 pin 会失败），
-  PASS 与 SKIP 分开输出；基线 DSH 0.2.2-rc.5 的两条加载流完整组合计数为 **174/174**
-  （阶段 1 27 + 阶段 1b 12 + 阶段 2 23 + 阶段 3 112，阶段 3 含 agent preset roster、
-  watched-Session 问题路由、排队 inbox、question conclude/durable/memory-only 与两条 scripted
-  真实 child turn 检查；171 PASS + 3 条无凭据 SKIP）；跳过阶段 2 时 **151/151**（阶段 1 + 1b + 3）。
+  PASS 与 SKIP 分开输出；基线 DSH 0.2.2-rc.5 的两条加载流完整组合计数为 **188/188**
+  （阶段 1 27 + 阶段 1b 12 + 阶段 2 23 + 阶段 3 126，阶段 3 含 agent preset roster、
+  watched-Session 问题路由、排队 inbox、question conclude/durable/memory-only、两条 scripted
+  真实 child turn，以及 Phase 1d answer routing：真实 scripted answer steer + 幂等重试 + 冲突 +
+  answer inbox 生命周期/clear-own/clear-all 检查；185 PASS + 3 条无凭据 SKIP）；跳过阶段 2 时
+  **165/165**（阶段 1 + 1b + 3）。历史轮次（Phase 1c 证据轮 174/174、排队输入轮 150/150 等）保留各自标签。
 - 本轮最终验证数字（工作树，排队 inbox 输入能力轮）：`pnpm verify` =
   typecheck 通过 + **26 文件 / 879 tests** + 7 个构建产物；`node scripts/check-packages.mjs` →
   `OK (6 packages)`；E2E 在安装版 rc.5 实跑 installed 与 patch **完整双流各 150/150**

@@ -777,8 +777,10 @@ export interface DevLeadQueuedInput {
  * Result of withdrawing one queued inbox input.
  *
  * Retraction is idempotent: an input already consumed or withdrawn reports
- * `retracted: false` rather than an error. Only relay prompts the calling
- * lead Session authored are retractable; other producers' inputs are refused.
+ * `retracted: false` rather than an error. The calling lead Session's own
+ * instruction/correction relay prompts and background notices are retractable;
+ * an answer is refused (removing it would desynchronize the question state from
+ * the child inbox), and other producers' inputs are refused.
  */
 export interface DevLeadRetractedInput {
   /** Addressed Session identity. */
@@ -963,6 +965,12 @@ export interface DevLeadPromptedSession {
    * receipt without a second delivery.
    */
   readonly delivery: DevLeadPromptDelivery
+  /**
+   * Present when an answer was delivered to the child inbox but its durable
+   * record could not be persisted/flushed: the question state may not survive a
+   * Host restart. The delivery itself still happened.
+   */
+  readonly warning?: string
 }
 
 declare module '@deepseek-ai/dsh-session-projection/types' {
