@@ -30,7 +30,7 @@ import type {
   DevLeadWorkspaceView,
 } from '@yankeguo/dsh-devlead-protocol'
 import { DEVLEAD_REPORT_KINDS } from '@yankeguo/dsh-devlead-protocol'
-import { createSessionRequest, DevLeadToolInputError } from '../src/arguments.ts'
+import { TOOL_ARGUMENT_KEYS, createSessionRequest, DevLeadToolInputError } from '../src/arguments.ts'
 import { DEVLEAD_POLICY_BASE } from '../src/policy.ts'
 import {
   ASK_USER_QUESTION_TOOL,
@@ -205,6 +205,17 @@ describe('registration', () => {
     expect([...harness.tools.keys()].sort()).toEqual([...TOOL_NAMES].sort())
     for (const name of TOOL_NAMES) {
       expect(harness.tool(name).definition.description.length).toBeGreaterThan(0)
+    }
+  })
+
+  it('keeps every registered parameter declared in TOOL_ARGUMENT_KEYS', () => {
+    const harness = boot()
+    expect([...harness.tools.keys()].sort()).toEqual(Object.keys(TOOL_ARGUMENT_KEYS).sort())
+    for (const [name, tool] of harness.tools) {
+      const parameters = tool.definition.parameters as { properties: Record<string, unknown> }
+      const registered = Object.keys(parameters.properties).sort()
+      const allowed = [...TOOL_ARGUMENT_KEYS[name as keyof typeof TOOL_ARGUMENT_KEYS]].sort()
+      expect(registered, name).toEqual(allowed)
     }
   })
 
