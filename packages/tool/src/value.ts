@@ -404,6 +404,7 @@ export const PROMPT_SESSION_OUTPUT = jsonOutput({
     sessionId: { type: 'string', required: true },
     watched: { type: 'boolean', required: true },
     resumed: { type: 'boolean', required: true },
+    interrupted: { type: 'boolean', required: true },
   },
 } as const)
 
@@ -660,6 +661,7 @@ export function promptedSessionValue(prompted: DevLeadPromptedSession): InferVal
     sessionId: prompted.sessionId,
     watched: prompted.watched,
     resumed: prompted.resumed,
+    interrupted: prompted.interrupted,
   }
 }
 

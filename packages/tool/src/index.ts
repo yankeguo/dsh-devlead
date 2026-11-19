@@ -169,7 +169,11 @@ const PROMPT_SESSION_DESCRIPTION =
   + 'DevLead Session. Archived Sessions are rejected. The Session is watched by default, so after this call end the '
   + 'turn instead of waiting: its settled turn starts a new turn of this lead session with the wake-up message. A '
   + 'watched Session gains devlead_report; in a long or blockage-prone continuation, tell it to send key progress, '
-  + 'blockers, or decisions. With watch=false the tool is unavailable.'
+  + 'blockers, or decisions. With watch=false the tool is unavailable. Default delivery queues the prompt behind the '
+  + 'Session\'s current turn; set interrupt true only to replace that work: the Host stops the running turn and the '
+  + 'work its stop providers report (running subagents, owned jobs, active schedules), discards queued inbox input, '
+  + 'then admits this prompt as a new turn. An idle or cold Session is a no-op and receives the prompt normally. '
+  + 'The interrupted turn still produces the normal watched-turn notification (cancelled) before the replacement turn.'
 
 const WATCH_SESSION_DESCRIPTION =
   'Add one Session to, or remove it from, this DevLead Session\'s watch set. A watch is a one-way follow '
@@ -493,6 +497,14 @@ export function apply(ctx: Context): void {
         type: 'boolean',
         description: 'Watch the Session after prompting. Defaults to true.',
       },
+      interrupt: {
+        type: 'boolean',
+        description: 'Defaults to false. Set true only to replace the Session\'s current work: the Host stops its '
+          + 'running turn and the work its stop providers report (running subagents, owned jobs, active schedules), '
+          + 'discards queued inbox input, then admits this prompt as a new turn. An idle or cold Session is a no-op '
+          + 'and receives the prompt normally. The interrupted turn still produces its normal watched-turn '
+          + 'notification as cancelled.',
+      },
     },
     output: PROMPT_SESSION_OUTPUT,
     presentCall: presentPromptSessionCall,
@@ -503,7 +515,7 @@ export function apply(ctx: Context): void {
           agent,
           requireSessionRef(args.session),
           requirePrompt(args.prompt),
-          { watch: args.watch ?? true, signal: exec.signal },
+          { watch: args.watch ?? true, interrupt: args.interrupt ?? false, signal: exec.signal },
         )
         return promptedSessionValue(prompted)
       })

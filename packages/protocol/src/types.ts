@@ -621,6 +621,23 @@ export interface DevLeadUnarchivedSession {
   readonly archived: false
 }
 
+/**
+ * Options of one prompt admission through the core service.
+ *
+ * `interrupt` is an explicit replacement of the Session's current work: the
+ * Host stops the running turn (and the other work its stop providers report)
+ * before the prompt is admitted. Omitted or `false` keeps the non-destructive
+ * queue-until-the-turn-settles behavior.
+ */
+export interface DevLeadPromptSessionOptions {
+  /** Watch the Session after prompting. Defaults to true. */
+  readonly watch?: boolean
+  /** Stop the Session's running work before admitting the prompt. Defaults to false. */
+  readonly interrupt?: boolean
+  /** Cancellation checked before each stage. */
+  readonly signal?: AbortSignal
+}
+
 /** One admitted prompt into an existing Session. */
 export interface DevLeadPromptedSession {
   /** Addressed Session identity. */
@@ -629,6 +646,13 @@ export interface DevLeadPromptedSession {
   readonly watched: boolean
   /** Whether the Host had to resume a cold Session to admit the prompt. */
   readonly resumed: boolean
+  /**
+   * Whether this call asked the Host's stop providers to interrupt a running
+   * turn before admitting the prompt. Always `false` when `interrupt` was
+   * omitted, and also `false` for an idle or cold Session where there was no
+   * active turn to stop.
+   */
+  readonly interrupted: boolean
 }
 
 declare module '@deepseek-ai/dsh-session-projection/types' {

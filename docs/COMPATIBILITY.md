@@ -41,11 +41,17 @@ rc.5 的 `dsh-web` 在未配置 `web.searchProvider` 时按模型路由选择：
 | `devlead_list_agent_presets` / 真实 roster | 支持 | 支持 | 支持 | 支持 | 支持 |
 | 派发模型选择 + `reasoning_effort` | 支持 | 支持 | 支持 | 支持 | 支持 |
 | `devlead_list_models` | 支持 | 支持 | 支持 | 支持 | 支持 |
+| `devlead_prompt_session interrupt`（`workspace/session-stop` providers） | 支持 | 支持 | 支持 | 支持 | 支持 |
 | 可选 worktree 隔离 | 可选 bundle | 可选 bundle | 可选 bundle | 可选 bundle | 可选 bundle |
 | `agent_teams: true` | 不可用\* | 支持† | 支持† | 支持† | 支持† |
 
 \* rc.1 无 `dsh-agent-team`；DevLead 通过 duck-typed `ctx.get('agentTeams')` 探测，不静态 import。
 † Host 必须组合 agent-team；默认 `dsh-base` 从 rc.2 起包含。
+
+`devlead_prompt_session interrupt` 复用五个 tag 都存在的 `workspace/session-stop` 事件；
+Agent registry 的 turn provider、jobs / subagent / schedule providers，以及 aborted phase 上
+把 `followup` 重归类为 `next-turn` 的 wake 逻辑，均在 rc.1–rc.5 的独立 worktree 中核对。
+该能力不新增 DSH peer 范围要求。
 
 ## 真实 E2E
 

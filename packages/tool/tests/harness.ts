@@ -171,7 +171,7 @@ export class FakeDevLead {
   }
 
   /** Result returned by {@link promptSession}. */
-  prompted: DevLeadPromptedSession = { sessionId: 'session-1', watched: true, resumed: false }
+  prompted: DevLeadPromptedSession = { sessionId: 'session-1', watched: true, resumed: false, interrupted: false }
 
   /** Result returned by {@link watchSession}. */
   mutation: DevLeadWatchMutation = { sessionId: 'session-1', watched: true, sessions: ['session-1'] }
@@ -331,7 +331,7 @@ export class FakeDevLead {
     agent: Agent,
     sessionId: string,
     prompt: string,
-    options?: { watch?: boolean; signal?: AbortSignal },
+    options?: { watch?: boolean; interrupt?: boolean; signal?: AbortSignal },
   ): Promise<DevLeadPromptedSession> {
     this.enter('promptSession', agent, sessionId, prompt, options)
     return this.prompted

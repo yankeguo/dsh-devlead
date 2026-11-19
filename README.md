@@ -454,7 +454,9 @@ projection.
 5. When a child's turn settles (completed / failed / blocked / cancelled / …), the DevLead
    session receives a notification excerpt and is woken; the model uses `devlead_list_sessions`
    / `devlead_get_session` to inspect state, `devlead_prompt_session` to follow up or dispatch
-   new work, and `devlead_notifications` to read the digest.
+   new work, and `devlead_notifications` to read the digest. By default a new prompt queues
+   behind a running turn; pass `interrupt: true` only when the new instruction should replace
+   the child's current work.
 6. Before finishing a turn, the model reports to the human: which Workspaces and Sessions it
    created, changed, or closed (and why it closed them), what each child was asked to do, how
    the latest turn ended, whether any implementation work was (exceptionally) done directly in
@@ -491,7 +493,7 @@ rather than implying the directory is unregistered.
 | `devlead_list_sessions` | `workspace?` (id, registered path, or exact title), `watched_only?`, `limit?` | `{ sessions, watched }` |
 | `devlead_create_session` | `workspace?` (id, registered path, or exact title), `prompt?`, `title?`, `watch?` (default true), `preset?` (Host-defined id; blank/omitted falls back to the plugin default then the Host default), `isolation?` (default `none`; `worktree` = best-effort isolated checkout), `provider?`+`model?` (paired; optional `reasoning_effort?`), `agent_teams?` | creation result (including the `isolation` outcome, and the applied `model`/`agentTeams` when requested) |
 | `devlead_get_session` | `session` (required) | `{ session, reports? }` — when reading this lead itself, `reports` carries its newest retained reports |
-| `devlead_prompt_session` | `session`, `prompt` (required), `watch?` (default true) | prompt result |
+| `devlead_prompt_session` | `session`, `prompt` (required), `watch?` (default true), `interrupt?` (default false: queue behind the running turn; `true` = stop the running turn and Host-reported subagent/job/schedule work, discard queued input, then admit a new turn; idle/cold = no-op) | prompt result (including `interrupted`) |
 | `devlead_watch_session` | `session`, `watching` (required bool) | watch mutation result |
 | `devlead_notifications` | `limit?` (default 20) | `{ notifications, reports, watched }` |
 | `devlead_report` | `message` (required, plain text, max 4000 code points), `kind?` (`progress` default / `blocked` / `decision` / `fyi`), `summary?` (max 200) | `{ report, durable, queued, warning? }` — visible only in a watched non-lead Session; one-way, never waits for a reply |
@@ -525,6 +527,22 @@ otherwise the base default), and a `broken` reason when it cannot compose a Sess
 composes no roster returns `available: false` with a reason; the tool never invents preset ids.
 The `preset` argument is always a Host-defined id, and an invalid or unusable id fails creation
 with a structured error instead of being silently replaced.
+
+`devlead_prompt_session` is non-destructive by default: while the child is running, the prompt
+queues behind its current turn. Pass `interrupt: true` only when the lead means to replace that
+work. The Host then dispatches the same `workspace/session-stop` providers that
+`devlead_archive_session`'s `stop_running` uses: the running turn is cancelled, running subagent
+descendants are cancelled, owned jobs are killed, and active schedule rows are removed; queued
+inbox input is discarded. The prompt is admitted immediately afterwards as a new turn. The stop is
+fire-and-forget and is not awaited to settlement — the Agent queues the replacement prompt for the
+next turn and starts it once the cancelled activity converges, so it cannot join the cancelling
+turn. The call returns after the replacement prompt is admitted, not after the old turn settles.
+An idle or cold child has no running turn, so `interrupt` is a harmless no-op and the prompt is
+delivered normally. When the Session is watched, the interrupted turn still produces the normal
+watched-turn notification with transition `aborted` (rendered as cancelled), and the replacement
+turn notifies separately. The result's `interrupted` field reports whether a stop was actually
+requested (`false` when the option was omitted, or when there was no running turn). Stop-provider
+failures are logged and do not block the replacement prompt.
 
 The three closing tools use DSH's own vocabulary and are never destructive. `devlead_remove_workspace`
 performs the DSH **remove** action: it unregisters the Workspace only — the directory, its files,

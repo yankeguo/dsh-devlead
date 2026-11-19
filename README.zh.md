@@ -395,7 +395,8 @@ projection 保持 `enabled: false`，工具条按钮保持 off、状态条不出
 4. 子会话独立运行；人类可以随时在侧边栏打开它、继续对话或接管。
 5. 子会话的 turn 结束（完成/失败/阻塞/取消等）后，DevLead 会话收到通知摘要并被唤醒；模型用
    `devlead_list_sessions` / `devlead_get_session` 查看状态，用 `devlead_prompt_session`
-   继续追问或派发新任务，用 `devlead_notifications` 读取通知摘要。
+   继续追问或派发新任务，用 `devlead_notifications` 读取通知摘要。默认情况下，新提示词会排在
+   运行中的 turn 之后；只有确实要替换子会话当前工作时才传 `interrupt: true`。
 6. 模型在结束 turn 前向人类汇报：创建/改动/关闭了哪些 Workspace 与 Session（关闭的要说
    原因）、每个子会话被要求做什么、最近一轮如何结束、是否（例外地）在 lead 会话里直接做了
    实现、有什么需要人类决策。
@@ -427,7 +428,7 @@ id 与 path，绝不静默取第一个；此时改用 id 或路径。未知引�
 | `devlead_list_sessions` | `workspace?`（id、注册路径或精确 title）、`watched_only?`、`limit?` | `{ sessions, watched }` |
 | `devlead_create_session` | `workspace?`（id、注册路径或精确 title）、`prompt?`、`title?`、`watch?`（默认 true）、`preset?`（Host 定义的 id；空白/省略时先回退插件默认 preset，再回退 Host 默认）、`isolation?`（默认 `none`；`worktree` = 尽力提供隔离检出）、`provider?`+`model?`（成对；可选 `reasoning_effort?`）、`agent_teams?` | 创建结果（含 `isolation` 结果；请求时含已应用的 `model`/`agentTeams`） |
 | `devlead_get_session` | `session`（必填） | `{ session, reports? }`——读取本 lead 自身时，`reports` 携带最近保留的汇报 |
-| `devlead_prompt_session` | `session`、`prompt`（必填）、`watch?`（默认 true） | 续写结果 |
+| `devlead_prompt_session` | `session`、`prompt`（必填）、`watch?`（默认 true）、`interrupt?`（默认 false：排在运行中 turn 之后；`true` = 停掉运行中 turn 与 Host 报告的 subagent/job/schedule 工作、丢弃排队输入，再投递新 turn；空闲/冷会话为 no-op） | 续写结果（含 `interrupted`） |
 | `devlead_watch_session` | `session`、`watching`（必填 bool） | watch 变更结果 |
 | `devlead_notifications` | `limit?`（默认 20） | `{ notifications, reports, watched }` |
 | `devlead_report` | `message`（必填，纯文本，上限 4000 code points）、`kind?`（默认 `progress` / `blocked` / `decision` / `fyi`）、`summary?`（上限 200） | `{ report, durable, queued, warning? }`——只在已关注的非 lead 会话可见；单向，不等待回复 |
@@ -456,6 +457,18 @@ turn 通知；每个子会话每轮最多 4 条不同报告，同轮相同消息
 以及无法组合 Session 时的 `broken` 原因。Host 未组合 roster 时返回 `available: false` 与
 原因，绝不虚构 preset id。`preset` 参数始终是 Host 定义的 id；无效或不可用 id 会让创建阶段
 返回结构化错误，而不是被静默替换。
+
+`devlead_prompt_session` 默认非破坏性：子会话正在运行时，提示词排队等当前 turn 结束。只有
+明确要替换当前工作时才传 `interrupt: true`。Host 会派发与 `devlead_archive_session` 的
+`stop_running` 相同的 `workspace/session-stop` providers：取消运行中的 turn、取消运行中的
+subagent 后代、杀掉所属 job、删除活跃 schedule 行，并丢弃子会话的排队 inbox 输入；随后立即
+把提示词作为新 turn 投递。停止是 fire-and-forget，不等待 settle——Agent 会把替换提示词排到
+下一 turn，并在被取消的活动收敛后启动，因此不会投进正在取消的 turn；调用在提示词被接受后
+返回，不等旧 turn 结束。空闲或冷子会话没有运行中的 turn，`interrupt` 是无害 no-op，提示词
+正常投递。会话被关注时，被中断的 turn 仍产生正常的已关注 turn 通知，transition 为 `aborted`
+（显示为 cancelled）；替换 turn 结束后再单独通知。结果里的 `interrupted` 表示本次是否真的
+请求了停止（未传选项或没有运行中的 turn 时为 false）。stop provider 失败只记日志，不阻塞
+替换提示词。
 
 三个关闭类工具沿用 DSH 自己的术语，且都不是破坏性操作。`devlead_remove_workspace` 执行 DSH 的
 **remove**：只注销 Workspace 记录，目录、文件与所有 Session 日志都不动；其 Session 变为

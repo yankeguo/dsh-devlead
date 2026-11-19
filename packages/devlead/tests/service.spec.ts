@@ -2012,12 +2012,22 @@ describe('session reference resolution', () => {
 })
 
 describe('prompt admission', () => {
+  /** Register one fake stop provider and return the Session ids it observed. */
+  function recordStops(harness: ServiceHarness, target?: FakeAgent): string[] {
+    const stops: string[] = []
+    harness.ctx.on('workspace/session-stop', ({ sessionId }) => {
+      stops.push(String(sessionId))
+      target?.setRunning(false)
+    })
+    return stops
+  }
+
   it('admits a relay prompt into a live watched Session', async () => {
     const harness = await bootService({ enabled: true, sessionIds: ['target'] })
     const target = new FakeAgent(requireSession(harness, 'target'))
     harness.agents.add(target)
     const receipt = await harness.service.promptSession(harness.lead.agent, 'target', '  do the thing  ')
-    expect(receipt).toEqual({ sessionId: 'target', watched: true, resumed: false })
+    expect(receipt).toEqual({ sessionId: 'target', watched: true, resumed: false, interrupted: false })
     expect(target.followups).toHaveLength(1)
     const message = target.followups[0]
     if (message === undefined) throw new Error('expected one admitted prompt')
@@ -2053,6 +2063,117 @@ describe('prompt admission', () => {
       () => harness.service.promptSession(harness.lead.agent, 'missing', '   '),
       'DEVLEAD_INVALID_INPUT',
     )
+  })
+
+  it('leaves a running Session queued when interrupt is omitted', async () => {
+    const harness = await bootService({ enabled: true, sessionIds: ['target'] })
+    const target = new FakeAgent(requireSession(harness, 'target'))
+    target.setRunning(true)
+    harness.agents.add(target)
+    const stops = recordStops(harness, target)
+
+    const receipt = await harness.service.promptSession(harness.lead.agent, 'target', 'queue me')
+
+    // Default delivery is non-destructive: no stop provider is asked and the
+    // prompt waits behind the running turn.
+    expect(stops).toEqual([])
+    expect(target.followups).toHaveLength(1)
+    expect(receipt).toEqual({ sessionId: 'target', watched: true, resumed: false, interrupted: false })
+  })
+
+  it('interrupts a running turn through the Host stop providers before admitting', async () => {
+    const harness = await bootService({ enabled: true, sessionIds: ['target'] })
+    const target = new FakeAgent(requireSession(harness, 'target'))
+    target.setRunning(true)
+    harness.agents.add(target)
+    const stops = recordStops(harness, target)
+
+    const receipt = await harness.service.promptSession(harness.lead.agent, 'target', 'replace the current work', {
+      interrupt: true,
+    })
+
+    // The stop event is the same fan-out archive stop_running uses; the
+    // replacement prompt is admitted after it returns.
+    expect(stops).toEqual(['target'])
+    expect(target.followups).toHaveLength(1)
+    expect(receipt).toEqual({ sessionId: 'target', watched: true, resumed: false, interrupted: true })
+  })
+
+  it('treats interrupt as a no-op on an idle Session', async () => {
+    const harness = await bootService({ enabled: true, sessionIds: ['target'] })
+    const target = new FakeAgent(requireSession(harness, 'target'))
+    harness.agents.add(target)
+    const stops = recordStops(harness)
+
+    const receipt = await harness.service.promptSession(harness.lead.agent, 'target', 'start now', { interrupt: true })
+
+    expect(stops).toEqual([])
+    expect(target.followups).toHaveLength(1)
+    expect(receipt).toEqual({ sessionId: 'target', watched: true, resumed: false, interrupted: false })
+  })
+
+  it('treats interrupt as a no-op after resuming a cold Session', async () => {
+    const controller = new FakeSessionController()
+    const harness = await bootService({ enabled: true, sessionIds: ['target'], sessionController: controller })
+    const target = new FakeAgent(requireSession(harness, 'target'))
+    controller.resolveHandler = () => {
+      harness.agents.add(target)
+      return { agent: target.agent }
+    }
+    const stops = recordStops(harness)
+
+    const receipt = await harness.service.promptSession(harness.lead.agent, 'target', 'start now', { interrupt: true })
+
+    expect(receipt).toEqual({ sessionId: 'target', watched: true, resumed: true, interrupted: false })
+    expect(stops).toEqual([])
+    expect(target.followups).toHaveLength(1)
+  })
+
+  it('logs stop-provider failures and still admits the replacement prompt', async () => {
+    const harness = await bootService({ enabled: true, sessionIds: ['target'] })
+    const target = new FakeAgent(requireSession(harness, 'target'))
+    target.setRunning(true)
+    harness.agents.add(target)
+    const warn = vi.spyOn(harness.ctx.logger, 'warn')
+    harness.ctx.on('workspace/session-stop', () => {
+      throw new Error('schedule stop failed')
+    })
+
+    const receipt = await harness.service.promptSession(harness.lead.agent, 'target', 'replace', { interrupt: true })
+
+    expect(receipt.interrupted).toBe(true)
+    expect(target.followups).toHaveLength(1)
+    expect(warn.mock.calls.some(call => String(call[0]).includes('prompt interrupt failed'))).toBe(true)
+    warn.mockRestore()
+  })
+
+  it('renders the interrupted turn as an aborted watched notification', async () => {
+    const harness = await bootService({
+      enabled: true,
+      sessionIds: ['target'],
+      watched: ['target'],
+      config: { notificationBatchMs: 0 },
+    })
+    const target = new FakeAgent(requireSession(harness, 'target'))
+    target.setRunning(true)
+    harness.agents.add(target)
+    const stops = recordStops(harness, target)
+
+    await harness.service.promptSession(harness.lead.agent, 'target', 'replace', { interrupt: true })
+    expect(stops).toEqual(['target'])
+
+    // The real Host stop provider cancels the turn with the user cause, which
+    // closes the log as `aborted`; the notification hub reports it as the
+    // normal watched-turn transition before the replacement turn settles.
+    appendTurnStart(requireSession(harness, 'target'), 1)
+    appendTurnEnd(requireSession(harness, 'target'), 1, { kind: 'aborted', reason: { kind: 'user' } })
+    await flushMicrotasks()
+
+    expect(harness.service.notifications(harness.lead.agent)).toContainEqual(expect.objectContaining({
+      sessionId: 'target',
+      turn: 1,
+      transition: 'aborted',
+    }))
   })
 
   it('rejects an archived Session', async () => {

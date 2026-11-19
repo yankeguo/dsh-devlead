@@ -201,7 +201,7 @@ export class DevLeadService extends Service {
   listAgentPresets(agent: Agent, signal?: AbortSignal): Promise<DevLeadAgentPresetCatalog>
   getSession(agent: Agent, sessionId: string, signal?: AbortSignal): Promise<DevLeadSessionView>
   createSession(agent: Agent, request: DevLeadCreateSessionRequest, signal?: AbortSignal): Promise<DevLeadCreatedSession>
-  promptSession(agent: Agent, sessionId: string, prompt: string, options?: { watch?: boolean; signal?: AbortSignal }): Promise<DevLeadPromptedSession>
+  promptSession(agent: Agent, sessionId: string, prompt: string, options?: DevLeadPromptSessionOptions): Promise<DevLeadPromptedSession>
   watchSession(agent: Agent, sessionId: string, watching: boolean, signal?: AbortSignal): Promise<DevLeadWatchMutation>
   archiveSession(agent: Agent, sessionId: string, options?: DevLeadArchiveSessionOptions): Promise<DevLeadArchivedSession>
   unarchiveSession(agent: Agent, sessionId: string, signal?: AbortSignal): Promise<DevLeadUnarchivedSession>
@@ -349,6 +349,18 @@ default: boolean; broken? }[]; reason? }`；`default` 是 Host 有效默认（`s
   `sessionController.resolveAgent(sessionId)` 拿 live Agent（冷会话会被 resume）→
   `agent.followup(createUserMessage({ content, source: { kind: 'devlead', form: 'relay', senderSessionId: lead.id } }))`
   + `ctx.sessions.flush(agent.session)`。默认自动 watch。
+- **prompt interrupt（显式 opt-in）**：`interrupt: true` 且目标 live Agent
+  `status === 'running'` 时，先 `await ctx.parallel('workspace/session-stop', { sessionId })`
+  ——与 `archiveSession(stopActivity: true)` 相同的 provider fan-out：Agent registry 取消
+  运行中的 turn、Job registry kill 所属 job、Subagent runtime 取消运行中的后代、Schedule
+  删除活跃行——再执行 `followup`。该事件是 fire-and-forget：provider 只发出取消/停止请求，
+  不等待 settle；`followup` 在 aborted phase 上被 Agent 重新归类为 `next-turn` 并 latch
+  wake，等被取消的活动收敛后启动，因此不会进入正在取消的 turn，也不需要 `whenIdle()`。
+  turn provider 使用 `agent.cancel({ kind: 'user' })`（不带 `keepInbox`），会丢弃子会话排队
+  输入；被中断的 turn 以 `aborted` 结束，watched 通知显示 cancelled，替换 turn 结束后再单独
+  通知。空闲或冷目标没有运行中的 turn，跳过 stop，`interrupt` 是无害 no-op。结果
+  `interrupted` 表示是否真的请求过 stop；stop provider 抛错只 warning，不阻塞替换 prompt。
+  一旦 stop 已请求，之后的取消不会回滚 stop，替换 prompt 与 stop 一起提交。
 - `watchSession`：追加完整 watch 记录；上限 `maxWatchedSessions`；不能 watch 自己。
 - **关闭语义（remove / archive / unarchive）**：`removeWorkspace` / `archiveSession` / `unarchiveSession` 都先
   `assertReady(agent)` 并转发 signal，Host 未组合 registry 时统一走 `requireWorkspaceRegistry`
@@ -643,7 +655,7 @@ Session 的工作目录切到独立分支/检出，DevLead 用它**可选地**�
 | `devlead_list_sessions` | `workspace?`(id / 注册路径 / 精确 title), `watched_only?`, `limit?` | `{ sessions, watched: string[] }` |
 | `devlead_create_session` | `workspace?`(id / 注册路径 / 精确 title), `prompt?`, `title?`, `watch?`(默认 true), `preset?`(Host 定义 id；空白回退插件默认再 Host 默认), `isolation?`(默认 `none`；`worktree` = 尽力隔离), `provider?`+`model?`(成对；可选 `reasoning_effort?`), `agent_teams?` | `DevLeadCreatedSession`（含 `isolation`；请求时含已应用的 `model`/`agentTeams`） |
 | `devlead_get_session` | `session`(必填) | `{ session }` |
-| `devlead_prompt_session` | `session`(必填), `prompt`(必填), `watch?`(默认 true) | `DevLeadPromptedSession` |
+| `devlead_prompt_session` | `session`(必填), `prompt`(必填), `watch?`(默认 true), `interrupt?`(默认 false；true = 先经 `workspace/session-stop` 停止运行中工作再投递；idle/cold no-op) | `DevLeadPromptedSession`（含 `interrupted`） |
 | `devlead_watch_session` | `session`(必填), `watching`(必填 bool) | `DevLeadWatchMutation` |
 | `devlead_notifications` | `limit?`(默认 20) | `{ notifications, watched: string[] }` |
 | `devlead_remove_workspace` | `workspace`(必填，id / 注册路径 / 精确 title) | `{ workspace, removed }`（注销前快照） |
@@ -919,7 +931,9 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   部分 id / 裸 uuid 第一段 / 裸完整 uuid / 首尾空白；同第一段歧义列候选且不猜、零命中给出
   可恢复提示、subagent origin 仍不可寻址）、
   **promptSession 自动 watch 的补偿语义**（admission/resume 失败与取消时移除本次新增、
-  已 watch 不受影响、`watch:false` 不变）、写路径的取消语义，以及可选 worktree 隔离的两种
+  已 watch 不受影响、`watch:false` 不变）、**prompt interrupt**（运行中目标派发
+  `workspace/session-stop`、idle/cold no-op、stop provider 失败不阻塞投递、被中断 turn 的
+  aborted 通知）、写路径的取消语义，以及可选 worktree 隔离的两种
   形态（fake `ctx.worktrees` 存在时按"创建→隔离→prompt"顺序调用子 Agent 的 `create`；
   缺席/畸形/抛错时降级为 `unavailable`/`failed`，Session 仍创建并 prompt，绝不抛错），以及
   可选 Agent preset roster 的映射（`defaultId` 标记、无 id 行丢弃）与缺席/空/读取失败路径；

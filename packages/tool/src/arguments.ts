@@ -84,6 +84,7 @@ export interface PromptSessionArgs {
   readonly session: string
   readonly prompt: string
   readonly watch?: boolean
+  readonly interrupt?: boolean
 }
 
 /** Arguments of `devlead_report`. */

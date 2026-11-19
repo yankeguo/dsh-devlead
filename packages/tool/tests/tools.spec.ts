@@ -501,15 +501,24 @@ describe('policy', () => {
     expect(text).toContain('not as a reply channel')
   })
 
+  it('teaches explicit prompt interruption without making it the default', () => {
+    const harness = bootEnabled()
+    const text = harness.sectionText(harness.agent)
+    expect(text).toContain('By default a running Session queues the prompt behind its current turn')
+    expect(text).toContain('set interrupt true only to replace that work')
+    expect(text).toContain('subagents, owned jobs, active schedules')
+    expect(text).toContain('an idle Session is a no-op')
+    expect(text).toContain('notifies you as cancelled')
+  })
+
   it('keeps the resident base policy within its +10% budget', () => {
-    // The policy is a resident system-prompt section. The 0.2.4 text
-    // (9,516 characters) is the baseline for the incoming-report paragraph
-    // added with the watched-Session report tool; a revision may add at most
-    // 10% (floor(9,516 x 1.1) = 10,467). Earlier baselines (7,896 and 8,653)
-    // were retired when their text stopped being the shipped voice. Measuring
-    // the exported base keeps the guard independent of the capability-
-    // conditional checkout paragraphs.
-    expect(DEVLEAD_POLICY_BASE.length).toBeLessThanOrEqual(10_467)
+    // The policy is a resident system-prompt section. The 0.2.7 text
+    // (10,839 characters) is the baseline for the prompt-interrupt contract;
+    // a revision may add at most 10% (floor(10,839 x 1.1) = 11,922). Earlier
+    // baselines were retired when their text stopped being the shipped voice.
+    // Measuring the exported base keeps the guard independent of the
+    // capability-conditional checkout paragraphs.
+    expect(DEVLEAD_POLICY_BASE.length).toBeLessThanOrEqual(11_900)
   })
 
   it('stays hidden without DevLead mode even when the capability exists', () => {
@@ -1273,15 +1282,46 @@ describe('devlead_prompt_session', () => {
     expect(agent).toBe(harness.agent)
     expect(sessionId).toBe('session-1')
     expect(prompt).toBe('continue with tests')
-    expect(options).toEqual({ watch: true, signal: harness.exec.signal })
-    expect(value).toEqual({ sessionId: 'session-1', watched: true, resumed: false })
+    expect(options).toEqual({ watch: true, interrupt: false, signal: harness.exec.signal })
+    expect(value).toEqual({ sessionId: 'session-1', watched: true, resumed: false, interrupted: false })
   })
 
   it('honors an explicit watch=false', async () => {
     const harness = boot()
     await harness.call('devlead_prompt_session', { session: 'session-1', prompt: 'go', watch: false })
     const [, , , options] = harness.devLead.callsOf('promptSession')[0] ?? []
-    expect(options).toEqual({ watch: false, signal: harness.exec.signal })
+    expect(options).toEqual({ watch: false, interrupt: false, signal: harness.exec.signal })
+  })
+
+  it('forwards an explicit interrupt and reports the outcome', async () => {
+    const harness = boot()
+    harness.devLead.prompted = { sessionId: 'session-1', watched: true, resumed: false, interrupted: true }
+    const value = await harness.call('devlead_prompt_session', {
+      session: 'session-1',
+      prompt: 'replace the current work',
+      interrupt: true,
+    })
+    const [, , , options] = harness.devLead.callsOf('promptSession')[0] ?? []
+    expect(options).toEqual({ watch: true, interrupt: true, signal: harness.exec.signal })
+    expect(value).toEqual({ sessionId: 'session-1', watched: true, resumed: false, interrupted: true })
+  })
+
+  it('advertises interrupt as explicit, scoped, and default-off', () => {
+    const harness = boot()
+    const definition = harness.tool('devlead_prompt_session').definition
+    expect(definition.description).toContain('Default delivery queues the prompt behind')
+    expect(definition.description).toContain('set interrupt true only to replace that work')
+    expect(definition.description).toContain('running subagents, owned jobs, active schedules')
+    expect(definition.description).toContain('discards queued inbox input')
+    expect(definition.description).toContain('An idle or cold Session is a no-op')
+    expect(definition.description).toContain('watched-turn notification (cancelled)')
+    const parameters = definition.parameters as {
+      properties: { interrupt: { type: string; description: string } }
+    }
+    expect(parameters.properties.interrupt.type).toBe('boolean')
+    expect(parameters.properties.interrupt.description).toContain('Defaults to false')
+    expect(parameters.properties.interrupt.description).toContain('running subagents, owned jobs, active schedules')
+    expect(parameters.properties.interrupt.description).toContain('An idle or cold Session is a no-op')
   })
 
   it('rejects a blank session or prompt before calling the core', async () => {
@@ -1616,6 +1656,15 @@ describe('presentation', () => {
     const unwatching = presentCall?.({ session: 'session-1', watching: false }) as GenericCallView
     expect(watching.title).toBe('Watch DevLead session')
     expect(unwatching.title).toBe('Unwatch DevLead session')
+  })
+
+  it('labels prompt delivery and interruption by intent', () => {
+    const harness = boot()
+    const presentCall = harness.tool('devlead_prompt_session').definition.presentCall
+    expect((presentCall?.({ session: 'session-1', prompt: 'go' }) as GenericCallView).title)
+      .toBe('Prompt DevLead session')
+    expect((presentCall?.({ session: 'session-1', prompt: 'go', interrupt: true }) as GenericCallView).title)
+      .toBe('Interrupt DevLead session')
   })
 
   it('labels workspace removal and Session archival by direction and stop policy', () => {

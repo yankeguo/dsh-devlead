@@ -94,7 +94,8 @@ export function presentGetSessionCall(args: GetSessionArgs): GenericCallView {
 
 /** Pending card of `devlead_prompt_session`. */
 export function presentPromptSessionCall(args: PromptSessionArgs): GenericCallView {
-  return present('Prompt DevLead session', 'other', firstText(args.session))
+  const title = args.interrupt === true ? 'Interrupt DevLead session' : 'Prompt DevLead session'
+  return present(title, 'other', firstText(args.session))
 }
 
 /** Pending card of `devlead_watch_session`. */

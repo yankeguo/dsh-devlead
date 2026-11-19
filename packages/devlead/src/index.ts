@@ -47,6 +47,7 @@ import type {
   DevLeadProjection,
   DevLeadProjectionState,
   DevLeadPromptedSession,
+  DevLeadPromptSessionOptions,
   DevLeadReport,
   DevLeadReportKind,
   DevLeadRemovedWorkspace,
@@ -208,6 +209,14 @@ const REHYDRATION_READINESS_POLL_MS = 100
 
 /** One persisted Session row as the optional Session query engine reports it. */
 type PersistedSessionRecord = Awaited<ReturnType<SessionQueryEngine['listSessions']>>[number]
+
+/** Outcome of one prompt admission: whether the Host resumed the target and whether a running turn was interrupted. */
+interface PromptAdmission {
+  /** Whether a cold Session had to be resumed to admit the prompt. */
+  readonly resumed: boolean
+  /** Whether the Host's stop providers were asked to interrupt a running turn. */
+  readonly interrupted: boolean
+}
 
 /** Loader schema for the DevLead core service. */
 export const Config: z<Config> = z.object({
@@ -1441,7 +1450,7 @@ export class DevLeadService extends Service {
       const prompt = request.prompt?.trim() ?? ''
       const prompted = prompt.length > 0
       if (prompted) {
-        await this.admitPrompt(agent, created.sessionId, prompt, false, signal)
+        await this.admitPrompt(agent, created.sessionId, prompt, { allowResume: false, interrupt: false, signal })
       }
       const deps = this.viewDeps(agent, signal)
       return {
@@ -1460,11 +1469,20 @@ export class DevLeadService extends Service {
   /**
    * Admit one prompt into an existing Session, resuming a cold Session and
    * watching it by default.
+   *
+   * `interrupt: true` explicitly replaces the Session's current work: when its
+   * Agent is running, the Host's `workspace/session-stop` providers are asked
+   * to stop the turn (and the subagent/job/schedule work they report) before
+   * the prompt is admitted. The stop is fire-and-forget; the replacement
+   * prompt is queued for the next turn and starts once the aborted turn
+   * converges, so it can never join the cancelling turn. An idle or cold
+   * Session skips the stop entirely.
    * @param agent - exact live lead Agent.
    * @param sessionId - Session id or unique prefix.
    * @param prompt - non-empty prompt text.
-   * @param options - optional watch policy (default watches) and cancellation
-   *   checked between stages.
+   * @param options - watch policy, interrupt policy, and cancellation checked
+   *   between stages. Cancellation after an interrupt was requested does not
+   *   roll the stop back; the replacement prompt is admitted with it.
    * @returns the admitted prompt receipt.
    * @throws {@link DevLeadError} when the Session is missing, archived, or cannot be resumed.
    */
@@ -1472,7 +1490,7 @@ export class DevLeadService extends Service {
     agent: Agent,
     sessionId: string,
     prompt: string,
-    options: { watch?: boolean; signal?: AbortSignal } = {},
+    options: DevLeadPromptSessionOptions = {},
   ): Promise<DevLeadPromptedSession> {
     this.assertReady(agent)
     const signal = options.signal
@@ -1506,9 +1524,13 @@ export class DevLeadService extends Service {
     const alreadyWatched = this.strictStateOf(agent.session).sessions.includes(String(resolved.sessionId))
     const added = watch && !alreadyWatched
     if (added) await this.setWatching(agent, resolved.sessionId, true, signal)
-    let resumed: boolean
+    let admission: PromptAdmission
     try {
-      resumed = await this.admitPrompt(agent, resolved.sessionId, text, true, signal)
+      admission = await this.admitPrompt(agent, resolved.sessionId, text, {
+        allowResume: true,
+        interrupt: options.interrupt ?? false,
+        signal,
+      })
     } catch (error: unknown) {
       if (added) {
         // No signal: the caller's cancellation already happened, and the
@@ -1528,7 +1550,8 @@ export class DevLeadService extends Service {
     return {
       sessionId: String(resolved.sessionId),
       watched: this.strictStateOf(agent.session).sessions.includes(String(resolved.sessionId)),
-      resumed,
+      resumed: admission.resumed,
+      interrupted: admission.interrupted,
     }
   }
 
@@ -2908,25 +2931,36 @@ export class DevLeadService extends Service {
 
   /**
    * Admit one lead-authored prompt into a Session, resuming a cold Session.
+   *
+   * `interrupt` is evaluated only against a live running Agent. The Host's
+   * `workspace/session-stop` providers are the same fan-out archive
+   * `stopActivity` uses; they cancel the turn and stop the Session's reported
+   * subagent/job/schedule work. The stop is fire-and-forget: `followup` is
+   * admitted immediately afterwards, and the Agent reclassifies a wake after
+   * an aborted phase to the next turn and latches it until the aborted
+   * activity converges, so the prompt cannot enter the cancelling turn. No
+   * settlement wait is needed.
    * @param leadAgent - exact live lead Agent.
    * @param sessionId - target Session identity.
    * @param text - non-empty prompt text.
-   * @param allowResume - whether a cold Session may be resumed.
-   * @param signal - cancellation checked before the resume and the admission.
-   * @returns whether the Host resumed a cold Session.
+   * @param options - resume policy, interrupt policy, and cancellation checked
+   *   before each stage. Once an interrupt is requested, cancellation does not
+   *   roll it back; the replacement prompt is admitted with the stop.
+   * @returns whether the Host resumed a cold Session and whether it was asked
+   *   to interrupt a running turn.
    */
   private async admitPrompt(
     leadAgent: Agent,
     sessionId: ReturnType<typeof toSessionId>,
     text: string,
-    allowResume: boolean,
-    signal?: AbortSignal,
-  ): Promise<boolean> {
+    options: { allowResume: boolean; interrupt: boolean; signal: AbortSignal | undefined },
+  ): Promise<PromptAdmission> {
+    const signal = options.signal
     signal?.throwIfAborted()
     let target = this.ctx.agents.get(sessionId)
     let resumed = false
     if (target === undefined) {
-      if (!allowResume) {
+      if (!options.allowResume) {
         throw new DevLeadError(`Session "${sessionId}" is not live`, 'DEVLEAD_SESSION_UNAVAILABLE')
       }
       const controller = this.ctx.get('sessionController')
@@ -2958,6 +2992,14 @@ export class DevLeadService extends Service {
       signal?.throwIfAborted()
     }
     signal?.throwIfAborted()
+    let interrupted = false
+    if (options.interrupt && target.status === 'running') {
+      // This is the last cancellation point: once the stop providers are asked
+      // to cancel the child, the replacement prompt is committed with the stop
+      // rather than leaving a stopped Session without its new instruction.
+      interrupted = true
+      await this.stopSessionActivity(sessionId)
+    }
     try {
       target.followup(createDevLeadPromptMessage(text, leadAgent))
     } catch (error: unknown) {
@@ -2967,7 +3009,31 @@ export class DevLeadService extends Service {
       )
     }
     await this.flushDurably(target.session, `prompt into Session "${sessionId}"`)
-    return resumed
+    return { resumed, interrupted }
+  }
+
+  /**
+   * Ask every composed `workspace/session-stop` provider to stop one Session's
+   * running work. This is the same fan-out archive `stopActivity` uses, without
+   * the archive write: the Agent registry cancels the running turn, the job
+   * registry kills owned jobs, the subagent runtime cancels running
+   * descendants, and the schedule plugin removes active schedule rows.
+   * Provider failures are logged and never block the replacement prompt; the
+   * cancellation itself is fire-and-forget, so this method does not wait for
+   * the stopped work to settle.
+   * @param sessionId - Session whose running work should stop.
+   */
+  private async stopSessionActivity(sessionId: ReturnType<typeof toSessionId>): Promise<void> {
+    try {
+      await this.ctx.parallel('workspace/session-stop', { sessionId })
+    } catch (error: unknown) {
+      const failures = error instanceof AggregateError ? error.errors : [error]
+      for (const failure of failures) {
+        this.ctx.logger.warn(
+          `devlead: stopping Session "${String(sessionId)}" for prompt interrupt failed: ${thrownMessage(failure)}`,
+        )
+      }
+    }
   }
 
   /**
