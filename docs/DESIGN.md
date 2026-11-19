@@ -1091,9 +1091,10 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   运行，调试用）。两条加载流完整组合的计数为 **146/146**（阶段 1 27 + 阶段 1b 12 + 阶段 2 23
   + 阶段 3 84，阶段 3 含 agent preset roster 与 watched-Session 问题路由检查）；跳过阶段 2 时
   **123/123**（阶段 1 + 1b + 3）。
-- 本轮最终验证数字（工作树）：`pnpm verify` = typecheck 通过 + **26 文件 / 781 tests** +
-  7 个构建产物；`node scripts/check-packages.mjs` → `OK (6 packages)`；E2E 本轮实跑
-  installed `--no-worktree` **123/123**（phase 1 27 + 1b 12 + 3 84；phase 2 未重跑）。
+- 本轮最终验证数字（工作树，0.2.6+ 工具面审计轮，见 [AUDIT](AUDIT.md) §12）：`pnpm verify` =
+  typecheck 通过 + **26 文件 / 821 tests** + 7 个构建产物；`node scripts/check-packages.mjs` →
+  `OK (6 packages)`；E2E 在安装版 rc.5 实跑 installed 与 patch **完整双流各 146/146**
+  （phase 1 27 + 1b 12 + 2 23 + 3 84）。
 - **DSH 版本兼容矩阵（本轮真实 E2E，npm 临时安装 CLI + `DSH_BIN`）**：
 
   | DSH | flow | checks | Team 分支 / 其他 |
@@ -1105,12 +1106,13 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   | 0.2.2-rc.4 | patch（完整） | **143/143** | 成功；含实验 worktree 阶段 23/23 |
   | 0.2.2-rc.5 | installed（`--no-worktree`） | **120/120** | 成功；phase 1 27 + 1b 12 + 3 81 |
   | 0.2.2-rc.5 | installed（`--no-worktree`，下一版 0.2.7 的问题路由 harness） | **123/123** | 成功；phase 3 84，含真实 `ask_user_question` gate + question report |
-  | 0.2.2-rc.5 | installed（完整） | **143/143** | 成功；含实验 worktree 阶段 23/23 |
-  | 0.2.2-rc.5 | patch（完整） | **143/143** | 成功；含实验 worktree 阶段 23/23 |
+  | 0.2.2-rc.5 | installed（完整，0.2.6+ 审计轮重跑） | **146/146** | 成功；含实验 worktree 阶段 23/23 与 question gate |
+  | 0.2.2-rc.5 | patch（完整，0.2.6+ 审计轮重跑） | **146/146** | 成功；含实验 worktree 阶段 23/23 与 question gate |
 
   表中 rc.1–rc.4 与 rc.5 的 120/143 行是各自发布时点的 harness 计数。下一版（0.2.7，未发布，
-  含 question 路由）给 phase 3 新增 3 条 question gate checks；当前工作树只重跑了 installed
-  `--no-worktree`（123/123）。完整组合的 146/146 需在发版前按 PUBLISHING 重跑。
+  含 question 路由）给 phase 3 新增 3 条 question gate checks；0.2.6+ 审计轮（AUDIT §12）已按
+  当前 harness 重跑 rc.5 installed `--no-worktree`（123/123）与 installed/patch 完整（各 146/146）。
+  发布前仍需按 PUBLISHING 重跑完整组合。
 
   每条版本使用独立 throwaway `DSH_HOME`，结束后清理；rc.1–rc.3 跳过 phase 2（实验组合不与
   内置 worktree bundle 绑定，阶段 1/1b/3 全跑），rc.4 / rc.5 两条加载流都跑完整四个阶段。所有版本

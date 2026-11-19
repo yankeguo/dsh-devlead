@@ -218,11 +218,12 @@ durable `team/mode`）。模型 API（`modelCatalog`、`Agent.model.select`、`m
 | `0.2.2-rc.4` | `DSH_BIN=<tmp>/rc.4/node_modules/.bin/dsh node scripts/e2e-smoke.mjs --flow installed` | **143/143**（含实验 worktree 阶段） |
 | `0.2.2-rc.4` | 同上，`--flow patch` | **143/143** |
 | `0.2.2-rc.5` | 同上，`rc.5` | **120/120**（Team 成功分支） |
-| `0.2.2-rc.5` | `DSH_BIN=<cache>/rc5/install/node_modules/@deepseek-ai/dsh/lib/bin.js node scripts/e2e-smoke.mjs --flow installed` | **143/143**（含实验 worktree 阶段） |
-| `0.2.2-rc.5` | 同上，`--flow patch` | **143/143** |
+| `0.2.2-rc.5` | `DSH_BIN=<cache>/rc5/install/node_modules/@deepseek-ai/dsh/lib/bin.js node scripts/e2e-smoke.mjs --flow installed` | **146/146**（0.2.6+ 审计轮按当前 harness 重跑，含实验 worktree 阶段） |
+| `0.2.2-rc.5` | 同上，`--flow patch` | **146/146**（同轮重跑） |
 
-下一版（0.2.7，未发布，含 question 路由）给 phase 3 新增 3 条 question-gate checks：installed
-rc.5 `--no-worktree` 按当前 harness 为 **123/123**；含 worktree 阶段的完整 **146/146** 仍需发版前重跑。
+下一版（0.2.7，未发布，含 question 路由）给 phase 3 新增 3 条 question-gate checks。0.2.6+ 审计轮
+已按当前 harness 重跑 rc.5：installed `--no-worktree` 为 **123/123**，installed/patch 完整双流各
+**146/146**。发布前仍需按发布指南重跑完整组合。
 
 每条 flow 有 3 条正向模型选择检查因本机无 provider 凭据记为 SKIP（打印真实原因）；负向
 model 路径与 `devlead_list_models` 在每个版本都真实运行。单元测试使用 rc.1 devDependencies，
@@ -781,7 +782,8 @@ checks）；调试时可加 `--no-worktree` 跳过阶段 2（**123/123**，阶�
 使用各自发布时点的 harness：用 npm 安装的 `0.2.2-rc.1` – `0.2.2-rc.5` CLI（`DSH_BIN`）各报告
 **120/120**——rc.1 上 Team 成功检查改为「预期不可用」（`DEVLEAD_TEAM_UNAVAILABLE`、不创建
 Session），rc.2–rc.5 走 Team 成功路径；rc.4 / rc.5 的 installed 与 patch 完整 flow 各通过
-**143/143**。目前只有 rc.5 `--no-worktree` 行按新的 123-check harness 重跑过。probe 是
+**143/143**。0.2.6+ 审计轮已按当前 harness 重跑 rc.5：`--no-worktree` **123/123**，installed/patch
+完整双流各 **146/146**。probe 是
 `scripts/e2e-probe/` 下的私有测试包，不发布、不属于 workspace 包；profile 变更只发生在
 `os.tmpdir()` 下的一次性 profile，不涉及 pnpm install / 网络 / lockfile。
 

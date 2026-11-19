@@ -245,12 +245,13 @@ requires Node ≥ 24.9):
 | `0.2.2-rc.4` | `DSH_BIN=<tmp>/rc.4/node_modules/.bin/dsh node scripts/e2e-smoke.mjs --flow installed` | **143/143** (includes the experimental worktree phase) |
 | `0.2.2-rc.4` | same, `--flow patch` | **143/143** |
 | `0.2.2-rc.5` | same, `rc.5` | **120/120** (Team success branch) |
-| `0.2.2-rc.5` | `DSH_BIN=<cache>/rc5/install/node_modules/@deepseek-ai/dsh/lib/bin.js node scripts/e2e-smoke.mjs --flow installed` | **143/143** (includes the experimental worktree phase) |
-| `0.2.2-rc.5` | same, `--flow patch` | **143/143** |
+| `0.2.2-rc.5` | `DSH_BIN=<cache>/rc5/install/node_modules/@deepseek-ai/dsh/lib/bin.js node scripts/e2e-smoke.mjs --flow installed` | **146/146** (0.2.6+ audit-round rerun on the current harness, includes the experimental worktree phase) |
+| `0.2.2-rc.5` | same, `--flow patch` | **146/146** (same rerun) |
 
 The next release (0.2.7, unpublished, includes question routing) adds three phase-3 question-gate
-checks: the installed rc.5 `--no-worktree` run on the current harness reports **123/123**; the full
-**146/146** (including the worktree phase) still needs a pre-release rerun.
+checks. The 0.2.6+ audit round reran rc.5 on the current harness: installed `--no-worktree`
+reports **123/123**, and the installed/patch full flows report **146/146** each. A pre-release
+rerun of the full combination is still required by the publishing guide.
 
 Three positive model-selection checks per flow are reported as SKIP on this credential-less
 Host (the real reason is printed); the negative model path and `devlead_list_models` run on every
@@ -933,8 +934,9 @@ phase 1b = 12, phase 2 = 23, phase 3 = 84, including the three question-gate che
 harness: npm-installed `0.2.2-rc.1` through `0.2.2-rc.5` CLIs (`DSH_BIN`, `--no-worktree`) reported
 **120/120** each — on rc.1 the Team success checks become expected-unavailable assertions
 (`DEVLEAD_TEAM_UNAVAILABLE`, no Session created), while rc.2–rc.5 run the Team success path — and
-the rc.4 / rc.5 installed and patch flows passed **143/143** with the worktree phase. Only the
-rc.5 `--no-worktree` row has been rerun on the current 123-check harness. The probe is a private
+the rc.4 / rc.5 installed and patch flows passed **143/143** with the worktree phase. The 0.2.6+
+audit round reran rc.5 on the current harness: `--no-worktree` **123/123** and the installed/patch
+full flows **146/146** each. The probe is a private
 test-only package under `scripts/e2e-probe/`, not a published or workspace package. The profile
 mutations happen only in the throwaway profile under `os.tmpdir()`; no pnpm install, network, or
 lockfile change is involved.

@@ -93,11 +93,12 @@ TMPDIR="$BASE/tmp" DSH_BIN="$DSH_BIN" node scripts/e2e-smoke.mjs \
 | `0.2.2-rc.4` | installed `--no-worktree` | **120/120**（Team 成功分支） |
 | `0.2.2-rc.4` | installed / patch 完整 | **143/143** 各（phase 2 23/23） |
 | `0.2.2-rc.5` | installed `--no-worktree` | **123/123**（phase 1 27 + 1b 12 + 3 84，含问题路由 gate） |
-| `0.2.2-rc.5` | installed 完整 | **143/143**（下一版 0.2.7（未发布，含 question 路由）新增 3 条 phase 3 checks 之前的完整运行；146/146 需发布前重跑） |
-| `0.2.2-rc.5` | patch 完整 | **143/143**（同上） |
+| `0.2.2-rc.5` | installed 完整（0.2.6+ 审计轮重跑） | **146/146**（phase 1 27 + 1b 12 + 2 23 + 3 84，含 question gate） |
+| `0.2.2-rc.5` | patch 完整（0.2.6+ 审计轮重跑） | **146/146**（同上） |
 
 rc.1–rc.4 的行是各自发布时的 harness 计数；下一版（0.2.7，未发布，含 question 路由）给 phase 3
-新增 3 条 checks，目前只有 rc.5 `--no-worktree` 行按新 harness 重跑。发布前需按
+新增 3 条 checks。0.2.6+ 审计轮（[AUDIT](AUDIT.md) §12）已按当前 harness 重跑 rc.5
+`--no-worktree`（123/123）与 installed/patch 完整（各 146/146，安装版 rc.5）。发布前需按
 [PUBLISHING](PUBLISHING.md) 重跑完整组合。
 
 每条 flow 有 3 条正向模型选择检查因无 provider 凭据 SKIP（打印真实原因）；负向

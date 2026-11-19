@@ -9,7 +9,8 @@ DSH 端到端验证。
 
 > **快照说明**：本文件 §1–§9 是**上一轮**全量审计的历史记录，其中的测试 / E2E 计数（399 tests、
 > 25/25 checks）记录的是当时的工作树。此后工作树新增了可选 worktree 隔离与依赖姿态审计
-> （0.1.1），并完成了 **0.2.0** 的六个决策项与 nits（见 §10.2）。最新验证数字与结论见
+> （0.1.1），并完成了 **0.2.0** 的六个决策项与 nits（见 §10.2）。**本轮（0.2.6+ 工具面审计）
+> 见 §12**；其余最新验证数字与结论见
 > [`DESIGN.md`](DESIGN.md) §10 与 [`OPTIONAL-DEPENDENCIES.md`](OPTIONAL-DEPENDENCIES.md)
 > （本文件 §1–§9 是历史快照；下列为 **v0.2.6 发布时点**数字：26 文件 / 755 tests。rc.5 补测：installed/patch 各 143/143、`--no-worktree` 120/120；rc.4 同；rc.1–rc.3 `--no-worktree` 各 120/120。完整矩阵见 [COMPATIBILITY.md](COMPATIBILITY.md)）。
 
@@ -342,3 +343,114 @@ PUBLISHING / OPTIONAL-DEPENDENCIES 与各包 README 同步；`docs/releases/v0.2
 - **UI**：失败 tooltip 可点击固定阅读（触屏可达），移除与 Tooltip 冲突的原生 `title`，
   失败态 hover 不再覆盖错误色，窄屏隐藏冗余标签/过期计数，文字对比度改用 label token，
   pressed 态增加背景，圆角与相邻 composer 卡片统一。
+
+## 12. 0.2.6+ 工具面与代码质量全面审计（2026-11-19，本轮）
+
+本轮以**模型可见工具面**为重点，对 6 包做全面审计、优化与打磨。方法：lead 逐工具深审
+`packages/tool`，同时并行 4 个只读审计子代理分别覆盖 devlead 核心、command+protocol、
+client-ui/文案、文档一致性；发现整合后由 lead 与两个实施子代理在**不相交写作用域**内落地，
+lead 审查全部 diff 并统一提交。审计基准 main @ `44753c4`（0.2.6，watched 提问路由未推送），
+运行行为以本机安装版 **DSH 0.2.2-rc.5** 为准；工具面判据采用官方 dsh-doc `tool-design`
+准则（"每个事实只说一次 / 参数规则放参数上 / 描述行为而非实现"）。
+
+### 12.1 结论摘要
+
+- **4 个 P0 真 bug（全部修复并附回归）**，都在 devlead 核心、且都触及 0.2.4–0.2.6 新功能的核心通道：
+  1. `reportProgress` 幂等键只按 message、忽略 kind —— 同文 `question` 被先前 `progress` 回执吞掉，
+     而 question 门禁（44753c4）恰会把子会话刚汇报过的原文转成 question report，导致 lead 永远收不到
+     该提问、子会话被告知"结束 turn 等回答"而静默卡死。修复：幂等键 = `kind + '\0' + message`，与
+     durable report id 语义对齐（同 kind 同文仍幂等）。
+  2. `hasQueuedNotice` 对无 `source` 的 inbox 消息抛 TypeError，且调用点在 flush 的 try 之外 ——
+     rc.5 inbox 投影用 `z.custom` 恢复持久化消息、不校验形状，损坏/迁移日志可致未处理拒绝
+     （Node 默认崩溃进程）+ digest 批永久滞留。修复：`source?.kind` 防御 + 调用点 try/catch 降级为投递。
+  3. dispose 不 await `outbox.close()` —— rc.5 storageDomain 单开，域名仅在完全 close 后释放；
+     插件重载时新实例 open 撞 `already-open` 被 catch 成 undefined，本世代 durable 报告永久降级
+     `durable:false`。修复：disposer 返回 close 的 Promise（cordis 等待）；`FakeStorageDomain` 加单开
+     语义使该竞态对测试可见，并补重载回归。
+  4. `promptSession interrupt` 已发出 stop 后 `followup` 失败时，外层补偿回滚本次新增 watch ——
+     子会话被停止、替代 prompt 未投递、还失去 watch，比不 interrupt 更糟。修复：新增
+     `DevLeadInterruptedAdmissionError`，stop 已提交则**保留 watch**（不补偿），文案提示重试；
+     DESIGN §4 补偿语义补此例外。
+- **工具面**：修复 `devlead_notifications` 描述残句（P0 文案）；按官方准则去重描述（总字符
+  10298 → 8613，-16%），把 preset/model/teams/interrupt/stop_running 等参数规则收敛到参数上；
+  补 8 个参数的 `default` schema 注解；6 个只读工具声明 `isConcurrencySafe`（可并行批处理）；
+  report kind 枚举改从 `DEVLEAD_REPORT_KINDS` 单一来源派生（输入/输出两处 + 穷尽性测试），删 `as` 断言；
+  披露 notifications limit 分别作用两个 digest、get_session 自读最近 5 条 report；补 prompt/watch 输出字段描述。
+- **command/protocol**：archived 占用者标题改经 `sessionRefLabel` 单行折叠（防换行注入）；idle 会话
+  也显示排队输入；本地匹配器镜像 core 的裸 uuid 头规则；引号诊断覆盖反向引号对/尾部 opener，剥离零宽粘贴噪声；
+  `sessionRefLabel` 收敛到 protocol 单一来源；`presentLine`/`reportLine` 加 wire-drift 防御；钉死 reset 记录词表。
+- **client-ui**：report 详情红字改中性色（error 红保留给真正的 turn 失败摘录）；hint/hover 文案补
+  report/question 唤醒通道；删 archived 拒绝死分支；admission 在途竞态（resetKey 代际）；行标记 O(N²) →
+  WeakMap 快照缓存；原型键 own-property 防御；paint-inset token 补 fallback。
+- **文档**：中英 README/DESIGN/COMPATIBILITY/OPTIONAL-DEPENDENCIES/各包 README 共 17+ 项一致性修复
+  （kind 枚举补 question、预算 question 豁免口径、when 门控、projection/记录清单补 reports、E2E 计数、
+  v0.2.7 叙事、交叉引用、三寻址矩阵行等）。
+- **验证**：`pnpm verify`（typecheck + **26 文件 / 821 tests** + build）通过；`pnpm check:packages` OK（6 包）；
+  安装版 rc.5 `pnpm e2e` **installed 与 patch 双流各 146/146**（phase 1 27 + 1b 12 + 2 23 + 3 84，3 条正向
+  model 检查因无凭据 SKIP）。基线 755 tests → 821（净增 66，均为边界/竞态/drift 回归）。
+
+### 12.2 工具面变更前后对照表
+
+**工具名 / 参数名 / 必填性 / 输出形状：零破坏性变更**（14 工具名、参数集合、required、canonical JSON
+形状全部不变，rc.1–rc.5 兼容面不回退）。变更均为**非破坏**的描述/schema 注解/行为收紧：
+
+| 维度 | 变更前 | 变更后 |
+| --- | --- | --- |
+| 工具名 | 14 个 `devlead_*` | 不变（评估过合并/改名，见 §12.3，建议不做） |
+| 参数 `default` 注解 | 仅描述文本写默认值 | create/watch/isolation/interrupt/stop_running/limit/kind 共 8 处补 schema `default` |
+| report kind 枚举 | index.ts/value.ts 两处硬编码 + `as` 断言 | 均 spread `DEVLEAD_REPORT_KINDS`，删 `as`，加穷尽性测试 |
+| message/summary 上限文案 | "max 4000/200 characters" | 从 protocol 常量插值，明确 Unicode code points |
+| 只读工具并发 | 默认 exclusive 串行 | 6 个只读工具 `isConcurrencySafe: () => true` |
+| 输出字段描述 | prompt/watch 输出字段无 description | 补全（尤其 watch `sessions` = 变更后完整 watch 集） |
+| notifications 描述 | 残句 "...from watched read it."；limit 仅说通知 | 修复残句；明确 limit 分别作用通知/汇报两个 digest、均 newest last |
+| get_session 描述 | 未披露自读 report 上限 | 明确"最近 5 条"（命名常量 `SELF_REPORTS_LIMIT`） |
+| stop_running 授权口径 | 参数"仅当人类要求" vs 主描述/judgment 矛盾 | 统一为 judgment-based（与主描述/policy/README 一致） |
+| report 幂等口径 | "identical messages deduplicated" | "同 kind+message 幂等（同文不同 kind 是新报告）"，描述/policy/文档同步 |
+| 描述总字符 | 10298 | 8613（-16%），逐工具见下 |
+
+逐工具描述字符数（前 → 后）：list_models 496→348、list_agent_presets 775→669、list_workspaces 331→331、
+use_workspace 303→261、list_sessions 508→508、create_session **2112→1323**、get_session 536→445、
+prompt_session 999→706、watch_session 377→377、notifications 533→544、report 992→913、
+remove_workspace 883→822、archive_session 1149→1062、unarchive_session 304→304。
+去重原则：参数规则移到参数描述、跨工具规则移到归属工具，测试断言随之移到规范位置并**保持强度**
+（新增"描述不再重复参数规则"的反向断言）。policy 两侧补 question 拦截的"人类直聊 turn 豁免"与
+kind+message 幂等口径；policy 预算基线 JSDoc 修正为 0.2.7 / 10839。
+
+### 12.3 待决策项（破坏性，已报 lead，建议不做）
+
+以下均**未实施**，已用 `devlead_report` 给出方案与兼容策略，建议维持现状（lead 未改判）：
+
+| 候选 | 评估 | 建议 |
+| --- | --- | --- |
+| 合并 archive/unarchive 为单工具布尔参数 | archive 带 stop_running 危险语义、unarchive 轻量恢复，分开触发更精准；合并破坏会话历史+权限契约，收益仅 -1 工具 | 不做 |
+| `use_workspace` 改名 `register_workspace` | 描述首词已是 Register；改名收益小、破坏面大 | 不做 |
+| watch 输出 `sessions` 改名 `watched` | PTC 消费契约；已改补 description 消歧（非破坏） | 不做 |
+| 4 个 list_* 合并为 kind 参数 | 各自触发语境差异大，合并增加模型理解成本 | 不做 |
+| 新增 `DEVLEAD_SESSION_AMBIGUOUS` 错误码（command 现把 INVALID_INPUT 整体当歧义） | 错误码联合新增成员，所有穷尽映射点需同步；0.x 可接受但应随 minor | 暂缓，随下个 minor |
+| 加宽 report id 的 32 位 FNV 哈希 | id 是 durable 记录契约，改算法会孤立存量记录、冻结 replay | 不做；已在 docstring 写明碰撞容忍度，须随记录版本变更 |
+
+### 12.4 未实施项与理由（非破坏，但本轮不做）
+
+- **index.ts 拆分**（核心审计 P1）：冷重建机器（~400 行）与全局单活准入（~350 行）可抽
+  `RehydrationCoordinator` / `ActiveAdmission` 两个深模块。属纯内部重构、公开 API 不变，但改动面大、
+  需独立一轮充分验证；本轮聚焦正确性与工具面，**建议单独一轮**实施。
+- **listSessions 两遍持久化 listing**（核心审计 P1，性能）：`collectSessionIds` 与 `sessionRankFacts`
+  各列一遍语料。可复用同一批 header，但需重构 views 数据流并重验 fake 计数；listing 已被
+  `maxListedSessions` 约束，非正确性问题，留待性能轮。
+- **report()/persistReport() 完全合并**：本轮已抽共享 `reportRuntime` 守卫（统一 archived 检查），
+  但两方法返回契约不同（同步队列决策 vs 已 flush 回执），完全合并会模糊语义，保留双方法。
+- **`deliverNow` 公开方法**：仅测试调用，但它是合法的按需投递 seam（idle 钩子之外的显式入口），
+  删除属破坏 hub 表面且无收益，保留。
+- **`storageDomain as never` 类型洞**：与 outbox.ts 的 duck-typed 可选能力姿态一致；补 module
+  augmentation 可能与 Host 自身 storage-domain 类型冲突，维持现状。
+- **client-ui 视觉验收**：report 中性色、ring fallback 几何等仍需按 [UI-VERIFICATION](UI-VERIFICATION.md)
+  在隔离 profile 人工视觉验收（单测只钉类名/CSS 文本）；本轮未启动浏览器，沿用上一轮"代码级判定 +
+  待人工视觉复核"口径。
+
+### 12.5 本轮提交（本地，未推送）
+
+`44753c4` 之上 8 个提交：`4473b32` fix(tool) 描述残句+digest 限额披露；`e53d104` feat(tool)
+default 注解+只读并发+kind 单一来源；`cc1a23b` refactor(tool) 描述去重；`e5f02fd`
+fix(command,protocol) 标签折叠/引号诊断/drift；`10681d7` fix(devlead) 4 个 P0；`5956095`
+fix(client-ui) 中性色/唤醒文案/竞态/缓存；`af7901c` docs 一致性；`2c84ee3` refactor(devlead)
+normalize 共享+report 守卫。**不 push、不打 tag、不发布**（遵守发布纪律）。
