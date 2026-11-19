@@ -365,7 +365,9 @@ scripts/trusted-publishers.sh --list
   3. GitHub Release 自动按版本标记：prerelease → `--prerelease --latest=false`，稳定版 →
      `--prerelease=false`（edit 时纠正旧标记），都带 `--verify-tag`。
   prerelease 的 tag（`v0.3.0-rc.1`）推送到远端即触发 CI stage，也供 Release 的 `--verify-tag`
-  使用。用户安装时需要显式指定版本（DSH 插件市场按版本安装，不受 dist-tag 影响）。
+  使用。用户安装时必须写精确版本；发布后 24 小时内尤其不能用 `@next`——pnpm 的
+  `minimumReleaseAge` 会把它回退到 npm 占位版本 `0.0.0-stage`，解包失败（见下文「发布后的
+  用户安装方式」）。
 - `engines.dsh` 当前为 `>=0.2.2-rc.1 <0.3.0`，**所有插件 / bundle 包都声明**；
   DSH 升级到 0.3 时需更新该范围并回归。
 - 破坏性变更：遵循 semver；预发布版本使用 `-rc.N` / `-alpha.N` 后缀。
@@ -531,15 +533,37 @@ scripts/trusted-publishers.sh --list
 | provenance 未生成 | 仓库非公开、runner 非 GitHub-hosted、或本地 stage（本地不生成）；公开仓库 + hosted runner 会在 CI 中生成 |
 | 想改用新工作流文件名/环境 | 一个包只能存在一个 trust 配置：先 `npm trust list` + `npm trust revoke --id`，再用 `scripts/trusted-publishers.sh` 重建 |
 | 误发版本 | npm 允许 72 小时内 `npm unpublish <pkg>@<version>`；超过则只能废弃（deprecate）并升版本 |
+| 安装 prerelease 报 `ERR_PNPM_TARBALL_EXTRACT` / `Unexpected end of TAR archive at offset 2560`，URL 是 `dsh-devlead-bundle-0.0.0-stage.tgz` | 用了 `@next` 装刚发布的版本：pnpm 的 `minimumReleaseAge`（默认 24h）挡下 tag 目标后回退到最低版本，即 npm 占位包 `0.0.0-stage`，其 tarball 不完整。改用精确版本 `@yankeguo/dsh-devlead-bundle@<version>`；细节见下文「发布后的用户安装方式」 |
 
 ## 发布后的用户安装方式
 
 ```sh
-# CLI
+# 稳定版（dist-tag latest）：只写包名即可
 dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 
-# 或在 Web：Plugins → Add plugin → 输入 @yankeguo/dsh-devlead-bundle
+# prerelease（dist-tag next）：必须写精确版本
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@<version>
 ```
+
+Web 的 Plugins → Add plugin 接受同样的写法（prerelease 输入 `包名@版本`）。
+
+> **装刚发布的 prerelease 不要用 `@next`。** DSH 内置 pnpm 11 的默认 `minimumReleaseAge`
+> 是 24 小时：发布不足 24 小时的版本不会被选中。dist-tag 指向的版本被挡下时，pnpm 会回退到
+> **不高于该 tag 目标的最低版本**——本包的 packument 里最低的是 npm 在 2026-11-09 首次发布时
+> 生成的 holding 占位版本 `0.0.0-stage`（`"stub": true`，只有 `package.json` 和 `README.md`）。
+> 它的 tarball 缺少 tar 结束块，下载后解包必然失败，并带着退避重试两分钟：
+>
+> ```
+> [WARN] GET .../dsh-devlead-bundle-0.0.0-stage.tgz error (ERR_PNPM_TARBALL_EXTRACT). Will retry ...
+> [ERR_PNPM_TARBALL_EXTRACT] Failed to add tarball from ".../dsh-devlead-bundle-0.0.0-stage.tgz"
+> to store: Unexpected end of TAR archive at offset 2560
+> ```
+>
+> 这与 6 个包之间的版本引用无关（bundle 的依赖都是精确的同版本）。写**精确版本**时 pnpm 走
+> 显式请求路径，会把 6 个包自动写进 profile `pnpm-workspace.yaml` 的
+> `minimumReleaseAgeExclude` 并正常安装（2026-11-19 用 11.28.5 实测 0.3.0-rc.1）。其它出路：
+> 等满 24 小时后再用 `@next`；或手工把 `'@yankeguo/dsh-devlead-bundle@<version>'` 等 6 条
+> 加进该列表。
 
 本地 checkout 开发仍可用 `pnpm install:profile`（见主 [README.zh.md](../README.zh.md)）。
 
