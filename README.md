@@ -58,9 +58,9 @@ Documentation: [Design notes (中文)](docs/DESIGN.md) · [Publishing guide (中
 | 13 lead tools + 1 report tool | Register/list/remove Workspaces, list Host models and Agent presets, create (model/Agent Teams inherited or pinned)/read/continue/archive/restore/watch Sessions, read the notification/report digest; watched non-lead Sessions can send a one-way `devlead_report` update (see [Model tools](#model-tools)) |
 | Human commands | `/devlead` (status), `/devlead on\|off`, `/devlead reset` (damaged-state recovery), `/devlead watch\|unwatch <session>`; sessions are addressable by full id or unique prefix |
 | Notification loop | A watched session's `turn/end` writes a durable notification and wakes an indexed DevLead through a coalescing window (configurable window; cold leads are resumed by default); the watch index is rebuilt from durable records after a Host restart, and a disposed lead keeps observing (see [Notification loop](#notification-loop)) |
-| Event sourcing | Mode / watch set / notifications / reset are ignorable `plugin:devlead/*` records with strict replay validation; survive restart / resume / fork |
+| Event sourcing | Mode / watch set / notifications / reports / reset are ignorable `plugin:devlead/*` records with strict replay validation; survive restart / resume / fork |
 | Damaged-state recovery | A corrupt `plugin:devlead/*` record freezes the fold, but the human-only `/devlead reset` (or `/devlead off` on a frozen fold) appends a `plugin:devlead/reset` record that restarts all three projections from the default disabled state (see [Notification loop](#notification-loop)) |
-| Session projection | The `devLead` projection (`{ enabled, sessions, notifications }`) syncs state to the browser without a custom Remote API; summary-sized companions `devLeadMode` (`{ enabled }`) and `devLeadWatch` (`{ sessions }`) ride every Session-list summary so sidebar rows can render the active lead and watched marks |
+| Session projection | The `devLead` projection (`{ enabled, sessions, notifications, reports }`) syncs state to the browser without a custom Remote API; summary-sized companions `devLeadMode` (`{ enabled }`) and `devLeadWatch` (`{ sessions }`) ride every Session-list summary so sidebar rows can render the active lead and watched marks |
 | UI | A labelled composer-toolbar DevLead toggle (icon + text) is present in both states and sends `/devlead on` or `/devlead off`. On: a status-only DevLeadBar above the composer shows the watched/running counts and the latest notification; the bar has no switch, so turning the mode off never hides the control that did it. The active lead row gets an accent ring (no trailing glyph), and watched Session rows get a quiet target glyph |
 | Permission model | The mode switch can only be triggered by human commands/UI; notifications are runtime notices, not human instructions (see [Permission model](#permission-model)) |
 | One-command install | The bundle's `cordis.patch.yml` inserts all 4 runtime plugin rows; individual packages can also be installed separately |
@@ -248,8 +248,9 @@ requires Node ≥ 24.9):
 | `0.2.2-rc.5` | `DSH_BIN=<cache>/rc5/install/node_modules/@deepseek-ai/dsh/lib/bin.js node scripts/e2e-smoke.mjs --flow installed` | **143/143** (includes the experimental worktree phase) |
 | `0.2.2-rc.5` | same, `--flow patch` | **143/143** |
 
-v0.2.7 adds three phase-3 question-gate checks: the installed rc.5 `--no-worktree` run now reports
-**123/123**; the full **146/146** (including the worktree phase) still needs a pre-release rerun.
+The next release (0.2.7, unpublished, includes question routing) adds three phase-3 question-gate
+checks: the installed rc.5 `--no-worktree` run on the current harness reports **123/123**; the full
+**146/146** (including the worktree phase) still needs a pre-release rerun.
 
 Three positive model-selection checks per flow are reported as SKIP on this credential-less
 Host (the real reason is printed); the negative model path and `devlead_list_models` run on every
@@ -497,10 +498,10 @@ rather than implying the directory is unregistered.
 | `devlead_use_workspace` | `path` (required, absolute), `title?`, `create?` (default false: a missing directory is an error; `true` creates it with `mkdir -p` after the human asked) | `{ workspace }` |
 | `devlead_list_sessions` | `workspace?` (id, registered path, or exact title), `watched_only?`, `limit?` | `{ sessions, watched }` |
 | `devlead_create_session` | `workspace?` (id, registered path, or exact title), `prompt?`, `title?`, `watch?` (default true), `preset?` (Host-defined id; blank/omitted falls back to the plugin default then the Host default), `isolation?` (default `none`; `worktree` = best-effort isolated checkout), `provider?`+`model?` (paired; optional `reasoning_effort?`), `agent_teams?` | creation result (including the `isolation` outcome, and the applied `model`/`agentTeams` when requested) |
-| `devlead_get_session` | `session` (required) | `{ session, reports? }` — when reading this lead itself, `reports` carries its newest retained reports |
+| `devlead_get_session` | `session` (required) | `{ session, reports? }` — when reading this lead itself, `reports` carries its 5 newest retained reports |
 | `devlead_prompt_session` | `session`, `prompt` (required), `watch?` (default true), `interrupt?` (default false: queue behind the running turn; `true` = stop the running turn and Host-reported subagent/job/schedule work, discard queued input, then admit a new turn; idle/cold = no-op) | prompt result (including `interrupted`) |
 | `devlead_watch_session` | `session`, `watching` (required bool) | watch mutation result |
-| `devlead_notifications` | `limit?` (default 20) | `{ notifications, reports, watched }` |
+| `devlead_notifications` | `limit?` (default 20, applied to each digest separately) | `{ notifications, reports, watched }` |
 | `devlead_report` | `message` (required, plain text, max 4000 code points), `kind?` (`progress` default / `blocked` / `decision` / `question` / `fyi`), `summary?` (max 200) | `{ report, durable, queued, warning? }` — visible only in a watched non-lead Session; one-way, never waits for a reply; a `question` report is answered in a new turn via `devlead_prompt_session` |
 | `devlead_remove_workspace` | `workspace` (required: id, registered path, or exact title) | `{ workspace, removed }` (pre-removal snapshot) |
 | `devlead_archive_session` | `session` (required), `stop_running?` (default false) | `{ sessionId, archived: true, stopped }` |
@@ -519,9 +520,10 @@ never returns; `/devlead reset` drops that lead's pending rows. The receipt appe
 `devlead_get_session` when reading the lead itself. A running lead gets the report at its next
 reachable step. The lead may optionally introduce `devlead_report` in the brief for a long,
 multi-stage, or blockage-prone watched Session; this is on-demand, omitted when `watch` is false
-(the tool is absent), and never replaces the final turn notification. At most four distinct reports
-are accepted per child turn; identical messages in one turn are idempotent; a fifth report fails
-`DEVLEAD_REPORT_RATE_LIMITED`.
+(the tool is absent), and never replaces the final turn notification. At most four distinct
+non-question reports are accepted per child turn; `question` reports are exempt from that budget;
+identical kind+message pairs in one turn are idempotent (the same text under a different kind is a
+new report); a fifth non-question report fails `DEVLEAD_REPORT_RATE_LIMITED`.
 
 Tools translate the core's `DevLeadError` into a `HarnessError` with a stable code. When reading
 state, trust `lastTurn` / `lastTransition` / `lastError` / `lastAssistant` instead of guessing.
@@ -855,7 +857,7 @@ without it keeps the default single-checkout behavior and reports `unavailable`.
 | Passing `title` to an already-registered Workspace has no effect | expected: `title` only applies when registering a new Workspace record; an existing record keeps its title |
 | `/devlead on` reports `DEVLEAD_ALREADY_ACTIVE` | another Session already holds the Host-wide DevLead mode. The error names it; run `/devlead off` in that Session before enabling this one. An **archived** holder does not block a new enable: it is ignored for admission, listed under `Archived DevLead holders` in `/devlead status`, and should be unarchived/opened to run `/devlead off` (or deleted). |
 | `devlead_report` reports `DEVLEAD_NOT_SUPERVISED` | the Session is a DevLead itself, the lead stopped watching it, the lead is archived, the lead's mode is off, or several historical watchers leave no unique active lead watching it. Re-watch it from the active lead. |
-| `devlead_report` reports `DEVLEAD_REPORT_RATE_LIMITED` | the child already sent four distinct reports in this turn. Wait for its next turn; the lead can still steer it with `devlead_prompt_session`. |
+| `devlead_report` reports `DEVLEAD_REPORT_RATE_LIMITED` | the child already sent four distinct non-question reports in this turn (`question` reports are exempt from the budget). Wait for its next turn; the lead can still steer it with `devlead_prompt_session`. |
 | `devlead_report` reports `DEVLEAD_INVALID_INPUT` | the message is empty or over 4000 code points, the summary is over 200, or the kind is not `progress` / `blocked` / `decision` / `question` / `fyi`. |
 | A watched child tried to call `ask_user_question` | the call is intercepted and forwarded to the active lead as a `question` report; the child gets a tool error telling it to end its turn. Answer with `devlead_prompt_session`, or ask the human from the lead first. The one exception is a child turn opened by a direct human message, which may ask in place |
 | `/devlead` / tools report `DEVLEAD_PROJECTION_INVALID` | a `plugin:devlead/*` record in this Session's log is corrupt and replay froze. Run `/devlead reset` (human-only; discards the mode, watch set, and notification digest) — `/devlead off` does that implicitly, `/devlead on` refuses until the reset. Old plugin versions cannot recover. |
@@ -921,14 +923,18 @@ true/false applied with a durable `team/mode`, omitted settings absent from the 
 unavailable model rejected before any Session exists, and the profile default model proven
 unchanged), and `devlead_list_models` returns the compact Host catalog view (default,
 providers, failures). When a credential-less Host exposes no model catalog, the positive model
-checks are reported as SKIP with the reason instead of being faked. Per-phase and total check
-counts are **143/143 per flow** (phase 1 = 27, phase 1b = 12, phase 2 = 23, phase 3 = 81);
+checks are reported as SKIP with the reason instead of being faked. The watched-child surface is
+exercised too: the child sees exactly `devlead_report`, its report lands in the lead digest as a
+durable receipt, and its `ask_user_question` call is denied and forwarded to the lead as a
+`question` report. Per-phase and total check counts are **146/146 per flow** (phase 1 = 27,
+phase 1b = 12, phase 2 = 23, phase 3 = 84, including the three question-gate checks);
 `--no-worktree` skips only the experimental phase, reporting
-**120/120** (phases 1 + 1b + 3) for debugging. Compatibility runs with npm-installed
-`0.2.2-rc.1` through `0.2.2-rc.5` CLIs (`DSH_BIN`, `--no-worktree`) report **120/120** each: on
-rc.1 the Team success checks become expected-unavailable assertions (`DEVLEAD_TEAM_UNAVAILABLE`,
-no Session created), while rc.2–rc.5 run the Team success path; the rc.4 / rc.5 installed and patch
-flows also pass **143/143** with the worktree phase. The probe is a private
+**123/123** (phases 1 + 1b + 3) for debugging. The compatibility runs above used each release's
+harness: npm-installed `0.2.2-rc.1` through `0.2.2-rc.5` CLIs (`DSH_BIN`, `--no-worktree`) reported
+**120/120** each — on rc.1 the Team success checks become expected-unavailable assertions
+(`DEVLEAD_TEAM_UNAVAILABLE`, no Session created), while rc.2–rc.5 run the Team success path — and
+the rc.4 / rc.5 installed and patch flows passed **143/143** with the worktree phase. Only the
+rc.5 `--no-worktree` row has been rerun on the current 123-check harness. The probe is a private
 test-only package under `scripts/e2e-probe/`, not a published or workspace package. The profile
 mutations happen only in the throwaway profile under `os.tmpdir()`; no pnpm install, network, or
 lockfile change is involved.

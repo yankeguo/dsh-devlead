@@ -10,8 +10,8 @@ DSH 端到端验证。
 > **快照说明**：本文件 §1–§9 是**上一轮**全量审计的历史记录，其中的测试 / E2E 计数（399 tests、
 > 25/25 checks）记录的是当时的工作树。此后工作树新增了可选 worktree 隔离与依赖姿态审计
 > （0.1.1），并完成了 **0.2.0** 的六个决策项与 nits（见 §10.2）。最新验证数字与结论见
-> [`DESIGN.md`](DESIGN.md) §12 与 [`OPTIONAL-DEPENDENCIES.md`](OPTIONAL-DEPENDENCIES.md)
-> （本文件 §1–§9 是历史快照；当前为 26 文件 / 755 tests。rc.5 补测：installed/patch 各 143/143、`--no-worktree` 120/120；rc.4 同；rc.1–rc.3 `--no-worktree` 各 120/120。完整矩阵见 [COMPATIBILITY.md](COMPATIBILITY.md)）。
+> [`DESIGN.md`](DESIGN.md) §10 与 [`OPTIONAL-DEPENDENCIES.md`](OPTIONAL-DEPENDENCIES.md)
+> （本文件 §1–§9 是历史快照；下列为 **v0.2.6 发布时点**数字：26 文件 / 755 tests。rc.5 补测：installed/patch 各 143/143、`--no-worktree` 120/120；rc.4 同；rc.1–rc.3 `--no-worktree` 各 120/120。完整矩阵见 [COMPATIBILITY.md](COMPATIBILITY.md)）。
 
 ## 1. 结论摘要
 

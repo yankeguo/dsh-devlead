@@ -8,7 +8,7 @@
 设计与实现的**唯一强信源**是官方 DeepSeek Harness 源码
 （`/Users/guoyk/Workspace/src/deepseek-harness`，以及 npm 上 `0.2.2-rc.1` – `0.2.2-rc.5`
 的已安装 `@deepseek-ai/*` 声明）。类型检查以 rc.1 devDependencies 为准（最旧支持面），
-运行验证覆盖 rc.1–rc.5（见 §12.3）。任何第三方插件——包括早期参考过的
+运行验证覆盖 rc.1–rc.5（见 §10）。任何第三方插件——包括早期参考过的
 `dsh-infini-goal`——只算线索，不作为依据；每条 DSH API 行为都以官方源码或已安装的
 `@deepseek-ai/*` 声明为准。
 
@@ -117,7 +117,7 @@ DSH 的所有读取路径会保留并重放这些记录，但不会把它们投�
   `error` / `summary` 必须是 ≤240 码点的非空字符串；一条 projection 最多保留 64 条通知。这些
   不变量同时由 decoder、state schema 与 wire schema 守卫。
 - report 的 `id` 必须等于 `devLeadReportId(senderSessionId, turn, kind, message)`；`kind` 是
-  `progress|blocked|decision|fyi`；`message` 1–4000 码点，`summary` 1–200 码点，sender/lead id
+  `progress|blocked|decision|question|fyi`；`message` 1–4000 码点，`summary` 1–200 码点，sender/lead id
   非空；`turn` 允许 0（命令调用常发生在首个 turn 之前）。最多保留 64 条 report，按 `id` 去重。
 - 新类型 `plugin:devlead/report` 对旧版本是未知插件记录：旧 fold 忽略、不冻结，因此回滚不会
   因新记录损坏日志；旧版本也读不到 report（预期降级）。`devLead` projection 的
@@ -253,6 +253,11 @@ default: boolean; broken? }[]; reason? }`；`default` 是 Host 有效默认（`s
   已有显式 watch（`alreadyWatched`）与 `watch:false` 不改变 watch。成功路径返回的 `watched`
   仍从 durable state 读取，并发下如实反映。即：promptSession 要么"投递成功且 watch 保持"，
   要么"失败且不留下本次新增的 watch"；`createSession` 保持原有语义（创建后的副作用不回滚）。
+  **interrupt 例外**：一旦 `interrupt:true` 已对运行中的 turn 发出 stop（`stopSessionActivity`
+  已请求），停止本身不可回滚；此后若 `followup` 投递失败，抛出的是
+  `DevLeadInterruptedAdmissionError`（仍是 `DEVLEAD_SESSION_UNAVAILABLE`，文案注明"已要求停止、
+  保留 watch、请重试 prompt"），**不做 watch 补偿**——否则会把一个已被停止的子会话留在无人
+  关注、无人重试的状态。lead 仍需观察被取消 turn 的通知并重试替代 prompt。
 - `useWorkspace`：先 `assertReady(agent)`（live + 模式开启）；绝对路径校验交给
   `workspaceRegistry.create`（它做 realpath 规范化、相对路径拒绝、目录存在性检查、已注册路径
   复用）。**`create` 默认 `false`**：默认绝不 mkdir，缺少目录时返回
@@ -360,7 +365,8 @@ default: boolean; broken? }[]; reason? }`；`default` 是 Host 有效默认（`s
   输入；被中断的 turn 以 `aborted` 结束，watched 通知显示 cancelled，替换 turn 结束后再单独
   通知。空闲或冷目标没有运行中的 turn，跳过 stop，`interrupt` 是无害 no-op。结果
   `interrupted` 表示是否真的请求过 stop；stop provider 抛错只 warning，不阻塞替换 prompt。
-  一旦 stop 已请求，之后的取消不会回滚 stop，替换 prompt 与 stop 一起提交。
+  一旦 stop 已请求，之后的取消不会回滚 stop，替换 prompt 与 stop 一起提交；若此时 `followup`
+  仍失败，按上文的 interrupt 例外保留本次新增的 watch（不补偿），错误文案提示重试 prompt。
 - `watchSession`：追加完整 watch 记录；上限 `maxWatchedSessions`；不能 watch 自己。
 - **关闭语义（remove / archive / unarchive）**：`removeWorkspace` / `archiveSession` / `unarchiveSession` 都先
   `assertReady(agent)` 并转发 signal，Host 未组合 registry 时统一走 `requireWorkspaceRegistry`
@@ -531,8 +537,9 @@ DevLead 无需额外工具调用即可判断是否要介入。
 投递状态机（`DevLeadService.reportProgress` → outbox → `DevLeadNotificationHub.persistReport`）：
 
 1. 校验 live / 非 DevLead / 唯一关注该会话的 active lead；解析 reporter 的当前 turn（命令调用可为 0）。
-2. 校验 message 非空且 ≤4000 码点、kind 枚举、summary ≤200；同轮同一 message 复用已有 receipt
-   （幂等），不同普通 report 超过 4 条返回 `DEVLEAD_REPORT_RATE_LIMITED`；`question` 是
+2. 校验 message 非空且 ≤4000 码点、kind 枚举、summary ≤200；同轮同一 kind+message 复用已有
+   receipt（幂等；同文不同 kind 是新报告），不同普通 report 超过 4 条返回
+   `DEVLEAD_REPORT_RATE_LIMITED`；`question` 是
    控制流通道，不计入普通 report 预算，也不受第 5 条限制。
 3. 构造 sender id/title、workspace id/title、lead id、`at`，**先写 durable outbox**
    （`devlead_report_outbox` storage-domain，`pending` 表，per-record、写入 resolve 即 durable），
@@ -577,7 +584,7 @@ watched 子会话是真实 Session，它自带的 `ask_user_question` 会直接�
    在新 turn 里回答。转发失败只 warning，并退化为“结束 turn，在最终 assistant 消息里写明问题”。
 
 `question` 是 `DevLeadReportKind` 的新增成员（protocol / outbox / fold / UI label 均派生同一
-枚举），但不计入普通 report 的每轮 4 条预算；同轮相同 message 仍幂等。UI 的 report chip 对
+枚举），但不计入普通 report 的每轮 4 条预算；同轮相同 kind+message 仍幂等。UI 的 report chip 对
 `question` 使用“提问 / question”标签和 warning 色。
 
 **为什么结束 turn 而不是挂起工具调用**：挂起会依赖 lead 及时响应，冷 lead / 人类离开时会形成
@@ -683,7 +690,9 @@ Session 的工作目录切到独立分支/检出，DevLead 用它**可选地**�
 
 ## 5. 模型工具（`@yankeguo/dsh-tool-devlead`）
 
-全部工具都带 `when: ({ agent }) => ctx.devLead.isEnabled(agent)`，只在 DevLead 会话可见。
+13 个主工具都带 `when: ({ agent }) => ctx.devLead.isEnabled(agent)`，只在 DevLead 会话可见；
+`devlead_report` 是唯一的反向面：`when` 为 `ctx.devLead.isSupervised(agent)`，只在被唯一 active lead
+关注的非 DevLead 会话可见（见下文「中途汇报工具」）。
 
 | 工具 | 参数 | 返回（canonical JSON） |
 | --- | --- | --- |
@@ -693,10 +702,11 @@ Session 的工作目录切到独立分支/检出，DevLead 用它**可选地**�
 | `devlead_use_workspace` | `path`(必填，绝对路径), `title?`, `create?`(默认 false；显式 true 才 mkdir) | `{ workspace }` |
 | `devlead_list_sessions` | `workspace?`(id / 注册路径 / 精确 title), `watched_only?`, `limit?` | `{ sessions, watched: string[] }` |
 | `devlead_create_session` | `workspace?`(id / 注册路径 / 精确 title), `prompt?`, `title?`, `watch?`(默认 true), `preset?`(Host 定义 id；空白回退插件默认再 Host 默认), `isolation?`(默认 `none`；`worktree` = 尽力隔离), `provider?`+`model?`(成对；可选 `reasoning_effort?`), `agent_teams?` | `DevLeadCreatedSession`（含 `isolation`；请求时含已应用的 `model`/`agentTeams`） |
-| `devlead_get_session` | `session`(必填) | `{ session }` |
+| `devlead_get_session` | `session`(必填) | `{ session, reports? }`（读取 lead 自身时携带最近 5 条 retained reports） |
 | `devlead_prompt_session` | `session`(必填), `prompt`(必填), `watch?`(默认 true), `interrupt?`(默认 false；true = 先经 `workspace/session-stop` 停止运行中工作再投递；idle/cold no-op) | `DevLeadPromptedSession`（含 `interrupted`） |
 | `devlead_watch_session` | `session`(必填), `watching`(必填 bool) | `DevLeadWatchMutation` |
-| `devlead_notifications` | `limit?`(默认 20) | `{ notifications, watched: string[] }` |
+| `devlead_notifications` | `limit?`(默认 20，分别作用于通知与汇报两个 digest) | `{ notifications, reports, watched: string[] }` |
+| `devlead_report` | `message`(必填，≤4000 码点), `kind?`(默认 progress；progress/blocked/decision/question/fyi), `summary?`(≤200 码点) | `{ report, durable, queued, warning? }`（仅已关注非 lead 会话可见；`when: isSupervised`） |
 | `devlead_remove_workspace` | `workspace`(必填，id / 注册路径 / 精确 title) | `{ workspace, removed }`（注销前快照） |
 | `devlead_archive_session` | `session`(必填), `stop_running?`(默认 false) | `{ sessionId, archived: true, stopped }` |
 | `devlead_unarchive_session` | `session`(必填) | `{ sessionId, archived: false }` |
@@ -709,7 +719,7 @@ Session 的工作目录切到独立分支/检出，DevLead 用它**可选地**�
   类型有编译期一致性约束，运行时还会用编译出的 output schema 校验每个投影值（可选字段按
   lossless JSON 规则省略）。
 - 参数里的 `workspace` 接受 Workspace id、注册路径或精确 title（解析顺序与歧义策略见 §4）；
-  `session` 接受完整 id、路径或唯一前缀匹配；`session` 还接受
+  `session` 接受完整 id 或唯一前缀匹配；`session` 还接受
   省略 `session-` 前缀的 uuid 第一段/前缀（`views.ts` 的 `matchSessionIds`：例如 `e59ab350`
   解析到 `session-e59ab350-…`），只有在可寻址集合内唯一时才解析。同第一段的多个 Session 仍报
   `DEVLEAD_INVALID_INPUT` 并列出候选（最多 8 个），不猜；零命中仍报 `DEVLEAD_SESSION_NOT_FOUND`，
@@ -742,8 +752,8 @@ Session 的工作目录切到独立分支/检出，DevLead 用它**可选地**�
 - **中途汇报工具** `devlead_report` 是唯一不要求 DevLead 模式的工具：`when` 为
   `ctx.devLead.isSupervised(agent)`（非 enabled + 唯一 active lead 的 watch），schema 只有
   `message` / `kind?` / `summary?`，没有 target。kind 含 `question`（lead 用新 turn 回答）；
-  普通 report 单向、不等待回复、最终 turn 仍走原通知、每轮最多 4 条、同轮相同消息幂等，
-  `question` 不计入该预算。执行转发 `reportProgress` 并把 receipt 投影成
+  普通 report 单向、不等待回复、最终 turn 仍走原通知、每轮最多 4 条不同普通报告、同轮相同
+  kind+消息幂等，`question` 不计入该预算。执行转发 `reportProgress` 并把 receipt 投影成
   `{ report, durable, queued, warning? }`（durable 为真才代表已落 durable outbox；queued 表示 lead receipt 尚未 flush）。`devlead_get_session` 读取 lead 自身时额外返回 `reports`（最近 5 条），
   读取其他 Session 时输出形状不变。参数长度/kind 由 core 再校验，错误码 `DEVLEAD_INVALID_INPUT` /
   `DEVLEAD_NOT_SUPERVISED` / `DEVLEAD_REPORT_RATE_LIMITED` 由统一翻译层转成 `HarnessError`。
@@ -938,7 +948,7 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
 | `DEVLEAD_NOT_ENABLED` | 当前会话未开启 DevLead 模式 |
 | `DEVLEAD_ALREADY_ACTIVE` | 另一个 Session 已占用 Host 级 DevLead 模式；消息含占用者 `title (id)`（或裸 id）与“先 /devlead off”的指引。**archived 占用者不再抛出该错误**：它被视为非 active，准入继续；`/devlead status` 会列出并给出 unarchive + off / 删除路径 |
 | `DEVLEAD_NOT_SUPERVISED` | 当前 Session 不是「非 DevLead + 被唯一 active lead watch」；包括自身是 lead、lead off/归档、unwatch、或历史多 watcher 无唯一关注该会话的 active lead |
-| `DEVLEAD_REPORT_RATE_LIMITED` | 已关注 Session 同一 turn 已发送 4 条不同报告；同轮相同 message 幂等，不计数 |
+| `DEVLEAD_REPORT_RATE_LIMITED` | 已关注 Session 同一 turn 已发送 4 条不同的**非 question** 报告；`question` 报告不计入该预算；同轮相同 kind+message 幂等，不计数 |
 | `DEVLEAD_AGENT_NOT_LIVE` | 传入的 Agent 不是注册表中的 live 实例（工具侧绕过 `when` 时也走该码） |
 | `DEVLEAD_WORKSPACE_NOT_FOUND` | 指定 Workspace 引用无法解析，或 Host 未组合 Workspace registry；消息说明 id / 注册路径 / 精确 title 三种寻址方式 |
 | `DEVLEAD_WORKSPACE_AMBIGUOUS` | 引用按精确 title 命中多个 Workspace；消息按 registry 顺序列出每个候选的 `id (path)`，要求改用 id 或注册路径 |
@@ -1094,12 +1104,13 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   | 0.2.2-rc.4 | installed（完整） | **143/143** | 成功；含实验 worktree 阶段 23/23 |
   | 0.2.2-rc.4 | patch（完整） | **143/143** | 成功；含实验 worktree 阶段 23/23 |
   | 0.2.2-rc.5 | installed（`--no-worktree`） | **120/120** | 成功；phase 1 27 + 1b 12 + 3 81 |
-  | 0.2.2-rc.5 | installed（`--no-worktree`，v0.2.7 问题路由） | **123/123** | 成功；phase 3 84，含真实 `ask_user_question` gate + question report |
+  | 0.2.2-rc.5 | installed（`--no-worktree`，下一版 0.2.7 的问题路由 harness） | **123/123** | 成功；phase 3 84，含真实 `ask_user_question` gate + question report |
   | 0.2.2-rc.5 | installed（完整） | **143/143** | 成功；含实验 worktree 阶段 23/23 |
   | 0.2.2-rc.5 | patch（完整） | **143/143** | 成功；含实验 worktree 阶段 23/23 |
 
-  v0.2.7 新增 3 条 phase-3 question gate checks；本轮只重跑 installed `--no-worktree`
-  （123/123）。完整组合的 146/146 需在发版前按 PUBLISHING 重跑。
+  表中 rc.1–rc.4 与 rc.5 的 120/143 行是各自发布时点的 harness 计数。下一版（0.2.7，未发布，
+  含 question 路由）给 phase 3 新增 3 条 question gate checks；当前工作树只重跑了 installed
+  `--no-worktree`（123/123）。完整组合的 146/146 需在发版前按 PUBLISHING 重跑。
 
   每条版本使用独立 throwaway `DSH_HOME`，结束后清理；rc.1–rc.3 跳过 phase 2（实验组合不与
   内置 worktree bundle 绑定，阶段 1/1b/3 全跑），rc.4 / rc.5 两条加载流都跑完整四个阶段。所有版本

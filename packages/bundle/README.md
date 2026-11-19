@@ -24,8 +24,8 @@ kind: "package-bundle"
   存活时经合并窗口唤醒它决定下一步。关注关系索引在 Host 重启 / 插件重载后从持久记录重建
   （cold lead rehydration），已 dispose 的 lead 继续观察；冷 lead 默认 resume 投递
   （`wakeColdSession: true`）。
-- **事件溯源**：模式 / 关注集合 / 通知以可忽略的 `plugin:devlead/*` 记录持久化，可跨重启 /
-  恢复 / fork；`devLead` Session projection 把状态同步到浏览器，summary 级 `devLeadMode` 与
+- **事件溯源**：模式 / 关注集合 / 通知 / 中途汇报 / reset 以可忽略的 `plugin:devlead/*` 记录持久化，
+  可跨重启 / 恢复 / fork；`devLead` Session projection 把状态同步到浏览器，summary 级 `devLeadMode` 与
   `devLeadWatch`（关注集合）随每个会话列表行下发，供侧边栏激活/已关注标记使用。
 - **人类命令**：`/devlead`、`/devlead on|off`、`/devlead reset`（损坏状态恢复）、
   `/devlead watch|unwatch <session>`。
@@ -59,7 +59,7 @@ dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 勾选一次即可），刷新 Web 页面。升级 / 卸载：
 
 ```sh
-'dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.2.0   # 升级到指定版本
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.2.0   # 升级到指定版本
 dsh plugin --profile desktop remove @yankeguo/dsh-devlead-bundle     # 卸载
 ```
 
@@ -108,12 +108,13 @@ profile，且 `desktop` profile 已启用本 bundle（重复插入相同 row id 
 `os.tmpdir()` DSH_HOME 验收本地加载路径（需要本机已安装 DSH，因此不在 CI 中运行）。
 0.2.0 起 E2E 分多阶段：阶段 1 保持默认组合断言（含 `Worktree isolation: unavailable`），
 阶段 1b 用同一加载流/scratch home 重启验证冷 lead 索引重建，阶段 2 在同一 scratch profile 里
-追加官方实验 forge bundle 并验证 worktree happy path；两条加载流各 **143/143**（阶段 1 27 +
-阶段 1b 12 + 阶段 2 23 + 阶段 3 81），`--no-worktree` 跳过阶段 2（**120/120**，阶段 1 + 1b + 3）。
+追加官方实验 forge bundle 并验证 worktree happy path；两条加载流各 **146/146**（阶段 1 27 +
+阶段 1b 12 + 阶段 2 23 + 阶段 3 84，含 3 条 question-gate checks），`--no-worktree` 跳过阶段 2
+（**123/123**，阶段 1 + 1b + 3）。
 
 ### 前置条件
 
-- DSH `0.2.2-rc.1`（bundle 声明 `engines.dsh: >=0.2.2-rc.1 <0.3.0`）；
+- DSH `0.2.2-rc.1` – `0.2.2-rc.5`（bundle 声明 `engines.dsh: >=0.2.2-rc.1 <0.3.0`）；
 - 从 npm 安装不需要本机 Node；本地构建 / 发布需要 Node.js ≥ 24.9 与 pnpm 12。
 
 ## 使用

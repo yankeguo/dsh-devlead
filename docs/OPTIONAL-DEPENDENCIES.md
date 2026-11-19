@@ -413,7 +413,7 @@ Web/Desktop 完整支持"，见 §9 R5。
   worktree happy path（见 §7.4）。阶段 1b 用同一 scratch home 重启同一加载流验证冷 lead
   索引重建（D2 的端到端证据）。阶段 3 用同一 probe 包（不要求实验 bundle）验证工具条件可见性、
   triage/自主关闭 policy 与 archive/unarchive/remove 的真实 Host 行为（见 §7.4）。两条加载流各
-  **143/143**（27 + 12 + 23 + 79）；`--no-worktree` 只跳过阶段 2（120/120，阶段 1 + 1b + 3）。probe 包
+  **143/143**（27 + 12 + 23 + 81）；`--no-worktree` 只跳过阶段 2（120/120，阶段 1 + 1b + 3）。probe 包
   `@yankeguo/dsh-devlead-e2e-probe`（0.0.0）是私有测试资产，不发布、
   不进 workspace/build/check-packages。文档承诺见 README 的 Notification loop / Development
   and verification 与 `docs/DESIGN.md` §10（行号随并行开发漂移，引用按小节）。
@@ -638,7 +638,7 @@ DSH 包不得作为直接/optional 依赖、不得声明 `dsh-experimental`；�
 | R5 | headless/acp/sdk 组合可安装本套件但 dispatch 不可用（§6.4），当前只有 README 一句"面向默认 Web 组合" | 低-中 | 决策：是否在详细文档/插件描述中显式标注"Web/Desktop 完整支持；headless/ACP 仅模式与只读可用"？代码侧不建议加硬限制（会妨碍未来组合） |
 | R6 | `dsh.client.inject` 里有非 client row 的名字（`dsh-client-ui-primitives`）；rc.1 loader 忽略之，保留作文档（`docs/AUDIT.md` 遗留限制） | 低 | 观察：若未来 DSH 改为严格校验 inject 名字，需移除该项；当前不动 |
 | R7 | `dsh-api-gateway`（提供 client `remote` 服务）未在本套件任何清单中出现 | 低 | 它是默认组合的传递依赖，且我们的代码没有直接 import/peer；保持不声明（声明反而会误导安装） |
-| R8 | ~~worktree 隔离 happy path 未在真实实验组合上实测~~：**0.2.0 已解决**。本地 E2E 阶段 2 在一次性 profile 里显式追加官方 `@deepseek-ai/dsh-experimental-forge-bundle`，通过私有 probe 命令走 `useWorkspace(agent, request)` + `createSession({ isolation: 'worktree' })`，对真实 git 仓库端到端断言 isolation 结果、worktree/分支存在、baseCommit、子会话有效 cwd 与 header cwd、Workspace 归属 | 已关闭 | 保留为本地验收的一部分（每流 143/143）；无需再手动验收 |
+| R8 | ~~worktree 隔离 happy path 未在真实实验组合上实测~~：**0.2.0 已解决**。本地 E2E 阶段 2 在一次性 profile 里显式追加官方 `@deepseek-ai/dsh-experimental-forge-bundle`，通过私有 probe 命令走 `useWorkspace(agent, request)` + `createSession({ isolation: 'worktree' })`，对真实 git 仓库端到端断言 isolation 结果、worktree/分支存在、baseCommit、子会话有效 cwd 与 header cwd、Workspace 归属 | 已关闭 | 保留为本地验收的一部分（当前 harness 每流 146/146）；无需再手动验收 |
 
 ## 10. 附录：复现命令
 

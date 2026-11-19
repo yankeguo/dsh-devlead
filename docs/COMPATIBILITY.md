@@ -41,6 +41,7 @@ rc.5 的 `dsh-web` 在未配置 `web.searchProvider` 时按模型路由选择：
 | `devlead_list_agent_presets` / 真实 roster | 支持 | 支持 | 支持 | 支持 | 支持 |
 | 派发模型选择 + `reasoning_effort` | 支持 | 支持 | 支持 | 支持 | 支持 |
 | `devlead_list_models` | 支持 | 支持 | 支持 | 支持 | 支持 |
+| Workspace id/注册路径/精确 title 三寻址 | 支持 | 支持 | 支持 | 支持 | 支持 |
 | `devlead_prompt_session interrupt`（`workspace/session-stop` providers） | 支持 | 支持 | 支持 | 支持 | 支持 |
 | watched 子会话问题路由（`tools/pre-execute` + `question` report） | 支持 | 支持 | 支持 | 支持 | 支持 |
 | 可选 worktree 隔离 | 可选 bundle | 可选 bundle | 可选 bundle | 可选 bundle | 可选 bundle |
@@ -48,6 +49,10 @@ rc.5 的 `dsh-web` 在未配置 `web.searchProvider` 时按模型路由选择：
 
 \* rc.1 无 `dsh-agent-team`；DevLead 通过 duck-typed `ctx.get('agentTeams')` 探测，不静态 import。
 † Host 必须组合 agent-team；默认 `dsh-base` 从 rc.2 起包含。
+
+Workspace 三寻址（`resolveWorkspaceReference`：id → 注册路径 → trim 后大小写敏感的精确 title）
+版本无关：rc.1–rc.5 的 WorkspaceRegistry 都允许不同 canonical path 共用 display title，同 title
+歧义报 `DEVLEAD_WORKSPACE_AMBIGUOUS` 并列出候选 id/path（见 [DESIGN](DESIGN.md) §4）。
 
 `devlead_prompt_session interrupt` 复用五个 tag 都存在的 `workspace/session-stop` 事件；
 Agent registry 的 turn provider、jobs / subagent / schedule providers，以及 aborted phase 上
@@ -88,11 +93,12 @@ TMPDIR="$BASE/tmp" DSH_BIN="$DSH_BIN" node scripts/e2e-smoke.mjs \
 | `0.2.2-rc.4` | installed `--no-worktree` | **120/120**（Team 成功分支） |
 | `0.2.2-rc.4` | installed / patch 完整 | **143/143** 各（phase 2 23/23） |
 | `0.2.2-rc.5` | installed `--no-worktree` | **123/123**（phase 1 27 + 1b 12 + 3 84，含问题路由 gate） |
-| `0.2.2-rc.5` | installed 完整 | **143/143**（问题路由新增 3 条 phase 3 checks 之前的完整运行；v0.2.7 的 146/146 需发布前重跑） |
+| `0.2.2-rc.5` | installed 完整 | **143/143**（下一版 0.2.7（未发布，含 question 路由）新增 3 条 phase 3 checks 之前的完整运行；146/146 需发布前重跑） |
 | `0.2.2-rc.5` | patch 完整 | **143/143**（同上） |
 
-rc.1–rc.4 的行是各自发布时的 harness 计数；v0.2.7 问题路由给 phase 3 新增 3 条 checks，目前只有
-rc.5 `--no-worktree` 行按新 harness 重跑。发布前需按 [PUBLISHING](PUBLISHING.md) 重跑完整组合。
+rc.1–rc.4 的行是各自发布时的 harness 计数；下一版（0.2.7，未发布，含 question 路由）给 phase 3
+新增 3 条 checks，目前只有 rc.5 `--no-worktree` 行按新 harness 重跑。发布前需按
+[PUBLISHING](PUBLISHING.md) 重跑完整组合。
 
 每条 flow 有 3 条正向模型选择检查因无 provider 凭据 SKIP（打印真实原因）；负向
 `DEVLEAD_MODEL_UNAVAILABLE`、`devlead_list_models`、preset roster 与 watched-child
@@ -107,7 +113,7 @@ rc.5 `--no-worktree` 行按新 harness 重跑。发布前需按 [PUBLISHING](PUB
 - E2E boot graph 确认 rc.5 加载 `@yankeguo/dsh-client-ui-devlead/client.js`；lead 的
   `devLead` / `devLeadMode` / `devLeadWatch` projection 均存在，summary 携带
   `devLeadMode` 与 `devLeadWatch`，且不携带 digest。DevLeadBar 读取的 `devLead` projection
-  含 enabled / sessions / notifications；组件级渲染断言由 `pnpm test` 覆盖。
+  含 enabled / sessions / notifications / reports；组件级渲染断言由 `pnpm test` 覆盖。
 - rc.5 Web UI 的视觉行为未在本轮用截图工具重跑（浏览器扩展不可用）；判定依据是
   slot/DOM 源码未变、boot graph 加载成功、projection 数据与渲染测试通过。此项不替代完整
   人工视觉验收。
