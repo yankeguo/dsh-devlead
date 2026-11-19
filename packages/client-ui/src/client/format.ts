@@ -186,6 +186,7 @@ export type DevLeadReportKey =
   | 'report.kind.progress'
   | 'report.kind.blocked'
   | 'report.kind.decision'
+  | 'report.kind.question'
   | 'report.kind.fyi'
   | 'report.kind.unknown'
 
@@ -194,6 +195,7 @@ const REPORT_LABEL_KEYS: Record<DevLeadReportKind, DevLeadReportKey> = {
   progress: 'report.kind.progress',
   blocked: 'report.kind.blocked',
   decision: 'report.kind.decision',
+  question: 'report.kind.question',
   fyi: 'report.kind.fyi',
 }
 

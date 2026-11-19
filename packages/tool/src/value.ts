@@ -192,7 +192,7 @@ export const REPORT_SCHEMA = {
     kind: {
       type: 'string',
       required: true,
-      enum: ['progress', 'blocked', 'decision', 'fyi'],
+      enum: ['progress', 'blocked', 'decision', 'question', 'fyi'],
       description: 'Why the reporter sent this update.',
     },
     message: { type: 'string', required: true, description: 'Full report text.' },

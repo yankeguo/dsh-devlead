@@ -87,6 +87,11 @@
  *                 real `reportProgress` call is durably outboxed (`durable:true`,
  *                 `queued:false` on the default storage composition) and lands
  *                 in the lead's durable digest;
+ *               - a real `ask_user_question` call executed through the Host
+ *                 tools pipeline as a watched child is denied before the
+ *                 child's own question UI runs, and the formatted question
+ *                 lands in the lead's durable report digest (the question
+ *                 gate);
  *               - the assembled `devlead:policy` section carries judgment-based
  *                 closing, its safety boundaries, and the feasibility-triage /
  *                 open-question handoff to the dispatched Session;
@@ -120,15 +125,15 @@
  *                 Agent Teams is version-adaptive: rc.2+ (default composition)
  *                 must apply it, while an rc.1 Host must reject the explicit
  *                 request with DEVLEAD_TEAM_UNAVAILABLE and create nothing.
- *             79 checks.
+ *             84 checks.
  *
  * `--no-worktree` skips phase 2 only (debugging escape hatch when the
  * experimental composition cannot boot on this machine); phases 1, 1b, and 3
  * still run.
  *
- * Check counts: phase 1 = 27, phase 1b = 12, phase 2 = 23, phase 3 = 81, so
- * every flow reports 143/143 checks when all four phases pass (`--no-worktree`
- * skips phase 2: 120/120). Run both flows before a release:
+ * Check counts: phase 1 = 27, phase 1b = 12, phase 2 = 23, phase 3 = 84, so
+ * every flow reports 146/146 checks when all four phases pass (`--no-worktree`
+ * skips phase 2: 123/123). Run both flows before a release:
  *
  *   node scripts/e2e-smoke.mjs --flow patch
  *   node scripts/e2e-smoke.mjs --flow installed
@@ -209,6 +214,8 @@ const PROBE_DISPATCH_COMMAND = 'devlead-e2e-dispatch'
 const PROBE_WATCH_CHILD_COMMAND = 'devlead-e2e-watch-child'
 /** Send one real report from inside the watched child. */
 const PROBE_REPORT_COMMAND = 'devlead-e2e-report'
+/** Drive the watched-Session question gate through a real ask_user_question call. */
+const PROBE_QUESTION_COMMAND = 'devlead-e2e-question'
 /** Exact DevLead tool surface an enabled lead step admits. */
 const DEVLEAD_TOOL_NAMES = [
   'devlead_archive_session',
@@ -1476,6 +1483,36 @@ async function runCloseChecks(client, paths, dshVersion) {
     'phase 3 report appears in the lead report digest',
     leadReports.some(row => row?.id === reportId && row?.senderSessionId === watchedChildId),
     JSON.stringify(leadReports),
+  )
+
+  // Watched-Session question gate: a real ask_user_question call is executed
+  // through the Host tools pipeline as a watched child. The DevLead pre-execute
+  // listener must deny before the child's own question UI runs and forward a
+  // question report into the lead digest.
+  const questionProbe = await runProbeCommand(client, leadId, PROBE_QUESTION_COMMAND, DISPATCH_PROBE_TIMEOUT_MS)
+  checks.expect(
+    'phase 3 watched-child question probe settles success',
+    questionProbe.execution?.result?.kind === 'success',
+    questionProbe.text.slice(0, 500),
+  )
+  const questionResults = Array.isArray(questionProbe.report?.results) ? questionProbe.report.results : []
+  checks.expect(
+    'phase 3 watched child ask_user_question is denied before its UI',
+    questionProbe.report?.supervised === true
+      && questionResults[0]?.isError === true
+      && JSON.stringify(questionResults[0]?.content ?? []).includes('Direct user questions are disabled')
+      && JSON.stringify(questionResults[0]?.content ?? []).includes('end your turn'),
+    JSON.stringify(questionResults),
+  )
+  const questionReports = Array.isArray(questionProbe.report?.questionReports)
+    ? questionProbe.report.questionReports
+    : []
+  checks.expect(
+    'phase 3 watched child question is forwarded to the lead digest',
+    questionReports.some(row => row?.kind === 'question'
+      && typeof row?.message === 'string'
+      && row.message.includes('Which e2e target?')),
+    JSON.stringify(questionReports),
   )
 
   // Creation-time dispatch settings: the probe creates real Sessions with a

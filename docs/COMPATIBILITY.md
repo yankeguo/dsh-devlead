@@ -42,6 +42,7 @@ rc.5 的 `dsh-web` 在未配置 `web.searchProvider` 时按模型路由选择：
 | 派发模型选择 + `reasoning_effort` | 支持 | 支持 | 支持 | 支持 | 支持 |
 | `devlead_list_models` | 支持 | 支持 | 支持 | 支持 | 支持 |
 | `devlead_prompt_session interrupt`（`workspace/session-stop` providers） | 支持 | 支持 | 支持 | 支持 | 支持 |
+| watched 子会话问题路由（`tools/pre-execute` + `question` report） | 支持 | 支持 | 支持 | 支持 | 支持 |
 | 可选 worktree 隔离 | 可选 bundle | 可选 bundle | 可选 bundle | 可选 bundle | 可选 bundle |
 | `agent_teams: true` | 不可用\* | 支持† | 支持† | 支持† | 支持† |
 
@@ -52,6 +53,10 @@ rc.5 的 `dsh-web` 在未配置 `web.searchProvider` 时按模型路由选择：
 Agent registry 的 turn provider、jobs / subagent / schedule providers，以及 aborted phase 上
 把 `followup` 重归类为 `next-turn` 的 wake 逻辑，均在 rc.1–rc.5 的独立 worktree 中核对。
 该能力不新增 DSH peer 范围要求。
+
+watched 子会话问题路由依赖五个 tag 都存在的 `tools/pre-execute` waterfall 与稳定的
+`ask_user_question` 工具名；legacy / timed 两种 schema 共用该名字。该结论已在 rc.1–rc.5 的
+独立 worktree 中核对，未新增 DSH peer 范围要求。
 
 ## 真实 E2E
 
@@ -82,9 +87,12 @@ TMPDIR="$BASE/tmp" DSH_BIN="$DSH_BIN" node scripts/e2e-smoke.mjs \
 | `0.2.2-rc.3` | installed `--no-worktree` | **120/120**（Team 成功分支） |
 | `0.2.2-rc.4` | installed `--no-worktree` | **120/120**（Team 成功分支） |
 | `0.2.2-rc.4` | installed / patch 完整 | **143/143** 各（phase 2 23/23） |
-| `0.2.2-rc.5` | installed `--no-worktree` | **120/120**（phase 1 27 + 1b 12 + 3 81） |
-| `0.2.2-rc.5` | installed 完整 | **143/143**（phase 2 23/23） |
-| `0.2.2-rc.5` | patch 完整 | **143/143**（phase 2 23/23） |
+| `0.2.2-rc.5` | installed `--no-worktree` | **123/123**（phase 1 27 + 1b 12 + 3 84，含问题路由 gate） |
+| `0.2.2-rc.5` | installed 完整 | **143/143**（问题路由新增 3 条 phase 3 checks 之前的完整运行；v0.2.7 的 146/146 需发布前重跑） |
+| `0.2.2-rc.5` | patch 完整 | **143/143**（同上） |
+
+rc.1–rc.4 的行是各自发布时的 harness 计数；v0.2.7 问题路由给 phase 3 新增 3 条 checks，目前只有
+rc.5 `--no-worktree` 行按新 harness 重跑。发布前需按 [PUBLISHING](PUBLISHING.md) 重跑完整组合。
 
 每条 flow 有 3 条正向模型选择检查因无 provider 凭据 SKIP（打印真实原因）；负向
 `DEVLEAD_MODEL_UNAVAILABLE`、`devlead_list_models`、preset roster 与 watched-child

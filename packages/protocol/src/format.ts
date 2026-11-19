@@ -150,6 +150,7 @@ const REPORT_KIND_LABELS: Record<DevLeadReportKind, string> = {
   progress: 'progress',
   blocked: 'blocked',
   decision: 'decision needed',
+  question: 'question',
   fyi: 'fyi',
 }
 

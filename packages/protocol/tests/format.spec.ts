@@ -345,7 +345,7 @@ function report(overrides: Partial<DevLeadReport> = {}): DevLeadReport {
 
 describe('report vocabulary', () => {
   it('pins every accepted report kind', () => {
-    expect(DEVLEAD_REPORT_KINDS).toEqual(['progress', 'blocked', 'decision', 'fyi'])
+    expect(DEVLEAD_REPORT_KINDS).toEqual(['progress', 'blocked', 'decision', 'question', 'fyi'])
     for (const kind of DEVLEAD_REPORT_KINDS) expect(isDevLeadReportKind(kind)).toBe(true)
     expect(isDevLeadReportKind('urgent')).toBe(false)
     expect(isDevLeadReportKind(undefined)).toBe(false)

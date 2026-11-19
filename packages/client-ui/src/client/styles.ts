@@ -261,7 +261,8 @@ export const styles = `
   background: var(--dsw-alias-state-error-primary, #c0392b);
 }
 
-.devlead-notification-dot[data-report-kind="decision"] {
+.devlead-notification-dot[data-report-kind="decision"],
+.devlead-notification-dot[data-report-kind="question"] {
   background: var(--dsw-alias-state-warn-primary, #a15c00);
 }
 

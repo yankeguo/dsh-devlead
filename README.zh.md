@@ -221,6 +221,9 @@ durable `team/mode`）。模型 API（`modelCatalog`、`Agent.model.select`、`m
 | `0.2.2-rc.5` | `DSH_BIN=<cache>/rc5/install/node_modules/@deepseek-ai/dsh/lib/bin.js node scripts/e2e-smoke.mjs --flow installed` | **143/143**（含实验 worktree 阶段） |
 | `0.2.2-rc.5` | 同上，`--flow patch` | **143/143** |
 
+v0.2.7 给 phase 3 新增 3 条 question-gate checks：installed rc.5 `--no-worktree` 现在为
+**123/123**；含 worktree 阶段的完整 **146/146** 仍需发版前重跑。
+
 每条 flow 有 3 条正向模型选择检查因本机无 provider 凭据记为 SKIP（打印真实原因）；负向
 model 路径与 `devlead_list_models` 在每个版本都真实运行。单元测试使用 rc.1 devDependencies，
 保持与最旧支持版本的类型兼容。
@@ -396,7 +399,9 @@ projection 保持 `enabled: false`，工具条按钮保持 off、状态条不出
 5. 子会话的 turn 结束（完成/失败/阻塞/取消等）后，DevLead 会话收到通知摘要并被唤醒；模型用
    `devlead_list_sessions` / `devlead_get_session` 查看状态，用 `devlead_prompt_session`
    继续追问或派发新任务，用 `devlead_notifications` 读取通知摘要。默认情况下，新提示词会排在
-   运行中的 turn 之后；只有确实要替换子会话当前工作时才传 `interrupt: true`。
+   运行中的 turn 之后；只有确实要替换子会话当前工作时才传 `interrupt: true`。被关注子会话的
+   提问会以 `question` report 到达：lead 自行回答，或从 lead 侧向人类提问后再用
+   `devlead_prompt_session` 把答案转回。
 6. 模型在结束 turn 前向人类汇报：创建/改动/关闭了哪些 Workspace 与 Session（关闭的要说
    原因）、每个子会话被要求做什么、最近一轮如何结束、是否（例外地）在 lead 会话里直接做了
    实现、有什么需要人类决策。
@@ -431,7 +436,7 @@ id 与 path，绝不静默取第一个；此时改用 id 或路径。未知引�
 | `devlead_prompt_session` | `session`、`prompt`（必填）、`watch?`（默认 true）、`interrupt?`（默认 false：排在运行中 turn 之后；`true` = 停掉运行中 turn 与 Host 报告的 subagent/job/schedule 工作、丢弃排队输入，再投递新 turn；空闲/冷会话为 no-op） | 续写结果（含 `interrupted`） |
 | `devlead_watch_session` | `session`、`watching`（必填 bool） | watch 变更结果 |
 | `devlead_notifications` | `limit?`（默认 20） | `{ notifications, reports, watched }` |
-| `devlead_report` | `message`（必填，纯文本，上限 4000 code points）、`kind?`（默认 `progress` / `blocked` / `decision` / `fyi`）、`summary?`（上限 200） | `{ report, durable, queued, warning? }`——只在已关注的非 lead 会话可见；单向，不等待回复 |
+| `devlead_report` | `message`（必填，纯文本，上限 4000 code points）、`kind?`（默认 `progress` / `blocked` / `decision` / `question` / `fyi`）、`summary?`（上限 200） | `{ report, durable, queued, warning? }`——只在已关注的非 lead 会话可见；单向，不等待回复；`question` report 由 lead 在新 turn 里用 `devlead_prompt_session` 回答 |
 | `devlead_remove_workspace` | `workspace`（必填：id、注册路径或精确 title） | `{ workspace, removed }`（注销前快照） |
 | `devlead_archive_session` | `session`（必填）、`stop_running?`（默认 false） | `{ sessionId, archived: true, stopped }` |
 | `devlead_unarchive_session` | `session`（必填） | `{ sessionId, archived: false }` |
@@ -446,8 +451,8 @@ cold / 归档 / 未 resume 时 outbox 行保留，下次启动或 lead 激活时
 读取 lead 自身时也出现在 `devlead_get_session`。lead 通过通知的合并唤醒通道被唤醒；运行中的
 lead 在下一步收到。lead 可在长任务、多阶段或可能中途阻塞的已关注会话简报中**按需**介绍
 `devlead_report`；不是每条简报都写，`watch=false` 时工具不存在，因此不要写。报告不能替代最终
-turn 通知；每个子会话每轮最多 4 条不同报告，同轮相同消息幂等，第 5 条返回
-`DEVLEAD_REPORT_RATE_LIMITED`。
+turn 通知；每个子会话每轮最多 4 条不同普通报告，`question` report 不计入该预算；同轮相同消息
+幂等，普通报告超预算返回 `DEVLEAD_REPORT_RATE_LIMITED`。
 
 工具把 core 的 `DevLeadError` 翻译成带稳定 code 的 `HarnessError`；阅读状态时请以
 `lastTurn` / `lastTransition` / `lastError` / `lastAssistant` 等字段为准，不要靠猜。
@@ -469,6 +474,17 @@ subagent 后代、杀掉所属 job、删除活跃 schedule 行，并丢弃子会
 （显示为 cancelled）；替换 turn 结束后再单独通知。结果里的 `interrupted` 表示本次是否真的
 请求了停止（未传选项或没有运行中的 turn 时为 false）。stop provider 失败只记日志，不阻塞
 替换提示词。
+
+被关注的子会话不能直接向人类提问。工具插件安装了硬性的 `tools/pre-execute` 闸门：来自已关注
+非 lead 子会话的 `ask_user_question` 会在其问题 UI 运行之前被拒绝，并格式化为发给 active lead
+的 durable `kind: question` report；子会话会收到明确指引，要求结束当前 turn。lead 可直接凭
+上下文回答，或用自己的 `ask_user_question` 向人类提问，再用 `devlead_prompt_session` 把答案
+转回；子会话不需要挂起工具调用，也不需要轮询。若子会话当前 turn 中最近一条可执行 user message
+直接来自人类（人类已经在子会话里接管对话），闸门放行，让人类就地回答；未关注会话和 lead
+自己的提问完全不受影响。轮次结尾的自然语言提问无法在工具层拦截：正常 watched-turn 通知会带
+assistant 摘要，lead policy 要求把它当作待回答问题并走同样的应答路径。`question` report 不计入
+每轮 4 条普通 report 预算；普通 report 仍受限。问题路由不新增 DevLead 错误码：子会话看到的是
+带指引的工具错误，转发失败时退化为“结束 turn，并在最终 assistant 消息里写明问题”。
 
 三个关闭类工具沿用 DSH 自己的术语，且都不是破坏性操作。`devlead_remove_workspace` 执行 DSH 的
 **remove**：只注销 Workspace 记录，目录、文件与所有 Session 日志都不动；其 Session 变为
@@ -703,6 +719,7 @@ config 是整体替换）。
 | `/devlead` / 工具报 `DEVLEAD_PROJECTION_INVALID` | 本会话日志里有一条损坏的 `plugin:devlead/*` 记录，replay 已冻结。运行 `/devlead reset`（人类专属；会丢弃模式 / 关注集合 / 通知 digest）——`/devlead off` 也会隐式 reset，`/devlead on` 在 reset 前会拒绝。旧版本插件无法恢复。 |
 | `devlead_use_workspace` 报 `DEVLEAD_DIRECTORY_MISSING` | 目录不存在且默认不允许创建。先创建目录，或在人类明确要求建该目录后带 `create: true` 重试 |
 | Workspace 参数报 `DEVLEAD_WORKSPACE_AMBIGUOUS` | 多个 Workspace 共用同一显示标题。按错误中（或 `devlead_list_workspaces`）列出的 id / 路径改用唯一引用；解析器不会静默取第一个 |
+| 已关注子会话调用 `ask_user_question` | 工具层闸门会拒绝并把问题作为 `question` report 转给 active lead；子会话应结束 turn，lead 用 `devlead_prompt_session` 回答（或先代问人类）。只有当前 turn 由人类直接发起的子会话可就地提问 |
 | 重启后冷 lead 被自动 resume | 0.2.0 起的预期默认行为：`wakeColdSession` 为 `true`；不希望后台 resume 就设为 `false`，队列会留在内存等人类打开 lead Session |
 | `devlead_create_session` 返回 `isolation.status: "unavailable"` | profile 未组合 DSH 实验性 worktree 服务（默认 Web profile 从不组合）；启用实验性 worktree bundle，或改为串行派发写入型 Session——Session 已创建并仍可在共享 checkout 工作 |
 | `devlead_create_session` 返回 `isolation.status: "failed"` | worktree 服务存在但创建失败（沙箱限制、分支名已存在、非 Git checkout、检出路径已存在等）；`reason` 带 Git/服务错误，Session 仍在共享 checkout 继续 |

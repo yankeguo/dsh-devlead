@@ -206,14 +206,15 @@ describe('reportLabelKey', () => {
     expect(reportLabelKey('progress')).toBe('report.kind.progress')
     expect(reportLabelKey('blocked')).toBe('report.kind.blocked')
     expect(reportLabelKey('decision')).toBe('report.kind.decision')
+    expect(reportLabelKey('question')).toBe('report.kind.question')
     expect(reportLabelKey('fyi')).toBe('report.kind.fyi')
     expect(reportLabelKey('urgent')).toBe('report.kind.unknown')
     expect(reportLabelKey('')).toBe('report.kind.unknown')
   })
 
   it('covers the whole report vocabulary', () => {
-    const keys: DevLeadReportKey[] = ['progress', 'blocked', 'decision', 'fyi'].map(reportLabelKey)
-    expect(new Set(keys).size).toBe(4)
+    const keys: DevLeadReportKey[] = ['progress', 'blocked', 'decision', 'question', 'fyi'].map(reportLabelKey)
+    expect(new Set(keys).size).toBe(5)
   })
 })
 

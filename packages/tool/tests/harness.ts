@@ -382,6 +382,9 @@ export class FakeDevLead {
   }
 }
 
+/** One captured `tools/pre-execute` listener. */
+type PreExecuteListener = (exec: unknown, next: () => Promise<unknown>) => unknown
+
 /** One registered tool definition with the registration options `apply` passed. */
 export interface CapturedTool {
   readonly definition: ToolDefinition
@@ -402,6 +405,8 @@ export interface Harness {
   readonly agent: Agent
   /** Default run context of one tool call. */
   readonly exec: ToolRunContext
+  /** Warnings logged by the plugin. */
+  readonly warnings: readonly string[]
   /** Captured tool definition by name, or a descriptive failure. */
   tool(name: string): CapturedTool
   /** Execute one tool through its registered definition. */
@@ -412,6 +417,8 @@ export interface Harness {
   sectionText(agent?: Agent): string
   /** Resolve the child report-policy text for one assembling Agent. */
   reportSectionText(agent?: Agent): string
+  /** Run the registered `tools/pre-execute` waterfall for one pending call. */
+  preExecute(exec: unknown): Promise<{ decision: unknown; nextCalls: number }>
 }
 
 /**
@@ -442,6 +449,8 @@ export function boot(): Harness {
   const devLead = new FakeDevLead()
   const registered = new Map<string, CapturedTool>()
   const sections = new Map<string, PromptSection>()
+  const listeners = new Map<string, PreExecuteListener[]>()
+  const warnings: string[] = []
   const agent = makeAgent()
   const exec = makeExec(agent)
 
@@ -459,6 +468,18 @@ export function boot(): Harness {
         return () => {}
       },
       getSectionOrder: () => 2800,
+    },
+    logger: {
+      warn: (message: unknown) => { warnings.push(String(message)) },
+    },
+    on: (name: string, listener: PreExecuteListener) => {
+      const current = listeners.get(name) ?? []
+      current.push(listener)
+      listeners.set(name, current)
+      return () => {
+        const entries = listeners.get(name) ?? []
+        listeners.set(name, entries.filter(entry => entry !== listener))
+      }
     },
   } as unknown as Context
   apply(ctx)
@@ -485,6 +506,7 @@ export function boot(): Harness {
     reportSection: reportPolicySection,
     agent,
     exec,
+    warnings,
     tool,
     call(name, args = {}, execOverride = exec) {
       return tool(name).definition.execute(args, execOverride)
@@ -504,6 +526,21 @@ export function boot(): Harness {
     },
     reportSectionText(candidate = agent) {
       return sectionTextOf(reportPolicySection, candidate)
+    },
+    async preExecute(pending) {
+      const registeredListeners = listeners.get('tools/pre-execute') ?? []
+      if (registeredListeners.length === 0) {
+        throw new Error('apply() did not register a tools/pre-execute listener')
+      }
+      let nextCalls = 0
+      let decision: unknown
+      for (const listener of registeredListeners) {
+        decision = await listener(pending, async () => {
+          nextCalls += 1
+          return { kind: 'allow' }
+        })
+      }
+      return { decision, nextCalls }
     },
   }
 }

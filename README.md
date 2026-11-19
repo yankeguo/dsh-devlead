@@ -248,6 +248,9 @@ requires Node ≥ 24.9):
 | `0.2.2-rc.5` | `DSH_BIN=<cache>/rc5/install/node_modules/@deepseek-ai/dsh/lib/bin.js node scripts/e2e-smoke.mjs --flow installed` | **143/143** (includes the experimental worktree phase) |
 | `0.2.2-rc.5` | same, `--flow patch` | **143/143** |
 
+v0.2.7 adds three phase-3 question-gate checks: the installed rc.5 `--no-worktree` run now reports
+**123/123**; the full **146/146** (including the worktree phase) still needs a pre-release rerun.
+
 Three positive model-selection checks per flow are reported as SKIP on this credential-less
 Host (the real reason is printed); the negative model path and `devlead_list_models` run on every
 version. Unit tests run against the rc.1 devDependencies, so the type surface stays compatible
@@ -456,7 +459,9 @@ projection.
    / `devlead_get_session` to inspect state, `devlead_prompt_session` to follow up or dispatch
    new work, and `devlead_notifications` to read the digest. By default a new prompt queues
    behind a running turn; pass `interrupt: true` only when the new instruction should replace
-   the child's current work.
+   the child's current work. A watched child's question arrives as a `question` report: answer
+   it from context or ask the human from the lead, then relay the answer with
+   `devlead_prompt_session`.
 6. Before finishing a turn, the model reports to the human: which Workspaces and Sessions it
    created, changed, or closed (and why it closed them), what each child was asked to do, how
    the latest turn ended, whether any implementation work was (exceptionally) done directly in
@@ -496,7 +501,7 @@ rather than implying the directory is unregistered.
 | `devlead_prompt_session` | `session`, `prompt` (required), `watch?` (default true), `interrupt?` (default false: queue behind the running turn; `true` = stop the running turn and Host-reported subagent/job/schedule work, discard queued input, then admit a new turn; idle/cold = no-op) | prompt result (including `interrupted`) |
 | `devlead_watch_session` | `session`, `watching` (required bool) | watch mutation result |
 | `devlead_notifications` | `limit?` (default 20) | `{ notifications, reports, watched }` |
-| `devlead_report` | `message` (required, plain text, max 4000 code points), `kind?` (`progress` default / `blocked` / `decision` / `fyi`), `summary?` (max 200) | `{ report, durable, queued, warning? }` — visible only in a watched non-lead Session; one-way, never waits for a reply |
+| `devlead_report` | `message` (required, plain text, max 4000 code points), `kind?` (`progress` default / `blocked` / `decision` / `question` / `fyi`), `summary?` (max 200) | `{ report, durable, queued, warning? }` — visible only in a watched non-lead Session; one-way, never waits for a reply; a `question` report is answered in a new turn via `devlead_prompt_session` |
 | `devlead_remove_workspace` | `workspace` (required: id, registered path, or exact title) | `{ workspace, removed }` (pre-removal snapshot) |
 | `devlead_archive_session` | `session` (required), `stop_running?` (default false) | `{ sessionId, archived: true, stopped }` |
 | `devlead_unarchive_session` | `session` (required) | `{ sessionId, archived: false }` |
@@ -543,6 +548,22 @@ watched-turn notification with transition `aborted` (rendered as cancelled), and
 turn notifies separately. The result's `interrupted` field reports whether a stop was actually
 requested (`false` when the option was omitted, or when there was no running turn). Stop-provider
 failures are logged and do not block the replacement prompt.
+
+A watched Session must not ask the human directly. The tool plugin installs a hard
+`tools/pre-execute` gate: an `ask_user_question` call from a watched non-lead Session is denied
+before its question UI runs, formatted into a durable `kind: question` report for the active lead,
+and the child is told to end its turn. The lead answers from its own context, or asks the human
+with its own `ask_user_question`, then relays the answer with `devlead_prompt_session`; the child
+does not hold a tool call or poll while waiting. The gate is skipped when the latest actionable
+user message in the child's current turn came directly from a human (the human is already in the
+child conversation and may answer there), and it never applies to unwatched Sessions or to the
+lead's own questions. Natural-language questions at the end of a turn cannot be gated at the tool
+layer; the normal watched-turn notification carries the assistant excerpt, and the lead is
+instructed to treat a question there as a pending question and answer it the same way. Question
+reports are exempt from the four-per-turn progress budget; ordinary reports keep that limit.
+Question routing has no new DevLead error code: the child receives a tool error whose text points
+it at the lead, and a failed forward falls back to "end your turn and state the question in your
+final message".
 
 The three closing tools use DSH's own vocabulary and are never destructive. `devlead_remove_workspace`
 performs the DSH **remove** action: it unregisters the Workspace only — the directory, its files,
@@ -835,7 +856,8 @@ without it keeps the default single-checkout behavior and reports `unavailable`.
 | `/devlead on` reports `DEVLEAD_ALREADY_ACTIVE` | another Session already holds the Host-wide DevLead mode. The error names it; run `/devlead off` in that Session before enabling this one. An **archived** holder does not block a new enable: it is ignored for admission, listed under `Archived DevLead holders` in `/devlead status`, and should be unarchived/opened to run `/devlead off` (or deleted). |
 | `devlead_report` reports `DEVLEAD_NOT_SUPERVISED` | the Session is a DevLead itself, the lead stopped watching it, the lead is archived, the lead's mode is off, or several historical watchers leave no unique active lead watching it. Re-watch it from the active lead. |
 | `devlead_report` reports `DEVLEAD_REPORT_RATE_LIMITED` | the child already sent four distinct reports in this turn. Wait for its next turn; the lead can still steer it with `devlead_prompt_session`. |
-| `devlead_report` reports `DEVLEAD_INVALID_INPUT` | the message is empty or over 4000 code points, the summary is over 200, or the kind is not `progress` / `blocked` / `decision` / `fyi`. |
+| `devlead_report` reports `DEVLEAD_INVALID_INPUT` | the message is empty or over 4000 code points, the summary is over 200, or the kind is not `progress` / `blocked` / `decision` / `question` / `fyi`. |
+| A watched child tried to call `ask_user_question` | the call is intercepted and forwarded to the active lead as a `question` report; the child gets a tool error telling it to end its turn. Answer with `devlead_prompt_session`, or ask the human from the lead first. The one exception is a child turn opened by a direct human message, which may ask in place |
 | `/devlead` / tools report `DEVLEAD_PROJECTION_INVALID` | a `plugin:devlead/*` record in this Session's log is corrupt and replay froze. Run `/devlead reset` (human-only; discards the mode, watch set, and notification digest) — `/devlead off` does that implicitly, `/devlead on` refuses until the reset. Old plugin versions cannot recover. |
 | `devlead_use_workspace` reports `DEVLEAD_DIRECTORY_MISSING` | the directory does not exist and creation is not allowed by default. Create it first, or retry with `create: true` once the human explicitly asked for that directory |
 | A Workspace argument reports `DEVLEAD_WORKSPACE_AMBIGUOUS` | several Workspaces share that display title. Use the id or registered path from the candidates listed in the error (or from `devlead_list_workspaces`); the resolver never picks the first match |

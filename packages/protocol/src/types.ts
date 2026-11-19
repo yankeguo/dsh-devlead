@@ -136,10 +136,16 @@ export interface DevLeadNotification {
 }
 
 /** Semantic kind of one mid-turn report from a watched Session. */
-export type DevLeadReportKind = 'progress' | 'blocked' | 'decision' | 'fyi'
+export type DevLeadReportKind = 'progress' | 'blocked' | 'decision' | 'question' | 'fyi'
 
 /** Every accepted report kind, in reporting order. */
-export const DEVLEAD_REPORT_KINDS: readonly DevLeadReportKind[] = ['progress', 'blocked', 'decision', 'fyi']
+export const DEVLEAD_REPORT_KINDS: readonly DevLeadReportKind[] = [
+  'progress',
+  'blocked',
+  'decision',
+  'question',
+  'fyi',
+]
 
 /** One mid-turn report a watched Session sends to its active DevLead. */
 export interface DevLeadReport {

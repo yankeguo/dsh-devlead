@@ -1866,8 +1866,10 @@ export class DevLeadService extends Service {
    * coalesced notice path as turn notifications. This method returns after the
    * receipt/queue decision and never waits for the lead's next turn, so the
    * reporter is not blocked. Same-message reports in one turn are idempotent;
-   * more than {@link DEVLEAD_REPORT_MAX_PER_TURN} distinct reports in one turn
-   * are refused.
+   * more than {@link DEVLEAD_REPORT_MAX_PER_TURN} distinct non-question reports
+   * in one turn are refused. `question` reports are the answer-seeking channel
+   * used by the watched-Session question router, so they are exempt from that
+   * progress budget.
    * @param agent - exact live reporter Agent.
    * @param request - report text, kind, and optional summary.
    * @param signal - cancellation checked before durable work.
@@ -1910,7 +1912,7 @@ export class DevLeadService extends Service {
     const kind = request.kind ?? 'progress'
     if (!isDevLeadReportKind(kind)) {
       throw new DevLeadError(
-        `report kind ${JSON.stringify(kind)} is not recognized; use progress, blocked, decision, or fyi`,
+        `report kind ${JSON.stringify(kind)} is not recognized; use progress, blocked, decision, question, or fyi`,
         'DEVLEAD_INVALID_INPUT',
       )
     }
@@ -1934,9 +1936,13 @@ export class DevLeadService extends Service {
     }
     const duplicate = state.messages.get(message)
     if (duplicate !== undefined) return duplicate
-    if (state.messages.size >= DEVLEAD_REPORT_MAX_PER_TURN) {
+    // Questions are a control-flow channel, not progress chatter: they must
+    // reach the lead even after four ordinary reports in the same turn.
+    const progressCount = [...state.messages.values()]
+      .filter(entry => entry.report.kind !== 'question').length
+    if (kind !== 'question' && progressCount >= DEVLEAD_REPORT_MAX_PER_TURN) {
       throw new DevLeadError(
-        `this Session already sent ${DEVLEAD_REPORT_MAX_PER_TURN} reports in turn ${turn}; `
+        `this Session already sent ${DEVLEAD_REPORT_MAX_PER_TURN} non-question reports in turn ${turn}; `
         + 'wait for the next turn or let the DevLead continue',
         'DEVLEAD_REPORT_RATE_LIMITED',
       )

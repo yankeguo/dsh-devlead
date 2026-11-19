@@ -521,16 +521,19 @@ DevLead 无需额外工具调用即可判断是否要介入。
 - tool registration 的 `when` 为 `ctx.devLead.isSupervised(agent)`；该查询是同步的：
   `!isEnabled(agent)` + hub 反向索引中恰好一个未被归档的 active lead（多于一个时优先
   `activeSessionId`，否则视为无唯一关注该会话的 active lead）。
-- 系统提示另有 `devlead:report-policy` 段，只对已关注的普通会话注入；内容明确「单向、不是
-  提问/等待回复通道、最终 turn 结束仍走原通知、每轮最多 4 条」。
-- lead 侧 policy 增加收到 `[DEV LEAD REPORT]` 后的处理口径：当作 runtime fact，必要时用
-  `devlead_prompt_session` steering，不用汇报通道回复。
+- 系统提示另有 `devlead:report-policy` 段，只对已关注的普通会话注入；内容明确「单向、最终
+  turn 结束仍走原通知、普通 report 每轮最多 4 条；`question` 是受支持的提问通道，发完后结束
+  turn 等 lead 的新 turn；watched 子会话直接 `ask_user_question` 会被工具层拦截并转给 lead」。
+- lead 侧 policy 增加收到 `[DEV LEAD REPORT]` 后的处理口径：当作 runtime fact；`question`
+  report 表示子会话需要决策，lead 自行回答或先向人类提问，再用 `devlead_prompt_session`
+  转回；普通 report 必要时用 steering，不用汇报通道回复。
 
 投递状态机（`DevLeadService.reportProgress` → outbox → `DevLeadNotificationHub.persistReport`）：
 
 1. 校验 live / 非 DevLead / 唯一关注该会话的 active lead；解析 reporter 的当前 turn（命令调用可为 0）。
 2. 校验 message 非空且 ≤4000 码点、kind 枚举、summary ≤200；同轮同一 message 复用已有 receipt
-   （幂等），不同消息超过 4 条返回 `DEVLEAD_REPORT_RATE_LIMITED`。
+   （幂等），不同普通 report 超过 4 条返回 `DEVLEAD_REPORT_RATE_LIMITED`；`question` 是
+   控制流通道，不计入普通 report 预算，也不受第 5 条限制。
 3. 构造 sender id/title、workspace id/title、lead id、`at`，**先写 durable outbox**
    （`devlead_report_outbox` storage-domain，`pending` 表，per-record、写入 resolve 即 durable），
    成功后工具即可安全返回。随后尝试把 receipt 写入 lead 日志：
@@ -554,6 +557,42 @@ DevLead 无需额外工具调用即可判断是否要介入。
 
 释放关系：unwatch / mode off / reset / lead 归档后 `supervisorOf` 返回 undefined，下一次 tool
 `when` 隐藏，伪造调用返回 `DEVLEAD_NOT_SUPERVISED`；已经写入的 report 仍保留到 retention。
+
+#### 4.1.3 问题路由（watched child → lead）
+
+watched 子会话是真实 Session，它自带的 `ask_user_question` 会直接打开子会话自己的问题 UI，
+绕过 lead。工具插件在根上下文注册 `tools/pre-execute` waterfall（rc.1–rc.5 均存在；它在
+`agent-loop` 执行工具前由 tools pipeline 派发），对每个待执行调用做如下判断：
+
+1. 只处理 `name === 'ask_user_question'` 且带 `agent` 的调用；
+2. `ctx.devLead.isSupervised(agent)` 为 false（未关注 / lead 自己）时直接 `next()`，完全不影响
+   原有路径；
+3. 若当前 turn 中最近一条可执行 user message 的 `source.kind === 'user'`（人类直接在子会话
+   对话 / steer；`runtime-context` 与 `tool-registry` 注入跳过），也放行——人类已经在场，问题
+   就地由人类回答；
+4. 否则把 `questions` 格式化为文本（问题、id、header、options、multi-select），通过
+   `reportProgress({ kind: 'question' })` 写入与普通 report 相同的 durable outbox / lead digest /
+   唤醒通道；随后返回 `{ kind: 'deny', reason }`，工具 body 不执行，子会话 UI 不出现。拒绝文案
+   明确要求子会话**结束当前 turn**，不要重试、不要轮询，lead 会用 `devlead_prompt_session`
+   在新 turn 里回答。转发失败只 warning，并退化为“结束 turn，在最终 assistant 消息里写明问题”。
+
+`question` 是 `DevLeadReportKind` 的新增成员（protocol / outbox / fold / UI label 均派生同一
+枚举），但不计入普通 report 的每轮 4 条预算；同轮相同 message 仍幂等。UI 的 report chip 对
+`question` 使用“提问 / question”标签和 warning 色。
+
+**为什么结束 turn 而不是挂起工具调用**：挂起会依赖 lead 及时响应，冷 lead / 人类离开时会形成
+死等；而 report 本身是 durable 的，lead 的回答作为 `devlead_prompt_session` 的新 user turn
+到达，子会话可能已在等待中被 resume。`tools/pre-execute` 的 deny 不会强行终止 turn，但拒绝文案
+与两侧 policy 都要求模型结束 turn；这是硬拦截（问题 UI 一定不会出现）+ 软收尾（模型决定何时
+结束）的组合。
+
+**自然语言提问**：轮次结尾直接说“请问……”无法在工具层拦截。普通 watched-turn 通知已带
+assistant excerpt（`summary`，完整内容可由 `devlead_get_session.lastAssistant` 读取），lead
+policy 要求把这类结尾问题当成待回答问题，用与 `question` report 相同的方式回答。该路径比
+`question` report 慢且依赖 lead 识别，是已知差距，不是静默失败。
+
+**豁免**：未关注会话、lead 自己的 `ask_user_question`、以及当前 turn 由人类直接发起的子会话
+均不受拦截。被关注子会话若被 lead 的 relay 提示词驱动，则问题必须绕回 lead。
 
 ### 4.2 状态视图
 
@@ -702,15 +741,20 @@ Session 的工作目录切到独立分支/检出，DevLead 用它**可选地**�
   简报都写，`watch:false` 时工具不可见所以不要写；报告是单向的，不替代最终 turn 通知。
 - **中途汇报工具** `devlead_report` 是唯一不要求 DevLead 模式的工具：`when` 为
   `ctx.devLead.isSupervised(agent)`（非 enabled + 唯一 active lead 的 watch），schema 只有
-  `message` / `kind?` / `summary?`，没有 target。描述明确单向、不等待回复、最终 turn 仍走原
-  通知、每轮最多 4 条、同轮相同消息幂等；执行转发 `reportProgress` 并把 receipt 投影成
+  `message` / `kind?` / `summary?`，没有 target。kind 含 `question`（lead 用新 turn 回答）；
+  普通 report 单向、不等待回复、最终 turn 仍走原通知、每轮最多 4 条、同轮相同消息幂等，
+  `question` 不计入该预算。执行转发 `reportProgress` 并把 receipt 投影成
   `{ report, durable, queued, warning? }`（durable 为真才代表已落 durable outbox；queued 表示 lead receipt 尚未 flush）。`devlead_get_session` 读取 lead 自身时额外返回 `reports`（最近 5 条），
   读取其他 Session 时输出形状不变。参数长度/kind 由 core 再校验，错误码 `DEVLEAD_INVALID_INPUT` /
   `DEVLEAD_NOT_SUPERVISED` / `DEVLEAD_REPORT_RATE_LIMITED` 由统一翻译层转成 `HarnessError`。
+- **watched 子会话问题闸门**：`registerQuestionRouting` 在根上下文监听 `tools/pre-execute`；
+  watched 非 lead 子会话的 `ask_user_question` 被格式化为 `kind: 'question'` report 后 deny
+  （详见 §4.1.3）。它不注册新工具、不新增错误码；人类正在直接对话的子会话与未关注会话放行。
 - `systemPrompt` 另注册 `devlead:report-policy` 段，条件为 `ctx.devLead.isSupervised(agent)`；
-  文案明确单向汇报、不是提问通道、完成仍走 turn 通知、每轮 4 条与限流错误码。lead 的
-  `devlead:policy` 增加接收 `[DEV LEAD REPORT]` 后的处理口径（事实、按需 steering、不通过
-  汇报通道回复）。
+  文案明确单向汇报、普通 report 每轮 4 条与限流错误码、`question` 是受支持提问通道、直接
+  `ask_user_question` 会被拦截转给 lead。lead 的 `devlead:policy` 增加接收
+  `[DEV LEAD REPORT]`（尤其 `question`）后的处理口径（自行回答或代问人类，再用
+  `devlead_prompt_session` 转回；普通报告按需 steering）。
 - 工具把领域失败翻译成 `HarnessError(message, code)`；需要调用者的工具在 `exec.agent` 缺失
   （条件可见性被绕过）时也走结构化错误 `DEVLEAD_AGENT_NOT_LIVE`，基础设施错误原样重抛。所有异步写调用转发
   `exec.signal`（`create_session` / `prompt_session` / `watch_session` / `remove_workspace` /
@@ -933,7 +977,9 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   **promptSession 自动 watch 的补偿语义**（admission/resume 失败与取消时移除本次新增、
   已 watch 不受影响、`watch:false` 不变）、**prompt interrupt**（运行中目标派发
   `workspace/session-stop`、idle/cold no-op、stop provider 失败不阻塞投递、被中断 turn 的
-  aborted 通知）、写路径的取消语义，以及可选 worktree 隔离的两种
+  aborted 通知）、**watched 问题路由**（问题格式化、人类直聊豁免、未关注/lead 放行、
+  `tools/pre-execute` 转发后 deny、转发失败降级、`question` report 绕过普通 report 预算）、
+  写路径的取消语义，以及可选 worktree 隔离的两种
   形态（fake `ctx.worktrees` 存在时按"创建→隔离→prompt"顺序调用子 Agent 的 `create`；
   缺席/畸形/抛错时降级为 `unavailable`/`failed`，Session 仍创建并 prompt，绝不抛错），以及
   可选 Agent preset roster 的映射（`defaultId` 标记、无 id 行丢弃）与缺席/空/读取失败路径；
@@ -1032,11 +1078,12 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   `team/mode` 与 false 关闭。版本与探测不一致会直接失败（rc.1 出现服务或 rc.2+ 缺少服务都能
   暴露）。
   patch 与 installed 两条加载流都跑完整多阶段；`--no-worktree` 跳过阶段 2（阶段 1、1b、3 仍
-  运行，调试用）。两条加载流各 **143/143**（阶段 1 27 + 阶段 1b 12 + 阶段 2 23 + 阶段 3 81，
-  阶段 3 新增 agent preset roster 检查）；跳过阶段 2 时 **120/120**（阶段 1 + 1b + 3）。
-- 本轮最终验证数字（工作树）：`pnpm verify` = typecheck 通过 + **26 文件 / 755 tests** +
-  7 个构建产物；`node scripts/check-packages.mjs` → `OK (6 packages)`；E2E 本轮重跑
-  patch / installed 各 **143/143**（阶段 1 27 + 阶段 1b 12 + 阶段 2 23 + 阶段 3 81）。
+  运行，调试用）。两条加载流完整组合的计数为 **146/146**（阶段 1 27 + 阶段 1b 12 + 阶段 2 23
+  + 阶段 3 84，阶段 3 含 agent preset roster 与 watched-Session 问题路由检查）；跳过阶段 2 时
+  **123/123**（阶段 1 + 1b + 3）。
+- 本轮最终验证数字（工作树）：`pnpm verify` = typecheck 通过 + **26 文件 / 781 tests** +
+  7 个构建产物；`node scripts/check-packages.mjs` → `OK (6 packages)`；E2E 本轮实跑
+  installed `--no-worktree` **123/123**（phase 1 27 + 1b 12 + 3 84；phase 2 未重跑）。
 - **DSH 版本兼容矩阵（本轮真实 E2E，npm 临时安装 CLI + `DSH_BIN`）**：
 
   | DSH | flow | checks | Team 分支 / 其他 |
@@ -1047,8 +1094,12 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   | 0.2.2-rc.4 | installed（完整） | **143/143** | 成功；含实验 worktree 阶段 23/23 |
   | 0.2.2-rc.4 | patch（完整） | **143/143** | 成功；含实验 worktree 阶段 23/23 |
   | 0.2.2-rc.5 | installed（`--no-worktree`） | **120/120** | 成功；phase 1 27 + 1b 12 + 3 81 |
+  | 0.2.2-rc.5 | installed（`--no-worktree`，v0.2.7 问题路由） | **123/123** | 成功；phase 3 84，含真实 `ask_user_question` gate + question report |
   | 0.2.2-rc.5 | installed（完整） | **143/143** | 成功；含实验 worktree 阶段 23/23 |
   | 0.2.2-rc.5 | patch（完整） | **143/143** | 成功；含实验 worktree 阶段 23/23 |
+
+  v0.2.7 新增 3 条 phase-3 question gate checks；本轮只重跑 installed `--no-worktree`
+  （123/123）。完整组合的 146/146 需在发版前按 PUBLISHING 重跑。
 
   每条版本使用独立 throwaway `DSH_HOME`，结束后清理；rc.1–rc.3 跳过 phase 2（实验组合不与
   内置 worktree bundle 绑定，阶段 1/1b/3 全跑），rc.4 / rc.5 两条加载流都跑完整四个阶段。所有版本

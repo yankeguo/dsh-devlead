@@ -36,6 +36,11 @@
     Called inside that watched child: send a real `reportProgress` call and
     return the durable lead receipt plus the lead's current report digest.
 
+  `devlead-e2e-question` (phase 3)
+    Create a watched child, execute a real `ask_user_question` call through the
+    Host tools pipeline as that child, and return the denial result plus the
+    forwarded `kind: question` report from the lead digest.
+
   `devlead-e2e-dispatch` (phase 3)
  *     Exercise creation-time dispatch settings: pick a model from the Host's
  *     own `modelCatalog()` (falling back to the deployment default route when
@@ -97,6 +102,14 @@
  *     teamsUnavailableReason: string,
  *     listModels: { view: DevLeadModelCatalog | null, error: { code, message } | null },
  *     presets: { view: DevLeadAgentPresetCatalog | null, error: { code, message } | null }
+ *   }
+ *
+ *   question:
+ *   {
+ *     childId: string,                      // watched child created for the probe
+ *     supervised: boolean,                  // child is watched by the lead
+ *     results: [{ callId, isError, content }], // real ask_user_question batch outcome
+ *     questionReports: DevLeadReport[]      // forwarded kind=question rows
  *   }
  *
  *   close:
@@ -183,6 +196,8 @@ export const DISPATCH_COMMAND_NAME = 'devlead-e2e-dispatch'
 export const WATCH_CHILD_COMMAND_NAME = 'devlead-e2e-watch-child'
 /** Send one real report from inside the watched child. */
 export const REPORT_COMMAND_NAME = 'devlead-e2e-report'
+/** Drive the watched-Session ask_user_question gate from the lead. */
+export const QUESTION_COMMAND_NAME = 'devlead-e2e-question'
 /** Upper bound for one prompted child turn to settle inside the close command. */
 const CHILD_TURN_TIMEOUT_MS = 45_000
 /** Poll interval of the close command's child-turn wait. */
@@ -580,6 +595,60 @@ async function executeReport(ctx, invocation) {
 }
 
 /**
+ * Drive one real `ask_user_question` call through a freshly created watched
+ * child and report whether the DevLead question gate denied it before the
+ * child's own question UI could run, plus the forwarded lead report.
+ * @param ctx - probe context.
+ * @param invocation - command invocation carrying the lead Agent.
+ * @returns success JSON with the call result and question reports, or an error result.
+ */
+async function executeQuestion(ctx, invocation) {
+  const lead = invocation.agent
+  try {
+    const created = await ctx.devLead.createSession(lead, { watch: true, title: 'e2e question child' })
+    const childId = String(created.session.sessionId)
+    const child = ctx.agents.get(childId)
+    if (child === undefined) {
+      return { kind: 'error', text: 'devlead-e2e-question: watched child is not live' }
+    }
+    const before = ctx.devLead.reports(lead).length
+    const batch = await ctx.tools.execute({
+      calls: [{
+        type: 'tool-call',
+        id: 'e2e-ask-question',
+        name: 'ask_user_question',
+        arguments: JSON.stringify({
+          questions: [{
+            id: 'target',
+            question: 'Which e2e target?',
+            header: 'Deploy',
+            options: [{ label: 'Staging' }, { label: 'Prod' }],
+          }],
+        }),
+      }],
+      agent: child,
+      signal: AbortSignal.timeout(5_000),
+    })
+    const questionReports = ctx.devLead.reports(lead).slice(before).filter(report => report.kind === 'question')
+    return {
+      kind: 'success',
+      text: JSON.stringify({
+        childId,
+        supervised: ctx.devLead.isSupervised(child),
+        results: batch.results.map(entry => ({
+          callId: String(entry.callId),
+          isError: entry.result.isError,
+          content: entry.result.content,
+        })),
+        questionReports,
+      }),
+    }
+  } catch (error) {
+    return { kind: 'error', text: `devlead-e2e-question: ${messageOf(error)}` }
+  }
+}
+
+/**
  * Drive creation-time model selection and Agent Teams through the real Host.
  *
  * The model route comes from the Host's own `modelCatalog()`; when the catalog
@@ -822,5 +891,11 @@ export function apply(ctx) {
     name: REPORT_COMMAND_NAME,
     description: 'E2E probe: send a real mid-turn report from this watched child.',
     handler: guarded(REPORT_COMMAND_NAME, invocation => executeReport(ctx, invocation)),
+  })
+  ctx.commands.register({
+    definitionId: CommandDefinitionId(`${DEFINITION_ID}#question`),
+    name: QUESTION_COMMAND_NAME,
+    description: 'E2E probe: ask a real ask_user_question call through a watched child and report the gate.',
+    handler: guarded(QUESTION_COMMAND_NAME, invocation => executeQuestion(ctx, invocation)),
   })
 }

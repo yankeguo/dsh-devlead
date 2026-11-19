@@ -777,6 +777,26 @@ describe('mid-turn reports', () => {
     expect(harness.service.reports(harness.lead.agent)).toHaveLength(4)
   })
 
+  it('lets a question report through the exhausted progress budget', async () => {
+    const { harness, child } = await bootReporting()
+    for (const message of ['one', 'two', 'three', 'four']) {
+      await harness.service.reportProgress(child.agent, { message })
+    }
+    const question = await harness.service.reportProgress(child.agent, {
+      kind: 'question',
+      message: 'Which deployment target should I use?',
+      summary: 'deployment target',
+    })
+    expect(question.report.kind).toBe('question')
+    // The question is a control-flow channel, not a fifth progress report.
+    expect(harness.service.reports(harness.lead.agent).map(report => report.kind))
+      .toEqual(['progress', 'progress', 'progress', 'progress', 'question'])
+    await expectCodeAsync(
+      () => harness.service.reportProgress(child.agent, { message: 'five' }),
+      'DEVLEAD_REPORT_RATE_LIMITED',
+    )
+  })
+
   it('rejects empty, oversized, and malformed reports before writing', async () => {
     const { harness, child } = await bootReporting()
     await expectCodeAsync(

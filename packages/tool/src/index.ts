@@ -29,6 +29,7 @@ import {
 } from './arguments.ts'
 import { runTool } from './errors.ts'
 import { DEVLEAD_REPORT_POLICY, devLeadPolicy } from './policy.ts'
+import { registerQuestionRouting } from './question-routing.ts'
 import {
   presentArchiveSessionCall,
   presentCreateSessionCall,
@@ -184,18 +185,20 @@ const WATCH_SESSION_DESCRIPTION =
 const NOTIFICATIONS_DESCRIPTION =
   'Read the retained notification digest of this DevLead Session together with the current watch set. Each entry names '
   + 'a watched Session whose turn settled and how it ended; the reports array carries mid-turn reports from watched '
-  + 'Sessions (kind, sender, summary/latest message). The digest is newest last. Read it after a wake-up or when the '
-  + 'human explicitly asks, not as a polling loop while waiting for a dispatched Session.'
+  + 'read it. The digest is newest last. A question report means the watched Session needs a decision; answer it '
+  + 'yourself or ask the human, then relay the answer with devlead_prompt_session. Read it after a wake-up or when '
+  + 'the human explicitly asks, not as a polling loop while waiting for a dispatched Session.'
 
 const REPORT_DESCRIPTION =
   'Send a one-way mid-turn report to the single active DevLead Session that watches this Session. Use it for progress '
-  + 'worth acting on, a real blocker, a decision the lead or human must make, or an important finding, instead of '
-  + 'waiting for the turn to end. It is not a question or reply channel: the lead cannot answer through it, and you '
-  + 'should keep working unless the lead steers you. Your settled turn still reaches the lead through the normal '
-  + 'turn-end notification. Keep the message concise and actionable; at most four distinct reports are accepted per '
-  + 'turn, identical messages are deduplicated, and no target Session can be chosen. The result carries '
-  + '`durable` and `queued`; when `durable` is false the Host has no durable storage and the warning must be '
-  + 'treated as a possible-loss receipt. Selected kind: progress (default), blocked, decision, or fyi.'
+  + 'worth acting on, a real blocker, a decision the lead or human must make, an important finding, or a question '
+  + 'that needs the lead\'s answer, instead of waiting for the turn to end. It is a one-way channel: the lead cannot '
+  + 'reply through the report itself. Use kind question when you are blocked on missing information or a decision, '
+  + 'then end your turn; the lead answers in a new turn (directly, or after asking the human). Keep the message '
+  + 'concise and actionable; at most four distinct non-question reports are accepted per turn, question reports are '
+  + 'exempt from that budget, identical messages are deduplicated, and no target Session can be chosen. The result '
+  + 'carries `durable` and `queued`; when `durable` is false the Host has no durable storage and the warning must be '
+  + 'treated as a possible-loss receipt. Selected kind: progress (default), blocked, decision, question, or fyi.'
 
 const REMOVE_WORKSPACE_DESCRIPTION =
   'Close (remove) a DSH Workspace registration: the DSH remove action, not a deletion. The directory, its files, and '
@@ -256,6 +259,10 @@ export function apply(ctx: Context): void {
       ? DEVLEAD_REPORT_POLICY
       : '',
   })
+  // Give watched Sessions a hard question path to the lead before the child's
+  // own ask_user_question UI can run. The listener checks supervision per call,
+  // so unwatched Sessions and human-directed child turns are untouched.
+  registerQuestionRouting(ctx, ctx.devLead)
 
   ctx.tools.register(defineTool({
     name: 'devlead_list_workspaces',
@@ -588,8 +595,9 @@ export function apply(ctx: Context): void {
       },
       kind: {
         type: 'string',
-        enum: ['progress', 'blocked', 'decision', 'fyi'],
-        description: 'Why this report is being sent; defaults to progress.',
+        enum: ['progress', 'blocked', 'decision', 'question', 'fyi'],
+        description: 'Why this report is being sent; defaults to progress. Use question for a decision or missing '
+          + 'information the lead must answer; then end your turn and wait for the lead\'s new turn.',
       },
       summary: {
         type: 'string',

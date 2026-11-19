@@ -28,6 +28,11 @@ import type {
 import { createSessionRequest, DevLeadToolInputError } from '../src/arguments.ts'
 import { DEVLEAD_POLICY_BASE } from '../src/policy.ts'
 import {
+  ASK_USER_QUESTION_TOOL,
+  formatQuestionReport,
+  isHumanDirectedTurn,
+} from '../src/question-routing.ts'
+import {
   ARCHIVE_SESSION_OUTPUT,
   CREATE_SESSION_OUTPUT,
   DEVLEAD_ISOLATION_MODES,
@@ -262,6 +267,9 @@ describe('registration', () => {
     expect(text).toContain('one-way')
     expect(text).toContain('four')
     expect(text).toContain('DEVLEAD_REPORT_RATE_LIMITED')
+    expect(text).toContain('kind question')
+    expect(text).toContain('ask_user_question call is intercepted')
+    expect(text).toContain('end your turn')
     // A DevLead-enabled Session must not see the child reporting guidance.
     harness.devLead.enabled.add(reporter.id)
     expect(harness.reportSectionText(reporter)).toBe('')
@@ -498,7 +506,9 @@ describe('policy', () => {
     const text = harness.sectionText(harness.agent)
     expect(text).toContain('[DEV LEAD REPORT]')
     expect(text).toContain('devlead_prompt_session')
-    expect(text).toContain('not as a reply channel')
+    expect(text).toContain('the child cannot receive a reply through the report itself')
+    expect(text).toContain('kind question report')
+    expect(text).toContain('ask_user_question call is intercepted')
   })
 
   it('teaches explicit prompt interruption without making it the default', () => {
@@ -1459,6 +1469,20 @@ describe('devlead_report', () => {
     expectValidOutput(harness, 'devlead_report', value)
   })
 
+  it('forwards a question report and advertises the kind', async () => {
+    const harness = boot()
+    await harness.call('devlead_report', { message: 'Which target?', kind: 'question', summary: 'target' })
+    const [, request] = harness.devLead.callsOf('reportProgress')[0] ?? []
+    expect(request).toMatchObject({ kind: 'question', message: 'Which target?', summary: 'target' })
+    const definition = harness.tool('devlead_report').definition
+    const parameters = definition.parameters as {
+      properties: { kind: { enum: readonly string[]; description: string } }
+    }
+    expect(parameters.properties.kind.enum).toContain('question')
+    expect(definition.description).toContain('question reports are exempt')
+    expect(definition.description).toContain('end your turn')
+  })
+
   it('translates a not-watched refusal', async () => {
     const harness = boot()
     harness.devLead.failures.set('reportProgress', devLeadFailure('DEVLEAD_NOT_SUPERVISED'))
@@ -1470,6 +1494,115 @@ describe('devlead_report', () => {
     const harness = boot()
     const error = await failureOf(harness.call('devlead_report', { message: 'progress' }, makeExec(undefined)))
     expect(error.code).toBe('DEVLEAD_AGENT_NOT_LIVE')
+  })
+})
+
+describe('watched Session question routing', () => {
+  /** Build one Agent whose current turn has the given user-message sources. */
+  function childAgent(id: string, sources: readonly string[]): ReturnType<typeof makeAgent> {
+    const events: unknown[] = [{ type: 'turn/start', data: { turn: 1 } }]
+    for (const kind of sources) events.push({ type: 'user/message', data: { source: { kind } } })
+    return {
+      id,
+      session: { header: { cwd: '/tmp' }, snapshotEvents: () => events },
+    } as unknown as ReturnType<typeof makeAgent>
+  }
+
+  it('formats a question batch for the lead', () => {
+    const report = formatQuestionReport({
+      questions: [
+        {
+          id: 'target',
+          question: 'Which target?',
+          header: 'Deploy',
+          options: [{ label: 'Staging', description: 'safe' }, { label: 'Prod' }],
+          multi_select: true,
+        },
+      ],
+    })
+    expect(report).toEqual({
+      message: 'The watched Session is waiting for your answer; reply with devlead_prompt_session:\n'
+        + '- [target] Deploy: Which target?\n'
+        + '  - Staging — safe\n'
+        + '  - Prod\n'
+        + '  (multi-select)',
+      summary: 'Question: Deploy',
+    })
+    expect(formatQuestionReport({})).toBeUndefined()
+  })
+
+  it('recognizes a human-directed turn and ignores injected context', () => {
+    expect(isHumanDirectedTurn(childAgent('child-human', ['user']))).toBe(true)
+    expect(isHumanDirectedTurn(childAgent('child-lead', ['devlead']))).toBe(false)
+    expect(isHumanDirectedTurn(childAgent('child-steered', ['user', 'runtime-context']))).toBe(true)
+  })
+
+  it('forwards a watched child question and denies the direct UI call', async () => {
+    const harness = boot()
+    const child = childAgent('child-question', ['devlead'])
+    harness.devLead.supervised.add(child.id)
+    const result = await harness.preExecute({
+      name: ASK_USER_QUESTION_TOOL,
+      arguments: { questions: [{ id: 'target', question: 'Which target?', header: 'Deploy' }] },
+      agent: child,
+      signal: new AbortController().signal,
+    })
+    expect(result.nextCalls).toBe(0)
+    expect(result.decision).toMatchObject({ kind: 'deny' })
+    expect((result.decision as { reason: string }).reason).toContain('forwarded to the DevLead')
+    const [agent, request] = harness.devLead.callsOf('reportProgress')[0] ?? []
+    expect(agent).toBe(child)
+    expect(request).toMatchObject({ kind: 'question', summary: 'Question: Deploy' })
+    expect((request as { message: string }).message).toContain('[target] Deploy: Which target?')
+  })
+
+  it('allows an unwatched or human-directed child to ask directly', async () => {
+    const harness = boot()
+    const unwatched = childAgent('child-unwatched', ['devlead'])
+    const human = childAgent('child-human', ['user'])
+    harness.devLead.supervised.add(human.id)
+    const request = {
+      name: ASK_USER_QUESTION_TOOL,
+      arguments: { questions: [{ id: 'q', question: 'ok?' }] },
+      signal: new AbortController().signal,
+    }
+    await expect(harness.preExecute({ ...request, agent: unwatched }))
+      .resolves.toEqual({ decision: { kind: 'allow' }, nextCalls: 1 })
+    await expect(harness.preExecute({ ...request, agent: human }))
+      .resolves.toEqual({ decision: { kind: 'allow' }, nextCalls: 1 })
+    expect(harness.devLead.callsOf('reportProgress')).toHaveLength(0)
+  })
+
+  it('denies with fallback guidance when forwarding fails', async () => {
+    const harness = boot()
+    const child = childAgent('child-failure', ['devlead'])
+    harness.devLead.supervised.add(child.id)
+    harness.devLead.failures.set('reportProgress', devLeadFailure('DEVLEAD_REPORT_RATE_LIMITED'))
+    const result = await harness.preExecute({
+      name: ASK_USER_QUESTION_TOOL,
+      arguments: { questions: [{ id: 'q', question: 'Which?' }] },
+      agent: child,
+      signal: new AbortController().signal,
+    })
+    expect(result.nextCalls).toBe(0)
+    expect((result.decision as { reason: string }).reason).toContain('forwarding the question failed')
+    expect(harness.warnings.some(warning => warning.includes('could not forward'))).toBe(true)
+  })
+
+  it('does not intercept other tools or calls without an Agent', async () => {
+    const harness = boot()
+    await expect(harness.preExecute({
+      name: 'bash',
+      arguments: {},
+      agent: undefined,
+      signal: new AbortController().signal,
+    })).resolves.toEqual({ decision: { kind: 'allow' }, nextCalls: 1 })
+    await expect(harness.preExecute({
+      name: ASK_USER_QUESTION_TOOL,
+      arguments: {},
+      agent: undefined,
+      signal: new AbortController().signal,
+    })).resolves.toEqual({ decision: { kind: 'allow' }, nextCalls: 1 })
   })
 })
 
