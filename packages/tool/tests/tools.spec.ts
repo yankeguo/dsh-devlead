@@ -22,6 +22,7 @@ import type {
   DevLeadPromptedSession,
   DevLeadQueuedInput,
   DevLeadRemovedWorkspace,
+  DevLeadReport,
   DevLeadReportKind,
   DevLeadRetractedInput,
   DevLeadSessionView,
@@ -56,10 +57,12 @@ import {
   RETRACT_INPUT_OUTPUT,
   UNARCHIVE_SESSION_OUTPUT,
   WATCH_SESSION_OUTPUT,
+  reportValue,
   type IsolationValue,
   type ModelCatalogValue,
   type NotificationValue,
   type QueuedInputValue,
+  type ReportValue,
   type SessionValue,
   type WorkspaceValue,
 } from '../src/value.ts'
@@ -86,6 +89,7 @@ type Assert<T extends true> = T
 type SchemaWorkspaceConforms = Assert<WorkspaceValue extends DevLeadWorkspaceView ? true : false>
 type SchemaSessionConforms = Assert<SessionValue extends DevLeadSessionView ? true : false>
 type SchemaNotificationConforms = Assert<NotificationValue extends DevLeadNotification ? true : false>
+type SchemaReportConforms = Assert<ReportValue extends DevLeadReport ? true : false>
 type SchemaIsolationConforms = Assert<IsolationValue extends DevLeadIsolation ? true : false>
 type SchemaCreatedConforms = Assert<
   InferValue<typeof CREATE_SESSION_OUTPUT.schema> extends DevLeadCreatedSession ? true : false
@@ -738,6 +742,34 @@ describe('report kind vocabulary', () => {
     expect(parameters.properties.kind.enum).toEqual([...DEVLEAD_REPORT_KINDS])
     expect(REPORT_SCHEMA.properties.kind.enum).toEqual([...DEVLEAD_REPORT_KINDS])
   })
+
+  it('projects a detached optional questions payload through the additive report schema', () => {
+    const base: DevLeadReport = {
+      id: 'report-question',
+      kind: 'question',
+      message: 'Which target?',
+      senderSessionId: 'child-1',
+      leadSessionId: 'lead-1',
+      turn: 1,
+      at: 1_700_000_000_000,
+    }
+    const questions = [{
+      id: 'target',
+      header: 'Deploy',
+      question: 'Which target?',
+      options: [{ label: 'Staging', description: 'safe' }],
+      multi_select: false,
+    }]
+    const value = reportValue({ ...base, questions })
+    expect(value.questions).toEqual(questions)
+    expect(value.questions).not.toBe(questions)
+    expect(value.questions?.[0]?.options).not.toBe(questions[0]!.options)
+    const harness = boot()
+    expectValidOutput(harness, 'devlead_report', { report: value, durable: true, queued: false })
+    questions[0]!.options[0]!.description = 'changed'
+    expect(value.questions?.[0]?.options?.[0]?.description).toBe('safe')
+    expect(reportValue(base)).not.toHaveProperty('questions')
+  })
 })
 
 describe('interrupt inbox vocabulary', () => {
@@ -809,6 +841,7 @@ describe('canonical values', () => {
       SchemaWorkspaceConforms,
       SchemaSessionConforms,
       SchemaNotificationConforms,
+      SchemaReportConforms,
       SchemaIsolationConforms,
       SchemaCreatedConforms,
       SchemaPromptedConforms,
@@ -820,7 +853,7 @@ describe('canonical values', () => {
       SchemaUnarchivedConforms,
       SchemaModelCatalogConforms,
       SchemaAgentPresetCatalogConforms,
-    ] = [true, true, true, true, true, true, true, true, true, true, true, true, true, true]
+    ] = [true, true, true, true, true, true, true, true, true, true, true, true, true, true, true]
     expect(conformance.every(value => value)).toBe(true)
   })
 
@@ -1885,6 +1918,7 @@ describe('devlead_report', () => {
     await harness.call('devlead_report', { message: 'Which target?', kind: 'question', summary: 'target' })
     const [, request] = harness.devLead.callsOf('reportProgress')[0] ?? []
     expect(request).toMatchObject({ kind: 'question', message: 'Which target?', summary: 'target' })
+    expect(request).not.toHaveProperty('questions')
     const definition = harness.tool('devlead_report').definition
     const parameters = definition.parameters as {
       properties: { kind: { enum: readonly string[]; description: string } }
@@ -1967,14 +2001,52 @@ describe('watched Session question routing', () => {
       ],
     })
     expect(report).toEqual({
-      message: 'The watched Session is waiting for your answer; reply with devlead_prompt_session:\n'
+      message: 'The watched Session asked a question; an answer is requested. Reply with devlead_prompt_session:\n'
         + '- [target] Deploy: Which target?\n'
         + '  - Staging — safe\n'
         + '  - Prod\n'
         + '  (multi-select)',
       summary: 'Question: Deploy',
+      questions: [{
+        id: 'target',
+        header: 'Deploy',
+        question: 'Which target?',
+        options: [{ label: 'Staging', description: 'safe' }, { label: 'Prod' }],
+        multi_select: true,
+      }],
     })
     expect(formatQuestionReport({})).toBeUndefined()
+  })
+
+  it('bounds and detaches the structured payload while retaining the formatted text path', () => {
+    const first = {
+      id: 'i'.repeat(2_001),
+      header: 'Deploy',
+      question: 'q'.repeat(2_001),
+      options: Array.from({ length: 17 }, (_, index) => ({ label: `option ${index}` })),
+      multi_select: false,
+    }
+    const args = {
+      questions: [
+        first,
+        ...Array.from({ length: 32 }, (_, index) => ({ question: `question ${index + 1}` })),
+      ],
+    }
+    const report = formatQuestionReport(args)
+    expect(report?.questions).toHaveLength(32)
+    expect(report?.questions[0]?.id).toHaveLength(2_000)
+    expect(report?.questions[0]?.question).toHaveLength(2_000)
+    expect(report?.questions[0]?.options).toHaveLength(16)
+    expect(report?.questions[0]?.multi_select).toBe(false)
+    expect(Array.from(report?.message ?? '')).toHaveLength(4_000)
+    expect(report?.message.endsWith('…')).toBe(true)
+    expect(report?.message).toContain('asked a question; an answer is requested')
+    expect(report?.message).not.toContain('is waiting for your answer')
+
+    first.question = 'changed'
+    first.options[0]!.label = 'changed'
+    expect(report?.questions[0]?.question).toBe(`${'q'.repeat(1_999)}…`)
+    expect(report?.questions[0]?.options?.[0]?.label).toBe('option 0')
   })
 
   it('recognizes a human-directed turn and ignores injected context', () => {
@@ -2026,7 +2098,11 @@ describe('watched Session question routing', () => {
     expect((result.decision as { reason: string }).reason).toContain('forwarded to the DevLead')
     const [agent, request] = harness.devLead.callsOf('reportProgress')[0] ?? []
     expect(agent).toBe(child)
-    expect(request).toMatchObject({ kind: 'question', summary: 'Question: Deploy' })
+    expect(request).toMatchObject({
+      kind: 'question',
+      summary: 'Question: Deploy',
+      questions: [{ id: 'target', header: 'Deploy', question: 'Which target?' }],
+    })
     expect((request as { message: string }).message).toContain('[target] Deploy: Which target?')
   })
 

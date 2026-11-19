@@ -11,6 +11,9 @@ import {
   DEVLEAD_ERROR_EXCERPT_MAX,
   DEVLEAD_MODE_RECORD_TYPE,
   DEVLEAD_NOTIFICATION_RECORD_TYPE,
+  DEVLEAD_QUESTIONS_MAX,
+  DEVLEAD_QUESTION_FIELD_MAX,
+  DEVLEAD_QUESTION_OPTIONS_MAX,
   DEVLEAD_RECORD_VERSION,
   DEVLEAD_WATCH_RECORD_TYPE,
   notificationId,
@@ -24,8 +27,10 @@ import {
   decodeModeRecord,
   decodeNotification,
   decodeNotificationRecord,
+  decodeReport,
   decodeWatchRecord,
   devLeadNotification,
+  devLeadReport,
   failureExcerpt,
   modeRecord,
   notificationRecord,
@@ -55,6 +60,27 @@ function notificationPayload(): Record<string, unknown> {
     kind: 'devlead/notification',
     version: DEVLEAD_RECORD_VERSION,
     notification: notificationValue(),
+  }
+}
+
+/** One canonical structured question report value. */
+function questionReportValue(): Record<string, unknown> {
+  return {
+    ...devLeadReport({
+      senderSessionId: 'child-1',
+      leadSessionId: 'lead-1',
+      turn: 2,
+      kind: 'question',
+      message: 'Which target?',
+      questions: [{
+        id: 'target',
+        header: 'Deploy',
+        question: 'Which target?',
+        options: [{ label: 'Staging', description: 'safe' }, { label: 'Prod' }],
+        multi_select: false,
+      }],
+      at: T0,
+    }),
   }
 }
 
@@ -93,6 +119,24 @@ describe('builders', () => {
     const notice = createDevLeadNoticeMessage('digest')
     expect(notice.source).toEqual({ kind: 'devlead', form: 'notice' })
   })
+
+  it('adds optional wake classification to notice sources without changing the default', () => {
+    const notice = createDevLeadNoticeMessage('question', {
+      wakeRequested: true,
+      lane: 'action-required',
+      summary: 'Question: Deploy',
+      reportId: 'child:1:report:question:abc',
+    })
+    expect(notice.source).toEqual({
+      kind: 'devlead',
+      form: 'notice',
+      wakeRequested: true,
+      lane: 'action-required',
+      summary: 'Question: Deploy',
+      reportId: 'child:1:report:question:abc',
+    })
+    expect(createDevLeadNoticeMessage('plain').source).toEqual({ kind: 'devlead', form: 'notice' })
+  })
 })
 
 describe('strict decoders', () => {
@@ -105,6 +149,78 @@ describe('strict decoders', () => {
     expect(decodeNotificationRecord(notificationPayload())).toEqual(
       devLeadNotification('session-alpha', undefined, 'completed', 1, T0),
     )
+  })
+
+  it('round-trips paired wake-suppression metadata', () => {
+    const suppressed = {
+      ...notificationValue(),
+      wakeSuppressedByReportId: 'child:1:report:question:abc',
+      wakeSuppressionReason: 'included-in-sent-wake',
+    }
+    expect(decodeNotification(suppressed)).toEqual(suppressed)
+    for (const payload of [
+      { ...notificationValue(), wakeSuppressedByReportId: 'report-1' },
+      { ...notificationValue(), wakeSuppressionReason: 'merged-into-pending-wake' },
+      { ...notificationValue(), wakeSuppressedByReportId: '', wakeSuppressionReason: 'included-in-sent-wake' },
+      { ...notificationValue(), wakeSuppressedByReportId: 'report-1', wakeSuppressionReason: 'other' },
+    ]) {
+      expect(() => decodeNotification(payload)).toThrow(/wakeSuppress/u)
+    }
+  })
+
+  it('round-trips structured questions and keeps legacy reports absent-field compatible', () => {
+    expect(decodeReport(questionReportValue())).toEqual(questionReportValue())
+    const legacy = devLeadReport({
+      senderSessionId: 'child-1',
+      leadSessionId: 'lead-1',
+      turn: 1,
+      kind: 'progress',
+      message: 'plain update',
+      at: T0,
+    })
+    expect(decodeReport({ ...legacy })).toEqual(legacy)
+    expect(decodeReport({ ...legacy })).not.toHaveProperty('questions')
+  })
+
+  it('deep-copies structured questions at the builder and decoder boundaries', () => {
+    const payload = questionReportValue()
+    const decoded = decodeReport(payload)
+    const questions = payload.questions as Array<{
+      question: string
+      options: Array<{ label: string; description?: string }>
+    }>
+    questions[0]!.question = 'changed'
+    questions[0]!.options[0]!.description = 'changed'
+    expect(decoded.questions?.[0]?.question).toBe('Which target?')
+    expect(decoded.questions?.[0]?.options?.[0]?.description).toBe('safe')
+    expect(decoded.questions).not.toBe(payload.questions)
+    expect(decoded.questions?.[0]?.options).not.toBe(questions[0]!.options)
+  })
+
+  it('rejects malformed, oversized, or non-question structured payloads', () => {
+    const baseQuestion = (questionReportValue().questions as unknown[])[0]!
+    const cases: Array<[string, unknown]> = [
+      ['non-array', 'not-an-array'],
+      ['too many questions', Array.from({ length: DEVLEAD_QUESTIONS_MAX + 1 }, () => baseQuestion)],
+      ['wrong report kind', [baseQuestion]],
+      ['unknown question field', [{ ...baseQuestion as object, extra: true }]],
+      ['missing question', [{ id: 'q' }]],
+      ['empty question', [{ question: '   ' }]],
+      ['oversized question', [{ question: 'x'.repeat(DEVLEAD_QUESTION_FIELD_MAX + 1) }]],
+      ['non-boolean multi-select', [{ ...baseQuestion as object, multi_select: 'yes' }]],
+      ['non-array options', [{ ...baseQuestion as object, options: 'invalid' }]],
+      [
+        'too many options',
+        [{ ...baseQuestion as object, options: Array.from({ length: DEVLEAD_QUESTION_OPTIONS_MAX + 1 }, () => ({ label: 'x' })) }],
+      ],
+      ['unknown option field', [{ question: 'q', options: [{ label: 'x', extra: true }] }]],
+      ['missing option label', [{ question: 'q', options: [{ description: 'x' }] }]],
+      ['oversized option description', [{ question: 'q', options: [{ label: 'x', description: 'x'.repeat(2_001) }] }]],
+    ]
+    for (const [label, questions] of cases) {
+      const kind = label === 'wrong report kind' ? 'progress' : 'question'
+      expect(() => decodeReport({ ...questionReportValue(), kind, questions }), label).toThrow()
+    }
   })
 
   it('copies the decoded watch set so callers cannot mutate a persisted array', () => {

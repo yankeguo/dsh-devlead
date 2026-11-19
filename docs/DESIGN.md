@@ -733,8 +733,8 @@ Session 的工作目录切到独立分支/检出，DevLead 用它**可选地**�
 
 ### 4.4 消息传递模型（Proposed，未实现）
 
-> **状态：Proposed，未实现。** 本节不是当前行为的描述；当前实现仍以 §4.1.2（中途汇报）、
-> §4.1.3（问题路由）与 §5（模型工具）为准。本节描述把 lead ↔ watched Session 的通信从
+> **状态：Phase 1a/1b 已实现；Phase 1c 起仍为 Proposed。** 本节描述完整目标模型；尚未落地的
+> 阶段仍以 §4.1.2（中途汇报）、§4.1.3（问题路由）与 §5（模型工具）的现有行为为准。本节描述把 lead ↔ watched Session 的通信从
 > 「所有方向、所有 kind 都走 `followup`」升级为「按消息类别与目标状态选择投递机制」的设计、
 > 取舍、API 提案、状态机、测试计划与分阶段落地。所有 DSH API 行为已按
 > `0.2.2-rc.1` – `0.2.2-rc.5` 源码核对（兼容性检查见 §4.4.11，Phase 门禁见 §4.4.12）。
@@ -761,7 +761,7 @@ Session 的工作目录切到独立分支/检出，DevLead 用它**可选地**�
 blocked/decision/review 分支＋ `background`（progress/fyi）＋ source metadata/retract/
 `clear-own` 扩展。全部只改 `dsh-devlead`，不需要 DSH 上游改动。
 
-#### 4.4.2 当前 flow 与实测
+#### 4.4.2 Phase 1 前 flow 与实测
 
 **child → lead（report）**
 
@@ -1913,8 +1913,8 @@ DSH 的 `ReactLoopInbox.claim(target, turn)` 在一个 turn 的第一个 pre-ste
 | 阶段 | 范围 | 是否改 DSH | 门禁 |
 | --- | --- | --- | --- |
 | Phase 0 | 本文档（Proposed） | 否 | 文档 review；不改代码 |
-| Phase 1a | 抽出纯策略表模块 + 单测；不改变现有行为 | 否 | `pnpm verify` |
-| Phase 1b | question `action-required`：完整 payload、结构化 questions、跳过 400ms/queued turn notice、窄化双 wake 规则 | 否 | `pnpm verify` + fake harness 用例 7/10/11/12/33/34 |
+| Phase 1a（已完成） | 抽出纯策略表模块 + 单测；不改变现有行为 | 否 | `pnpm verify` |
+| Phase 1b（已完成） | question `action-required`：完整 payload、结构化 questions、跳过 400ms/queued turn notice、窄化双 wake 规则 | 否 | `pnpm verify` + fake harness 用例 7/10/11/12/33/34 |
 | Phase 1c | `devlead_report({kind:'question'})` `turnEndRequested` + durable 检查 + 结果/policy | 否 | 用例 8/9；真实 DSH question E2E |
 | Phase 1d | `devlead_prompt_session` intent/`question_id`/`idempotency_key` + answer/correction steering + answer record + `answerStatus` admitted/claimed/presented（内存观测）+ `delivery` 结果 + retract/clear-own/source | 否 | 用例 13–25；`pnpm verify` |
 | Phase 1e | T2/P1–P4 路径、questionStatus/answerStatus、notifications/get_session 输出、policy/UI 文案、指标 | 否 | 全量单测/集成/E2E；`pnpm e2e`；UI 验收 |

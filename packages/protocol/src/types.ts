@@ -85,6 +85,15 @@ export const DEVLEAD_REPORT_MESSAGE_MAX = 4_000
 /** Longest optional report summary accepted from a watched Session, in code points. */
 export const DEVLEAD_REPORT_SUMMARY_MAX = 200
 
+/** Most structured questions one native question report may retain. */
+export const DEVLEAD_QUESTIONS_MAX = 32
+
+/** Most options one structured question may retain. */
+export const DEVLEAD_QUESTION_OPTIONS_MAX = 16
+
+/** Longest structured question/option string field, in Unicode code points. */
+export const DEVLEAD_QUESTION_FIELD_MAX = 2_000
+
 /** Most reports one watched Session may send during one turn. */
 export const DEVLEAD_REPORT_MAX_PER_TURN = 4
 
@@ -115,6 +124,9 @@ export type DevLeadTransition =
   | 'interrupted'
   | 'forked'
 
+/** Why a separate turn-notification wake was not sent. */
+export type DevLeadWakeSuppressionReason = 'merged-into-pending-wake' | 'included-in-sent-wake'
+
 /** One transition of a watched Session that the lead is notified about. */
 export interface DevLeadNotification {
   /** Deterministic identity: `<sessionId>:<turn>:<transition>`. */
@@ -133,6 +145,10 @@ export interface DevLeadNotification {
   readonly error?: string
   /** Compact single-line excerpt of the latest assistant message before the turn settled. */
   readonly summary?: string
+  /** Action-required report whose wake made a separate turn-notification wake unnecessary. */
+  readonly wakeSuppressedByReportId?: string
+  /** Whether that report was still pending or had already included this transition in its sent wake. */
+  readonly wakeSuppressionReason?: DevLeadWakeSuppressionReason
 }
 
 /** Semantic kind of one mid-turn report from a watched Session. */
@@ -147,6 +163,28 @@ export const DEVLEAD_REPORT_KINDS: readonly DevLeadReportKind[] = [
   'fyi',
 ]
 
+/** One structured option captured from a native user question. */
+export interface DevLeadQuestionOption {
+  /** Short option label. */
+  readonly label: string
+  /** Optional explanation of the option. */
+  readonly description?: string
+}
+
+/** One structured question captured from the native `ask_user_question` gate. */
+export interface DevLeadQuestion {
+  /** Optional child-authored question identifier. */
+  readonly id?: string
+  /** Optional short display heading. */
+  readonly header?: string
+  /** Full question text. */
+  readonly question: string
+  /** Optional choices presented to the lead. */
+  readonly options?: readonly DevLeadQuestionOption[]
+  /** Whether the child allows selecting more than one option. */
+  readonly multi_select?: boolean
+}
+
 /** One mid-turn report a watched Session sends to its active DevLead. */
 export interface DevLeadReport {
   /** Deterministic identity derived from sender, turn, kind, and message. */
@@ -157,6 +195,8 @@ export interface DevLeadReport {
   readonly message: string
   /** Optional short title for notification rows. */
   readonly summary?: string
+  /** Structured native question payload; present only on gate-created question reports. */
+  readonly questions?: readonly DevLeadQuestion[]
   /** Reporting Session identity. */
   readonly senderSessionId: string
   /** Reporting Session title at report time, when available. */

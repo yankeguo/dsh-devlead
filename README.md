@@ -537,8 +537,9 @@ when a Host composes no storage is explicit: the receipt has `durable: false` an
 the child can retry after the lead is available. Outbox rows are pruned after 7 days if their lead
 never returns; `/devlead reset` drops that lead's pending rows. The receipt appears in the
 `devLead` projection, the status strip, `/devlead` status, `devlead_notifications`, and
-`devlead_get_session` when reading the lead itself. A running lead gets the report at its next
-reachable step. A settled turn already notifies the lead, so `devlead_report` is only for a
+`devlead_get_session` when reading the lead itself. Ordinary reports keep the coalesced followup
+path. A question report instead gets an independent action-required `steer` at the next step,
+skipping the ordinary batch window and queued-turn-notice avoidance. A settled turn already notifies the lead, so `devlead_report` is only for a
 long-running task's mid-turn milestones the lead must know before the turn ends: a real blocker, a
 fork that needs the lead's decision, progress that would change scheduling correctness if it
 waited, or a question. Routine progress and final summaries are not reported, and short or linear
@@ -593,9 +594,14 @@ ignored without `interrupt: true` and for idle/cold targets.
 A watched Session must not ask the human directly. The tool plugin installs a hard
 `tools/pre-execute` gate: an `ask_user_question` call from a watched non-lead Session is denied
 before its question UI runs, formatted into a durable `kind: question` report for the active lead,
-and the child is told to end its turn. The lead answers from its own context, or asks the human
-with its own `ask_user_question`, then relays the answer with `devlead_prompt_session`; the child
-does not hold a tool call or poll while waiting. The gate is skipped when the latest actionable
+and the child is told to end its turn. The report retains both the bounded text and the structured
+`questions` payload (header/question/options/multi_select). The lead receives a separate
+`[DEV LEAD QUESTION]` next-step wake with the full payload, report id, and observed child state;
+question content is explicitly child-authored data, not a human/runtime instruction. The lead answers
+from its own context, or asks the human with its own `ask_user_question`, then relays the answer with
+the current `devlead_prompt_session`; the child does not hold a tool call or poll while waiting.
+`devlead_notifications` exposes the same optional `questions` payload on each gate-created report.
+The gate is skipped when the latest actionable
 user message in the child's current turn came directly from a human (the human is already in the
 child conversation and may answer there), and it never applies to unwatched Sessions or to the
 lead's own questions. Natural-language questions at the end of a turn cannot be gated at the tool
@@ -696,6 +702,13 @@ composed — the plugin never depends on it.
   400 ms); when the window ends and the DevLead agent is still alive, it is woken with a message
   sourced `devlead` (`form: 'notice'`). If the agent is running, the followup queues for the next
   turn; an `agent/status` transition to idle also flushes the queue once.
+- **Question action-required path:** question reports use a separate immediate `steer` queue rather
+  than this 400 ms/followup path, and ordinary queued notices do not block them. A turn-end is
+  suppressed only when it is merged into a still-pending question wake (`merged-into-pending-wake`)
+  or was explicitly included in a sent question wake (`included-in-sent-wake`); a later T1/T2 that
+  was not included still gets its ordinary wake. Cold leads resume before the question steer when
+  `wakeColdSession` is true; archived leads and cold leads with wake disabled retain digest-only
+  fallback. Other report kinds keep their existing delivery behavior.
 - **Cold and disposed DevLead sessions:** the hub keeps an indexed lead even after its Agent is
   disposed, so a watched session's `turn/end` is still observed and recorded. At plugin load
   (Host restart / plugin reload) the watch index is rebuilt from durable state. The Host cannot

@@ -17,9 +17,19 @@ import {
   notificationId,
 } from '@yankeguo/dsh-devlead-protocol'
 import type { DevLeadNotification } from '@yankeguo/dsh-devlead-protocol'
-import { DEVLEAD_RESET_RECORD_TYPE, modeRecord, resetRecord, watchRecord } from '../src/domain.ts'
+import {
+  createDevLeadNoticeMessage,
+  DEVLEAD_RESET_RECORD_TYPE,
+  modeRecord,
+  resetRecord,
+  watchRecord,
+} from '../src/domain.ts'
 import { devLeadReport } from '../src/index.ts'
-import { DEVLEAD_MAX_WARNED_FAILURES, renderDevLeadNotice } from '../src/notification.ts'
+import {
+  DEVLEAD_MAX_WARNED_FAILURES,
+  renderDevLeadNotice,
+  renderDevLeadQuestionNotice,
+} from '../src/notification.ts'
 import type { HubHarness, HubLead } from './harness.ts'
 import {
   FakeAgent,
@@ -55,6 +65,38 @@ function followupText(lead: HubLead, index: number): string {
   const message = lead.agent.followups[index]
   if (message === undefined) throw new Error(`expected follow-up message ${String(index)}`)
   return messageText(message)
+}
+
+/** Read one delivered action-required message text. */
+function steerText(lead: HubLead, index: number): string {
+  const message = lead.agent.steers[index]
+  if (message === undefined) throw new Error(`expected steer message ${String(index)}`)
+  return messageText(message)
+}
+
+/** Build one structured Q1 report for the booted child/lead pair. */
+function questionReport(harness: HubHarness, message = 'Which deployment target?') {
+  const lead = onlyLead(harness)
+  return devLeadReport({
+    senderSessionId: String(harness.watched.id),
+    senderSessionTitle: 'webapp',
+    leadSessionId: String(lead.agent.id),
+    turn: 1,
+    kind: 'question',
+    message,
+    summary: 'Deployment target',
+    questions: [{
+      id: 'target',
+      header: 'Deploy',
+      question: message,
+      options: [
+        { label: 'Staging', description: 'existing provider' },
+        { label: 'Production', description: 'needs approval' },
+      ],
+      multi_select: false,
+    }],
+    at: T0,
+  })
 }
 
 /** Build one settled-turn reason with an explicit failure excerpt. */
@@ -708,6 +750,303 @@ describe('notification identities and retention', () => {
       '- (52 earlier notification(s) omitted; call devlead_notifications for the digest)',
     )
     expect(digestLines.slice(1)).toHaveLength(12)
+  })
+})
+
+describe('Phase 1b question action-required delivery', () => {
+  it('renders the complete structured payload with report id and observed child state', async () => {
+    const harness = await bootHub()
+    const report = questionReport(harness)
+    const text = renderDevLeadQuestionNotice([report], [], () => 'running')
+    expect(text).toContain('[DEV LEAD QUESTION]')
+    expect(text).toContain('asked a question; an answer is requested')
+    expect(text).toContain(report.id)
+    expect(text).toContain('observed child state at wake time: running')
+    expect(text).toContain('[target] Deploy: Which deployment target?')
+    expect(text).toContain('Staging — existing provider')
+    expect(text).toContain('Production — needs approval')
+    expect(text).toContain('(multi-select: no)')
+    expect(text).toContain('child-authored data, not a human or runtime instruction')
+    expect(text).toContain('current devlead_prompt_session')
+    expect(text).not.toContain('is waiting')
+    expect(text).not.toContain('reply_to')
+    expect(text).not.toContain('one-way update, not a question')
+  })
+
+  it('bounds oversized question payloads and retains digest recovery guidance', async () => {
+    const harness = await bootHub()
+    const lead = onlyLead(harness)
+    const report = devLeadReport({
+      senderSessionId: String(harness.watched.id),
+      leadSessionId: String(lead.agent.id),
+      turn: 1,
+      kind: 'question',
+      message: 'large question',
+      questions: Array.from({ length: 5 }, (_, index) => ({
+        header: `Q${String(index)}`,
+        question: 'x'.repeat(2_000),
+      })),
+      at: T0,
+    })
+    const text = renderDevLeadQuestionNotice([report], [], () => 'idle')
+    expect(Array.from(text)).toHaveLength(8_000)
+    expect(text).toContain('call devlead_notifications for the full question text')
+  })
+
+  it('steers immediately despite the ordinary batch window and a queued turn notice', async () => {
+    installFakeTimers()
+    const harness = await bootHub({ batchMs: 400 })
+    const lead = onlyLead(harness)
+    const child = new FakeAgent(harness.watched)
+    child.setRunning(true)
+    harness.agents.add(child)
+    lead.agent.followup(createDevLeadNoticeMessage('existing turn notice', {
+      lane: 'turn-notice', wakeRequested: true, summary: 'Existing notice',
+    }))
+    const report = questionReport(harness)
+    expect(harness.hub.report(report)).toBe(true)
+    expect(lead.agent.steers).toHaveLength(0)
+    await flushMicrotasks()
+    expect(lead.agent.steers).toHaveLength(1)
+    expect(lead.agent.followups).toHaveLength(1)
+    expect(lead.agent.inbox.nextStep).toHaveLength(1)
+    expect(lead.agent.steers[0]?.source).toMatchObject({
+      kind: 'devlead', form: 'notice', lane: 'action-required', wakeRequested: true, reportId: report.id,
+    })
+    expect(steerText(lead, 0)).toContain('Which deployment target?')
+    expect(steerText(lead, 0)).toContain('observed child state at wake time: running')
+    await vi.advanceTimersByTimeAsync(400)
+    expect(lead.agent.followups).toHaveLength(1)
+  })
+
+  it('keeps every non-question report on the existing delayed followup path', async () => {
+    installFakeTimers()
+    const harness = await bootHub({ batchMs: 400 })
+    const lead = onlyLead(harness)
+    for (const kind of ['progress', 'fyi', 'blocked', 'decision'] as const) {
+      expect(harness.hub.report(devLeadReport({
+        senderSessionId: String(harness.watched.id),
+        leadSessionId: String(lead.agent.id),
+        turn: 1,
+        kind,
+        message: `${kind} remains ordinary`,
+        at: T0,
+      }))).toBe(true)
+    }
+    await flushMicrotasks()
+    expect(lead.agent.steers).toHaveLength(0)
+    expect(lead.agent.followups).toHaveLength(0)
+    await vi.advanceTimersByTimeAsync(400)
+    expect(lead.agent.steers).toHaveLength(0)
+    expect(lead.agent.followups).toHaveLength(1)
+    expect(followupText(lead, 0)).toContain('[DEV LEAD REPORT]')
+    expect(followupText(lead, 0)).toContain('blocked remains ordinary')
+  })
+
+  it('admits action-required before an ordinary zero-delay flush scheduled first', async () => {
+    installFakeTimers()
+    const harness = await bootHub({ batchMs: 0 })
+    const lead = onlyLead(harness)
+    harness.hub.report(devLeadReport({
+      senderSessionId: String(harness.watched.id),
+      leadSessionId: String(lead.agent.id),
+      turn: 1,
+      kind: 'progress',
+      message: 'ordinary scheduled first',
+      at: T0,
+    }))
+    harness.hub.report(questionReport(harness))
+    await flushMicrotasks()
+    expect(lead.agent.admissions).toEqual(['steer', 'followup'])
+    expect(followupText(lead, 0)).toContain('ordinary scheduled first')
+  })
+
+  it('merges a turn-end into a pending question wake without a second wake', async () => {
+    installFakeTimers()
+    const harness = await bootHub({ batchMs: 400 })
+    const lead = onlyLead(harness)
+    const report = questionReport(harness)
+    harness.hub.report(report)
+    appendTurnEnd(harness.watched, 1)
+    await flushMicrotasks()
+    expect(lead.agent.steers).toHaveLength(1)
+    expect(lead.agent.followups).toHaveLength(0)
+    expect(steerText(lead, 0)).toContain('included turn-end:')
+    expect(steerText(lead, 0)).toContain('turn 1 completed')
+    expect(notificationRecords(lead.session)[0]).toMatchObject({
+      wakeSuppressedByReportId: report.id,
+      wakeSuppressionReason: 'merged-into-pending-wake',
+    })
+    await vi.advanceTimersByTimeAsync(400)
+    expect(lead.agent.followups).toHaveLength(0)
+  })
+
+  it('marks an ordinary pending turn-end included only after the question steer succeeds', async () => {
+    installFakeTimers()
+    const harness = await bootHub({ batchMs: 400 })
+    const lead = onlyLead(harness)
+    appendTurnEnd(harness.watched, 1)
+    const report = questionReport(harness)
+    harness.hub.report(report)
+    await flushMicrotasks()
+    expect(lead.agent.steers).toHaveLength(1)
+    expect(steerText(lead, 0)).toContain('included turn-end:')
+    const records = notificationRecords(lead.session)
+    expect(records).toHaveLength(2)
+    expect(records[1]).toMatchObject({
+      wakeSuppressedByReportId: report.id,
+      wakeSuppressionReason: 'included-in-sent-wake',
+    })
+    expect(projectionStateOf(lead.session).notifications[0]).toMatchObject({
+      wakeSuppressedByReportId: report.id,
+      wakeSuppressionReason: 'included-in-sent-wake',
+    })
+    await vi.advanceTimersByTimeAsync(400)
+    expect(lead.agent.followups).toHaveLength(0)
+  })
+
+  it('suppresses a replay only when the sent question wake included that exact turn-end', async () => {
+    installFakeTimers()
+    const harness = await bootHub({ batchMs: 400 })
+    const lead = onlyLead(harness)
+    const report = questionReport(harness)
+    harness.hub.report(report)
+    appendTurnEnd(harness.watched, 1)
+    await flushMicrotasks()
+    appendTurnEnd(harness.watched, 1)
+    await vi.advanceTimersByTimeAsync(400)
+    expect(lead.agent.steers).toHaveLength(1)
+    expect(lead.agent.followups).toHaveLength(0)
+    expect(notificationRecords(lead.session).map(record => record.wakeSuppressionReason)).toEqual([
+      'merged-into-pending-wake',
+      'included-in-sent-wake',
+    ])
+  })
+
+  it('retains T1 with assistant content when the sent question did not include the turn-end', async () => {
+    installFakeTimers()
+    const harness = await bootHub({ batchMs: 400 })
+    const lead = onlyLead(harness)
+    harness.hub.report(questionReport(harness))
+    await flushMicrotasks()
+    appendAssistantMessage(harness.watched, 1, 'Please answer the deployment question above.')
+    appendTurnEnd(harness.watched, 1)
+    await vi.advanceTimersByTimeAsync(400)
+    expect(lead.agent.steers).toHaveLength(1)
+    expect(lead.agent.followups).toHaveLength(1)
+    expect(followupText(lead, 0)).toContain('[DEV LEAD NOTIFICATION]')
+    expect(followupText(lead, 0)).toContain('Please answer the deployment question above.')
+    expect(notificationRecords(lead.session)[0]).not.toHaveProperty('wakeSuppressedByReportId')
+  })
+
+  it('retains T2 when the sent question did not include the failed turn-end', async () => {
+    installFakeTimers()
+    const harness = await bootHub({ batchMs: 400 })
+    const lead = onlyLead(harness)
+    harness.hub.report(questionReport(harness))
+    await flushMicrotasks()
+    appendTurnEnd(harness.watched, 1, errorReason('provider failed'))
+    await vi.advanceTimersByTimeAsync(400)
+    expect(lead.agent.followups).toHaveLength(1)
+    expect(followupText(lead, 0)).toContain('turn 1 failed: provider failed')
+    expect(notificationRecords(lead.session)[0]).not.toHaveProperty('wakeSuppressionReason')
+  })
+
+  it('does not suppress an ambiguous turn-end shared by multiple pending questions', async () => {
+    installFakeTimers()
+    const harness = await bootHub({ batchMs: 400 })
+    const lead = onlyLead(harness)
+    harness.hub.report(questionReport(harness, 'First question?'))
+    harness.hub.report(questionReport(harness, 'Second question?'))
+    appendTurnEnd(harness.watched, 1)
+    await flushMicrotasks()
+    expect(lead.agent.steers).toHaveLength(1)
+    expect(steerText(lead, 0)).not.toContain('included turn-end:')
+    await vi.advanceTimersByTimeAsync(400)
+    expect(lead.agent.followups).toHaveLength(1)
+    expect(notificationRecords(lead.session)[0]).not.toHaveProperty('wakeSuppressedByReportId')
+  })
+
+  it('restores a merged question after steer failure and retries without a T1 wake', async () => {
+    installFakeTimers()
+    const harness = await bootHub({ batchMs: 400 })
+    const lead = onlyLead(harness)
+    lead.agent.failSteers = 1
+    harness.hub.report(questionReport(harness))
+    appendTurnEnd(harness.watched, 1)
+    await flushMicrotasks()
+    expect(lead.agent.steers).toHaveLength(0)
+    await vi.advanceTimersByTimeAsync(1_000)
+    await flushMicrotasks()
+    expect(lead.agent.steers).toHaveLength(1)
+    expect(steerText(lead, 0)).toContain('included turn-end:')
+    await vi.advanceTimersByTimeAsync(400)
+    expect(lead.agent.followups).toHaveLength(0)
+  })
+
+  it('holds another question behind an unclaimed action wake, then retries after drain', async () => {
+    installFakeTimers()
+    const harness = await bootHub({ batchMs: 400 })
+    const lead = onlyLead(harness)
+    harness.hub.report(questionReport(harness, 'First question?'))
+    await flushMicrotasks()
+    harness.hub.report(questionReport(harness, 'Second question?'))
+    await flushMicrotasks()
+    expect(lead.agent.steers).toHaveLength(1)
+    lead.agent.drainInbox()
+    await vi.advanceTimersByTimeAsync(1_000)
+    await flushMicrotasks()
+    expect(lead.agent.steers).toHaveLength(2)
+    expect(steerText(lead, 1)).toContain('Second question?')
+  })
+
+  it('resumes a cold lead and steers without waiting for the ordinary batch window', async () => {
+    installFakeTimers()
+    const controller = new FakeSessionController()
+    const harness = await bootHub({ batchMs: 400, sessionController: controller })
+    const lead = onlyLead(harness)
+    controller.resolveHandler = () => {
+      harness.agents.add(lead.agent)
+      return { agent: lead.agent.agent }
+    }
+    harness.agents.remove(String(lead.agent.id))
+    harness.hub.report(questionReport(harness))
+    await flushMicrotasks()
+    expect(controller.resolveCalls.map(String)).toEqual([String(lead.agent.id)])
+    await flushMicrotasks()
+    expect(lead.agent.steers).toHaveLength(1)
+    expect(lead.agent.followups).toHaveLength(0)
+  })
+
+  it('keeps a cold question digest-only when cold wake is disabled', async () => {
+    installFakeTimers()
+    const controller = new FakeSessionController()
+    const harness = await bootHub({ batchMs: 400, wakeColdSession: false, sessionController: controller })
+    const lead = onlyLead(harness)
+    harness.agents.remove(String(lead.agent.id))
+    harness.hub.report(questionReport(harness))
+    await vi.advanceTimersByTimeAsync(400)
+    await flushMicrotasks()
+    expect(controller.resolveCalls).toEqual([])
+    expect(lead.agent.steers).toHaveLength(0)
+    expect(projectionStateOf(lead.session).reports).toHaveLength(1)
+    harness.agents.add(lead.agent)
+    await harness.hub.deliverNow(String(lead.agent.id))
+    expect(lead.agent.steers).toHaveLength(1)
+  })
+
+  it('keeps an archived question in the digest without resume, steer, or followup', async () => {
+    installFakeTimers()
+    const registry = new FakeWorkspaceRegistry()
+    const harness = await bootHub({ batchMs: 400, workspaceRegistry: registry })
+    const lead = onlyLead(harness)
+    registry.archived = [String(lead.agent.id)]
+    expect(harness.hub.report(questionReport(harness))).toBe(true)
+    await vi.advanceTimersByTimeAsync(400)
+    await flushMicrotasks()
+    expect(lead.agent.steers).toHaveLength(0)
+    expect(lead.agent.followups).toHaveLength(0)
+    expect(projectionStateOf(lead.session).reports).toHaveLength(1)
   })
 })
 

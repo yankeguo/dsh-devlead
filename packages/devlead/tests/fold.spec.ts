@@ -260,6 +260,48 @@ describe('notification records', () => {
     expect(replayed.notifications[0]?.sessionTitle).toBeUndefined()
   })
 
+  it('upgrades a duplicate only with additive wake-suppression metadata', () => {
+    const observed = notification({ sessionId: 'session-alpha', turn: 2, at: T0 })
+    const once = fold([notificationEvent(0, observed)])
+    const suppressed = apply(once, notificationEvent(1, {
+      ...observed,
+      wakeSuppressedByReportId: 'session-alpha:2:report:question:abc',
+      wakeSuppressionReason: 'included-in-sent-wake',
+    }))
+    expect(suppressed).not.toBe(once)
+    expect(suppressed.notifications).toEqual([{
+      ...observed,
+      wakeSuppressedByReportId: 'session-alpha:2:report:question:abc',
+      wakeSuppressionReason: 'included-in-sent-wake',
+    }])
+    expect(devLeadProjectionSchema.safeParse(devLeadProjectionView(suppressed)).success).toBe(true)
+  })
+
+  it('ignores payload drift and never rewrites existing suppression metadata', () => {
+    const observed = notification({ sessionId: 'session-alpha', turn: 2, at: T0 })
+    const once = fold([notificationEvent(0, observed)])
+    const drifted = apply(once, notificationEvent(1, {
+      ...observed,
+      at: T0 + 1,
+      wakeSuppressedByReportId: 'report-new',
+      wakeSuppressionReason: 'included-in-sent-wake',
+    }))
+    expect(drifted).toBe(once)
+
+    const initiallySuppressed = fold([notificationEvent(0, {
+      ...observed,
+      wakeSuppressedByReportId: 'report-original',
+      wakeSuppressionReason: 'merged-into-pending-wake',
+    })])
+    const rewritten = apply(initiallySuppressed, notificationEvent(1, {
+      ...observed,
+      wakeSuppressedByReportId: 'report-new',
+      wakeSuppressionReason: 'included-in-sent-wake',
+    }))
+    expect(rewritten).toBe(initiallySuppressed)
+    expect(rewritten.notifications[0]?.wakeSuppressedByReportId).toBe('report-original')
+  })
+
   it('bounds the digest to the protocol retention constant, dropping the oldest', () => {
     const events: SessionEvent[] = []
     for (let index = 0; index < DEVLEAD_DEFAULT_NOTIFICATION_RETENTION + 1; index += 1) {
@@ -448,6 +490,52 @@ describe('report records', () => {
     expect('failure' in view).toBe(false)
   })
 
+  it('round-trips structured question reports and legacy records through fold and wire schemas', () => {
+    const structured = report({
+      kind: 'question',
+      message: 'Which target?',
+      questions: [{
+        id: 'target',
+        header: 'Deploy',
+        question: 'Which target?',
+        options: [{ label: 'Staging', description: 'safe' }],
+        multi_select: false,
+      }],
+    })
+    const state = fold([reportEvent(0, structured), reportEvent(1, report())])
+    expect(state.reports).toEqual([structured, report()])
+    expect(state.reports[1]).not.toHaveProperty('questions')
+    expect(devLeadProjectionStateSchema.safeParse(state).success).toBe(true)
+    expect(devLeadProjectionSchema.safeParse(devLeadProjectionView(state)).success).toBe(true)
+  })
+
+  it('rejects malformed structured questions on durable and wire paths', () => {
+    const structured = report({
+      kind: 'question',
+      message: 'Which target?',
+      questions: [{ question: 'Which target?', options: [{ label: 'Staging' }] }],
+    })
+    const wrongKind = { ...structured, kind: 'progress' as const }
+    expect(fold([reportEvent(0, wrongKind)]).failure).toContain('questions are only valid')
+    const unknownOption = {
+      ...structured,
+      questions: [{ question: 'Which target?', options: [{ label: 'Staging', extra: true }] }],
+    }
+    expect(fold([reportEvent(0, unknownOption)]).failure).toContain('unexpected field "extra"')
+    expect(devLeadProjectionSchema.safeParse({
+      enabled: false,
+      sessions: [],
+      notifications: [],
+      reports: [wrongKind],
+    }).success).toBe(false)
+    expect(devLeadProjectionSchema.safeParse({
+      enabled: false,
+      sessions: [],
+      notifications: [],
+      reports: [unknownOption],
+    }).success).toBe(false)
+  })
+
   it('caps the retained report digest at the shared retention', () => {
     const events = [modeEvent(0, true)]
     for (let index = 0; index < DEVLEAD_REPORT_RETENTION + 1; index += 1) {
@@ -551,6 +639,18 @@ describe('wire view and schemas', () => {
       ...state,
       notifications: [notification(), notification()],
     }).success).toBe(false)
+  })
+
+  it('requires paired, recognized wake-suppression metadata on the wire', () => {
+    const view = devLeadProjectionView(fold([modeEvent(0, true)]))
+    for (const invalid of [
+      { ...notification(), wakeSuppressedByReportId: 'report-1' },
+      { ...notification(), wakeSuppressionReason: 'included-in-sent-wake' },
+      { ...notification(), wakeSuppressedByReportId: '', wakeSuppressionReason: 'included-in-sent-wake' },
+      { ...notification(), wakeSuppressedByReportId: 'report-1', wakeSuppressionReason: 'other' },
+    ]) {
+      expect(devLeadProjectionSchema.safeParse({ ...view, notifications: [invalid] }).success).toBe(false)
+    }
   })
 
   it('rejects a notification carrying an unknown wire field', () => {

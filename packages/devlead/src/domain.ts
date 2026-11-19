@@ -26,6 +26,9 @@ import {
   DEVLEAD_MESSAGE_KIND,
   DEVLEAD_NOTIFICATION_RECORD_TYPE,
   DEVLEAD_MODE_RECORD_TYPE,
+  DEVLEAD_QUESTIONS_MAX,
+  DEVLEAD_QUESTION_FIELD_MAX,
+  DEVLEAD_QUESTION_OPTIONS_MAX,
   DEVLEAD_RECORD_VERSION,
   DEVLEAD_REPORT_MESSAGE_MAX,
   DEVLEAD_REPORT_RECORD_TYPE,
@@ -44,6 +47,8 @@ import type {
   DevLeadModeRecord,
   DevLeadNotification,
   DevLeadNotificationRecord,
+  DevLeadQuestion,
+  DevLeadQuestionOption,
   DevLeadReport,
   DevLeadReportKind,
   DevLeadReportRecord,
@@ -59,6 +64,9 @@ export {
   DEVLEAD_MESSAGE_KIND,
   DEVLEAD_NOTIFICATION_RECORD_TYPE,
   DEVLEAD_MODE_RECORD_TYPE,
+  DEVLEAD_QUESTIONS_MAX,
+  DEVLEAD_QUESTION_FIELD_MAX,
+  DEVLEAD_QUESTION_OPTIONS_MAX,
   DEVLEAD_RECORD_VERSION,
   DEVLEAD_REPORT_MESSAGE_MAX,
   DEVLEAD_REPORT_RECORD_TYPE,
@@ -74,6 +82,8 @@ export type {
   DevLeadModeRecord,
   DevLeadWatchRecord,
   DevLeadNotificationRecord,
+  DevLeadQuestion,
+  DevLeadQuestionOption,
   DevLeadReport,
   DevLeadReportKind,
   DevLeadReportRecord,
@@ -94,6 +104,14 @@ export interface DevLeadNoticeMessageSource {
   readonly kind: 'devlead'
   /** A runtime digest of watched-session transitions, not human or lead-authored content. */
   readonly form: 'notice'
+  /** Whether this notice requests a driver wake. */
+  readonly wakeRequested?: boolean
+  /** Internal delivery lane used to classify queued notices. */
+  readonly lane?: 'turn-notice' | 'action-required' | 'background'
+  /** Bounded notice summary for Host context surfaces. */
+  readonly summary?: string
+  /** Report associated with an action-required notice, when one exists. */
+  readonly reportId?: string
 }
 
 /** Union of the two DevLead message sources. */
@@ -138,12 +156,16 @@ export function createDevLeadPromptMessage(text: string, lead: Agent): UserMessa
 /**
  * Build the durable user message that wakes a lead with a notification digest.
  * @param text - rendered digest text.
+ * @param metadata - optional wake classification and associated report facts.
  * @returns the identified user message.
  */
-export function createDevLeadNoticeMessage(text: string): UserMessage {
+export function createDevLeadNoticeMessage(
+  text: string,
+  metadata: Omit<DevLeadNoticeMessageSource, 'kind' | 'form'> = {},
+): UserMessage {
   return createUserMessage({
     content: [{ type: 'text', text }],
-    source: { kind: DEVLEAD_MESSAGE_KIND, form: 'notice' },
+    source: { kind: DEVLEAD_MESSAGE_KIND, form: 'notice', ...metadata },
   })
 }
 
@@ -227,6 +249,22 @@ export function devLeadNotification(
   }
 }
 
+/** Deep-copy a structured question payload across the service/durable boundary. */
+function cloneQuestions(questions: readonly DevLeadQuestion[]): DevLeadQuestion[] {
+  return questions.map(question => ({
+    ...(question.id === undefined ? {} : { id: question.id }),
+    ...(question.header === undefined ? {} : { header: question.header }),
+    question: question.question,
+    ...(question.options === undefined ? {} : {
+      options: question.options.map(option => ({
+        label: option.label,
+        ...(option.description === undefined ? {} : { description: option.description }),
+      })),
+    }),
+    ...(question.multi_select === undefined ? {} : { multi_select: question.multi_select }),
+  }))
+}
+
 /**
  * Build one durable mid-turn report.
  *
@@ -246,6 +284,7 @@ export function devLeadReport(input: {
   readonly kind: DevLeadReportKind
   readonly message: string
   readonly summary?: string
+  readonly questions?: readonly DevLeadQuestion[]
   readonly at: number
 }): DevLeadReport {
   const message = input.message.trim()
@@ -267,6 +306,7 @@ export function devLeadReport(input: {
     kind: input.kind,
     message,
     ...(summary === undefined ? {} : { summary }),
+    ...(input.questions === undefined ? {} : { questions: cloneQuestions(input.questions) }),
     senderSessionId: input.senderSessionId,
     ...(title === undefined ? {} : { senderSessionTitle: title }),
     ...(input.senderWorkspaceId === undefined ? {} : { senderWorkspaceId: input.senderWorkspaceId }),
@@ -412,6 +452,71 @@ function decodeExcerptWithMax(value: unknown, label: string, max: number): strin
   return value
 }
 
+/** Decode one non-blank structured question string with the shared field budget. */
+function decodeQuestionText(value: unknown, label: string): string {
+  if (typeof value === 'string' && value.trim().length === 0) {
+    throw new Error(`${label} must be a non-empty string when present`)
+  }
+  return decodeExcerptWithMax(value, label, DEVLEAD_QUESTION_FIELD_MAX)
+}
+
+/** Decode and detach one structured question option. */
+function decodeQuestionOption(value: unknown, label: string): DevLeadQuestionOption {
+  const option = expectRecord(value, label)
+  expectFields(option, label, ['label'], ['description'])
+  const description = option.description === undefined
+    ? undefined
+    : decodeQuestionText(option.description, `${label} description`)
+  return {
+    label: decodeQuestionText(option.label, `${label} label`),
+    ...(description === undefined ? {} : { description }),
+  }
+}
+
+/** Decode and detach the optional structured payload of a question report. */
+function decodeQuestions(value: unknown): DevLeadQuestion[] {
+  const label = 'report questions'
+  if (!Array.isArray(value)) throw new Error(`${label} must be an array when present`)
+  if (value.length > DEVLEAD_QUESTIONS_MAX) {
+    throw new Error(`${label} must contain at most ${DEVLEAD_QUESTIONS_MAX} questions`)
+  }
+  return value.map((entry, index) => {
+    const questionLabel = `${label}[${String(index)}]`
+    const question = expectRecord(entry, questionLabel)
+    expectFields(question, questionLabel, ['question'], ['id', 'header', 'options', 'multi_select'])
+    const id = question.id === undefined
+      ? undefined
+      : decodeQuestionText(question.id, `${questionLabel} id`)
+    const header = question.header === undefined
+      ? undefined
+      : decodeQuestionText(question.header, `${questionLabel} header`)
+    if (question.options !== undefined && !Array.isArray(question.options)) {
+      throw new Error(`${questionLabel} options must be an array when present`)
+    }
+    if (Array.isArray(question.options) && question.options.length > DEVLEAD_QUESTION_OPTIONS_MAX) {
+      throw new Error(
+        `${questionLabel} options must contain at most ${DEVLEAD_QUESTION_OPTIONS_MAX} options`,
+      )
+    }
+    if (question.multi_select !== undefined && typeof question.multi_select !== 'boolean') {
+      throw new Error(`${questionLabel} multi_select must be a boolean when present`)
+    }
+    const options = question.options === undefined
+      ? undefined
+      : (question.options as unknown[]).map((option, optionIndex) => decodeQuestionOption(
+        option,
+        `${questionLabel} options[${String(optionIndex)}]`,
+      ))
+    return {
+      ...(id === undefined ? {} : { id }),
+      ...(header === undefined ? {} : { header }),
+      question: decodeQuestionText(question.question, `${questionLabel} question`),
+      ...(options === undefined ? {} : { options }),
+      ...(question.multi_select === undefined ? {} : { multi_select: question.multi_select }),
+    }
+  })
+}
+
 /**
  * Decode one persisted mode record.
  * @param value - persisted payload.
@@ -477,6 +582,7 @@ export function decodeReport(value: unknown): DevLeadReport {
     'at',
   ], [
     'summary',
+    'questions',
     'senderSessionTitle',
     'senderWorkspaceId',
     'senderWorkspaceTitle',
@@ -505,6 +611,10 @@ export function decodeReport(value: unknown): DevLeadReport {
   const summary = record.summary === undefined
     ? undefined
     : decodeExcerptWithMax(record.summary, `${label} summary`, DEVLEAD_REPORT_SUMMARY_MAX)
+  const questions = record.questions === undefined ? undefined : decodeQuestions(record.questions)
+  if (questions !== undefined && record.kind !== 'question') {
+    throw new Error(`${label} questions are only valid when kind is "question"`)
+  }
   const senderSessionTitle = record.senderSessionTitle === undefined
     ? undefined
     : decodeExcerpt(record.senderSessionTitle, `${label} senderSessionTitle`)
@@ -521,6 +631,7 @@ export function decodeReport(value: unknown): DevLeadReport {
     kind: record.kind,
     message: record.message,
     ...(summary === undefined ? {} : { summary }),
+    ...(questions === undefined ? {} : { questions }),
     senderSessionId: record.senderSessionId,
     ...(senderSessionTitle === undefined ? {} : { senderSessionTitle }),
     ...(senderWorkspaceId === undefined ? {} : { senderWorkspaceId }),
@@ -558,6 +669,8 @@ export function decodeNotification(value: unknown): DevLeadNotification {
     'sessionTitle',
     'error',
     'summary',
+    'wakeSuppressedByReportId',
+    'wakeSuppressionReason',
   ])
   if (typeof record.id !== 'string' || record.id.length === 0) {
     throw new Error(`${label} id must be a non-empty string`)
@@ -574,6 +687,20 @@ export function decodeNotification(value: unknown): DevLeadNotification {
   const turn = decodeTurn(record.turn, `${label} turn`)
   const error = record.error === undefined ? undefined : decodeExcerpt(record.error, `${label} error`)
   const summary = record.summary === undefined ? undefined : decodeExcerpt(record.summary, `${label} summary`)
+  const wakeSuppressedByReportId = record.wakeSuppressedByReportId
+  const wakeSuppressionReason = record.wakeSuppressionReason
+  if ((wakeSuppressedByReportId === undefined) !== (wakeSuppressionReason === undefined)) {
+    throw new Error(`${label} wakeSuppressedByReportId and wakeSuppressionReason must appear together`)
+  }
+  if (wakeSuppressedByReportId !== undefined
+    && (typeof wakeSuppressedByReportId !== 'string' || wakeSuppressedByReportId.length === 0)) {
+    throw new Error(`${label} wakeSuppressedByReportId must be a non-empty string when present`)
+  }
+  if (wakeSuppressionReason !== undefined
+    && wakeSuppressionReason !== 'merged-into-pending-wake'
+    && wakeSuppressionReason !== 'included-in-sent-wake') {
+    throw new Error(`${label} wakeSuppressionReason is not recognized`)
+  }
   const id = notificationId(record.sessionId, turn, record.transition)
   if (record.id !== id) throw new Error(`${label} id must be ${id}`)
   return {
@@ -585,6 +712,8 @@ export function decodeNotification(value: unknown): DevLeadNotification {
     at: decodeInstant(record.at, `${label} at`),
     ...(error === undefined ? {} : { error }),
     ...(summary === undefined ? {} : { summary }),
+    ...(wakeSuppressedByReportId === undefined ? {} : { wakeSuppressedByReportId }),
+    ...(wakeSuppressionReason === undefined ? {} : { wakeSuppressionReason }),
   }
 }
 

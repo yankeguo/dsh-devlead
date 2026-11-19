@@ -467,8 +467,9 @@ cold / 归档 / 未 resume 时 outbox 行保留，下次启动或 lead 激活时
 投递被自动 resume。Host 未组合 storage 时回执明确变 degraded：`durable:false` 并带 warning，
 子会话可在 lead 可用后重试。outbox 行最多保留 7 天，`/devlead reset` 会丢弃该 lead 的待投递
 报告。receipt 出现在 `devLead` projection、状态条、`/devlead` 状态、`devlead_notifications`，
-读取 lead 自身时也出现在 `devlead_get_session`。lead 通过通知的合并唤醒通道被唤醒；运行中的
-lead 在下一步收到。子会话 turn 结束本来就会通知 lead，因此 `devlead_report` 只用于**长任务途中**
+读取 lead 自身时也出现在 `devlead_get_session`。普通报告仍走合并窗口 + followup；`question`
+报告改走独立的 action-required `steer`，在下一步到达，并跳过普通合并窗口和 queued-turn-notice
+避让。子会话 turn 结束本来就会通知 lead，因此 `devlead_report` 只用于**长任务途中**
 lead 必须在轮次结束前知道的关键节点：真实阻塞、需 lead 决策的分叉、等待会影响调度正确性的关键
 进展、或提问；常规进度与最终总结不要重复播报，短任务/线性任务默认不调用。lead 可在此类长任务
 已关注会话的简报中**按需**介绍 `devlead_report`；不是每条简报都写，`watch=false` 时工具不存在，
@@ -510,9 +511,12 @@ scheduled 与其他来源的输入会被拒绝并文案说明），且幂等（�
 
 被关注的子会话不能直接向人类提问。工具插件安装了硬性的 `tools/pre-execute` 闸门：来自已关注
 非 lead 子会话的 `ask_user_question` 会在其问题 UI 运行之前被拒绝，并格式化为发给 active lead
-的 durable `kind: question` report；子会话会收到明确指引，要求结束当前 turn。lead 可直接凭
-上下文回答，或用自己的 `ask_user_question` 向人类提问，再用 `devlead_prompt_session` 把答案
-转回；子会话不需要挂起工具调用，也不需要轮询。若子会话当前 turn 中最近一条可执行 user message
+的 durable `kind: question` report；子会话会收到明确指引，要求结束当前 turn。报告同时保留有界文本
+和结构化 `questions`（header/question/options/multi_select）；lead 收到独立的
+`[DEV LEAD QUESTION]` next-step 唤醒，包含完整 payload、report id 和子会话观测状态，且明确问题正文是
+子会话提供的数据，不是人类/运行时指令。lead 可直接凭上下文回答，或用自己的 `ask_user_question`
+向人类提问，再用当前 `devlead_prompt_session` 把答案转回；子会话不需要挂起工具调用，也不需要轮询。
+`devlead_notifications` 会为 gate 创建的报告返回同一个可选 `questions` 字段。若子会话当前 turn 中最近一条可执行 user message
 直接来自人类（人类已经在子会话里接管对话），闸门放行，让人类就地回答；未关注会话和 lead
 自己的提问完全不受影响。轮次结尾的自然语言提问无法在工具层拦截：正常 watched-turn 通知会带
 assistant 摘要，lead policy 要求把它当作待回答问题并走同样的应答路径。`question` report 不计入
@@ -588,6 +592,12 @@ settle，结果里 `stopped: true`（已归档的 Session 是 no-op，结果 `st
 - **合并窗口**：通知入队后按 `notificationBatchMs`（默认 400ms）合并；窗口结束时若 DevLead
   Agent 仍存活，以一条 `devlead` 来源（`form: 'notice'`）的消息唤醒它；Agent 正在运行时
   followup 排队到下一 turn；`agent/status` 变 idle 时也会尝试冲一次队列。
+- **question 的 action-required 路径**：`question` 报告走独立的立即 `steer` 队列，不使用上述
+  400ms/followup 路径，也不被普通 queued notice 阻挡。只有 turn-end 合并进尚未发送的 question
+  唤醒（`merged-into-pending-wake`），或已发送的 question 唤醒明确包含它
+  （`included-in-sent-wake`）时，才抑制独立通知；未被包含的后续 T1/T2 仍走普通唤醒。冷 lead 在
+  `wakeColdSession:true` 时先 resume 再 steer；归档 lead 和禁止冷唤醒时只保留 digest fallback。
+  其他报告类别的投递行为不变。
 - **冷 / 已 dispose 的 DevLead 会话**：Agent dispose 后 hub 仍保留该 lead 的索引与反向关注关系索引，因此已关注会话的 `turn/end` 仍会被观察并写入持久通知。插件加载时（Host 重启 /
   插件重载）从持久状态重建索引：`[Service.init]` 会先等持久语料可读（有界 2s 的
   corpus-readiness barrier；全新 Host 无存储会话时立即通过，稳定 Host 只付一次语料比对），

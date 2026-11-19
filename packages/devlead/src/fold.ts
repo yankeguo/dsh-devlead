@@ -22,6 +22,9 @@ import {
   DEVLEAD_MODE_RECORD_TYPE,
   DEVLEAD_NOTIFICATION_RECORD_TYPE,
   DEVLEAD_PROJECTION_KEY,
+  DEVLEAD_QUESTIONS_MAX,
+  DEVLEAD_QUESTION_FIELD_MAX,
+  DEVLEAD_QUESTION_OPTIONS_MAX,
   DEVLEAD_REPORT_KINDS,
   DEVLEAD_REPORT_MESSAGE_MAX,
   DEVLEAD_REPORT_RECORD_TYPE,
@@ -39,6 +42,8 @@ import type {
   DevLeadNotification,
   DevLeadProjection,
   DevLeadProjectionState,
+  DevLeadQuestion,
+  DevLeadQuestionOption,
   DevLeadReport,
   DevLeadReportKind,
   DevLeadTransition,
@@ -88,7 +93,13 @@ const notificationSchema: ZodType<DevLeadNotification> = zod.object({
   at: zod.number().int().nonnegative().max(DEVLEAD_MAX_INSTANT),
   error: excerptSchema.optional(),
   summary: excerptSchema.optional(),
+  wakeSuppressedByReportId: zod.string().min(1).optional(),
+  wakeSuppressionReason: zod.enum(['merged-into-pending-wake', 'included-in-sent-wake']).optional(),
 }).strict().refine(
+  notification => (notification.wakeSuppressedByReportId === undefined)
+    === (notification.wakeSuppressionReason === undefined),
+  { message: 'wakeSuppressedByReportId and wakeSuppressionReason must appear together' },
+).refine(
   notification => notification.id === notificationId(
     notification.sessionId,
     notification.turn,
@@ -103,6 +114,28 @@ const reportMessageSchema = zod.string().min(1).refine(
   { message: `report message must be at most ${DEVLEAD_REPORT_MESSAGE_MAX} code points` },
 )
 
+/** Bounded non-empty structured question/option text. */
+const questionFieldSchema = zod.string().min(1).refine(
+  value => value.length <= DEVLEAD_QUESTION_FIELD_MAX * 2
+    && Array.from(value).length <= DEVLEAD_QUESTION_FIELD_MAX,
+  { message: `question field must be at most ${DEVLEAD_QUESTION_FIELD_MAX} code points` },
+)
+
+/** Wire schema of one structured question option. */
+const questionOptionSchema: ZodType<DevLeadQuestionOption> = zod.object({
+  label: questionFieldSchema,
+  description: questionFieldSchema.optional(),
+}).strict() as ZodType<DevLeadQuestionOption>
+
+/** Wire schema of one structured native question. */
+const questionSchema: ZodType<DevLeadQuestion> = zod.object({
+  id: questionFieldSchema.optional(),
+  header: questionFieldSchema.optional(),
+  question: questionFieldSchema,
+  options: zod.array(questionOptionSchema).max(DEVLEAD_QUESTION_OPTIONS_MAX).optional(),
+  multi_select: zod.boolean().optional(),
+}).strict() as ZodType<DevLeadQuestion>
+
 /** Wire schema validating one retained report before it leaves the Host. */
 const reportSchema: ZodType<DevLeadReport> = zod.object({
   id: zod.string().min(1),
@@ -112,6 +145,7 @@ const reportSchema: ZodType<DevLeadReport> = zod.object({
     value => Array.from(value).length <= DEVLEAD_REPORT_SUMMARY_MAX,
     { message: `report summary must be at most ${DEVLEAD_REPORT_SUMMARY_MAX} code points` },
   ).optional(),
+  questions: zod.array(questionSchema).max(DEVLEAD_QUESTIONS_MAX).optional(),
   senderSessionId: zod.string().min(1),
   senderSessionTitle: excerptSchema.optional(),
   senderWorkspaceId: zod.string().min(1).optional(),
@@ -120,9 +154,24 @@ const reportSchema: ZodType<DevLeadReport> = zod.object({
   turn: zod.number().int().nonnegative(),
   at: zod.number().int().nonnegative().max(DEVLEAD_MAX_INSTANT),
 }).strict().refine(
+  report => report.questions === undefined || report.kind === 'question',
+  { message: 'report questions are only valid when kind is "question"' },
+).refine(
   report => report.id === devLeadReportId(report.senderSessionId, report.turn, report.kind, report.message),
   { message: 'report id must match senderSessionId, turn, kind, and message' },
 ) as ZodType<DevLeadReport>
+
+/** Compare every notification fact except the additive wake-suppression pair. */
+function sameNotificationPayload(left: DevLeadNotification, right: DevLeadNotification): boolean {
+  return left.id === right.id
+    && left.sessionId === right.sessionId
+    && left.sessionTitle === right.sessionTitle
+    && left.transition === right.transition
+    && left.turn === right.turn
+    && left.at === right.at
+    && left.error === right.error
+    && left.summary === right.summary
+}
 
 /**
  * Append one notification to a bounded digest, dropping an already-retained
@@ -135,11 +184,30 @@ function retainNotification(
   notifications: readonly DevLeadNotification[],
   notification: DevLeadNotification,
 ): readonly DevLeadNotification[] {
-  if (notifications.some(existing => existing.id === notification.id)) return notifications
-  const next = [...notifications, notification]
-  return next.length <= DEVLEAD_DEFAULT_NOTIFICATION_RETENTION
-    ? next
-    : next.slice(next.length - DEVLEAD_DEFAULT_NOTIFICATION_RETENTION)
+  const index = notifications.findIndex(existing => existing.id === notification.id)
+  if (index < 0) {
+    const next = [...notifications, notification]
+    return next.length <= DEVLEAD_DEFAULT_NOTIFICATION_RETENTION
+      ? next
+      : next.slice(next.length - DEVLEAD_DEFAULT_NOTIFICATION_RETENTION)
+  }
+  const existing = notifications[index]
+  if (existing === undefined
+    || existing.wakeSuppressedByReportId !== undefined
+    || notification.wakeSuppressedByReportId === undefined
+    || notification.wakeSuppressionReason === undefined
+    || !sameNotificationPayload(existing, notification)) return notifications
+  // A plain durable T1 row may later be folded through the Q1 path, which can
+  // prove that its already-sent wake included this exact transition. Only that
+  // additive pair may upgrade a duplicate identity; every other drift is still
+  // ignored, and an existing suppression fact is never rewritten.
+  const next = [...notifications]
+  next[index] = {
+    ...existing,
+    wakeSuppressedByReportId: notification.wakeSuppressedByReportId,
+    wakeSuppressionReason: notification.wakeSuppressionReason,
+  }
+  return next
 }
 
 /**

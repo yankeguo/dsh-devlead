@@ -917,6 +917,44 @@ describe('mid-turn reports', () => {
     expect(text).toContain('parser progress')
   })
 
+  it('persists a detached structured question payload on question reports only', async () => {
+    const { harness, child } = await bootReporting()
+    const questions = [{
+      id: 'target',
+      header: 'Deploy',
+      question: 'Which target?',
+      options: [{ label: 'Staging', description: 'safe' }, { label: 'Prod' }],
+      multi_select: false,
+    }]
+    const receipt = await harness.service.reportProgress(child.agent, {
+      kind: 'question',
+      message: 'Which target?',
+      summary: 'Question: Deploy',
+      questions,
+    })
+    expect(receipt.report.questions).toEqual(questions)
+    expect(receipt.report.questions).not.toBe(questions)
+    expect(receipt.report.questions?.[0]?.options).not.toBe(questions[0]!.options)
+    expect(harness.service.view(harness.lead.agent).reports).toEqual([receipt.report])
+    const records = harness.leadSession.snapshotEvents().flatMap((event) => {
+      const record = pluginRecordOf(event)
+      return record?.type === DEVLEAD_REPORT_RECORD_TYPE ? [record.data] : []
+    })
+    expect(records).toHaveLength(1)
+    expect((records[0] as { report: { questions?: unknown } }).report.questions).toEqual(questions)
+
+    questions[0]!.question = 'changed later'
+    questions[0]!.options[0]!.description = 'changed later'
+    expect(receipt.report.questions?.[0]?.question).toBe('Which target?')
+    expect(receipt.report.questions?.[0]?.options?.[0]?.description).toBe('safe')
+
+    const textOnly = await harness.service.reportProgress(child.agent, {
+      kind: 'question',
+      message: 'A text-only question',
+    })
+    expect(textOnly.report).not.toHaveProperty('questions')
+  })
+
   it('reports to the single active lead while a second lead enable is refused', async () => {
     const harness = await bootService({
       enabled: true,
@@ -1288,6 +1326,51 @@ describe('mid-turn reports', () => {
       }),
       'DEVLEAD_INVALID_INPUT',
     )
+    expect(harness.service.reports(harness.lead.agent)).toEqual([])
+  })
+
+  it('rejects invalid structured questions before writing', async () => {
+    const { harness, child } = await bootReporting()
+    const valid = [{ question: 'Which target?', options: [{ label: 'Staging' }] }]
+    const cases: Array<[string, { message: string; kind?: 'progress' | 'question'; questions?: never }]> = [
+      ['non-question report', { message: 'update', kind: 'progress', questions: valid as never }],
+      ['too many questions', {
+        message: 'question',
+        kind: 'question',
+        questions: Array.from({ length: 33 }, () => ({ question: 'q' })) as never,
+      }],
+      ['too many options', {
+        message: 'question',
+        kind: 'question',
+        questions: [{ question: 'q', options: Array.from({ length: 17 }, () => ({ label: 'x' })) }] as never,
+      }],
+      ['oversized field', {
+        message: 'question',
+        kind: 'question',
+        questions: [{ id: 'x'.repeat(2_001), question: 'q' }] as never,
+      }],
+      ['unknown question field', {
+        message: 'question',
+        kind: 'question',
+        questions: [{ question: 'q', extra: true }] as never,
+      }],
+      ['unknown option field', {
+        message: 'question',
+        kind: 'question',
+        questions: [{ question: 'q', options: [{ label: 'x', extra: true }] }] as never,
+      }],
+      ['invalid multi-select', {
+        message: 'question',
+        kind: 'question',
+        questions: [{ question: 'q', multi_select: 'yes' }] as never,
+      }],
+    ]
+    for (const [label, request] of cases) {
+      await expectCodeAsync(
+        () => harness.service.reportProgress(child.agent, request),
+        'DEVLEAD_INVALID_INPUT',
+      ).then(error => expect(error.message, label).toContain('questions'))
+    }
     expect(harness.service.reports(harness.lead.agent)).toEqual([])
   })
 

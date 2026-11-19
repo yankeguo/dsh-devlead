@@ -207,6 +207,29 @@ export const NOTIFICATION_SCHEMA = {
   },
 } as const
 
+/** Enforced schema of one structured native question option. */
+const QUESTION_OPTION_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    label: { type: 'string', required: true, description: 'Short option label.' },
+    description: { type: 'string', description: 'Optional explanation of the option.' },
+  },
+} as const
+
+/** Enforced schema of one structured native question. */
+const QUESTION_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    id: { type: 'string', description: 'Optional child-authored question identifier.' },
+    header: { type: 'string', description: 'Optional short display heading.' },
+    question: { type: 'string', required: true, description: 'Full question text.' },
+    options: { type: 'array', items: QUESTION_OPTION_SCHEMA, description: 'Optional choices presented to the lead.' },
+    multi_select: { type: 'boolean', description: 'Whether multiple options may be selected.' },
+  },
+} as const
+
 /** Enforced schema of one mid-turn report from a watched Session. */
 export const REPORT_SCHEMA = {
   type: 'object',
@@ -221,6 +244,11 @@ export const REPORT_SCHEMA = {
     },
     message: { type: 'string', required: true, description: 'Full report text.' },
     summary: { type: 'string', description: 'Optional short title for digest rows.' },
+    questions: {
+      type: 'array',
+      items: QUESTION_SCHEMA,
+      description: 'Structured native question payload, present only on gate-created question reports.',
+    },
     senderSessionId: { type: 'string', required: true, description: 'Reporting Session identity.' },
     senderSessionTitle: { type: 'string', description: 'Reporting Session title at report time.' },
     senderWorkspaceId: { type: 'string', description: 'Reporting Session Workspace identity.' },
@@ -349,6 +377,20 @@ export function reportValue(report: DevLeadReport): ReportValue {
     turn: report.turn,
     at: report.at,
     ...report.summary === undefined ? {} : { summary: report.summary },
+    ...report.questions === undefined ? {} : {
+      questions: report.questions.map(question => ({
+        ...question.id === undefined ? {} : { id: question.id },
+        ...question.header === undefined ? {} : { header: question.header },
+        question: question.question,
+        ...question.options === undefined ? {} : {
+          options: question.options.map(option => ({
+            label: option.label,
+            ...option.description === undefined ? {} : { description: option.description },
+          })),
+        },
+        ...question.multi_select === undefined ? {} : { multi_select: question.multi_select },
+      })),
+    },
     ...report.senderSessionTitle === undefined ? {} : { senderSessionTitle: report.senderSessionTitle },
     ...report.senderWorkspaceId === undefined ? {} : { senderWorkspaceId: report.senderWorkspaceId },
     ...report.senderWorkspaceTitle === undefined ? {} : { senderWorkspaceTitle: report.senderWorkspaceTitle },

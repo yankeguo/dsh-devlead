@@ -29,9 +29,13 @@ import type { PreToolDecision } from '@deepseek-ai/dsh-tools'
 import type { DevLeadService } from '@yankeguo/dsh-devlead'
 import {
   DEVLEAD_MESSAGE_KIND,
+  DEVLEAD_QUESTIONS_MAX,
+  DEVLEAD_QUESTION_FIELD_MAX,
+  DEVLEAD_QUESTION_OPTIONS_MAX,
   DEVLEAD_REPORT_MESSAGE_MAX,
   DEVLEAD_REPORT_SUMMARY_MAX,
 } from '@yankeguo/dsh-devlead-protocol'
+import type { DevLeadQuestion, DevLeadQuestionOption } from '@yankeguo/dsh-devlead-protocol'
 
 /** Exact tool name the Host's user-question surface registers. */
 export const ASK_USER_QUESTION_TOOL = 'ask_user_question'
@@ -98,6 +102,8 @@ export interface QuestionReport {
   readonly message: string
   /** Short digest title, bounded by {@link DEVLEAD_REPORT_SUMMARY_MAX}. */
   readonly summary: string
+  /** Detached, bounded native payload persisted alongside the text. */
+  readonly questions: readonly DevLeadQuestion[]
 }
 
 /** Narrow an unknown value to a non-array object record. */
@@ -136,6 +142,7 @@ export function formatQuestionReport(args: unknown): QuestionReport | undefined 
   const questions = asRecord(args)?.questions
   if (!Array.isArray(questions) || questions.length === 0) return undefined
   const lines: string[] = []
+  const structured: DevLeadQuestion[] = []
   let firstSummary: string | undefined
   for (const entry of questions) {
     const question = asRecord(entry)
@@ -146,6 +153,7 @@ export function formatQuestionReport(args: unknown): QuestionReport | undefined 
     const header = typeof question.header === 'string' ? question.header.trim() : ''
     firstSummary ??= header.length > 0 ? header : text
     lines.push(`- ${id.length === 0 ? '' : `[${id}] `}${header.length === 0 ? '' : `${header}: `}${text}`)
+    const options: DevLeadQuestionOption[] = []
     if (Array.isArray(question.options)) {
       for (const option of question.options) {
         const optionRecord = asRecord(option)
@@ -156,18 +164,36 @@ export function formatQuestionReport(args: unknown): QuestionReport | undefined 
           ? optionRecord.description.trim()
           : ''
         lines.push(`  - ${label}${description.length === 0 ? '' : ` — ${description}`}`)
+        if (options.length < DEVLEAD_QUESTION_OPTIONS_MAX) {
+          options.push({
+            label: truncate(label, DEVLEAD_QUESTION_FIELD_MAX),
+            ...(description.length === 0 ? {} : {
+              description: truncate(description, DEVLEAD_QUESTION_FIELD_MAX),
+            }),
+          })
+        }
       }
     }
     if (question.multi_select === true) lines.push('  (multi-select)')
+    if (structured.length < DEVLEAD_QUESTIONS_MAX) {
+      structured.push({
+        ...(id.length === 0 ? {} : { id: truncate(id, DEVLEAD_QUESTION_FIELD_MAX) }),
+        ...(header.length === 0 ? {} : { header: truncate(header, DEVLEAD_QUESTION_FIELD_MAX) }),
+        question: truncate(text, DEVLEAD_QUESTION_FIELD_MAX),
+        ...(Array.isArray(question.options) ? { options } : {}),
+        ...(typeof question.multi_select === 'boolean' ? { multi_select: question.multi_select } : {}),
+      })
+    }
   }
   if (lines.length === 0 || firstSummary === undefined) return undefined
   return {
     message: truncate(
-      'The watched Session is waiting for your answer; reply with devlead_prompt_session:\n'
+      'The watched Session asked a question; an answer is requested. Reply with devlead_prompt_session:\n'
       + lines.join('\n'),
       DEVLEAD_REPORT_MESSAGE_MAX,
     ),
     summary: truncate(`Question: ${firstSummary}`, DEVLEAD_REPORT_SUMMARY_MAX),
+    questions: structured,
   }
 }
 
@@ -235,6 +261,7 @@ export function registerQuestionRouting(ctx: Context, devLead: DevLeadService): 
         kind: 'question',
         message: question.message,
         summary: question.summary,
+        questions: question.questions,
       }, exec.signal)
     } catch (error: unknown) {
       ctx.logger.warn(

@@ -167,8 +167,14 @@ export class FakeAgent {
   readonly inbox = new FakeInbox()
   /** Every message admitted through {@link followup}, in order. */
   readonly followups: UserMessage[] = []
-  /** When true, the next {@link followup} throws instead of admitting. */
+  /** Every message admitted through {@link steer}, in order. */
+  readonly steers: UserMessage[] = []
+  /** Cross-primitive admission order for mixed-lane scheduling assertions. */
+  readonly admissions: Array<'followup' | 'steer'> = []
+  /** When positive, the next {@link followup} calls throw instead of admitting. */
   failFollowups = 0
+  /** When positive, the next {@link steer} calls throw instead of admitting. */
+  failSteers = 0
   /** Model selections recorded by the core through `agent.model.select`. */
   readonly modelSelections: ModelSelection[] = []
   /** When positive, the next `agent.model.select` throws instead of recording. */
@@ -209,7 +215,19 @@ export class FakeAgent {
       throw new Error('fake agent refused the followup')
     }
     this.followups.push(message)
+    this.admissions.push('followup')
     this.inbox.nextTurn.push(message)
+  }
+
+  /** Admit one action-required message at the next-step boundary. */
+  steer(message: UserMessage): void {
+    if (this.failSteers > 0) {
+      this.failSteers -= 1
+      throw new Error('fake agent refused the steer')
+    }
+    this.steers.push(message)
+    this.admissions.push('steer')
+    this.inbox.nextStep.push(message)
   }
 
   /** Drop every pending inbox message, emulating a drain by the driven loop. */

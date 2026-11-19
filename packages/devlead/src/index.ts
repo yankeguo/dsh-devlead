@@ -28,6 +28,9 @@ import type {} from '@deepseek-ai/dsh-workspace'
 import type { SessionActivity, Workspace, WorkspaceRegistry } from '@deepseek-ai/dsh-workspace'
 import {
   DEVLEAD_DEFAULT_MAX_WATCHED,
+  DEVLEAD_QUESTIONS_MAX,
+  DEVLEAD_QUESTION_FIELD_MAX,
+  DEVLEAD_QUESTION_OPTIONS_MAX,
   DEVLEAD_REPORT_MAX_PER_TURN,
   DEVLEAD_REPORT_MESSAGE_MAX,
   DEVLEAD_REPORT_SUMMARY_MAX,
@@ -50,6 +53,8 @@ import type {
   DevLeadPromptedSession,
   DevLeadPromptSessionOptions,
   DevLeadQueuedInput,
+  DevLeadQuestion,
+  DevLeadQuestionOption,
   DevLeadReport,
   DevLeadRetractedInput,
   DevLeadReportKind,
@@ -421,6 +426,87 @@ function describeSessionActivity(activity: readonly SessionActivity[]): string {
   }).join('; ')
 }
 
+/** Reject one malformed structured report-question field. */
+function invalidQuestions(message: string): never {
+  throw new DevLeadError(`report questions ${message}`, 'DEVLEAD_INVALID_INPUT')
+}
+
+/** Validate one bounded, non-empty structured question string. */
+function questionText(value: unknown, label: string): string {
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    return invalidQuestions(`${label} must be a non-empty string`)
+  }
+  if (value.length > DEVLEAD_QUESTION_FIELD_MAX * 2
+    || Array.from(value).length > DEVLEAD_QUESTION_FIELD_MAX) {
+    return invalidQuestions(`${label} must be at most ${DEVLEAD_QUESTION_FIELD_MAX} code points`)
+  }
+  return value
+}
+
+/** Narrow one structured question/option to a plain record. */
+function questionRecord(value: unknown, label: string): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return invalidQuestions(`${label} must be a plain object`)
+  }
+  return value as Record<string, unknown>
+}
+
+/** Validate and detach the optional structured payload supplied by the native gate. */
+function validatedQuestions(value: unknown, kind: DevLeadReportKind): DevLeadQuestion[] | undefined {
+  if (value === undefined) return undefined
+  if (kind !== 'question') invalidQuestions('are only valid when kind is "question"')
+  if (!Array.isArray(value)) invalidQuestions('must be an array when present')
+  if (value.length > DEVLEAD_QUESTIONS_MAX) {
+    invalidQuestions(`must contain at most ${DEVLEAD_QUESTIONS_MAX} questions`)
+  }
+  return value.map((entry, index) => {
+    const label = `[${String(index)}]`
+    const question = questionRecord(entry, label)
+    const allowed = new Set(['id', 'header', 'question', 'options', 'multi_select'])
+    for (const key of Object.keys(question)) {
+      if (!allowed.has(key)) invalidQuestions(`${label} carries unexpected field ${JSON.stringify(key)}`)
+    }
+    if (!('question' in question)) invalidQuestions(`${label} is missing field "question"`)
+    const id = question.id === undefined ? undefined : questionText(question.id, `${label} id`)
+    const header = question.header === undefined ? undefined : questionText(question.header, `${label} header`)
+    if (question.multi_select !== undefined && typeof question.multi_select !== 'boolean') {
+      invalidQuestions(`${label} multi_select must be a boolean when present`)
+    }
+    let options: DevLeadQuestionOption[] | undefined
+    if (question.options !== undefined) {
+      if (!Array.isArray(question.options)) invalidQuestions(`${label} options must be an array when present`)
+      if (question.options.length > DEVLEAD_QUESTION_OPTIONS_MAX) {
+        invalidQuestions(`${label} options must contain at most ${DEVLEAD_QUESTION_OPTIONS_MAX} options`)
+      }
+      options = question.options.map((entry, optionIndex) => {
+        const optionLabel = `${label} options[${String(optionIndex)}]`
+        const option = questionRecord(entry, optionLabel)
+        const optionAllowed = new Set(['label', 'description'])
+        for (const key of Object.keys(option)) {
+          if (!optionAllowed.has(key)) {
+            invalidQuestions(`${optionLabel} carries unexpected field ${JSON.stringify(key)}`)
+          }
+        }
+        if (!('label' in option)) invalidQuestions(`${optionLabel} is missing field "label"`)
+        const description = option.description === undefined
+          ? undefined
+          : questionText(option.description, `${optionLabel} description`)
+        return {
+          label: questionText(option.label, `${optionLabel} label`),
+          ...(description === undefined ? {} : { description }),
+        }
+      })
+    }
+    return {
+      ...(id === undefined ? {} : { id }),
+      ...(header === undefined ? {} : { header }),
+      question: questionText(question.question, `${label} question`),
+      ...(options === undefined ? {} : { options }),
+      ...(question.multi_select === undefined ? {} : { multi_select: question.multi_select }),
+    }
+  })
+}
+
 /** One mid-turn report request from a watched Session. */
 export interface DevLeadReportRequest {
   /** Full plain-text update; trimmed, non-empty, at most 4000 code points. */
@@ -429,6 +515,8 @@ export interface DevLeadReportRequest {
   readonly kind?: DevLeadReportKind
   /** Optional short title for digest rows; at most 200 code points. */
   readonly summary?: string
+  /** Structured native questions; accepted only for kind `question`. */
+  readonly questions?: readonly DevLeadQuestion[]
 }
 
 /** Receipt returned by one report call. */
@@ -2044,9 +2132,10 @@ export class DevLeadService extends Service {
    * Send one mid-turn report from a watched Session to its active DevLead.
    *
    * The durable receipt is appended to the lead's own Session log (or queued
-   * for a cold lead by the hub), then the lead is woken through the same
-   * coalesced notice path as turn notifications. This method returns after the
-   * receipt/queue decision and never waits for the lead's next turn, so the
+   * for a cold lead by the hub). Ordinary reports keep the coalesced followup
+   * path; question reports use their independent action-required steer path.
+   * This method returns after the receipt/queue decision, not after the wake,
+   * and never waits for the lead's next turn, so the
    * reporter is not blocked. Same-kind same-message reports in one turn are
    * idempotent (the same text under a different kind is a new report);
    * more than {@link DEVLEAD_REPORT_MAX_PER_TURN} distinct non-question reports
@@ -2054,7 +2143,7 @@ export class DevLeadService extends Service {
    * used by the watched-Session question router, so they are exempt from that
    * progress budget.
    * @param agent - exact live reporter Agent.
-   * @param request - report text, kind, and optional summary.
+   * @param request - report text, kind, optional summary, and native structured questions.
    * @param signal - cancellation checked before durable work.
    * @returns the report receipt, including whether it is durable and still queued.
    * @throws {@link DevLeadError} `DEVLEAD_NOT_SUPERVISED` when no unique active
@@ -2108,6 +2197,7 @@ export class DevLeadService extends Service {
         'DEVLEAD_INVALID_INPUT',
       )
     }
+    const questions = validatedQuestions(request.questions, kind)
     const reporterId = String(agent.id)
     const turn = this.ctx.agents.turnBoundaryOf(agent.session).lastTurn
     const previous = this.reportState.get(reporterId)
@@ -2153,6 +2243,7 @@ export class DevLeadService extends Service {
       kind,
       message,
       ...(summary === undefined ? {} : { summary }),
+      ...(questions === undefined ? {} : { questions }),
       at: Date.now(),
     })
     signal?.throwIfAborted()

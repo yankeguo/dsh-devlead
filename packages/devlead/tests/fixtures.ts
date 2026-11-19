@@ -15,9 +15,11 @@ import {
 } from '@yankeguo/dsh-devlead-protocol'
 import type {
   DevLeadNotification,
+  DevLeadQuestion,
   DevLeadReport,
   DevLeadReportKind,
   DevLeadTransition,
+  DevLeadWakeSuppressionReason,
 } from '@yankeguo/dsh-devlead-protocol'
 import {
   devLeadNotification,
@@ -110,6 +112,8 @@ export interface NotificationOverrides {
   at?: number
   error?: string
   summary?: string
+  wakeSuppressedByReportId?: string
+  wakeSuppressionReason?: DevLeadWakeSuppressionReason
 }
 
 /**
@@ -118,15 +122,23 @@ export interface NotificationOverrides {
  * @returns the notification.
  */
 export function notification(overrides: NotificationOverrides = {}): DevLeadNotification {
-  return devLeadNotification(
-    overrides.sessionId ?? 'session-alpha',
-    overrides.sessionTitle,
-    overrides.transition ?? 'completed',
-    overrides.turn ?? 1,
-    overrides.at ?? T0,
-    overrides.error,
-    overrides.summary,
-  )
+  return {
+    ...devLeadNotification(
+      overrides.sessionId ?? 'session-alpha',
+      overrides.sessionTitle,
+      overrides.transition ?? 'completed',
+      overrides.turn ?? 1,
+      overrides.at ?? T0,
+      overrides.error,
+      overrides.summary,
+    ),
+    ...overrides.wakeSuppressedByReportId === undefined ? {} : {
+      wakeSuppressedByReportId: overrides.wakeSuppressedByReportId,
+    },
+    ...overrides.wakeSuppressionReason === undefined ? {} : {
+      wakeSuppressionReason: overrides.wakeSuppressionReason,
+    },
+  }
 }
 
 /**
@@ -176,6 +188,7 @@ export interface ReportOverrides {
   kind?: DevLeadReportKind
   message?: string
   summary?: string
+  questions?: readonly DevLeadQuestion[]
   at?: number
 }
 
@@ -193,6 +206,7 @@ export function report(overrides: ReportOverrides = {}): DevLeadReport {
     kind: overrides.kind ?? 'progress',
     message: overrides.message ?? 'halfway through the parser',
     ...overrides.summary === undefined ? {} : { summary: overrides.summary },
+    ...overrides.questions === undefined ? {} : { questions: overrides.questions },
     at: overrides.at ?? T0,
   })
 }

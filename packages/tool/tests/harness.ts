@@ -28,6 +28,7 @@ import type {
   DevLeadNotification,
   DevLeadPromptedSession,
   DevLeadProjection,
+  DevLeadQuestion,
   DevLeadQueuedInput,
   DevLeadRemovedWorkspace,
   DevLeadReport,
@@ -287,7 +288,7 @@ export class FakeDevLead {
 
   async reportProgress(
     agent: Agent,
-    request: { message: string; kind?: string; summary?: string },
+    request: { message: string; kind?: string; summary?: string; questions?: readonly DevLeadQuestion[] },
     signal?: AbortSignal,
   ): Promise<{ report: DevLeadReport; durable: boolean; queued: boolean; warning?: string }> {
     this.enter('reportProgress', agent, request, signal)
