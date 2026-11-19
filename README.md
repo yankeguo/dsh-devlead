@@ -546,9 +546,12 @@ waited, or a question. Routine progress and final summaries are not reported, an
 tasks should not call it. The lead may optionally introduce the tool in the brief for such a
 long-running watched Session; this is on-demand, omitted when `watch` is false
 (the tool is absent), and never replaces the final turn notification. At most four distinct
-non-question reports are accepted per child turn; `question` reports are exempt from that budget;
-identical kind+message pairs in one turn are idempotent (the same text under a different kind is a
-new report); a fifth non-question report fails `DEVLEAD_REPORT_RATE_LIMITED`.
+non-question reports are accepted per child turn; `question` reports are exempt from that budget but
+limited to 16 distinct pending Q1 reports per lead/child pair, with overflow failing
+`DEVLEAD_DELIVERY_RATE_LIMITED` before any outbox write. Identical kind+message pairs with identical
+structured questions are idempotent (the same text under a different kind is a new report); the same
+text with different structured questions fails `DEVLEAD_INVALID_INPUT` instead of replacing the first
+payload. A fifth non-question report fails `DEVLEAD_REPORT_RATE_LIMITED`.
 
 Tools translate the core's `DevLeadError` into a `HarnessError` with a stable code. When reading
 state, trust `lastTurn` / `lastTransition` / `lastError` / `lastAssistant` instead of guessing.
@@ -703,7 +706,9 @@ composed — the plugin never depends on it.
   sourced `devlead` (`form: 'notice'`). If the agent is running, the followup queues for the next
   turn; an `agent/status` transition to idle also flushes the queue once.
 - **Question action-required path:** question reports use a separate immediate `steer` queue rather
-  than this 400 ms/followup path, and ordinary queued notices do not block them. A turn-end is
+  than this 400 ms/followup path, and ordinary queued notices do not block them. A running lead holds
+  a new batch behind an unclaimed action wake in either inbox boundary (including abort reclassification);
+  an idle lead instead admits the steer so the first pre-step wakes both parked and new input. A turn-end is
   suppressed only when it is merged into a still-pending question wake (`merged-into-pending-wake`)
   or was explicitly included in a sent question wake (`included-in-sent-wake`); a later T1/T2 that
   was not included still gets its ordinary wake. Cold leads resume before the question steer when

@@ -56,7 +56,7 @@ import {
   reportRecord,
   representableInstant,
 } from './domain.ts'
-import { thrownMessage } from './error.ts'
+import { DevLeadError, thrownMessage } from './error.ts'
 import { planChildReport } from './message-policy.ts'
 
 /** Deployment policy the hub obeys. */
@@ -119,6 +119,9 @@ const MAX_DIGEST_LINES = 12
 
 /** Maximum merged turn-end lines placed before the bounded question payload. */
 const MAX_MERGED_QUESTION_TURN_ENDS = 8
+
+/** Maximum action-required reports pending for one lead/child pair. */
+export const DEVLEAD_ACTION_REQUIRED_PENDING_MAX = 16
 
 /**
  * Retry delay after a failed wake-up delivery, or before re-checking a lead
@@ -373,10 +376,12 @@ export class DevLeadNotificationHub {
    * decision, never after the lead's wake-up turn, so the reporter is not blocked.
    * @param report - report addressed to one active lead.
    * @returns whether the report belongs to an indexed watch relationship.
+   * @throws `DEVLEAD_DELIVERY_RATE_LIMITED` before queueing a distinct Q1 over the pair cap.
    */
   report(report: DevLeadReport): boolean {
     const runtime = this.reportRuntime(report)
     if (runtime === undefined) return false
+    this.assertReportCapacity(report)
     if (runtime.pendingReports.some(existing => existing.id === report.id)
       || runtime.pendingQuestions.some(existing => existing.id === report.id)
       || runtime.unsavedReports.some(existing => existing.id === report.id)) return true
@@ -386,10 +391,10 @@ export class DevLeadNotificationHub {
       if (state === undefined || !state.enabled) return false
       if (state.reports.some(existing => existing.id === report.id)) return true
       if (this.appendReportRecord(session, report)) this.queuePendingReport(runtime, report)
-      else runtime.unsavedReports = [...runtime.unsavedReports, report].slice(-DEVLEAD_REPORT_RETENTION)
+      else this.queueUnsavedReport(runtime, report)
     }
     else {
-      runtime.unsavedReports = [...runtime.unsavedReports, report].slice(-DEVLEAD_REPORT_RETENTION)
+      this.queueUnsavedReport(runtime, report)
     }
     this.scheduleReportFlush(runtime, report)
     return true
@@ -405,13 +410,15 @@ export class DevLeadNotificationHub {
    * relationship returns false without queueing; archived Q1 is digest-only.
    * @param report - report addressed to one watched lead.
    * @returns whether the lead Session log now carries a flushed receipt.
+   * @throws `DEVLEAD_DELIVERY_RATE_LIMITED` before writing a distinct Q1 over the pair cap.
    */
   async persistReport(report: DevLeadReport): Promise<boolean> {
     const runtime = this.reportRuntime(report)
     if (runtime === undefined) return false
+    this.assertReportCapacity(report)
     const session = this.ctx.sessions.get(toSessionId(report.leadSessionId))
     if (session === undefined) {
-      runtime.unsavedReports = [...runtime.unsavedReports, report].slice(-DEVLEAD_REPORT_RETENTION)
+      this.queueUnsavedReport(runtime, report)
       this.scheduleReportFlush(runtime, report)
       return false
     }
@@ -424,7 +431,7 @@ export class DevLeadNotificationHub {
         this.ctx.logger.warn(
           `devlead: could not record a report for lead "${runtime.sessionId}": ${thrownMessage(error)}`,
         )
-        runtime.unsavedReports = [...runtime.unsavedReports, report].slice(-DEVLEAD_REPORT_RETENTION)
+        this.queueUnsavedReport(runtime, report)
         this.scheduleReportFlush(runtime, report)
         return false
       }
@@ -443,10 +450,42 @@ export class DevLeadNotificationHub {
     return true
   }
 
+  /**
+   * Reject a new Q1 before any outbox/receipt write when its pair is full.
+   * Existing identities remain retryable; the cap is only for a distinct report.
+   */
+  assertReportCapacity(report: DevLeadReport): void {
+    if (report.kind !== 'question') return
+    const runtime = this.reportRuntime(report)
+    if (runtime === undefined) return
+    if (runtime.pendingQuestions.some(existing => existing.id === report.id)
+      || runtime.unsavedReports.some(existing => existing.id === report.id)) return
+    const session = this.ctx.sessions.get(toSessionId(report.leadSessionId))
+    if (session !== undefined && this.stateOf(session)?.reports.some(existing => existing.id === report.id)) return
+    const pending = runtime.pendingQuestions.filter(existing => existing.senderSessionId === report.senderSessionId).length
+      + runtime.unsavedReports.filter(existing => existing.kind === 'question'
+        && existing.senderSessionId === report.senderSessionId).length
+    if (pending < DEVLEAD_ACTION_REQUIRED_PENDING_MAX) return
+    throw new DevLeadError(
+      `this lead/child pair already has ${String(pending)} pending action-required reports; `
+      + 'wait for the next turn or merge the question into an existing report instead of sending another one',
+      'DEVLEAD_DELIVERY_RATE_LIMITED',
+    )
+  }
+
+  /** Keep Q1 unsaved rows under the explicit pair cap; retain ordinary digest bounds. */
+  private queueUnsavedReport(runtime: LeadRuntime, report: DevLeadReport): void {
+    runtime.unsavedReports = report.kind === 'question'
+      ? [...runtime.unsavedReports, report]
+      : [...runtime.unsavedReports, report].slice(-DEVLEAD_REPORT_RETENTION)
+  }
+
   /** Route one persisted report to the only lane Phase 1b assigns to its kind. */
   private queuePendingReport(runtime: LeadRuntime, report: DevLeadReport): void {
     if (report.kind === 'question') {
-      runtime.pendingQuestions = [...runtime.pendingQuestions, report].slice(-DEVLEAD_REPORT_RETENTION)
+      // Q1 is bounded explicitly per pair by assertReportCapacity; never evict
+      // an action-required report silently through the ordinary digest cap.
+      runtime.pendingQuestions = [...runtime.pendingQuestions, report]
     } else {
       runtime.pendingReports = [...runtime.pendingReports, report].slice(-DEVLEAD_REPORT_RETENTION)
     }
@@ -1233,10 +1272,13 @@ export class DevLeadNotificationHub {
         `devlead: could not inspect the inbox of lead "${runtime.sessionId}" for a queued question: ${thrownMessage(error)}`,
       )
     }
-    if (queuedAction) {
+    if (queuedAction && agent.status !== 'idle') {
       this.scheduleQuestionRetry(runtime)
       return
     }
+    // An idle steer opens a turn whose first pre-step claims every parked
+    // next-step message before one next-turn message. Admitting the new batch
+    // therefore wakes the parked wake instead of deadlocking behind it.
 
     const batch = runtime.pendingQuestions
     const turnEnds: DevLeadNotification[] = []
@@ -1319,7 +1361,7 @@ export class DevLeadNotificationHub {
       }
     } catch (error: unknown) {
       this.ctx.logger.warn(`devlead: could not steer question to lead "${runtime.sessionId}": ${thrownMessage(error)}`)
-      runtime.pendingQuestions = [...batch, ...runtime.pendingQuestions].slice(-DEVLEAD_REPORT_RETENTION)
+      runtime.pendingQuestions = [...batch, ...runtime.pendingQuestions]
       failed = true
     } finally {
       runtime.questionFlushing = false
@@ -1406,9 +1448,11 @@ export class DevLeadNotificationHub {
     })
   }
 
-  /** Whether an unclaimed action-required wake already occupies next-step. */
+  /** Whether an unclaimed action-required wake occupies either inbox boundary. */
   private hasQueuedActionRequired(agent: Agent): boolean {
-    return agent.inbox.nextStep.some((message) => {
+    // Aborted activity reclassifies a waking steer to next-turn, so scanning
+    // only next-step would admit a duplicate action wake on the next batch.
+    return [...agent.inbox.nextStep, ...agent.inbox.nextTurn].some((message) => {
       const source = message.source as {
         kind?: unknown
         form?: unknown

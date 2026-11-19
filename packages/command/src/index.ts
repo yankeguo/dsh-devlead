@@ -330,6 +330,7 @@ function friendlyDevLeadError(error: DevLeadError): string {
       return error.message
     case 'DEVLEAD_NOT_SUPERVISED':
     case 'DEVLEAD_REPORT_RATE_LIMITED':
+    case 'DEVLEAD_DELIVERY_RATE_LIMITED':
       return error.message
     case 'DEVLEAD_AGENT_NOT_LIVE':
       return 'This Session is no longer live in this Host, so the command cannot run. '

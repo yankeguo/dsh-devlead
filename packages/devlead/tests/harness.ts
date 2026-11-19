@@ -175,6 +175,8 @@ export class FakeAgent {
   failFollowups = 0
   /** When positive, the next {@link steer} calls throw instead of admitting. */
   failSteers = 0
+  /** Simulate a non-idle activity whose abort signal reclassifies waking input. */
+  abortedActivity = false
   /** Model selections recorded by the core through `agent.model.select`. */
   readonly modelSelections: ModelSelection[] = []
   /** When positive, the next `agent.model.select` throws instead of recording. */
@@ -204,6 +206,41 @@ export class FakeAgent {
     return this as unknown as Agent
   }
 
+  /** Append one durable inbox admission exactly at the current boundary tail. */
+  private appendInput(target: 'next-turn' | 'next-step', message: UserMessage): void {
+    const list = target === 'next-turn' ? this.inbox.nextTurn : this.inbox.nextStep
+    const start = list.length
+    list.push(message)
+    this.session.append('agent/inbox/spliced', { target, start, inserted: [message] })
+  }
+
+  /** Remove a prefix with the same durable splice shape as claim/cancel. */
+  private removeInput(
+    target: 'next-turn' | 'next-step',
+    count: number,
+    canceled: boolean,
+  ): UserMessage[] {
+    const list = target === 'next-turn' ? this.inbox.nextTurn : this.inbox.nextStep
+    const removed = list.splice(0, count)
+    if (removed.length === 0) return []
+    this.session.append('agent/inbox/spliced', {
+      target,
+      start: 0,
+      removedCount: removed.length,
+      inserted: [],
+      ...(canceled ? { outcome: 'canceled' as const } : {}),
+    })
+    return removed
+  }
+
+  /** Append presented messages, or omit them to model a pre-step reject. */
+  private presentClaimed(claimed: readonly UserMessage[], turn: number, present: boolean): void {
+    if (!present) return
+    for (const message of claimed) {
+      this.session.append('user/message', { ...message, turn, step: 1 } as never, { surfaceOp: 'append' })
+    }
+  }
+
   /**
    * Queue one ordinary follow-up message: mirrors the real Agent contract by
    * appending to `next-turn` before waking.
@@ -216,7 +253,7 @@ export class FakeAgent {
     }
     this.followups.push(message)
     this.admissions.push('followup')
-    this.inbox.nextTurn.push(message)
+    this.appendInput('next-turn', message)
   }
 
   /** Admit one action-required message at the next-step boundary. */
@@ -227,7 +264,7 @@ export class FakeAgent {
     }
     this.steers.push(message)
     this.admissions.push('steer')
-    this.inbox.nextStep.push(message)
+    this.appendInput(this.abortedActivity && this.status !== 'idle' ? 'next-turn' : 'next-step', message)
   }
 
   /** Drop every pending inbox message, emulating a drain by the driven loop. */
@@ -242,8 +279,25 @@ export class FakeAgent {
    * delivery-retry boundary: the notice disappears with no turn executed.
    */
   cancelInbox(): void {
-    this.inbox.nextTurn.splice(0)
-    this.inbox.nextStep.splice(0)
+    this.removeInput('next-step', this.inbox.nextStep.length, true)
+    this.removeInput('next-turn', this.inbox.nextTurn.length, true)
+  }
+
+  /** Claim all next-step input; reject consumes it without a presented message. */
+  claimNextStep(options: { readonly present?: boolean; readonly turn?: number } = {}): UserMessage[] {
+    const claimed = this.removeInput('next-step', this.inbox.nextStep.length, false)
+    this.presentClaimed(claimed, options.turn ?? 1, options.present ?? true)
+    return claimed
+  }
+
+  /** Model the first pre-step: all next-step, then one next-turn input. */
+  claimNextTurnPreStep(options: { readonly present?: boolean; readonly turn?: number } = {}): UserMessage[] {
+    const claimed = [
+      ...this.removeInput('next-step', this.inbox.nextStep.length, false),
+      ...this.removeInput('next-turn', 1, false),
+    ]
+    this.presentClaimed(claimed, options.turn ?? 1, options.present ?? true)
+    return claimed
   }
 
   /** Flip the public lifecycle status. */

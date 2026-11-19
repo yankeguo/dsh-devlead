@@ -955,6 +955,25 @@ describe('mid-turn reports', () => {
     expect(textOnly.report).not.toHaveProperty('questions')
   })
 
+  it('pins the receipt-flush to wake-admission crash window without claiming replay recovery', async () => {
+    const storage = new FakeStorageDomain()
+    const { harness, child } = await bootReporting({}, { storageDomain: storage })
+    harness.lead.setRunning(true)
+    harness.lead.steer(createDevLeadNoticeMessage('parked action wake', {
+      lane: 'action-required', wakeRequested: true, summary: 'Parked question',
+    }))
+    const admitted = harness.lead.steers.length
+    await harness.service.reportProgress(child.agent, { kind: 'question', message: 'Crash before wake?' })
+    // persistReport has flushed the lead receipt and cleared the outbox, while
+    // the Q1 microtask has not yet admitted the wake. A crash here leaves the
+    // durable digest as the only Phase 1b recovery surface.
+    expect(storage.table('devlead_report_outbox', 'pending').records.size).toBe(0)
+    expect(harness.lead.steers).toHaveLength(admitted)
+    expect(harness.service.reports(harness.lead.agent)).toHaveLength(1)
+    await flushMicrotasks()
+    expect(harness.lead.steers).toHaveLength(admitted)
+  })
+
   it('reports to the single active lead while a second lead enable is refused', async () => {
     const harness = await bootService({
       enabled: true,
@@ -1282,6 +1301,32 @@ describe('mid-turn reports', () => {
     expect(harness.service.reports(harness.lead.agent)).toHaveLength(2)
   })
 
+  it('deduplicates only identical structured questions and rejects a same-id payload mismatch', async () => {
+    const { harness, child } = await bootReporting()
+    const first = await harness.service.reportProgress(child.agent, {
+      kind: 'question',
+      message: 'Which target?',
+      questions: [{ header: 'Deploy', question: 'Which target?', options: [{ label: 'Staging' }] }],
+    })
+    const retry = await harness.service.reportProgress(child.agent, {
+      kind: 'question',
+      message: 'Which target?',
+      questions: [{ header: 'Deploy', question: 'Which target?', options: [{ label: 'Staging' }] }],
+    })
+    expect(retry.report.id).toBe(first.report.id)
+    expect(retry.report.questions).toEqual(first.report.questions)
+    const error = await expectCodeAsync(
+      () => harness.service.reportProgress(child.agent, {
+        kind: 'question',
+        message: 'Which target?',
+        questions: [{ header: 'Deploy', question: 'Which target?', options: [{ label: 'Production' }] }],
+      }),
+      'DEVLEAD_INVALID_INPUT',
+    )
+    expect(error.message).toContain('different structured questions')
+    expect(harness.service.reports(harness.lead.agent)).toHaveLength(1)
+  })
+
   it('lets a question report through the exhausted progress budget', async () => {
     const { harness, child } = await bootReporting()
     for (const message of ['one', 'two', 'three', 'four']) {
@@ -1300,6 +1345,27 @@ describe('mid-turn reports', () => {
       () => harness.service.reportProgress(child.agent, { message: 'five' }),
       'DEVLEAD_REPORT_RATE_LIMITED',
     )
+  })
+
+  it('returns delivery backpressure before writing a seventeenth question or its outbox row', async () => {
+    const storage = new FakeStorageDomain()
+    const { harness, child } = await bootReporting({}, { storageDomain: storage })
+    harness.lead.setRunning(true)
+    harness.lead.steer(createDevLeadNoticeMessage('parked action wake', {
+      lane: 'action-required', wakeRequested: true, summary: 'Parked question',
+    }))
+    for (let index = 0; index < 16; index += 1) {
+      await harness.service.reportProgress(child.agent, {
+        kind: 'question', message: `Question ${String(index)}?`,
+      })
+    }
+    const error = await expectCodeAsync(
+      () => harness.service.reportProgress(child.agent, { kind: 'question', message: 'Question overflow?' }),
+      'DEVLEAD_DELIVERY_RATE_LIMITED',
+    )
+    expect(error.message).toContain('16 pending action-required reports')
+    expect(harness.service.reports(harness.lead.agent)).toHaveLength(16)
+    expect(storage.table('devlead_report_outbox', 'pending').records.size).toBe(0)
   })
 
   it('rejects empty, oversized, and malformed reports before writing', async () => {

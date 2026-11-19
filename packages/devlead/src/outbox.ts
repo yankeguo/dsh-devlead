@@ -24,6 +24,9 @@ import { z as zod } from 'zod'
 import type { Context } from '@deepseek-ai/cordis'
 import {
   DEVLEAD_MAX_INSTANT,
+  DEVLEAD_QUESTION_FIELD_MAX,
+  DEVLEAD_QUESTION_OPTIONS_MAX,
+  DEVLEAD_QUESTIONS_MAX,
   DEVLEAD_REPORT_KINDS,
   DEVLEAD_REPORT_MESSAGE_MAX,
   DEVLEAD_REPORT_SUMMARY_MAX,
@@ -75,6 +78,26 @@ interface StorageDomainFacility {
   open(spec: unknown): Promise<OutboxDomain>
 }
 
+/** Bounded structured question field accepted at the durable outbox boundary. */
+const questionFieldSchema = zod.string().min(1).refine(
+  value => value.length <= DEVLEAD_QUESTION_FIELD_MAX * 2
+    && Array.from(value).length <= DEVLEAD_QUESTION_FIELD_MAX,
+  { message: `question field must be at most ${DEVLEAD_QUESTION_FIELD_MAX} code points` },
+)
+
+const questionOptionSchema = zod.object({
+  label: questionFieldSchema,
+  description: questionFieldSchema.optional(),
+}).strict()
+
+const questionSchema = zod.object({
+  id: questionFieldSchema.optional(),
+  header: questionFieldSchema.optional(),
+  question: questionFieldSchema,
+  options: zod.array(questionOptionSchema).max(DEVLEAD_QUESTION_OPTIONS_MAX).optional(),
+  multi_select: zod.boolean().optional(),
+}).strict()
+
 /** Report schema accepted from the durable outbox boundary. */
 const reportSchema = zod.object({
   id: zod.string().min(1),
@@ -87,6 +110,7 @@ const reportSchema = zod.object({
     value => Array.from(value).length <= DEVLEAD_REPORT_SUMMARY_MAX,
     { message: `report summary must be at most ${DEVLEAD_REPORT_SUMMARY_MAX} code points` },
   ).optional(),
+  questions: zod.array(questionSchema).max(DEVLEAD_QUESTIONS_MAX).optional(),
   senderSessionId: zod.string().min(1),
   senderSessionTitle: zod.string().min(1).optional(),
   senderWorkspaceId: zod.string().min(1).optional(),
@@ -95,6 +119,9 @@ const reportSchema = zod.object({
   turn: zod.number().int().nonnegative(),
   at: zod.number().int().nonnegative().max(DEVLEAD_MAX_INSTANT),
 }).strict().refine(
+  report => report.questions === undefined || report.kind === 'question',
+  { message: 'report questions are only valid when kind is "question"' },
+).refine(
   report => report.id === devLeadReportId(report.senderSessionId, report.turn, report.kind, report.message),
   { message: 'report id must match senderSessionId, turn, kind, and message' },
 )

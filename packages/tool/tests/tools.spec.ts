@@ -2106,6 +2106,32 @@ describe('watched Session question routing', () => {
     expect((request as { message: string }).message).toContain('[target] Deploy: Which target?')
   })
 
+  it('denies and forwards each of two gate calls exactly once without opening the child UI', async () => {
+    const harness = boot()
+    const child = childAgent('child-two-questions', ['devlead'])
+    harness.devLead.supervised.add(child.id)
+    const request = {
+      name: ASK_USER_QUESTION_TOOL,
+      arguments: { questions: [{ id: 'q', header: 'Deploy', question: 'Which target?' }] },
+      agent: child,
+      signal: new AbortController().signal,
+    }
+    const first = await harness.preExecute(request)
+    const second = await harness.preExecute(request)
+    for (const result of [first, second]) {
+      expect(result.nextCalls).toBe(0)
+      expect(result.decision).toMatchObject({ kind: 'deny' })
+    }
+    const calls = harness.devLead.callsOf('reportProgress')
+    expect(calls).toHaveLength(2)
+    for (const [, forwarded] of calls) {
+      expect(forwarded).toMatchObject({
+        kind: 'question',
+        questions: [{ id: 'q', header: 'Deploy', question: 'Which target?' }],
+      })
+    }
+  })
+
   it('allows an unwatched or human-directed child to ask directly', async () => {
     const harness = boot()
     const unwatched = childAgent('child-unwatched', ['devlead'])

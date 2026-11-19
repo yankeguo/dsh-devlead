@@ -2034,6 +2034,9 @@ export class DevLeadService extends Service {
    * @returns the child-facing receipt with durability status.
    */
   private async deliverReport(report: DevLeadReport): Promise<DevLeadReportReceipt> {
+    // Capacity errors must reach the child before an outbox row can make a
+    // rejected question look accepted; replay applies the same check in the hub.
+    this.hub?.assertReportCapacity(report)
     await this.pruneOutboxOpportunistically()
     const outboxed = this.outbox === undefined ? false : await this.outbox.put(report)
     if (outboxed && this.outbox !== undefined) {
@@ -2148,7 +2151,8 @@ export class DevLeadService extends Service {
    * @returns the report receipt, including whether it is durable and still queued.
    * @throws {@link DevLeadError} `DEVLEAD_NOT_SUPERVISED` when no unique active
    *   lead watches the reporter, `DEVLEAD_INVALID_INPUT` for unusable fields,
-   *   and `DEVLEAD_REPORT_RATE_LIMITED` when the per-turn budget is exhausted.
+   *   `DEVLEAD_REPORT_RATE_LIMITED` when the per-turn budget is exhausted, and
+   *   `DEVLEAD_DELIVERY_RATE_LIMITED` when the pair's Q1 pending queue is full.
    */
   async reportProgress(
     agent: Agent,
@@ -2212,7 +2216,18 @@ export class DevLeadService extends Service {
     // upgrade to the answer-seeking channel, not a duplicate to swallow.
     const dedupKey = `${kind}\u0000${message}`
     const duplicate = state.messages.get(dedupKey)
-    if (duplicate !== undefined) return duplicate
+    if (duplicate !== undefined) {
+      const previousQuestions = JSON.stringify(duplicate.report.questions ?? null)
+      const nextQuestions = JSON.stringify(questions ?? null)
+      if (previousQuestions !== nextQuestions) {
+        throw new DevLeadError(
+          'the same report kind and message were already used in this turn with different structured questions; '
+          + 'keep the questions unchanged for an idempotent retry, or change the report message',
+          'DEVLEAD_INVALID_INPUT',
+        )
+      }
+      return duplicate
+    }
     // Questions are a control-flow channel, not progress chatter: they must
     // reach the lead even after four ordinary reports in the same turn.
     const progressCount = [...state.messages.values()]

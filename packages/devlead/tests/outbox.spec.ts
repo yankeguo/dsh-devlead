@@ -53,6 +53,31 @@ describe('DevLeadReportOutbox', () => {
     expect(second!.entries()).toEqual([])
   })
 
+  it('round-trips structured questions and keeps legacy reports compatible', async () => {
+    const storage = new FakeStorageDomain()
+    const outbox = await DevLeadReportOutbox.open(storageContext(storage))
+    expect(outbox).toBeDefined()
+    const structured = devLeadReport({
+      senderSessionId: 'child-structured',
+      leadSessionId: 'lead-1',
+      turn: 1,
+      kind: 'question',
+      message: 'Which target?',
+      questions: [{
+        header: 'Deploy',
+        question: 'Which target?',
+        options: [{ label: 'Staging', description: 'safe' }],
+        multi_select: false,
+      }],
+      at: T0,
+    })
+    expect(await outbox!.put(structured)).toBe(true)
+    expect(await outbox!.put(report('legacy update'))).toBe(true)
+    const entries = outbox!.entries()
+    expect(entries.find(entry => entry.report.id === structured.id)?.report.questions).toEqual(structured.questions)
+    expect(entries.find(entry => entry.report.message === 'legacy update')?.report).not.toHaveProperty('questions')
+  })
+
   it('keeps the first enqueue instant when the same id is retried', async () => {
     const storage = new FakeStorageDomain()
     const outbox = await DevLeadReportOutbox.open(storageContext(storage))

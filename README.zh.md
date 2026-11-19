@@ -474,8 +474,10 @@ lead 必须在轮次结束前知道的关键节点：真实阻塞、需 lead 决
 进展、或提问；常规进度与最终总结不要重复播报，短任务/线性任务默认不调用。lead 可在此类长任务
 已关注会话的简报中**按需**介绍 `devlead_report`；不是每条简报都写，`watch=false` 时工具不存在，
 因此不要写。报告不能替代最终 turn 通知；每个子会话每轮最多 4 条不同普通报告，`question` report
-不计入该预算；同轮相同
-kind+消息幂等（同文不同 kind 视为新报告），普通报告超预算返回 `DEVLEAD_REPORT_RATE_LIMITED`。
+不计入该预算，但每个 lead/child pair 最多允许 16 条不同的 pending Q1，超出在写 outbox 前返回
+`DEVLEAD_DELIVERY_RATE_LIMITED`。同轮相同 kind+消息且结构化内容一致时幂等（同文不同 kind 视为新报告）；
+同文但 questions 不同则返回 `DEVLEAD_INVALID_INPUT`，不覆盖第一份 payload；普通报告超预算返回
+`DEVLEAD_REPORT_RATE_LIMITED`。
 
 工具把 core 的 `DevLeadError` 翻译成带稳定 code 的 `HarnessError`；阅读状态时请以
 `lastTurn` / `lastTransition` / `lastError` / `lastAssistant` 等字段为准，不要靠猜。
@@ -593,7 +595,9 @@ settle，结果里 `stopped: true`（已归档的 Session 是 no-op，结果 `st
   Agent 仍存活，以一条 `devlead` 来源（`form: 'notice'`）的消息唤醒它；Agent 正在运行时
   followup 排队到下一 turn；`agent/status` 变 idle 时也会尝试冲一次队列。
 - **question 的 action-required 路径**：`question` 报告走独立的立即 `steer` 队列，不使用上述
-  400ms/followup 路径，也不被普通 queued notice 阻挡。只有 turn-end 合并进尚未发送的 question
+  400ms/followup 路径，也不被普通 queued notice 阻挡。running lead 会等新 batch 排在任一 inbox
+  boundary 的未消费 action wake 之后（包括 abort 重分类）；idle lead 则直接放行 steer，让首个
+  pre-step 同时唤醒 parked 与新输入。只有 turn-end 合并进尚未发送的 question
   唤醒（`merged-into-pending-wake`），或已发送的 question 唤醒明确包含它
   （`included-in-sent-wake`）时，才抑制独立通知；未被包含的后续 T1/T2 仍走普通唤醒。冷 lead 在
   `wakeColdSession:true` 时先 resume 再 steer；归档 lead 和禁止冷唤醒时只保留 digest fallback。

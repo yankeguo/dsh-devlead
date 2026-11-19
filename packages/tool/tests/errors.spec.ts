@@ -57,6 +57,13 @@ describe('translateToolError', () => {
     expect((translated as HarnessError).cause).toBeInstanceOf(Error)
   })
 
+  it('maps action-required backpressure to the stable delivery rate code', () => {
+    const translated = translateToolError(new DevLeadError('16 questions are pending', 'DEVLEAD_DELIVERY_RATE_LIMITED'))
+    expect(translated).toBeInstanceOf(HarnessError)
+    expect((translated as HarnessError).code).toBe('DEVLEAD_DELIVERY_RATE_LIMITED')
+    expect((translated as HarnessError).message).toContain('16 questions are pending')
+  })
+
   it('maps tool input errors to DEVLEAD_INVALID_INPUT', () => {
     const translated = translateToolError(new DevLeadToolInputError('prompt must not be empty'))
     expect(translated).toBeInstanceOf(HarnessError)

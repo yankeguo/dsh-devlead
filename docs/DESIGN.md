@@ -1344,7 +1344,8 @@ If you need the human, ask them first with ask_user_question, then relay.
   `interrupt:true` 才 cancel + `followup`。不要根据 child state 让 lead 选择不同 primitive。
 - 完整 question/options 有界（建议 8000 字符）；超出时保留前 N 条并写
   «call devlead_notifications for the full text»。
-- 多个 question 同批时逐条列出 report id；lead 可以逐条用 `question_id` 回答。
+- 多个 question 同批时逐条列出 report id；Phase 1d 起 lead 可以逐条用 `question_id` 回答。
+  Phase 1b 的 wake 只展示当前 `devlead_prompt_session` 的 `session` + `prompt`，不引用尚未实现的参数。
 - 正常路径 lead 不需要先调 `devlead_notifications`；digest 只用于历史/丢 wake 恢复。
 - 如果 question wake 无法发送（lead cold 且 `wakeColdSession:false`、archived、send 抛错），
   receipt 仍在 durable digest/outbox；lead 打开/恢复后 `devlead_notifications` 能看到
@@ -1365,9 +1366,11 @@ If you need the human, ask them first with ask_user_question, then relay.
 
 - `action-required` 使用独立的 `actionRequiredBatchMs`（默认 0，即微任务；可配 0–400ms）。
   question 永远不排普通 400ms 批。
-- `hasQueuedActionRequired(agent)`：lead inbox 的 next-step 里已有未 claim 的
-  action-required wake 时，新 batch 留在 pending，1s 后或 `agent/inbox/claimed` 时重试；
-  避免同一问题重复 steer。
+- `hasQueuedActionRequired(agent)`：lead inbox 的 next-step **或 next-turn** 里已有未 claim 的
+  action-required wake 时，running lead 的新 batch 留在 pending，1s 后或 idle hook 重试；aborted
+  activity 重分类到 next-turn 的 wake 也必须命中，避免重复 steer。lead 为 idle 时不得因此被
+  死锁：直接放行新 steer，由首个 pre-step 同时 claim parked 与新 next-step（必要时再 claim 一条
+  next-turn）。guard 按内部 lane 识别排队消息，`reportId` 用于关联/诊断，不是 guard 的去重键。
 - `hasQueuedTurnNotice` 只对 `wakeRequested:true` + `lane:'turn-notice'` 生效；
   question/action-required/background 不阻塞普通 turn notice，普通 turn notice 也不阻塞
   question。
@@ -1383,6 +1386,24 @@ If you need the human, ask them first with ask_user_question, then relay.
   静默掉。question wake 早于 turn/end 发出、且没有包含 turn-end 时，T1 wake 仍然发送。
 - 如果 turn/end 在 question wake 发送后才到，而 question wake 没有包含它，就按普通 T1
   发送；lead 可能收到两条消息，这是有意的可观测性，不是 bug。
+
+**Phase 1b 的残留窗口（明确未宣称完全修复）**
+
+- **admission 不等于 presented。** `steer` 成功只产生 durable `agent/inbox/spliced`；pre-step
+  reject 会消费 inbox 消息而不写 `user/message`，archive 也可能与这个窗口重叠。Phase 1b 没有
+  questionStatus/presented 状态机，也不会自动重发；durable report digest 是当前恢复入口。
+  Phase 2 才用 `user/message`、claim/reject 对账和 open-question replay 补齐。
+- **receipt flush 到 wake admission 仍有 crash 窗口。** 当前顺序是 lead receipt flush → 删除
+  outbox → microtask/1s retry 中的 wake admission；在 wake admission 前崩溃时，outbox 已清理，
+  内存 pending 可能丢失，但 lead digest 仍有 report。Phase 1b 不声称 exactly-once 或自动补 wake；
+  Phase 2 的 open-question rehydrate/replay 才关闭这个窗口。
+- **archived / unwatch / mode-off 会丢弃 pending wake，不重写 durable metadata。** 已经记录的
+  `wakeSuppressedByReportId` / `wakeSuppressionReason` 表示当时的合并/包含决策，不证明 wake 已
+  admission 或 presented。digest 仍是权威恢复面；Phase 2 replay open question 时重新评估未
+  presented 的问题，不能把这些字段当作完成态。
+- 上述路径统一以 `devlead_notifications` 的 durable report digest 为当前兜底。fake harness
+  只钉住这些现有语义与 durable splice/claim/reject/cancel 行为，不把测试中的消息存在误写成
+  模型已经看到。
 
 **answer 路由与状态**
 
@@ -1524,8 +1545,9 @@ DSH 的 `ReactLoopInbox.claim(target, turn)` 在一个 turn 的第一个 pre-ste
 
 **mixed-lane flush 规则**
 
-当前 hub 只有一个 `pending` / `pendingReports` 队列和一个全局 `flushing` guard；新设计不能
-继续用一个全局 guard 覆盖所有 kind。实现上拆成三个独立队列/定时器/guard：
+Phase 1 前的 hub 只有一个 `pending` / `pendingReports` 队列和一个全局 `flushing` guard；新设计不能
+继续用一个全局 guard 覆盖所有 kind。Phase 1b 已先为 Q1 拆出独立队列/定时器/guard，Phase 1e
+再补齐其余类别的三条路径：
 
 | lane | 队列内容 | 定时器 | guard |
 | --- | --- | --- | --- |
@@ -1563,8 +1585,12 @@ DSH 的 `ReactLoopInbox.claim(target, turn)` 在一个 turn 的第一个 pre-ste
 
 - child report：outbox at-least-once；report id 由 sender/turn/kind/message 确定性生成；lead
   日志 fold 按 id 去重；wake 可能重复，digest 权威。`devlead_notifications` 一个 id 一行。
-- question wake：crash/replay 可能重复 steer；`hasQueuedActionRequired` 按 report id 去重；
-  `question_id` 让 lead 的重复回答被识别。设计接受 at-least-once wake，不承诺 exactly-once。
+  同轮 dedup 命中时还必须比较规范化后的 `questions`：完全一致才返回原 receipt；同 kind+message
+  但结构化内容不同（包括文本截断后碰撞）显式返回 `DEVLEAD_INVALID_INPUT`，不改变 report id
+  契约，也不允许同 id 的第二份 payload 静默覆盖第一份。
+- question wake：crash/replay 可能重复 steer；`hasQueuedActionRequired` 按内部 lane 在两个
+  inbox boundary 去重，idle 时放行以唤醒 parked 消息；`question_id` 让 lead 的重复回答被识别。
+  设计接受 at-least-once wake，不承诺 exactly-once。
 - notification：确定性 id；`hasQueuedTurnNotice` / `hasQueuedActionRequired` 防止同一批
   重复。
 - lead prompt：没有 outbox；child Session log 的 `agent/inbox/spliced` 是记录，但
@@ -1626,10 +1652,10 @@ DSH 的 `ReactLoopInbox.claim(target, turn)` 在一个 turn 的第一个 pre-ste
 | `devlead_watch_session` | enabled live lead | 非 self、非 subagent | 现有规则 | 现有错误 |
 | `devlead_archive_session` | enabled live lead | 非 self | 现有规则 | 现有错误 |
 
-以下错误码是 **Proposed 新增**，当前 §8 没有：`DEVLEAD_FOREIGN_SUPERVISOR`、
-`DEVLEAD_MULTIPLE_SUPERVISORS`、`DEVLEAD_QUESTION_NOT_FOUND`、
-`DEVLEAD_QUESTION_ALREADY_ANSWERED`、`DEVLEAD_DELIVERY_RATE_LIMITED`。实现时要同步加入
-`DevLeadErrorCode` union、§8 表格与错误翻译测试；在实现前不要用这些码。
+`DEVLEAD_DELIVERY_RATE_LIMITED` 已在 Phase 1b 随 16/pair Q1 pending cap 实现，并同步加入
+`DevLeadErrorCode` union、§8 表格与错误翻译测试。以下错误码仍是 **Proposed**，当前 §8 没有：
+`DEVLEAD_FOREIGN_SUPERVISOR`、`DEVLEAD_MULTIPLE_SUPERVISORS`、`DEVLEAD_QUESTION_NOT_FOUND`、
+`DEVLEAD_QUESTION_ALREADY_ANSWERED`。实现时执行同样的 union/文档/翻译门禁；在实现前不要用这些码。
 
 **多 lead**
 
@@ -1914,7 +1940,7 @@ DSH 的 `ReactLoopInbox.claim(target, turn)` 在一个 turn 的第一个 pre-ste
 | --- | --- | --- | --- |
 | Phase 0 | 本文档（Proposed） | 否 | 文档 review；不改代码 |
 | Phase 1a（已完成） | 抽出纯策略表模块 + 单测；不改变现有行为 | 否 | `pnpm verify` |
-| Phase 1b（已完成） | question `action-required`：完整 payload、结构化 questions、跳过 400ms/queued turn notice、窄化双 wake 规则 | 否 | `pnpm verify` + fake harness 用例 7/10/11/12/33/34 |
+| Phase 1b（已完成） | question `action-required`：完整 payload、结构化 questions、跳过 400ms/queued turn notice、窄化双 wake 规则；16/pair 显式 cap、结构化内容幂等、idle/aborted parked-wake 防死锁/防重 | 否 | `pnpm verify` + fake harness 用例 7/10/11/12/33/34 与 durable inbox 生命周期回归 |
 | Phase 1c | `devlead_report({kind:'question'})` `turnEndRequested` + durable 检查 + 结果/policy | 否 | 用例 8/9；真实 DSH question E2E |
 | Phase 1d | `devlead_prompt_session` intent/`question_id`/`idempotency_key` + answer/correction steering + answer record + `answerStatus` admitted/claimed/presented（内存观测）+ `delivery` 结果 + retract/clear-own/source | 否 | 用例 13–25；`pnpm verify` |
 | Phase 1e | T2/P1–P4 路径、questionStatus/answerStatus、notifications/get_session 输出、policy/UI 文案、指标 | 否 | 全量单测/集成/E2E；`pnpm e2e`；UI 验收 |
@@ -2232,7 +2258,8 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
 | `DEVLEAD_NOT_ENABLED` | 当前会话未开启 DevLead 模式 |
 | `DEVLEAD_ALREADY_ACTIVE` | 另一个 Session 已占用 Host 级 DevLead 模式；消息含占用者 `title (id)`（或裸 id）与“先 /devlead off”的指引。**archived 占用者不再抛出该错误**：它被视为非 active，准入继续；`/devlead status` 会列出并给出 unarchive + off / 删除路径 |
 | `DEVLEAD_NOT_SUPERVISED` | 当前 Session 不是「非 DevLead + 被唯一 active lead watch」；包括自身是 lead、lead off/归档、unwatch、或历史多 watcher 无唯一关注该会话的 active lead |
-| `DEVLEAD_REPORT_RATE_LIMITED` | 已关注 Session 同一 turn 已发送 4 条不同的**非 question** 报告；`question` 报告不计入该预算；同轮相同 kind+message 幂等，不计数 |
+| `DEVLEAD_REPORT_RATE_LIMITED` | 已关注 Session 同一 turn 已发送 4 条不同的**非 question** 报告；`question` 报告不计入该预算；同轮相同 kind+message 且结构化内容一致时幂等，不计数 |
+| `DEVLEAD_DELIVERY_RATE_LIMITED` | 同一 lead/child pair 已有 16 条不同的 pending Q1 报告；新报告在 outbox/receipt 写入前拒绝，提示等待下一轮或合并问题；既有 id 重试不受 cap 影响，不静默 eviction |
 | `DEVLEAD_AGENT_NOT_LIVE` | 传入的 Agent 不是注册表中的 live 实例（工具侧绕过 `when` 时也走该码） |
 | `DEVLEAD_WORKSPACE_NOT_FOUND` | 指定 Workspace 引用无法解析，或 Host 未组合 Workspace registry；消息说明 id / 注册路径 / 精确 title 三种寻址方式 |
 | `DEVLEAD_WORKSPACE_AMBIGUOUS` | 引用按精确 title 命中多个 Workspace；消息按 registry 顺序列出每个候选的 `id (path)`，要求改用 id 或注册路径 |

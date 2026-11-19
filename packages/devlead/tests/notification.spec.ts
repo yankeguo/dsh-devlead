@@ -26,6 +26,7 @@ import {
 } from '../src/domain.ts'
 import { devLeadReport } from '../src/index.ts'
 import {
+  DEVLEAD_ACTION_REQUIRED_PENDING_MAX,
   DEVLEAD_MAX_WARNED_FAILURES,
   renderDevLeadNotice,
   renderDevLeadQuestionNotice,
@@ -788,8 +789,18 @@ describe('Phase 1b question action-required delivery', () => {
       })),
       at: T0,
     })
-    const text = renderDevLeadQuestionNotice([report], [], () => 'idle')
+    const turnEnd = {
+      ...notification({ sessionId: String(harness.watched.id), turn: 1 }),
+      wakeSuppressedByReportId: report.id,
+      wakeSuppressionReason: 'merged-into-pending-wake' as const,
+    }
+    const text = renderDevLeadQuestionNotice([report], [turnEnd], () => 'idle')
     expect(Array.from(text)).toHaveLength(8_000)
+    expect(text.indexOf('included turn-end:')).toBeLessThan(text.indexOf('Q0'))
+    expect(text).toContain('turn 1 completed')
+    expect(text).toContain(report.id)
+    expect(text).toContain('Q0')
+    expect(text).toContain('x'.repeat(200))
     expect(text).toContain('call devlead_notifications for the full question text')
   })
 
@@ -841,6 +852,30 @@ describe('Phase 1b question action-required delivery', () => {
     expect(lead.agent.followups).toHaveLength(1)
     expect(followupText(lead, 0)).toContain('[DEV LEAD REPORT]')
     expect(followupText(lead, 0)).toContain('blocked remains ordinary')
+  })
+
+  it('rejects the seventeenth pending question explicitly instead of evicting one silently', async () => {
+    installFakeTimers()
+    const harness = await bootHub({ batchMs: 400 })
+    const lead = onlyLead(harness)
+    const reports = Array.from({ length: DEVLEAD_ACTION_REQUIRED_PENDING_MAX }, (_, index) => (
+      questionReport(harness, `Question ${String(index)}?`)
+    ))
+    for (const report of reports) expect(harness.hub.report(report)).toBe(true)
+    // An existing identity is a retry, not a seventeenth distinct question.
+    expect(harness.hub.report(reports[0]!)).toBe(true)
+    const runtime = (harness.hub as unknown as {
+      leads: Map<string, { pendingQuestions: readonly unknown[] }>
+    }).leads.get(String(lead.agent.id))
+    expect(runtime?.pendingQuestions).toHaveLength(DEVLEAD_ACTION_REQUIRED_PENDING_MAX)
+    expect(() => harness.hub.report(questionReport(harness, 'One question too many?'))).toThrowError(
+      expect.objectContaining({ code: 'DEVLEAD_DELIVERY_RATE_LIMITED' }),
+    )
+    expect(runtime?.pendingQuestions).toHaveLength(DEVLEAD_ACTION_REQUIRED_PENDING_MAX)
+    expect(projectionStateOf(lead.session).reports).toHaveLength(DEVLEAD_ACTION_REQUIRED_PENDING_MAX)
+    await flushMicrotasks()
+    expect(lead.agent.steers).toHaveLength(1)
+    expect(runtime?.pendingQuestions).toHaveLength(0)
   })
 
   it('admits action-required before an ordinary zero-delay flush scheduled first', async () => {
@@ -961,6 +996,8 @@ describe('Phase 1b question action-required delivery', () => {
     appendTurnEnd(harness.watched, 1)
     await flushMicrotasks()
     expect(lead.agent.steers).toHaveLength(1)
+    expect(steerText(lead, 0)).toContain('First question?')
+    expect(steerText(lead, 0)).toContain('Second question?')
     expect(steerText(lead, 0)).not.toContain('included turn-end:')
     await vi.advanceTimersByTimeAsync(400)
     expect(lead.agent.followups).toHaveLength(1)
@@ -969,17 +1006,26 @@ describe('Phase 1b question action-required delivery', () => {
 
   it('restores a merged question after steer failure and retries without a T1 wake', async () => {
     installFakeTimers()
-    const harness = await bootHub({ batchMs: 400 })
+    const harness = await bootHub({ batchMs: 60_000 })
     const lead = onlyLead(harness)
     lead.agent.failSteers = 1
-    harness.hub.report(questionReport(harness))
     appendTurnEnd(harness.watched, 1)
+    const report = questionReport(harness)
+    harness.hub.report(report)
     await flushMicrotasks()
     expect(lead.agent.steers).toHaveLength(0)
+    // The failed admission must not mark the ordinary T1 as included in a sent
+    // wake, and must leave its ordinary pending queue untouched for the retry.
+    expect(notificationRecords(lead.session)).toHaveLength(1)
+    expect(notificationRecords(lead.session)[0]).not.toHaveProperty('wakeSuppressedByReportId')
     await vi.advanceTimersByTimeAsync(1_000)
     await flushMicrotasks()
     expect(lead.agent.steers).toHaveLength(1)
     expect(steerText(lead, 0)).toContain('included turn-end:')
+    expect(notificationRecords(lead.session)[1]).toMatchObject({
+      wakeSuppressedByReportId: report.id,
+      wakeSuppressionReason: 'included-in-sent-wake',
+    })
     await vi.advanceTimersByTimeAsync(400)
     expect(lead.agent.followups).toHaveLength(0)
   })
@@ -988,6 +1034,7 @@ describe('Phase 1b question action-required delivery', () => {
     installFakeTimers()
     const harness = await bootHub({ batchMs: 400 })
     const lead = onlyLead(harness)
+    lead.agent.setRunning(true)
     harness.hub.report(questionReport(harness, 'First question?'))
     await flushMicrotasks()
     harness.hub.report(questionReport(harness, 'Second question?'))
@@ -998,6 +1045,145 @@ describe('Phase 1b question action-required delivery', () => {
     await flushMicrotasks()
     expect(lead.agent.steers).toHaveLength(2)
     expect(steerText(lead, 1)).toContain('Second question?')
+  })
+
+  it('models durable admission and next-step/next-turn canceled clear order', async () => {
+    const harness = await bootHub()
+    const lead = onlyLead(harness)
+    lead.agent.followup(createDevLeadNoticeMessage('ordinary'))
+    lead.agent.steer(createDevLeadNoticeMessage('question', {
+      lane: 'action-required', wakeRequested: true, summary: 'Question',
+    }))
+    lead.agent.cancelInbox()
+    expect(lead.agent.inbox.nextStep).toHaveLength(0)
+    expect(lead.agent.inbox.nextTurn).toHaveLength(0)
+    const splices = lead.session.snapshotEvents().filter(event => event.type === 'agent/inbox/spliced')
+    expect(splices).toHaveLength(4)
+    expect(splices.slice(-2).map(event => ({
+      target: event.data.target,
+      removedCount: event.data.removedCount,
+      outcome: event.data.outcome,
+    }))).toEqual([
+      { target: 'next-step', removedCount: 1, outcome: 'canceled' },
+      { target: 'next-turn', removedCount: 1, outcome: 'canceled' },
+    ])
+    expect(lead.session.snapshotEvents().filter(event => event.type === 'user/message')).toHaveLength(0)
+  })
+
+  it('lets an idle lead admit a new steer that wakes a parked next-step action wake', async () => {
+    installFakeTimers()
+    const harness = await bootHub({ batchMs: 400 })
+    const lead = onlyLead(harness)
+    lead.agent.setRunning(true)
+    harness.hub.report(questionReport(harness, 'Parked question?'))
+    await flushMicrotasks()
+    expect(lead.agent.inbox.nextStep).toHaveLength(1)
+    // Dispose/abort leaves the durable action message parked. Idle admission is
+    // the wake path: the first pre-step consumes both old and new next-step rows.
+    lead.agent.setRunning(false)
+    harness.hub.report(questionReport(harness, 'Wake the parked question?'))
+    await flushMicrotasks()
+    expect(lead.agent.steers).toHaveLength(2)
+    const claimed = lead.agent.claimNextTurnPreStep()
+    expect(claimed.map(message => messageText(message))).toEqual([
+      expect.stringContaining('Parked question?'),
+      expect.stringContaining('Wake the parked question?'),
+    ])
+    expect(lead.agent.inbox.nextStep).toHaveLength(0)
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(lead.agent.steers).toHaveLength(2)
+  })
+
+  it('detects an aborted activity action wake reclassified to next-turn', async () => {
+    installFakeTimers()
+    const harness = await bootHub({ batchMs: 400 })
+    const lead = onlyLead(harness)
+    lead.agent.setRunning(true)
+    lead.agent.abortedActivity = true
+    harness.hub.report(questionReport(harness, 'Aborted question?'))
+    await flushMicrotasks()
+    expect(lead.agent.inbox.nextStep).toHaveLength(0)
+    expect(lead.agent.inbox.nextTurn).toHaveLength(1)
+    lead.agent.abortedActivity = false
+    harness.hub.report(questionReport(harness, 'Duplicate while running?'))
+    await flushMicrotasks()
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(lead.agent.steers).toHaveLength(1)
+    // Once idle, admission wakes both boundaries instead of spinning behind the
+    // reclassified message. First pre-step order is next-step then next-turn.
+    lead.agent.setRunning(false)
+    harness.ctx.emit('agent/status', { agent: lead.agent.agent, status: 'idle' })
+    await flushMicrotasks()
+    expect(lead.agent.steers).toHaveLength(2)
+    const claimed = lead.agent.claimNextTurnPreStep()
+    expect(claimed.map(message => messageText(message))).toEqual([
+      expect.stringContaining('Duplicate while running?'),
+      expect.stringContaining('Aborted question?'),
+    ])
+  })
+
+  it('pins admission versus presented when a pre-step reject consumes the question', async () => {
+    installFakeTimers()
+    const harness = await bootHub({ batchMs: 400 })
+    const lead = onlyLead(harness)
+    harness.hub.report(questionReport(harness))
+    await flushMicrotasks()
+    const message = lead.agent.steers[0]!
+    const claimed = lead.agent.claimNextStep({ present: false })
+    expect(claimed.map(item => item.id)).toEqual([message.id])
+    expect(lead.agent.inbox.nextStep).toHaveLength(0)
+    expect(lead.session.snapshotEvents().filter(event => event.type === 'agent/inbox/spliced')).toHaveLength(2)
+    expect(lead.session.snapshotEvents().filter(event => event.type === 'user/message')).toHaveLength(0)
+    // Phase 1b has no presented/open-question replay: the durable report digest
+    // is the recovery surface, not an automatic second steer.
+    expect(projectionStateOf(lead.session).reports).toHaveLength(1)
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(lead.agent.steers).toHaveLength(1)
+  })
+
+  it('keeps only the digest fallback when archive races an admitted but rejected question', async () => {
+    installFakeTimers()
+    const registry = new FakeWorkspaceRegistry()
+    const harness = await bootHub({ batchMs: 400, workspaceRegistry: registry })
+    const lead = onlyLead(harness)
+    harness.hub.report(questionReport(harness, 'Admitted before archive?'))
+    await flushMicrotasks()
+    expect(lead.agent.steers).toHaveLength(1)
+    registry.archived = [String(lead.agent.id)]
+    const claimed = lead.agent.claimNextStep({ present: false })
+    expect(claimed).toHaveLength(1)
+    expect(lead.session.snapshotEvents().filter(event => event.type === 'user/message')).toHaveLength(0)
+    harness.hub.report(questionReport(harness, 'Archived after admission?'))
+    await flushMicrotasks()
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(lead.agent.steers).toHaveLength(1)
+    expect(projectionStateOf(lead.session).reports).toHaveLength(2)
+  })
+
+  it.each(['archived', 'unwatched', 'mode-off'] as const)('keeps suppression metadata as a decision record after %s drops the pending wake', async disposition => {
+    installFakeTimers()
+    const registry = new FakeWorkspaceRegistry()
+    const harness = await bootHub({ batchMs: 400, workspaceRegistry: registry })
+    const lead = onlyLead(harness)
+    const report = questionReport(harness)
+    harness.hub.report(report)
+    appendTurnEnd(harness.watched, 1)
+    if (disposition === 'archived') registry.archived = [String(lead.agent.id)]
+    if (disposition === 'unwatched') {
+      appendPluginRecord(lead.session, DEVLEAD_WATCH_RECORD_TYPE, watchRecord([], T0 + 2))
+    }
+    if (disposition === 'mode-off') {
+      appendPluginRecord(lead.session, DEVLEAD_MODE_RECORD_TYPE, modeRecord(false, T0 + 2))
+    }
+    await flushMicrotasks()
+    await vi.advanceTimersByTimeAsync(400)
+    expect(lead.agent.steers).toHaveLength(0)
+    expect(lead.agent.followups).toHaveLength(0)
+    expect(notificationRecords(lead.session)[0]).toMatchObject({
+      wakeSuppressedByReportId: report.id,
+      wakeSuppressionReason: 'merged-into-pending-wake',
+    })
+    expect(projectionStateOf(lead.session).reports).toHaveLength(1)
   })
 
   it('resumes a cold lead and steers without waiting for the ordinary batch window', async () => {

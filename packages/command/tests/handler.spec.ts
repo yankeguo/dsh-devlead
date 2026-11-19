@@ -708,6 +708,7 @@ describe('devlead command friendly error mapping', () => {
     ['DEVLEAD_ALREADY_ACTIVE', 'injected DEVLEAD_ALREADY_ACTIVE'],
     ['DEVLEAD_NOT_SUPERVISED', 'injected DEVLEAD_NOT_SUPERVISED'],
     ['DEVLEAD_REPORT_RATE_LIMITED', 'injected DEVLEAD_REPORT_RATE_LIMITED'],
+    ['DEVLEAD_DELIVERY_RATE_LIMITED', 'injected DEVLEAD_DELIVERY_RATE_LIMITED'],
     ['DEVLEAD_AGENT_NOT_LIVE', 'no longer live'],
     ['DEVLEAD_WORKSPACE_NOT_FOUND', 'Workspace could not be resolved'],
     ['DEVLEAD_WORKSPACE_AMBIGUOUS', 'Workspace reference is ambiguous'],
