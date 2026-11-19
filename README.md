@@ -248,7 +248,7 @@ requires Node ≥ 24.9):
 | `0.2.2-rc.5` | `DSH_BIN=<cache>/rc5/install/node_modules/@deepseek-ai/dsh/lib/bin.js node scripts/e2e-smoke.mjs --flow installed` | **150/150** (queued-input round rerun on the current harness, includes the experimental worktree phase) |
 | `0.2.2-rc.5` | same, `--flow patch` | **150/150** (same rerun) |
 
-The next release (0.2.7, unpublished, includes question routing) adds three phase-3 question-gate
+The next release (0.3.0, unpublished, includes question routing and queued inbox inputs) adds three phase-3 question-gate
 checks. The 0.2.6+ audit round reran rc.5 on the current harness: installed `--no-worktree`
 reports **127/127**, and the installed/patch full flows report **150/150** each. A pre-release
 rerun of the full combination is still required by the publishing guide.

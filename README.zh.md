@@ -221,7 +221,7 @@ durable `team/mode`）。模型 API（`modelCatalog`、`Agent.model.select`、`m
 | `0.2.2-rc.5` | `DSH_BIN=<cache>/rc5/install/node_modules/@deepseek-ai/dsh/lib/bin.js node scripts/e2e-smoke.mjs --flow installed` | **150/150**（排队输入轮按当前 harness 重跑，含实验 worktree 阶段） |
 | `0.2.2-rc.5` | 同上，`--flow patch` | **150/150**（同轮重跑） |
 
-下一版（0.2.7，未发布，含 question 路由）给 phase 3 新增 3 条 question-gate checks。0.2.6+ 审计轮
+下一版（0.3.0，未发布，含 question 路由与排队 inbox 输入）给 phase 3 新增 3 条 question-gate checks。0.2.6+ 审计轮
 已按当前 harness 重跑 rc.5：installed `--no-worktree` 为 **127/127**，installed/patch 完整双流各
 **150/150**。发布前仍需按发布指南重跑完整组合。
 

@@ -1137,7 +1137,7 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   | 0.2.2-rc.4 | installed（完整） | **143/143** | 成功；含实验 worktree 阶段 23/23 |
   | 0.2.2-rc.4 | patch（完整） | **143/143** | 成功；含实验 worktree 阶段 23/23 |
   | 0.2.2-rc.5 | installed（`--no-worktree`） | **120/120** | 成功；phase 1 27 + 1b 12 + 3 81 |
-  | 0.2.2-rc.5 | installed（`--no-worktree`，下一版 0.2.7 的问题路由 harness） | **123/123** | 成功；phase 3 84，含真实 `ask_user_question` gate + question report |
+  | 0.2.2-rc.5 | installed（`--no-worktree`，0.3.0 的问题路由 harness） | **123/123** | 成功；phase 3 84，含真实 `ask_user_question` gate + question report |
   | 0.2.2-rc.5 | installed（完整，0.2.6+ 审计轮重跑） | **146/146** | 成功；含实验 worktree 阶段 23/23 与 question gate |
   | 0.2.2-rc.5 | patch（完整，0.2.6+ 审计轮重跑） | **146/146** | 成功；含实验 worktree 阶段 23/23 与 question gate |
   | 0.2.2-rc.5 | installed（完整，排队输入轮重跑） | **150/150** | 成功；另含 4 条排队 inbox checks |
@@ -1145,7 +1145,7 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   | 0.2.2-rc.5 | installed（`--no-worktree`，排队输入轮重跑） | **127/127** | 成功；phase 3 88 |
 
   表中 rc.1–rc.4 与 rc.5 的 120/143/146/123 行是各自发布或审计时点的 harness 计数。下一版
-  （0.2.7，未发布，含 question 路由）给 phase 3 新增 3 条 question gate checks；排队输入轮再增
+  （0.3.0，未发布，含 question 路由与排队 inbox 输入）给 phase 3 新增 3 条 question gate checks；排队输入轮再增
   4 条 inbox checks（当前 harness 150/150、`--no-worktree` 127/127），已按当前 harness 重跑 rc.5
   installed/patch 完整与 `--no-worktree`。发布前仍需按 PUBLISHING 重跑完整组合。
 
