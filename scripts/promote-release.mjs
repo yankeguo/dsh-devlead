@@ -24,7 +24,10 @@
  *      prompt for the one-time password interactively. Stops at the first
  *      failure and prints what remains staged.
  *   3. Create or update the GitHub Release idempotently (gh release
- *      view/edit/create --verify-tag).
+ *      view/edit/create --verify-tag). A prerelease version (-rc.N etc.) is
+ *      marked --prerelease --latest=false; a stable version --prerelease=false.
+ *      Preflight refuses a prerelease staged with the latest dist-tag, and a
+ *      post-approval check proves latest does not point at the prerelease.
  *
  * Usage:
  *   node scripts/promote-release.mjs [options]
@@ -60,6 +63,8 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const PACKAGES_DIR = join(ROOT, 'packages')
 const STAGE_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu
 const VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?(?:\+[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?$/u
+/** A semver prerelease carries a `-rc.1`-style suffix after the core version. */
+const PRERELEASE_PATTERN = /^\d+\.\d+\.\d+-/u
 const REPO_PATTERN = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/u
 /** Release tags are refs: no spaces, no leading dash (gh would read it as a flag). */
 const TAG_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/u
@@ -491,14 +496,21 @@ function approveStage (stageId, neutralDir) {
 
 /**
  * Idempotently create or update the GitHub Release for an existing tag.
+ *
+ * A prerelease version is marked `--prerelease` and explicitly `--latest=false`
+ * so GitHub never surfaces it as the repository's Latest release; a stable
+ * version is explicitly `--prerelease=false` (correcting a stale flag on edit)
+ * and leaves the Latest marker to GitHub's automatic rule.
  * @param {{repo: string, tag: string, notesFile: string, neutralDir: string, releaseExists: boolean, version: string}} options
  * @returns {'created' | 'updated'}
  */
 function ensureRelease (options) {
   const { repo, tag, notesFile, neutralDir, releaseExists } = options
+  const prerelease = PRERELEASE_PATTERN.test(options.version)
+  const flags = prerelease ? ['--prerelease', '--latest=false'] : ['--prerelease=false']
   const args = releaseExists
-    ? ['release', 'edit', tag, '--repo', repo, '--title', tag, '--notes-file', notesFile, '--verify-tag']
-    : ['release', 'create', tag, '--repo', repo, '--title', tag, '--notes-file', notesFile, '--verify-tag']
+    ? ['release', 'edit', tag, '--repo', repo, '--title', tag, '--notes-file', notesFile, '--verify-tag', ...flags]
+    : ['release', 'create', tag, '--repo', repo, '--title', tag, '--notes-file', notesFile, '--verify-tag', ...flags]
   const result = run('gh', args, { cwd: neutralDir, stdio: 'inherit' })
   assertSpawned(result, 'gh')
   if (result.status !== 0) {
@@ -509,6 +521,40 @@ function ensureRelease (options) {
     )
   }
   return releaseExists ? 'updated' : 'created'
+}
+
+/**
+ * After approving a prerelease, prove the registry's `latest` dist-tag does not
+ * point at it. Approval publishes under the dist-tag recorded at stage time;
+ * the preflight already refuses a prerelease staged with `latest`, so this is a
+ * belt-and-braces check against registry-side surprises. A violation is fatal
+ * and prints the repair command (the packages are already public at this point).
+ * @param {Array<{name: string}>} packages
+ * @param {string} version
+ * @param {string} neutralDir
+ */
+function verifyPrereleaseDistTags (packages, version, neutralDir) {
+  for (const pkg of packages) {
+    const result = run('npm', ['view', pkg.name, 'dist-tags', '--json'], { cwd: neutralDir })
+    assertSpawned(result, 'npm')
+    if (result.status !== 0) {
+      throw new PromoteError(`cannot read dist-tags of ${pkg.name} after approval:\n${tail(result.stderr || result.stdout)}`)
+    }
+    let tags
+    try {
+      tags = JSON.parse(result.stdout)
+    } catch {
+      throw new PromoteError(`npm view ${pkg.name} dist-tags did not print JSON:\n${tail(result.stdout)}`)
+    }
+    if (tags?.latest === version) {
+      throw new PromoteError(
+        `${pkg.name}: the latest dist-tag points at prerelease ${version}. All packages of this version are already public.\n` +
+        `Repair immediately by pointing latest back at the intended stable version:\n` +
+        `  npm dist-tag add ${pkg.name}@<stable-version> latest\n` +
+        'Then re-run this script to finish the GitHub Release step.'
+      )
+    }
+  }
 }
 
 /**
@@ -530,7 +576,8 @@ function printPlan (results, context) {
     }
   }
   step++
-  console.log(`  ${step}. ${context.releaseExists ? 'update' : 'create'} GitHub Release ${context.tag} from ${context.notesFile.replace(`${ROOT}/`, '')} (--verify-tag)`)
+  const prereleaseNote = PRERELEASE_PATTERN.test(context.version) ? ' (prerelease, --latest=false)' : ''
+  console.log(`  ${step}. ${context.releaseExists ? 'update' : 'create'} GitHub Release ${context.tag} from ${context.notesFile.replace(`${ROOT}/`, '')} (--verify-tag)${prereleaseNote}`)
 }
 
 /**
@@ -680,6 +727,21 @@ function main () {
       )
     }
 
+    // A prerelease must have been staged with a non-latest dist-tag: approving
+    // it would otherwise publish the prerelease as the default install.
+    if (PRERELEASE_PATTERN.test(version)) {
+      const misTagged = results.filter(result => result.status === 'staged' && (result.item?.tag ?? 'latest') === 'latest')
+      if (misTagged.length > 0) {
+        throw new PromoteError(
+          `prerelease ${version} was staged with the latest dist-tag for: ${misTagged.map(result => result.pkg.name).join(', ')}.\n` +
+          'Approving would make the prerelease the default install. Reject those staged records and re-stage locally with a non-latest tag:\n' +
+          misTagged.map(result => `  npm stage reject ${result.stageId}`).join('\n') + '\n' +
+          `  node scripts/stage-release.mjs --version ${version} --dist-tag next\n` +
+          'Nothing was approved.'
+        )
+      }
+    }
+
     const notesFile = resolveNotesFile(options.notesFile, version)
     const ghState = checkGh(repo, tag, neutralDir)
     const localTag = run('git', ['rev-parse', '--verify', `refs/tags/${tag}^{commit}`], { cwd: ROOT })
@@ -716,6 +778,10 @@ function main () {
         )
       }
       approved.push({ name: result.pkg.name, version, stageId: result.stageId })
+    }
+
+    if (PRERELEASE_PATTERN.test(version) && approved.length > 0) {
+      verifyPrereleaseDistTags(packages, version, neutralDir)
     }
 
     const releaseAction = ensureRelease({

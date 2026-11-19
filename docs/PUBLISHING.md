@@ -189,9 +189,9 @@ client-ui 的 `index`/`client`；`bundle` 只有 patch 文件与 icon，不产�
 可选（本机，需要已安装的 DSH 桌面端）：真实 DSH 端到端冒烟：
 
 ```sh
-pnpm e2e                          # 默认组合（阶段 1 + 1b + 2 + 3，全过报 146/146）
+pnpm e2e                          # 默认组合（阶段 1 + 1b + 2 + 3，全过报 150/150）
 pnpm e2e --flow installed         # 已安装形态的安装流
-pnpm e2e --no-worktree            # 跳过实验 forge bundle 组合（报 123/123，阶段 1 + 1b + 3）
+pnpm e2e --no-worktree            # 跳过实验 forge bundle 组合（报 127/127，阶段 1 + 1b + 3）
 ```
 
 `release:dry` 的本地预检说明：
@@ -222,8 +222,10 @@ git push origin v0.3.0                 # 触发 .github/workflows/publish.yml
    `refs/tags/<tag>`，`fetch-depth: 0` 取全量历史与 tag）。
 2. **Resolve and verify the release tag**：`git fetch --tags`，确认 `refs/tags/<tag>` 指向的
    commit 与当前 `HEAD` 一致，并从 tag 推导版本号；不一致直接失败（**CI 不会创建、移动或删除
-   tag**）。prerelease tag（版本号带 `-rc`/`-alpha` 等后缀）也会在此步被拒绝：CI 只 stage
-   稳定版（`latest`），预发布请走本地 stage。这一步在安装依赖之前执行，坏 tag 数秒内失败。
+   tag**）。prerelease tag（版本号带 `-rc`/`-alpha` 等后缀）在此步被**优雅跳过**（notice +
+   job summary 说明，其余步骤 `if: env.PRERELEASE_SKIP != 'true'` 全部跳过，运行记为成功）：
+   CI 只 stage 稳定版（`latest`），预发布走本地 stage（见「版本与 dist-tag 策略」）。这一步在
+   安装依赖之前执行，坏 tag 数秒内失败。
 3. 安装 pnpm `12.16.1`、Node `24`，并显式安装/校验 **npm 11.20.0**（`npm stage --help` 能力探测）。
 4. **tag-version 门禁**：`v<version>` 必须与 6 个可发布包 + 根 `package.json` 的 `version` 完全一致。
 5. `pnpm install --frozen-lockfile` → typecheck → test → build → `node scripts/check-packages.mjs`。
@@ -346,14 +348,23 @@ scripts/trusted-publishers.sh --list
 
 - 稳定版：默认 `latest`。CI 固定以 `--dist-tag latest` stage；promote 批准后即成为 `latest` 对应的
   已发布版本。
-- 试验版/预发布：**CI 会在 tag 校验阶段直接拒绝 prerelease tag**（见工作流），请在本地以其他
-  dist-tag stage：
+- 试验版/预发布：**CI 只 stage 稳定版**；prerelease tag 推送后工作流优雅跳过（不 stage、不报
+  红）。预发布在本地以非 latest 的 dist-tag stage：
   ```sh
   npm login
-  node scripts/stage-release.mjs --dist-tag next          # 或 --version 0.3.0-rc.1
+  node scripts/stage-release.mjs --version 0.3.0-rc.1 --dist-tag next
   node scripts/promote-release.mjs --version 0.3.0-rc.1
   ```
-  用户安装时需要显式指定版本（DSH 插件市场按版本安装，不受 dist-tag 影响）。
+  三道防误发闸门：
+  1. `stage-release.mjs` **拒绝 prerelease 版本 + `--dist-tag latest`**（approve 会按 stage 时
+     记录的 dist-tag 公开，prerelease 一旦挂 latest 就成了默认安装）；
+  2. `promote-release.mjs` 预检**拒绝 approve 任何以 latest stage 的 prerelease 记录**，并给出
+     reject + 以 next 重 stage 的修复命令；approve 后还会逐包核对 registry `dist-tags.latest`
+     不指向该 prerelease；
+  3. GitHub Release 自动按版本标记：prerelease → `--prerelease --latest=false`，稳定版 →
+     `--prerelease=false`（edit 时纠正旧标记），都带 `--verify-tag`。
+  prerelease 的 tag（`v0.3.0-rc.1`）仍需推送到远端供 `--verify-tag` 使用；推送触发的 CI 运行
+  会优雅跳过。用户安装时需要显式指定版本（DSH 插件市场按版本安装，不受 dist-tag 影响）。
 - `engines.dsh` 当前为 `>=0.2.2-rc.1 <0.3.0`，**所有插件 / bundle 包都声明**；
   DSH 升级到 0.3 时需更新该范围并回归。
 - 破坏性变更：遵循 semver；预发布版本使用 `-rc.N` / `-alpha.N` 后缀。
@@ -367,7 +378,10 @@ scripts/trusted-publishers.sh --list
   `devlead_list_agent_presets`（13 个主工具），并把 DSH 兼容面扩到 0.2.2-rc.1 – rc.4、修复
   审计缺陷；**0.2.5**（patch）新增全局单活、`devlead_report`（13 主工具 + 1 汇报工具）、
   durable report outbox 与 archived 占用者非阻塞准入；**0.2.6**（patch）统一「关注」术语、
-  lead 按需邀请中途汇报，并为侧栏增加 active DevLead ring 与被关注行准星标识。
+  lead 按需邀请中途汇报，并为侧栏增加 active DevLead ring 与被关注行准星标识；
+  **0.3.0-rc.1**（prerelease，dist-tag `next`）是 0.3.0 的首个候选：Workspace 三寻址、
+  `prompt_session interrupt`、watched 子会话问题路由、排队 inbox 可见/可撤/保留策略、
+  全面审计修复与 report 指引收窄（详见 `docs/releases/v0.3.0-rc.1.md`）。
   各版发布时同步 README / README.zh 与 `docs/releases/v<version>.md`；0.2.0 另复核
   旧 core + 新 tool 混装时 `isolation` 的防御性降级（tool 对缺失字段回退
   `{requested:'none',status:'none'}`）。
@@ -383,7 +397,7 @@ scripts/trusted-publishers.sh --list
 | 参数 / 环境变量 | 说明 |
 | --- | --- |
 | `--version <x.y.z>` | 期望版本；默认根 `package.json` 版本。必须与根 + 6 个包一致，否则失败 |
-| `--dist-tag <tag>` | npm dist-tag，默认 `latest`；不允许写成版本号 |
+| `--dist-tag <tag>` | npm dist-tag，默认 `latest`；不允许写成版本号；**prerelease 版本禁用 latest**（用 `next` 等） |
 | `--dry-run` | 打包 + `npm stage publish --dry-run --force` 预检，不上传、不创建 stage id |
 | `--no-provenance` | 即使在 GitHub Actions 中也不传 `--provenance` |
 | `GITHUB_ACTIONS=true` | 传 `--provenance`（npm 也会对公开包自动启用 provenance） |
@@ -402,8 +416,11 @@ scripts/trusted-publishers.sh --list
   有限次 registry 传播重试，避免把刚 approve、尚未可见的版本误判为缺失）；重试后仍缺失才失败；
 - approve 顺序与发布顺序一致（依赖先公开，bundle 最后），每个 approve 由 npm 交互式读取 OTP；
 - 失败时给出已公开列表、剩余 staged id、`npm stage reject` 与重跑指引；
-- GitHub Release 幂等创建/更新，`--verify-tag` 保证不新建 tag；本地 HEAD 与 tag 不一致时只警告
-  （promote 读取 registry 与 notes 文件，不依赖本地构建产物）。
+- GitHub Release 幂等创建/更新，`--verify-tag` 保证不新建 tag；prerelease 版本自动
+  `--prerelease --latest=false`，稳定版 `--prerelease=false`；本地 HEAD 与 tag 不一致时只警告
+  （promote 读取 registry 与 notes 文件，不依赖本地构建产物）；
+- prerelease 预检拒绝以 latest stage 的记录；approve 后逐包核对 `dist-tags.latest` 不指向该
+  prerelease（违反即失败并给出 `npm dist-tag add` 修复命令）。
 
 ### 根 `package.json` scripts
 

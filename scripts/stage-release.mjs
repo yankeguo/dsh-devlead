@@ -35,6 +35,8 @@
  * Options:
  *   --version <x.y.z>   Expected version (default: root package.json version).
  *   --dist-tag <tag>    npm dist-tag for the staged versions (default: latest).
+ *                       A prerelease version (-rc.N etc.) must use a non-latest
+ *                       tag (typically next); latest is rejected for it.
  *   --dry-run           Pack and validate the tarballs through the npm CLI
  *                       (`npm stage publish --dry-run --force`): uploads
  *                       nothing and creates no stage ids. --force disables
@@ -63,6 +65,8 @@ const PACKAGES_DIR = join(ROOT, 'packages')
 const ACCESS = 'public'
 const STAGE_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu
 const VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?(?:\+[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?$/u
+/** A semver prerelease carries a `-rc.1`-style suffix after the core version. */
+const PRERELEASE_PATTERN = /^\d+\.\d+\.\d+-/u
 /** npm dist-tags must not look like a semver version and must be argv-safe. */
 const DIST_TAG_PATTERN = /^[A-Za-z][A-Za-z0-9._-]*$/u
 
@@ -528,6 +532,15 @@ function main () {
     }
     if (rootManifest.version !== expectedVersion) {
       throw new StageError(`root package.json is version ${rootManifest.version}, but --version says ${expectedVersion}; bump the root and all packages together`)
+    }
+    // A prerelease must never become the default install: approving a staged
+    // version publishes it under the dist-tag recorded at stage time, so a
+    // prerelease staged with `latest` would silently replace the stable tag.
+    if (PRERELEASE_PATTERN.test(expectedVersion) && options.distTag === 'latest') {
+      throw new StageError(
+        `version ${expectedVersion} is a prerelease; staging it with --dist-tag latest would make it the default install once approved. ` +
+        'Use --dist-tag next (or another non-latest tag) for prereleases.'
+      )
     }
     const packages = sortByWorkspaceDependencies(discoverPackages())
     const mismatched = packages.filter(pkg => pkg.version !== expectedVersion)
