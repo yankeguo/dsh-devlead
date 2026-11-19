@@ -50,6 +50,14 @@ const ANSWER_DISCARD_TABLE = 'answer_discards'
 /** Durable outbox row retention; uncollected rows older than this are discarded. */
 export const DEVLEAD_REPORT_OUTBOX_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000
 
+/**
+ * Queued answer-discard retention, deliberately longer than the report outbox
+ * horizon: a dropped discard row means a question may stay answered after a
+ * restart even though the child inbox already lost the answer. Pruning past
+ * this horizon is an explicit warning, never the silent report sweep.
+ */
+export const DEVLEAD_ANSWER_DISCARD_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000
+
 /** One persisted outbox row. */
 export interface DevLeadOutboxRecord {
   /** Full report receipt, including sender and lead identities. */
@@ -301,22 +309,32 @@ export class DevLeadReportOutbox {
    * @param retentionMs - maximum age, defaulting to the outbox retention.
    * @returns number of removed rows.
    */
-  async prune(now: number = Date.now(), retentionMs: number = DEVLEAD_REPORT_OUTBOX_RETENTION_MS): Promise<number> {
+  async prune(
+    now: number = Date.now(),
+    retentionMs: number = DEVLEAD_REPORT_OUTBOX_RETENTION_MS,
+    answerDiscardRetentionMs: number = DEVLEAD_ANSWER_DISCARD_RETENTION_MS,
+  ): Promise<number> {
     const cutoff = now - retentionMs
+    const discardCutoff = now - answerDiscardRetentionMs
     const stale = this.entries().filter(entry => entry.enqueuedAt < cutoff)
-    const staleDiscards = this.answerDiscards().filter(row => row.enqueuedAt < cutoff)
+    // Queued discards keep their own (longer) horizon: they are question-state
+    // repairs, not deliverable reports, and losing one silently would leave a
+    // question answered after a restart although the child dropped the answer.
+    const staleDiscards = this.answerDiscards().filter(row => row.enqueuedAt < discardCutoff)
     if (stale.length === 0 && staleDiscards.length === 0) return 0
     let removed = 0
     try {
       if (stale.length > 0) {
         removed += await this.domain.table(OUTBOX_TABLE).deleteMany(stale.map(entry => devLeadOutboxKey(entry.report)))
+        this.ctx.logger.warn(
+          `devlead: discarded ${String(stale.length)} undelivered report(s) older than the ${String(retentionMs)} ms outbox retention`,
+        )
       }
       if (staleDiscards.length > 0) {
         removed += await this.domain.table(ANSWER_DISCARD_TABLE).deleteMany(staleDiscards.map(row => devLeadAnswerDiscardKey(row.answer)))
-      }
-      if (removed > 0) {
         this.ctx.logger.warn(
-          `devlead: discarded ${String(removed)} undelivered report(s)/answer discard(s) older than the ${String(retentionMs)} ms outbox retention`,
+          `devlead: pruned ${String(staleDiscards.length)} queued answer discard(s) older than the ${String(answerDiscardRetentionMs)} ms answer-discard retention; `
+          + 'their questions may stay answered after a restart although the child inbox dropped the answers',
         )
       }
       return removed

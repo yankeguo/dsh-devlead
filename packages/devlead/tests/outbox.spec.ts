@@ -4,10 +4,10 @@
  * archived-holder tombstones survive the same reopen.
  */
 
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { devLeadReport } from '../src/index.ts'
-import { DEVLEAD_REPORT_OUTBOX_RETENTION_MS, DevLeadReportOutbox, OUTBOX_SPEC, devLeadAnswerDiscardKey, devLeadOutboxKey } from '../src/outbox.ts'
+import { DEVLEAD_ANSWER_DISCARD_RETENTION_MS, DEVLEAD_REPORT_OUTBOX_RETENTION_MS, DevLeadReportOutbox, OUTBOX_SPEC, devLeadAnswerDiscardKey, devLeadOutboxKey } from '../src/outbox.ts'
 import { answer } from './fixtures.ts'
 import { FakeStorageDomain, T0, disposeContext } from './harness.ts'
 
@@ -403,19 +403,31 @@ describe('DevLeadReportOutbox answer discard queue', () => {
     expect(await outbox!.dropAnswerDiscardsForLead('lead-1')).toBe(0)
   })
 
-  it('prunes queued discards older than the retention horizon', async () => {
+  it('prunes queued discards only past their own longer retention, with an explicit warning', async () => {
     const storage = new FakeStorageDomain()
-    const outbox = await DevLeadReportOutbox.open(storageContext(storage))
+    const pruneCtx = storageContext(storage)
+    const outbox = await DevLeadReportOutbox.open(pruneCtx)
     await outbox!.putAnswerDiscard(discard())
     const table = storage.table('devlead_report_outbox', 'answer_discards')
     const [key, stored] = [...table.records.entries()][0] ?? []
     if (key === undefined || stored === undefined) throw new Error('discard row missing')
+    // Older than the report horizon but inside the answer-discard horizon:
+    // the ordinary sweep must NOT silently drop the question-state repair.
     table.records.set(key, {
       ...(stored as { answer: unknown }),
       enqueuedAt: Date.now() - DEVLEAD_REPORT_OUTBOX_RETENTION_MS - 1,
     })
+    expect(await outbox!.prune()).toBe(0)
+    expect(outbox!.answerDiscards()).toHaveLength(1)
+    // Past the answer-discard horizon it is pruned, loudly.
+    table.records.set(key, {
+      ...(stored as { answer: unknown }),
+      enqueuedAt: Date.now() - DEVLEAD_ANSWER_DISCARD_RETENTION_MS - 1,
+    })
+    const warn = vi.spyOn(pruneCtx.logger, 'warn')
     expect(await outbox!.prune()).toBe(1)
     expect(outbox!.answerDiscards()).toEqual([])
+    expect(warn.mock.calls.some(call => String(call[0]).includes('answer-discard retention'))).toBe(true)
   })
 
   it('parses stored discard rows with the exact Host open-time schema', async () => {

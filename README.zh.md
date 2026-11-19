@@ -230,6 +230,9 @@ durable `team/mode`）。模型 API（`modelCatalog`、`Agent.model.select`、`m
 | `0.2.2-rc.5` | `node scripts/e2e-smoke.mjs --flow installed`（Phase 1d cold-discard durable 轮，pin 总数） | **188/188**（185 PASS + 3 SKIP；durable discard 队列 spec v2 走真实 storage backend） |
 | `0.2.2-rc.5` | 同上，`--flow patch` | **188/188**（同轮） |
 | `0.2.2-rc.5` | 同上，`--no-worktree --flow patch` | **165/165**（同轮，跳过 phase 2） |
+| `0.2.2-rc.5` | `node scripts/e2e-smoke.mjs --flow installed`（Phase 1d cold-discard 复核轮 3，pin 总数） | **188/188**（185 PASS + 3 SKIP；canceled+restore 安全的 discard 重建） |
+| `0.2.2-rc.5` | 同上，`--flow patch` | **188/188**（同轮） |
+| `0.2.2-rc.5` | 同上，`--no-worktree --flow patch` | **165/165**（同轮，跳过 phase 2） |
 
 0.3.0 的 prerelease 候选（0.3.0-rc.1 / rc.2，尚未 promote 为稳定版）含 question 路由与排队 inbox 输入。Phase 1c 的 harness 轮新增 question-gate 与 `devlead_report` question checks（结构化多问题 payload 深比对、完整 wake payload 深比对、action-required wake admission、conclude/durable/memory-only 路径，以及只证明恢复可写性、不宣称自动 replay 的 recovery report），并新增两条**真实 prompted child turn**：用 scripted `llm/stream` 脚本驱动真实 agent-loop turn/step/tool 事件（无需 provider 凭据）——conclude 的 question batch 之后，已提交的 next-step marker 仍会在后续真实 step 中执行、先于唯一 completed `turn/end`；被 gate deny 的 `ask_user_question` 不会阻止模型继续运行（用例 33）。Phase 1d 轮新增一条真实 scripted child turn：lead 在 glob dispatch 期间用 `intent:"answer"` **steer 回答运行中的 child**（答案在后续真实 step 中 presented、先于唯一 completed `turn/end`；同键/同文本重试返回原 receipt；不同答案冲突；durable answer record 与派生视图报 answered/presented），以及 answer inbox 生命周期（queuedInputs 的 intent/questionId/wakeRequested/deliveryState、retract 拒绝 answer 但接受 background/instruction、运行中 child interrupt `clear-own` 保留 pending answer 而 `clear-all` 丢弃并重新 open question，经真实 `workspace/session-stop` fan-out）。每阶段 check 总数已 pin（27 / 12 / 23 / 126，基线 DSH 0.2.2-rc.5；删 check 会使该阶段失败），PASS 与 SKIP 分开输出；rc.5 的 installed/patch 完整双流各报 **188/188**（185 PASS + 3 条无凭据 SKIP；`--no-worktree`：**165/165**）。发布前仍需按发布指南重跑完整组合。
 
@@ -532,7 +535,9 @@ pre-step 被 reject/inbox discard/`clear-all` interrupt 时 `discarded`（重新
 discard 是 durable 的：暂时写不进 lead log 的 discard（lead cold/detached、append 或 flush 失败）
 进入 storage-domain outbox 队列，在 lead 变 live 时、下一次 prompt 前以及重试定时器上 drain；
 Host 重启后队列会 rehydrate，child 的 durable inbox log 也能在 lead 仍 cold 时独立重建 discard
-（canceled splice、claimed 但从未 presented 的 answer）。每条 answer 带 per-question admission
+（canceled splice、claimed 但从未 presented 的 answer）。被 `keep`/`clear-own` restore 重新插回的
+canceled splice 绝不会被 discard——restore（或真实 presentation）撤销该 cancellation，且每次
+drain/rehydrate 都先确认 answer 确实已离开 inbox 才写。每条 answer 带 per-question admission
 sequence，旧 answer 的延迟 discard 不会压过更新的 re-answer。
 `questionStatus`（`open`/`answered`）与 `answerStatus` 是两套状态：answered 不等于 presented。
 结果的 `delivery` receipt 报告实际 primitive/boundary/wake 与稳定 `messageId`；它是 admission

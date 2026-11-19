@@ -36,6 +36,32 @@ describe('DevLeadAnswerTracker seed (restart semantics)', () => {
     expect(tracker.entryOfQuestion(LEAD, REPORT)?.status).toBe('discarded')
   })
 
+  it('never rewinds an observed presentation with a stale discard seed', () => {
+    const tracker = new DevLeadAnswerTracker()
+    tracker.remember(entryOfRecord(answer({ reportId: REPORT, leadSessionId: LEAD, sessionId: CHILD, messageId: 'm1', status: 'admitted', at: 10 })))
+    tracker.presented(CHILD, 'm1', 20)
+    // A stale queued discard of the presented answer must not reopen it.
+    tracker.seed(answer({ reportId: REPORT, leadSessionId: LEAD, sessionId: CHILD, messageId: 'm1', status: 'discarded', at: 30 }))
+    expect(tracker.entryOfQuestion(LEAD, REPORT)?.status).toBe('presented')
+  })
+
+  it('repairs a disproven discard to pending or presented, and only from terminal discard/failed', () => {
+    const tracker = new DevLeadAnswerTracker()
+    tracker.remember(entryOfRecord(answer({ reportId: REPORT, leadSessionId: LEAD, sessionId: CHILD, messageId: 'm1', status: 'discarded', at: 10 })))
+    // The child log proves the answer really presented: repair it.
+    expect(tracker.repairLifecycle(CHILD, 'm1', 'presented', 20)).toBe(true)
+    expect(tracker.entryOfQuestion(LEAD, REPORT)?.status).toBe('presented')
+    expect(tracker.entryOfQuestion(LEAD, REPORT)?.presentedAt).toBe(20)
+    // A presented entry is never repaired again.
+    expect(tracker.repairLifecycle(CHILD, 'm1', 'admitted', 30)).toBe(false)
+    // A restored (still pending) answer repairs a discarded entry to admitted.
+    tracker.remember(entryOfRecord(answer({ reportId: REPORT, leadSessionId: LEAD, sessionId: CHILD, messageId: 'm2', status: 'discarded', at: 40 })))
+    expect(tracker.repairLifecycle(CHILD, 'm2', 'admitted', 50)).toBe(true)
+    expect(tracker.entryOfQuestion(LEAD, REPORT)?.status).toBe('admitted')
+    // An untracked message has nothing to repair.
+    expect(tracker.repairLifecycle(CHILD, 'm-unknown', 'admitted', 60)).toBe(false)
+  })
+
   it('replaces an older entry with a newer different-message answer, but not an older one', () => {
     const tracker = new DevLeadAnswerTracker()
     tracker.seed(answer({ reportId: REPORT, leadSessionId: LEAD, sessionId: CHILD, messageId: 'm1', status: 'admitted', at: 10 }))
@@ -135,6 +161,18 @@ describe('DevLeadAnswerTracker admission sequence (delayed lifecycle facts)', ()
     tracker.seed(answer({ reportId: REPORT, leadSessionId: LEAD, sessionId: CHILD, messageId: 'm1', status: 'discarded', at: 999, answeredAt: 10 }))
     expect(tracker.entryOfQuestion(LEAD, REPORT)?.messageId).toBe('m2')
   })
+
+  it('legacy same-instant admissions resolve by durable log position, lifecycle facts never do', () => {
+    const tracker = new DevLeadAnswerTracker()
+    // Two legacy admissions in the same millisecond: the newer record (later
+    // log position, the one the caller seeds last) wins the tie.
+    tracker.seed(answer({ reportId: REPORT, leadSessionId: LEAD, sessionId: CHILD, messageId: 'm1', status: 'admitted', at: 10 }))
+    tracker.seed(answer({ reportId: REPORT, leadSessionId: LEAD, sessionId: CHILD, messageId: 'm2', status: 'admitted', at: 10, answeredAt: 10 }))
+    expect(tracker.entryOfQuestion(LEAD, REPORT)?.messageId).toBe('m2')
+    // A legacy discard tied on the first admission instant never replaces it.
+    tracker.seed(answer({ reportId: REPORT, leadSessionId: LEAD, sessionId: CHILD, messageId: 'm1', status: 'discarded', at: 999, answeredAt: 10 }))
+    expect(tracker.entryOfQuestion(LEAD, REPORT)?.messageId).toBe('m2')
+  })
 })
 
 describe('DevLeadChildAnswerObserver (durable child-log reconstruction)', () => {
@@ -229,5 +267,101 @@ describe('DevLeadChildAnswerObserver (durable child-log reconstruction)', () => 
     const noQuestion = { id: 'm1', source: { kind: DEVLEAD_MESSAGE_KIND, form: 'relay', intent: 'answer', senderSessionId: LEAD }, content: [] }
     observer.observe(sessionEvent(1, 'agent/inbox/spliced', { target: 'next-step', start: 0, inserted: [noQuestion, humanMessage('h1')] }, 10))
     expect(observer.observe(sessionEvent(2, 'agent/inbox/spliced', { target: 'next-step', start: 0, removedCount: 2, inserted: [], outcome: 'canceled' }, 20))).toEqual([])
+  })
+
+  it('replay revokes a cancellation when the same id is restored later in the log', () => {
+    const observer = new DevLeadChildAnswerObserver()
+    const events = [
+      sessionEvent(1, 'agent/inbox/spliced', { target: 'next-step', start: 0, inserted: [answerMessage('m1')] }, 10),
+      sessionEvent(2, 'agent/inbox/spliced', { target: 'next-step', start: 0, removedCount: 1, inserted: [], outcome: 'canceled' }, 20),
+      sessionEvent(3, 'agent/inbox/spliced', { target: 'next-step', start: 0, inserted: [answerMessage('m1')] }, 30),
+      sessionEvent(4, 'turn/end', { turn: 1, reason: { kind: 'completed' } }, 40),
+    ]
+    expect(observer.replay(events)).toEqual([])
+  })
+
+  it('replay revokes a cancellation when the restored answer presented', () => {
+    const observer = new DevLeadChildAnswerObserver()
+    const events = [
+      sessionEvent(1, 'agent/inbox/spliced', { target: 'next-step', start: 0, inserted: [answerMessage('m1')] }, 10),
+      sessionEvent(2, 'agent/inbox/spliced', { target: 'next-step', start: 0, removedCount: 1, inserted: [], outcome: 'canceled' }, 20),
+      sessionEvent(3, 'agent/inbox/spliced', { target: 'next-step', start: 0, inserted: [answerMessage('m1')] }, 30),
+      sessionEvent(4, 'agent/inbox/spliced', { target: 'next-step', start: 0, removedCount: 1, inserted: [] }, 40),
+      sessionEvent(5, 'user/message', { ...answerMessage('m1') as object, turn: 1, step: 1 }, 50),
+      sessionEvent(6, 'turn/end', { turn: 1, reason: { kind: 'completed' } }, 60),
+    ]
+    expect(observer.replay(events)).toEqual([])
+    expect(observer.wasPresented('m1')).toBe(true)
+    expect(observer.presentedAtOf('m1')).toBe(50)
+  })
+
+  it('replay finalizes a never-restored cancellation at the end of the log', () => {
+    const observer = new DevLeadChildAnswerObserver()
+    const events = [
+      sessionEvent(1, 'agent/inbox/spliced', { target: 'next-step', start: 0, inserted: [answerMessage('m1')] }, 10),
+      sessionEvent(2, 'agent/inbox/spliced', { target: 'next-step', start: 0, removedCount: 1, inserted: [], outcome: 'canceled' }, 20),
+      sessionEvent(3, 'turn/end', { turn: 1, reason: { kind: 'completed' } }, 40),
+    ]
+    // The turn/end INSIDE the replay does not finalize the candidate (a restore
+    // could still follow); the end of the log does.
+    expect(observer.replay(events)).toEqual([{ messageId: 'm1', questionId: REPORT, leadId: LEAD, at: 20 }])
+  })
+
+  it('replay can keep candidates pending when the log ends inside an interrupt window', () => {
+    const observer = new DevLeadChildAnswerObserver()
+    const events = [
+      sessionEvent(1, 'agent/inbox/spliced', { target: 'next-step', start: 0, inserted: [answerMessage('m1')] }, 10),
+      sessionEvent(2, 'agent/inbox/spliced', { target: 'next-step', start: 0, removedCount: 1, inserted: [], outcome: 'canceled' }, 20),
+    ]
+    expect(observer.replay(events, { finalizeCandidates: false })).toEqual([])
+    // The live restore re-inserts the same id: the candidate is revoked.
+    expect(observer.observe(sessionEvent(3, 'agent/inbox/spliced', { target: 'next-step', start: 0, inserted: [answerMessage('m1')] }, 30))).toEqual([])
+    expect(observer.observe(sessionEvent(4, 'turn/end', { turn: 1, reason: { kind: 'completed' } }, 40))).toEqual([])
+  })
+
+  it('a suppressed live cancellation finalizes at the first turn/end outside the window', () => {
+    const observer = new DevLeadChildAnswerObserver()
+    observer.observe(sessionEvent(1, 'agent/inbox/spliced', { target: 'next-step', start: 0, inserted: [answerMessage('m1')] }, 10))
+    expect(observer.observe(sessionEvent(2, 'agent/inbox/spliced', { target: 'next-step', start: 0, removedCount: 1, inserted: [], outcome: 'canceled' }, 20), true)).toEqual([])
+    // A turn/end still inside the window must not finalize (restore pending).
+    expect(observer.observe(sessionEvent(3, 'turn/end', { turn: 1, reason: { kind: 'aborted' } }, 25), true)).toEqual([])
+    // The first settled turn outside the window proves no restore happened.
+    expect(observer.observe(sessionEvent(4, 'turn/end', { turn: 2, reason: { kind: 'completed' } }, 40)))
+      .toEqual([{ messageId: 'm1', questionId: REPORT, leadId: LEAD, at: 20 }])
+  })
+
+  it('a live user/message revokes a suppressed cancellation candidate', () => {
+    const observer = new DevLeadChildAnswerObserver()
+    observer.observe(sessionEvent(1, 'agent/inbox/spliced', { target: 'next-step', start: 0, inserted: [answerMessage('m1')] }, 10))
+    observer.observe(sessionEvent(2, 'agent/inbox/spliced', { target: 'next-step', start: 0, removedCount: 1, inserted: [], outcome: 'canceled' }, 20), true)
+    observer.observe(sessionEvent(3, 'agent/inbox/spliced', { target: 'next-step', start: 0, inserted: [answerMessage('m1')] }, 30))
+    observer.observe(sessionEvent(4, 'agent/inbox/spliced', { target: 'next-step', start: 0, removedCount: 1, inserted: [] }, 40))
+    observer.observe(sessionEvent(5, 'user/message', { ...answerMessage('m1') as object, turn: 1, step: 1 }, 50))
+    expect(observer.observe(sessionEvent(6, 'turn/end', { turn: 1, reason: { kind: 'completed' } }, 60))).toEqual([])
+    expect(observer.wasPresented('m1')).toBe(true)
+  })
+
+  it('warns when bounded observations evict their oldest entries', () => {
+    const warnings: string[] = []
+    const observer = new DevLeadChildAnswerObserver(message => warnings.push(message))
+    // 257 claimed answers overflow the 256-entry claimed bound.
+    for (let index = 0; index < 257; index += 1) {
+      observer.observe(sessionEvent(index * 2 + 1, 'agent/inbox/spliced', { target: 'next-step', start: 0, inserted: [answerMessage(`m${index}`)] }, index))
+      observer.observe(sessionEvent(index * 2 + 2, 'agent/inbox/spliced', { target: 'next-step', start: 0, removedCount: 1, inserted: [] }, index))
+    }
+    expect(warnings.some(message => message.includes('claimed observations'))).toBe(true)
+    // 257 suppressed cancellations overflow the candidate bound.
+    const other = new DevLeadChildAnswerObserver(message => warnings.push(message))
+    for (let index = 0; index < 257; index += 1) {
+      other.observe(sessionEvent(index * 2 + 1, 'agent/inbox/spliced', { target: 'next-step', start: 0, inserted: [answerMessage(`c${index}`)] }, index))
+      other.observe(sessionEvent(index * 2 + 2, 'agent/inbox/spliced', { target: 'next-step', start: 0, removedCount: 1, inserted: [], outcome: 'canceled' }, index), true)
+    }
+    expect(warnings.some(message => message.includes('cancellation candidates'))).toBe(true)
+    // 257 presentations overflow the presented bound.
+    const third = new DevLeadChildAnswerObserver(message => warnings.push(message))
+    for (let index = 0; index < 257; index += 1) {
+      third.observe(sessionEvent(index + 1, 'user/message', { ...answerMessage(`p${index}`) as object, turn: 1, step: 1 }, index))
+    }
+    expect(warnings.some(message => message.includes('presented observation'))).toBe(true)
   })
 })

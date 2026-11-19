@@ -116,7 +116,9 @@ export class DevLeadAnswerTracker {
    * newest record per question (not every audit row), so a discarded answer
    * seeds as discarded and the question stays open after a restart. A live
    * memory entry is never rewound: a same-messageId admission keeps any observed
-   * claim/presentation, a durable terminal discard wins over a stale admission,
+   * claim/presentation, a durable terminal discard wins over a stale admission
+   * or claim but NEVER over an observed presentation (delivery completed; a
+   * stale queued discard of a presented answer must not reopen the question),
    * and a newer different-messageId fact replaces an older one.
    * @param answer - newest durable answer lifecycle record of the question.
    */
@@ -125,9 +127,11 @@ export class DevLeadAnswerTracker {
     const existing = this.byQuestion.get(key)
     if (existing !== undefined) {
       if (existing.messageId === answer.messageId) {
-        // Same answer: a durable terminal discard/failed is authoritative; an
-        // admitted/claimed record never rewinds an observed claim/presentation.
-        if (answer.status === 'discarded' || answer.status === 'failed') {
+        // Same answer: a durable terminal discard/failed is authoritative over
+        // admitted/claimed, but an observed presentation is delivery completion
+        // and is never rewound by a (possibly stale) discard fact.
+        if ((answer.status === 'discarded' || answer.status === 'failed')
+          && existing.status !== 'presented') {
           existing.status = answer.status
           existing.at = answer.at
         }
@@ -140,8 +144,16 @@ export class DevLeadAnswerTracker {
       if (incomingSeq < existing.answerSeq) return
       if (incomingSeq === existing.answerSeq) {
         // Legacy tie (both records predate the sequence): admission instants
-        // decide, never the lifecycle `at`; a tie keeps the live entry.
-        if (existing.firstAdmittedAt >= admittedAtOf(answer)) return
+        // decide, never the lifecycle `at`.
+        const incomingAdmittedAt = admittedAtOf(answer)
+        if (existing.firstAdmittedAt > incomingAdmittedAt) return
+        if (existing.firstAdmittedAt === incomingAdmittedAt) {
+          // Same-instant tie: a newer ADMISSION wins by durable log position
+          // (the caller seeds the newest record); a discard/failed lifecycle
+          // fact of an older answer carries the question's first admission in
+          // answeredAt and must never replace the live entry on a tie.
+          if (answer.status !== 'admitted') return
+        }
       }
       this.byMessage.delete(messageKey(existing.sessionId, existing.messageId))
       this.byQuestion.delete(key)
@@ -234,6 +246,30 @@ export class DevLeadAnswerTracker {
     entry.status = 'discarded'
     entry.at = at
     return entry
+  }
+
+  /**
+   * Repair one entry whose terminal discard/failed fact was disproven by the
+   * child's durable log: the message is still pending in the inbox (a
+   * keep/clear-own restore re-inserted it after a canceled splice) or it really
+   * entered an entered step (`user/message`). Only a discarded/failed entry is
+   * repaired — an observed presentation is never rewound, and a live admission
+   * needs no repair. This is the stale-queue-row correction path, not a normal
+   * lifecycle transition.
+   * @param sessionId - child Session identity.
+   * @param messageId - answer message identity.
+   * @param status - the proven reality: pending again (`admitted`) or presented.
+   * @param at - instant of the proving fact.
+   * @returns whether the entry was repaired.
+   */
+  repairLifecycle(sessionId: string, messageId: string, status: 'admitted' | 'presented', at: number): boolean {
+    const entry = this.byMessage.get(messageKey(sessionId, messageId))
+    if (entry === undefined) return false
+    if (entry.status !== 'discarded' && entry.status !== 'failed') return false
+    entry.status = status
+    entry.at = at
+    if (status === 'presented') entry.presentedAt = at
+    return true
   }
 
   /**
@@ -333,6 +369,12 @@ interface PendingItem {
 /** Maximum claimed-answer observations retained per child before FIFO eviction. */
 const MAX_CLAIMED_OBSERVATIONS = 256
 
+/** Maximum cancellation candidates retained per child before FIFO eviction. */
+const MAX_CANCEL_CANDIDATES = 256
+
+/** Maximum presented-message identities retained per child before FIFO eviction. */
+const MAX_PRESENTED_OBSERVATIONS = 256
+
 /** Answer metadata of one inserted message, when it is a correlatable answer. */
 function answerMetaOf(message: unknown): { questionId: string; leadId: string } | undefined {
   const source = (message as { source?: unknown } | null)?.source
@@ -353,22 +395,92 @@ function answerMetaOf(message: unknown): { questionId: string; leadId: string } 
  * entry, which answers were discarded or consumed by a rejected pre-step —
  * the restart/cold-lead reconstruction path. The observer never fabricates a
  * presentation: only a real `user/message` clears a claimed answer.
+ *
+ * A canceled removal is a cancellation CANDIDATE, not an immediate discard,
+ * whenever a restore may still follow: during the service's interrupt window
+ * (`keep`/`clear-own` stop clears the inbox, then `restoreInputs` re-inserts
+ * the same ids) and throughout a replay (the log may carry the restore later).
+ * A same-id re-insertion or a `user/message` revokes the candidate; surviving
+ * candidates finalize at the end of a replay, or at the first live `turn/end`
+ * outside the interrupt window. Only a live canceled removal outside any
+ * interrupt window derives immediately — no restore can follow it.
  */
 export class DevLeadChildAnswerObserver {
   private nextTurn: PendingItem[] = []
   private nextStep: PendingItem[] = []
   private readonly claimed = new Map<string, { readonly questionId: string; readonly leadId: string }>()
+  private readonly cancelCandidates = new Map<string, { readonly questionId: string; readonly leadId: string; readonly at: number }>()
+  private readonly presented = new Map<string, number>()
 
   /**
-   * Observe one committed child log event.
+   * @param onWarning - optional sink for bounded-observation eviction warnings.
+   */
+  constructor(private readonly onWarning?: (message: string) => void) {}
+
+  /**
+   * Whether this child's log proved the message presented (entered an entered
+   * step's `user/message`), so a derived discard of it must be skipped.
+   * @param messageId - answer message identity.
+   * @returns whether a presentation was observed.
+   */
+  wasPresented(messageId: string): boolean {
+    return this.presented.has(messageId)
+  }
+
+  /**
+   * The instant this child's log proved the message presented, when observed.
+   * @param messageId - answer message identity.
+   * @returns the `user/message` event instant, or undefined.
+   */
+  presentedAtOf(messageId: string): number | undefined {
+    return this.presented.get(messageId)
+  }
+
+  /**
+   * Whether the folded inbox still holds the message pending (including a
+   * keep/clear-own restore that re-inserted it after a canceled splice).
+   * @param messageId - answer message identity.
+   * @returns whether the message is pending at either boundary.
+   */
+  isPending(messageId: string): boolean {
+    return this.nextTurn.some(item => item.id === messageId) || this.nextStep.some(item => item.id === messageId)
+  }
+
+  /**
+   * Observe one committed child log event live.
    * @param event - the committed event.
-   * @param suppressDiscards - while the service's own interrupt stop clears the
-   *   inbox, `keep`/`clear-own` restore the kept answers afterwards, so a
-   *   canceled removal must not derive a discard in that window (the explicit
-   *   `clear-all` snapshot owns those discards).
+   * @param suppressDiscards - whether the service's own interrupt stop is
+   *   clearing this child's inbox (a restore may re-insert the same answers).
    * @returns the discards this event proved, in observation order.
    */
   observe(event: SessionEvent, suppressDiscards = false): DerivedAnswerDiscard[] {
+    return this.apply(event, 'live', suppressDiscards)
+  }
+
+  /**
+   * Rebuild the observation from a complete child log (boot/resume
+   * reconstruction), replacing any prior state. Cancellation candidates
+   * finalize at the end of the log unless the caller knows the log ends inside
+   * an interrupt window whose restore has not happened yet.
+   * @param events - the child's committed events, in log order.
+   * @param options - `finalizeCandidates: false` keeps surviving candidates
+   *   pending (the restore may still arrive as a later live event).
+   * @returns every discard the log proves, in log order.
+   */
+  replay(events: readonly SessionEvent[], options: { readonly finalizeCandidates?: boolean } = {}): DerivedAnswerDiscard[] {
+    this.nextTurn = []
+    this.nextStep = []
+    this.claimed.clear()
+    this.cancelCandidates.clear()
+    this.presented.clear()
+    const derived: DerivedAnswerDiscard[] = []
+    for (const event of events) derived.push(...this.apply(event, 'replay', false))
+    if (options.finalizeCandidates !== false) derived.push(...this.finalizeCandidates())
+    return derived
+  }
+
+  /** Apply one event in live or replay mode. */
+  private apply(event: SessionEvent, mode: 'live' | 'replay', suppress: boolean): DerivedAnswerDiscard[] {
     if (event.type === 'agent/inbox/spliced') {
       const data = event.data as {
         target?: unknown
@@ -390,28 +502,42 @@ export class DevLeadChildAnswerObserver {
       const removed = list.splice(start, count, ...inserted)
       const derived: DerivedAnswerDiscard[] = []
       for (const item of removed) {
-        // A restored message (same id re-inserted later) is pending again.
         this.claimed.delete(item.id)
         if (item.answer === undefined) continue
         if (data.outcome === 'canceled') {
-          if (!suppressDiscards) {
+          if (mode === 'live' && !suppress) {
+            // Outside any interrupt window no restore can follow: the discard
+            // is proven now.
             derived.push({ messageId: item.id, questionId: item.answer.questionId, leadId: item.answer.leadId, at: event.time })
+          } else {
+            this.cancelCandidates.set(item.id, { ...item.answer, at: event.time })
+            this.evictBounded(this.cancelCandidates, MAX_CANCEL_CANDIDATES, 'cancellation candidates')
           }
         } else {
           this.claimed.set(item.id, item.answer)
-          while (this.claimed.size > MAX_CLAIMED_OBSERVATIONS) {
-            const oldest = this.claimed.keys().next().value
-            if (oldest === undefined) break
-            this.claimed.delete(oldest)
-          }
+          this.evictBounded(this.claimed, MAX_CLAIMED_OBSERVATIONS, 'claimed observations')
         }
       }
-      for (const item of inserted) this.claimed.delete(item.id)
+      for (const item of inserted) {
+        this.claimed.delete(item.id)
+        // A restored message (same id re-inserted) revokes its cancellation.
+        this.cancelCandidates.delete(item.id)
+      }
       return derived
     }
     if (event.type === 'user/message') {
       const id = String((event.data as { id?: unknown } | null)?.id ?? '')
       this.claimed.delete(id)
+      // Presentation is delivery completion: it revokes any cancellation
+      // candidate and blocks every later derived discard of this message.
+      this.cancelCandidates.delete(id)
+      this.presented.set(id, event.time)
+      while (this.presented.size > MAX_PRESENTED_OBSERVATIONS) {
+        const oldest = this.presented.keys().next().value
+        if (oldest === undefined) break
+        this.presented.delete(oldest)
+        this.onWarning?.(`evicted the oldest presented observation beyond ${String(MAX_PRESENTED_OBSERVATIONS)}; a much later derived discard of it may not be blocked`)
+      }
       return []
     }
     if (event.type === 'turn/end') {
@@ -422,24 +548,34 @@ export class DevLeadChildAnswerObserver {
         derived.push({ messageId, questionId: answer.questionId, leadId: answer.leadId, at: event.time })
       }
       this.claimed.clear()
+      // Outside the interrupt window a settled turn also proves that any
+      // surviving cancellation candidate was never restored. During a replay
+      // the restore may still appear later in the log, so candidates wait for
+      // the end of the log instead.
+      if (mode === 'live' && !suppress) derived.push(...this.finalizeCandidates())
       return derived
     }
     return []
   }
 
-  /**
-   * Rebuild the observation from a complete child log (boot/resume
-   * reconstruction), replacing any prior state.
-   * @param events - the child's committed events, in log order.
-   * @returns every discard the log proves, in log order.
-   */
-  replay(events: readonly SessionEvent[]): DerivedAnswerDiscard[] {
-    this.nextTurn = []
-    this.nextStep = []
-    this.claimed.clear()
+  /** Emit and clear every surviving cancellation candidate. */
+  private finalizeCandidates(): DerivedAnswerDiscard[] {
     const derived: DerivedAnswerDiscard[] = []
-    for (const event of events) derived.push(...this.observe(event))
+    for (const [messageId, candidate] of this.cancelCandidates) {
+      derived.push({ messageId, questionId: candidate.questionId, leadId: candidate.leadId, at: candidate.at })
+    }
+    this.cancelCandidates.clear()
     return derived
+  }
+
+  /** FIFO-evict a bounded observation map, warning on each eviction. */
+  private evictBounded(map: Map<string, unknown>, max: number, label: string): void {
+    while (map.size > max) {
+      const oldest = map.keys().next().value
+      if (oldest === undefined) break
+      map.delete(oldest)
+      this.onWarning?.(`evicted the oldest ${label} entry beyond ${String(max)}; a much later restore/reject of it may be misobserved`)
+    }
   }
 }
 

@@ -120,6 +120,7 @@ import {
   restoreInputs,
 } from './inbox.ts'
 import { DevLeadReportOutbox } from './outbox.ts'
+import type { DevLeadAnswerDiscardRow } from './outbox.ts'
 import {
   applyDevLeadProjection,
   devLeadModeProjectionDefinition,
@@ -738,6 +739,13 @@ export class DevLeadService extends Service {
   private readonly warnedMemoryOnlyDiscards = new Set<string>()
 
   /**
+   * Last answer-discard persistence failure (append/flush/durable-queue write),
+   * surfaced through {@link answerDiscardHealth} so a discard that may not
+   * survive a crash is visible beyond the logger. Cleared by a successful drain.
+   */
+  private lastAnswerDiscardFailure: string | undefined
+
+  /**
    * Discard derivations waiting for a cold lead to become live (no Session
    * query engine could read its cold log). Processed at lead activation.
    * Bounded per lead; the newest derivations are kept.
@@ -891,6 +899,12 @@ export class DevLeadService extends Service {
           this.seedAnswersForAgent(agent)
           return undefined
         }),
+        this.ctx.on('agent/disposed', ({ agent }): undefined => {
+          // A disposed child's observer is stale; the next activation rebuilds
+          // it by a full replay of the (possibly grown) log.
+          this.childAnswerObservers.delete(String(agent.id))
+          return undefined
+        }),
       ]
       yield () => {
         for (const dispose of disposables) dispose()
@@ -900,14 +914,14 @@ export class DevLeadService extends Service {
     // `agent/created` listener only fires for later creations).
     for (const agent of this.ctx.agents.list()) this.seedAnswersForAgent(agent)
     await this.openOutbox()
-    this.restoreAnswerDiscards()
+    await this.restoreAnswerDiscards()
     if (this.outbox === undefined) {
       // The storage facility often mounts after the DevLead service in the
       // default composition. Retry once it becomes available, then replay any
       // rows that were already written by an earlier Host incarnation.
       this.outboxInjection = this.ctx.inject(['storageDomain' as never], () => {
-        void this.openOutbox().then(() => {
-          this.restoreAnswerDiscards()
+        void this.openOutbox().then(async () => {
+          await this.restoreAnswerDiscards()
           return this.replayOutbox()
         })
         return undefined
@@ -3809,8 +3823,10 @@ export class DevLeadService extends Service {
     if (options.intent === 'answer' && options.questionId !== undefined) {
       for (const pending of pendingAnswersOf(target)) {
         if (pending.questionId !== options.questionId || pending.senderSessionId !== leadId) continue
-        this.discardPendingAnswer(targetId, pending.message.id, pending.questionId, leadId)
+        // Remove first: the discard derivation refuses messages still pending
+        // in the child inbox (a survival guard against stale cancellations).
         target.inbox.remove(pending.message.id)
+        this.discardPendingAnswer(targetId, pending.message.id, pending.questionId, leadId)
       }
     }
     const message = options.intent === 'background'
@@ -4035,6 +4051,25 @@ export class DevLeadService extends Service {
   }
 
   /**
+   * Diagnostic health of the answer discard queue: how many discards are still
+   * waiting per lead, and the last persistence failure (append/flush/durable
+   * queue write) that a successful drain has not cleared yet. A non-empty
+   * `pending` with a `lastFailure` means some question reopens may not survive
+   * a Host crash until the queue drains.
+   * @returns the per-lead pending counts and the last failure, when any.
+   */
+  answerDiscardHealth(): { readonly pending: Readonly<Record<string, number>>; readonly lastFailure?: string } {
+    const pending: Record<string, number> = {}
+    for (const [leadId, queue] of this.pendingAnswerDiscards) {
+      if (queue.length > 0) pending[leadId] = queue.length
+    }
+    return {
+      pending,
+      ...(this.lastAnswerDiscardFailure === undefined ? {} : { lastFailure: this.lastAnswerDiscardFailure }),
+    }
+  }
+
+  /**
    * Read the newest answer fact of one question for retry recognition and
    * conflict messages.
    * @param agent - exact live lead Agent.
@@ -4188,18 +4223,16 @@ export class DevLeadService extends Service {
     try {
       appendPluginRecord(leadSession, DEVLEAD_REPORT_ANSWER_RECORD_TYPE, reportAnswerRecord(discard))
     } catch (error: unknown) {
-      this.ctx.logger.warn(
-        `devlead: could not record the discard of answer "${discard.messageId}": ${thrownMessage(error)}; queued for retry`,
-      )
+      this.lastAnswerDiscardFailure = `append of the discard of answer "${discard.messageId}" (question "${discard.reportId}", lead "${discard.leadSessionId}") failed: ${thrownMessage(error)}`
+      this.ctx.logger.warn(`devlead: ${this.lastAnswerDiscardFailure}; queued for retry`)
       this.queueAnswerDiscard(discard)
       return
     }
     try {
       await this.ctx.sessions.flush(leadSession)
     } catch (error: unknown) {
-      this.ctx.logger.warn(
-        `devlead: answer discard for question "${discard.reportId}" could not be flushed: ${thrownMessage(error)}; queued for retry`,
-      )
+      this.lastAnswerDiscardFailure = `flush of the discard of answer "${discard.messageId}" (question "${discard.reportId}", lead "${discard.leadSessionId}") failed: ${thrownMessage(error)}`
+      this.ctx.logger.warn(`devlead: ${this.lastAnswerDiscardFailure}; queued for retry`)
       this.queueAnswerDiscard(discard)
     }
   }
@@ -4235,7 +4268,11 @@ export class DevLeadService extends Service {
         )
       }
     } else {
-      void this.outbox.putAnswerDiscard(discard)
+      void this.outbox.putAnswerDiscard(discard).then((durable) => {
+        if (!durable) {
+          this.lastAnswerDiscardFailure = `durable queue write of answer discard "${discard.messageId}" (lead "${leadId}") failed; the queue row is memory-only until the next drain`
+        }
+      })
     }
     this.scheduleAnswerDiscardRetry()
   }
@@ -4255,26 +4292,57 @@ export class DevLeadService extends Service {
 
   /**
    * Rehydrate the durable answer discard queue after the outbox opens (boot or
-   * late storage mount): every surviving row re-enters the memory queue and
+   * late storage mount): every still-valid row re-enters the memory queue and
    * seeds the tracker as discarded, so a question whose answer was dropped
    * while the lead stayed cold reads open immediately — even before the drain
-   * appends the record. Rows queued in memory before the outbox opened are
-   * mirrored back into it. Live leads drain right away.
+   * appends the record. A stale row whose answer survived (a keep/clear-own
+   * restore re-inserted it, or it was presented) or was superseded by a newer
+   * durable answer is dropped, never seeded. Each lead's restored rows are
+   * bounded exactly like the live queue (newest kept, overflow warned). Rows
+   * queued in memory before the outbox opened are mirrored back into it. Live
+   * leads drain right away.
    */
-  private restoreAnswerDiscards(): void {
+  private async restoreAnswerDiscards(): Promise<void> {
     const outbox = this.outbox
     if (outbox === undefined || !outbox.available) return
+    const byLead = new Map<string, DevLeadAnswerDiscardRow[]>()
     for (const row of outbox.answerDiscards()) {
-      const discard = row.answer
-      const queue = this.pendingAnswerDiscards.get(discard.leadSessionId) ?? []
-      if (!queue.some(existing => existing.reportId === discard.reportId
-        && existing.messageId === discard.messageId && existing.status === discard.status)) {
-        queue.push(discard)
-        this.pendingAnswerDiscards.set(discard.leadSessionId, queue)
+      const rows = byLead.get(row.answer.leadSessionId) ?? []
+      rows.push(row)
+      byLead.set(row.answer.leadSessionId, rows)
+    }
+    const logCache = new Map<string, readonly SessionEvent[] | undefined>()
+    for (const [leadId, rows] of byLead) {
+      rows.sort((left, right) => left.enqueuedAt - right.enqueuedAt)
+      if (rows.length > MAX_PENDING_ANSWER_DISCARDS) {
+        const dropped = rows.splice(0, rows.length - MAX_PENDING_ANSWER_DISCARDS)
+        this.ctx.logger.warn(
+          `devlead: restored answer discard queue for lead "${leadId}" exceeded ${String(MAX_PENDING_ANSWER_DISCARDS)} entries; `
+          + `dropped the ${String(dropped.length)} oldest — their questions may stay answered after a restart`,
+        )
+        for (const row of dropped) void outbox.deleteAnswerDiscard(row.answer)
       }
-      // The seq-aware seed never lets a stale queued discard outrank a newer
-      // re-answer already observed in memory.
-      this.answers.seed(discard)
+      for (const row of rows) {
+        const discard = row.answer
+        if (this.leadSideObsolete(discard)) {
+          this.dropObsoleteDiscard(discard)
+          continue
+        }
+        const survival = await this.survivalProof(discard, logCache)
+        if (survival !== undefined) {
+          this.dropObsoleteDiscard(discard, survival)
+          continue
+        }
+        const queue = this.pendingAnswerDiscards.get(leadId) ?? []
+        if (!queue.some(existing => existing.reportId === discard.reportId
+          && existing.messageId === discard.messageId && existing.status === discard.status)) {
+          queue.push(discard)
+          this.pendingAnswerDiscards.set(leadId, queue)
+        }
+        // The seq-aware, presentation-safe seed never lets a stale queued
+        // discard outrank a newer re-answer or rewind a presented answer.
+        this.answers.seed(discard)
+      }
     }
     for (const [leadId, queue] of this.pendingAnswerDiscards) {
       for (const discard of queue) void outbox.putAnswerDiscard(discard)
@@ -4305,11 +4373,143 @@ export class DevLeadService extends Service {
   }
 
   /**
+   * Lead-side obsolescence of one queued discard: a newer answer of the same
+   * question is already durable (same or higher admission sequence), or a
+   * different discard fact of the same message is already durable.
+   * @param discard - the queued discard fact.
+   * @returns whether the durable audit already supersedes the discard.
+   */
+  private leadSideObsolete(discard: DevLeadReportAnswer): boolean {
+    const leadSession = this.ctx.sessions.get(toSessionId(discard.leadSessionId))
+    if (leadSession === undefined) return false
+    const state = this.projectionHandle.stateOf(leadSession)
+    if (state.failure !== null) return false
+    const latest = latestAnswerOf(state.answers, discard.reportId)
+    if (latest === undefined) return false
+    if (latest.messageId !== discard.messageId && (latest.answerSeq ?? 0) >= (discard.answerSeq ?? 0)) return true
+    return latest.messageId === discard.messageId
+      && (latest.status === 'discarded' || latest.status === 'failed')
+      && latest.at !== discard.at
+  }
+
+  /**
+   * Prove that a queued discard's answer SURVIVED, so the discard must be
+   * dropped and any tracker entry it poisoned repaired: the message is still
+   * pending in the child inbox (a keep/clear-own restore re-inserted it after a
+   * canceled splice) or it really presented. A live child is checked through
+   * its inbox and observer; a cold child through its durable log (attached
+   * Session snapshot, else the Session query engine), replayed exactly like the
+   * activation path so canceled+restore histories resolve identically.
+   * @param discard - the queued discard fact.
+   * @param logCache - per-pass cache of cold child logs, avoiding one read per row.
+   * @returns the proven survival state, or undefined when nothing disproves the discard.
+   */
+  private async survivalProof(
+    discard: DevLeadReportAnswer,
+    logCache: Map<string, readonly SessionEvent[] | undefined>,
+  ): Promise<{ readonly status: 'presented'; readonly at: number } | { readonly status: 'admitted' } | undefined> {
+    const childId = discard.sessionId
+    const child = this.ctx.agents.get(toSessionId(childId))
+    if (child !== undefined) {
+      if (locatedInputs(child).some(entry => String(entry.message.id) === discard.messageId)) return { status: 'admitted' }
+      const presentedAt = this.childAnswerObservers.get(childId)?.presentedAtOf(discard.messageId)
+      if (presentedAt !== undefined) return { status: 'presented', at: presentedAt }
+      const entry = this.answers.entryOfMessage(childId, discard.messageId)
+      if (entry?.status === 'presented') return { status: 'presented', at: entry.presentedAt ?? entry.at }
+      return undefined
+    }
+    let events = logCache.get(childId)
+    if (events === undefined && !logCache.has(childId)) {
+      events = await this.childLogEvents(childId)
+      logCache.set(childId, events)
+    }
+    if (events === undefined) return undefined
+    const observer = new DevLeadChildAnswerObserver()
+    observer.replay(events)
+    const presentedAt = observer.presentedAtOf(discard.messageId)
+    if (presentedAt !== undefined) return { status: 'presented', at: presentedAt }
+    if (observer.isPending(discard.messageId)) return { status: 'admitted' }
+    return undefined
+  }
+
+  /**
+   * Read one child's durable log: the attached Session snapshot when present,
+   * else the persisted log through the optional Session query engine.
+   * @param childId - child Session identity.
+   * @returns the committed events, or undefined when unreadable.
+   */
+  private async childLogEvents(childId: string): Promise<readonly SessionEvent[] | undefined> {
+    const session = this.ctx.sessions.get(toSessionId(childId))
+    if (session !== undefined) return session.snapshotEvents()
+    const query = this.ctx.get('sessionQuery')
+    if (query === undefined) return undefined
+    try {
+      return (await query.readSession(toSessionId(childId))).events
+    } catch {
+      return undefined
+    }
+  }
+
+  /**
+   * Drop one obsolete queued discard (memory row already removed by the caller;
+   * this removes the durable row) and repair a tracker entry the stale discard
+   * had marked discarded/failed back to the proven reality.
+   * @param discard - the obsolete discard fact.
+   * @param survival - the proven survival state, when the drop is survival-based.
+   */
+  private dropObsoleteDiscard(
+    discard: DevLeadReportAnswer,
+    survival?: { readonly status: 'presented'; readonly at: number } | { readonly status: 'admitted' },
+  ): void {
+    void this.outbox?.deleteAnswerDiscard(discard)
+    if (survival?.status === 'presented') {
+      this.answers.repairLifecycle(discard.sessionId, discard.messageId, 'presented', survival.at)
+    } else if (survival?.status === 'admitted') {
+      this.answers.repairLifecycle(discard.sessionId, discard.messageId, 'admitted', Date.now())
+    }
+  }
+
+  /**
+   * Reconcile every lead's queued discards targeting one newly-live child
+   * against the child's observable reality: a row whose answer is still pending
+   * (a keep/clear-own restore re-inserted it) or was presented is obsolete —
+   * drop it (memory and durable row) and repair a tracker entry the stale row
+   * had marked discarded. Runs at child activation, when the inbox and the
+   * replayed log first become checkable.
+   * @param childId - child Session identity that just became live.
+   */
+  private async reconcileQueuedDiscardsForChild(childId: string): Promise<void> {
+    const logCache = new Map<string, readonly SessionEvent[] | undefined>()
+    for (const [leadId, queue] of [...this.pendingAnswerDiscards]) {
+      const kept: DevLeadReportAnswer[] = []
+      for (const discard of queue) {
+        if (discard.sessionId !== childId) {
+          kept.push(discard)
+          continue
+        }
+        if (this.leadSideObsolete(discard)) {
+          this.dropObsoleteDiscard(discard)
+          continue
+        }
+        const survival = await this.survivalProof(discard, logCache)
+        if (survival !== undefined) {
+          this.dropObsoleteDiscard(discard, survival)
+          continue
+        }
+        kept.push(discard)
+      }
+      if (kept.length === 0) this.pendingAnswerDiscards.delete(leadId)
+      else this.pendingAnswerDiscards.set(leadId, kept)
+    }
+  }
+
+  /**
    * One drain pass over a lead's queued discards. A discard superseded by a
    * newer answer of the same question (durable or observed) is dropped instead
    * of appended, so a delayed old discard can never become the latest fact; a
-   * discard whose exact fact is already durable is dropped too. Append/flush
-   * failures re-queue the affected rows for the next drain.
+   * discard whose exact fact is already durable, or whose answer survived
+   * (pending/presented), is dropped too. Append/flush failures re-queue the
+   * affected rows for the next drain.
    * @param leadId - lead Session identity.
    */
   private async drainAnswerDiscards(leadId: string): Promise<void> {
@@ -4332,31 +4532,33 @@ export class DevLeadService extends Service {
     }
     const appended: DevLeadReportAnswer[] = []
     const failed: DevLeadReportAnswer[] = []
+    const logCache = new Map<string, readonly SessionEvent[] | undefined>()
     for (const discard of queue) {
-      const state = this.projectionHandle.stateOf(leadSession)
-      const latest = latestAnswerOf(state.answers, discard.reportId)
       const entry = this.answers.entryOfQuestion(leadId, discard.reportId)
-      const discardSeq = discard.answerSeq ?? 0
-      const supersededByRecord = latest !== undefined && latest.messageId !== discard.messageId
-        && (latest.answerSeq ?? 0) >= discardSeq
       const supersededByMemory = entry !== undefined && entry.messageId !== discard.messageId
-        && entry.answerSeq >= discardSeq
-      // A different discard fact of the same message is already durable.
-      const alreadyRecorded = latest !== undefined && latest.messageId === discard.messageId
-        && (latest.status === 'discarded' || latest.status === 'failed') && latest.at !== discard.at
-      if (supersededByRecord || supersededByMemory || alreadyRecorded) {
-        void this.outbox?.deleteAnswerDiscard(discard)
+        && entry.answerSeq >= (discard.answerSeq ?? 0)
+      if (supersededByMemory || this.leadSideObsolete(discard)) {
+        this.dropObsoleteDiscard(discard)
+        continue
+      }
+      // The answer may have survived (restored/pending or presented) — check
+      // the child's inbox or durable log before appending the discard.
+      const survival = await this.survivalProof(discard, logCache)
+      if (survival !== undefined) {
+        this.dropObsoleteDiscard(discard, survival)
         continue
       }
       // This exact fact may already sit in the live log (a flush failed after a
       // successful append): it then needs only the flush, not a duplicate row.
+      const latest = latestAnswerOf(this.projectionHandle.stateOf(leadSession).answers, discard.reportId)
       const alreadyAppended = latest !== undefined && latest.messageId === discard.messageId
         && latest.status === discard.status && latest.at === discard.at
       if (!alreadyAppended) {
         try {
           appendPluginRecord(leadSession, DEVLEAD_REPORT_ANSWER_RECORD_TYPE, reportAnswerRecord(discard))
         } catch (error: unknown) {
-          this.ctx.logger.warn(`devlead: could not reconcile answer discard "${discard.messageId}": ${thrownMessage(error)}; queued for retry`)
+          this.lastAnswerDiscardFailure = `reconcile append of answer discard "${discard.messageId}" (lead "${leadId}") failed: ${thrownMessage(error)}`
+          this.ctx.logger.warn(`devlead: ${this.lastAnswerDiscardFailure}; queued for retry`)
           failed.push(discard)
           continue
         }
@@ -4367,11 +4569,11 @@ export class DevLeadService extends Service {
     if (appended.length > 0) {
       try {
         await this.ctx.sessions.flush(leadSession)
+        this.lastAnswerDiscardFailure = undefined
       } catch (error: unknown) {
         flushed = false
-        this.ctx.logger.warn(
-          `devlead: reconciled answer discards for lead "${leadId}" could not be flushed: ${thrownMessage(error)}; queued for retry`,
-        )
+        this.lastAnswerDiscardFailure = `reconcile flush of answer discards for lead "${leadId}" failed: ${thrownMessage(error)}`
+        this.ctx.logger.warn(`devlead: ${this.lastAnswerDiscardFailure}; queued for retry`)
       }
     }
     for (const discard of appended) {
@@ -4396,6 +4598,13 @@ export class DevLeadService extends Service {
    * @param at - discard instant (the proving log event's time for a replay).
    */
   private discardPendingAnswer(targetId: string, messageId: string, questionId: string, leadId: string, at = Date.now()): void {
+    // The child inbox is authoritative about survival: a message still pending
+    // (for example one a keep/clear-own restore re-inserted after a canceled
+    // splice) or already presented must never be discarded, whatever a
+    // replayed cancellation candidate or stale queue row claims.
+    const targetAgent = this.ctx.agents.get(toSessionId(targetId))
+    if (targetAgent !== undefined && locatedInputs(targetAgent).some(entry => String(entry.message.id) === messageId)) return
+    if (this.childAnswerObservers.get(targetId)?.wasPresented(messageId) === true) return
     const advanced = this.answers.discarded(targetId, messageId, at)
     if (advanced !== undefined) {
       void this.writeAnswerDiscard(advanced, at)
@@ -4574,16 +4783,23 @@ export class DevLeadService extends Service {
     if (existing === undefined) {
       // First event of an unknown Session: the snapshot already includes this
       // event, so a full replay both initializes the observer and proves any
-      // historical discards the live tracker never saw.
-      const observer = new DevLeadChildAnswerObserver()
-      derived = observer.replay(session.snapshotEvents())
-      this.rememberChildObserver(sessionId, observer)
+      // historical discards the live tracker never saw. When the log ends
+      // inside this service's interrupt window, the restore has not happened
+      // yet: surviving cancellation candidates must stay pending.
+      derived = this.replayChildObserver(session)
     } else {
       derived = existing.observe(event, this.interrupting.has(sessionId))
     }
     for (const discard of derived) {
       this.discardPendingAnswer(sessionId, discard.messageId, discard.questionId, discard.leadId, discard.at)
     }
+  }
+
+  /** Build one child observer whose eviction warnings reach the Host logger. */
+  private newChildObserver(sessionId: string): DevLeadChildAnswerObserver {
+    return new DevLeadChildAnswerObserver(message => {
+      this.ctx.logger.warn(`devlead: child answer observer for Session "${sessionId}": ${message}`)
+    })
   }
 
   /** Store one child observer, FIFO-evicting beyond the bounded count. */
@@ -4594,23 +4810,30 @@ export class DevLeadService extends Service {
       const oldest = this.childAnswerObservers.keys().next().value
       if (oldest === undefined) break
       this.childAnswerObservers.delete(oldest)
+      this.ctx.logger.warn(
+        `devlead: evicted the answer-log observer of Session "${oldest}" beyond ${String(MAX_CHILD_ANSWER_OBSERVERS)} tracked Sessions; `
+        + 'it will be rebuilt by replay when that Session becomes live again',
+      )
     }
   }
 
   /**
-   * Read (or rebuild by replay) the durable answer-log observer of one Session,
-   * returning the discards a fresh replay proves.
-   * @param session - Session whose inbox log is observed.
-   * @returns the observer and any discards derived by a first-time replay.
+   * Rebuild the durable answer-log observer of one Session by a full replay,
+   * replacing any prior observation. Every activation replays: a child that
+   * went live→cold→live again gained splices while cold that the previous
+   * observer never saw. Cancellation candidates finalize unless the log ends
+   * inside this service's interrupt window (the restore may still arrive).
+   * @param session - Session whose inbox log is replayed.
+   * @returns the discards the replay proves.
    */
-  private observerFor(session: Session): { observer: DevLeadChildAnswerObserver; derived: DerivedAnswerDiscard[] } {
+  private replayChildObserver(session: Session): DerivedAnswerDiscard[] {
     const sessionId = String(session.id)
-    const existing = this.childAnswerObservers.get(sessionId)
-    if (existing !== undefined) return { observer: existing, derived: [] }
-    const observer = new DevLeadChildAnswerObserver()
-    const derived = observer.replay(session.snapshotEvents())
+    const observer = this.newChildObserver(sessionId)
+    const derived = observer.replay(session.snapshotEvents(), {
+      finalizeCandidates: !this.interrupting.has(sessionId),
+    })
     this.rememberChildObserver(sessionId, observer)
-    return { observer, derived }
+    return derived
   }
 
   /**
@@ -4628,8 +4851,11 @@ export class DevLeadService extends Service {
     // Reconstruct answer discards from this Session's durable inbox log: a
     // restart (or a cold lead) leaves the live tracker empty, but the splices
     // still prove which answers were canceled or consumed by a rejected
-    // pre-step. Derivations are idempotent against the durable audit.
-    const { derived } = this.observerFor(agent.session)
+    // pre-step. Every activation replays the full log — a live→cold→live child
+    // gained splices while cold that an earlier observer never saw.
+    // Derivations are idempotent against the durable audit, and a canceled
+    // answer that a keep/clear-own restore re-inserted is not discarded.
+    const derived = this.replayChildObserver(agent.session)
     for (const discard of derived) {
       this.discardPendingAnswer(sessionId, discard.messageId, discard.questionId, discard.leadId, discard.at)
     }
@@ -4650,6 +4876,10 @@ export class DevLeadService extends Service {
       }
       for (const answer of latest.values()) this.answers.seed(answer)
     }
+    // This Session's inbox is now observable: drop queued discards of its
+    // answers that reality disproves (restored/pending or presented), and
+    // repair any tracker entry a stale queue row had marked discarded.
+    void this.reconcileQueuedDiscardsForChild(sessionId)
     const ownState = this.projectionHandle.stateOf(agent.session)
     if (ownState.failure === null && ownState.enabled) {
       const latest = new Map<string, DevLeadReportAnswer>()
