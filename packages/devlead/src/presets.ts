@@ -12,6 +12,7 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { DevLeadAgentPresetView } from '@yankeguo/dsh-devlead-protocol'
+import { recordOf, stringField } from './normalize.ts'
 
 /** One Host Agent preset row, structurally narrowed for roster reads. */
 export interface AgentPresetRosterRow {
@@ -34,26 +35,6 @@ export interface AgentPresetRosterCapability {
    * @returns Host roster rows in roster order.
    */
   list(): Promise<readonly AgentPresetRosterRow[]>
-}
-
-/**
- * Treat one unknown value as a record for defensive roster normalization.
- * @param value - candidate value.
- * @returns the value when it is a non-array object, otherwise undefined.
- */
-function recordOf(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : undefined
-}
-
-/**
- * Read one string field, or an empty string when absent.
- * @param value - candidate value.
- * @returns the string, or ''.
- */
-function stringField(value: unknown): string {
-  return typeof value === 'string' ? value : ''
 }
 
 /**

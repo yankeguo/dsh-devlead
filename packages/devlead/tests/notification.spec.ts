@@ -18,6 +18,7 @@ import {
 } from '@yankeguo/dsh-devlead-protocol'
 import type { DevLeadNotification } from '@yankeguo/dsh-devlead-protocol'
 import { DEVLEAD_RESET_RECORD_TYPE, modeRecord, resetRecord, watchRecord } from '../src/domain.ts'
+import { devLeadReport } from '../src/index.ts'
 import { DEVLEAD_MAX_WARNED_FAILURES, renderDevLeadNotice } from '../src/notification.ts'
 import type { HubHarness, HubLead } from './harness.ts'
 import {
@@ -523,6 +524,27 @@ describe('DevLeadNotificationHub lifecycle', () => {
     await harness.hub.deliverNow(String(lead.agent.id))
     await flushMicrotasks()
     expect(lead.agent.followups).toHaveLength(0)
+  })
+
+  it('refuses reports for an archived lead on both the queue and durable paths', async () => {
+    installFakeTimers()
+    const registry = new FakeWorkspaceRegistry()
+    const harness = await bootHub({ batchMs: 400, workspaceRegistry: registry })
+    const lead = onlyLead(harness)
+    const report = (message: string) => devLeadReport({
+      senderSessionId: String(harness.watched.id),
+      leadSessionId: String(lead.agent.id),
+      turn: 1,
+      kind: 'progress',
+      message,
+      at: T0,
+    })
+    expect(harness.hub.report(report('before archive'))).toBe(true)
+    // The sync queue path applies the same archived-lead guard as the durable
+    // receipt path: a lead archived mid-turn must not keep receiving reports.
+    registry.archived = [String(lead.agent.id)]
+    expect(harness.hub.report(report('after archive'))).toBe(false)
+    expect(await harness.hub.persistReport(report('durable after archive'))).toBe(false)
   })
 
   it('never resumes or wakes a cold archived lead even when wakeColdSession is enabled', async () => {

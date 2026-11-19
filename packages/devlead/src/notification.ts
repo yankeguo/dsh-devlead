@@ -292,9 +292,8 @@ export class DevLeadNotificationHub {
    * @returns whether the report belongs to an indexed watch relationship.
    */
   report(report: DevLeadReport): boolean {
-    if (this.stopping) return false
-    const runtime = this.leads.get(report.leadSessionId)
-    if (runtime === undefined || !runtime.watched.has(report.senderSessionId)) return false
+    const runtime = this.reportRuntime(report)
+    if (runtime === undefined) return false
     if (runtime.pendingReports.some(existing => existing.id === report.id)
       || runtime.unsavedReports.some(existing => existing.id === report.id)) return true
     const session = this.ctx.sessions.get(toSessionId(report.leadSessionId))
@@ -328,12 +327,8 @@ export class DevLeadNotificationHub {
    * @returns whether the lead Session log now carries a flushed receipt.
    */
   async persistReport(report: DevLeadReport): Promise<boolean> {
-    if (this.stopping) return false
-    const runtime = this.leads.get(report.leadSessionId)
-    if (runtime === undefined || !runtime.watched.has(report.senderSessionId)) return false
-    if (this.ctx.get('workspaceRegistry')?.archivedSessionIds.some(id => String(id) === report.leadSessionId) ?? false) {
-      return false
-    }
+    const runtime = this.reportRuntime(report)
+    if (runtime === undefined) return false
     const session = this.ctx.sessions.get(toSessionId(report.leadSessionId))
     if (session === undefined) {
       runtime.unsavedReports = [...runtime.unsavedReports, report].slice(-DEVLEAD_REPORT_RETENTION)
@@ -366,6 +361,24 @@ export class DevLeadNotificationHub {
     }
     this.scheduleFlush(runtime)
     return true
+  }
+
+  /**
+   * Resolve the lead runtime one report may be queued for: the hub must be
+   * running, the lead indexed and still watching the sender, and the lead not
+   * archived. Shared by the sync queue path and the durable receipt path so
+   * both reject the same relationships.
+   * @param report - report addressed to one lead.
+   * @returns the lead runtime, or undefined when the report must be refused.
+   */
+  private reportRuntime(report: DevLeadReport): LeadRuntime | undefined {
+    if (this.stopping) return undefined
+    const runtime = this.leads.get(report.leadSessionId)
+    if (runtime === undefined || !runtime.watched.has(report.senderSessionId)) return undefined
+    if (this.ctx.get('workspaceRegistry')?.archivedSessionIds.some(id => String(id) === report.leadSessionId) ?? false) {
+      return undefined
+    }
+    return runtime
   }
 
   /**
