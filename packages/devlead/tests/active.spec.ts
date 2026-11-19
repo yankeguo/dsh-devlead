@@ -50,6 +50,16 @@ describe('lastEnabledAt', () => {
     ])).toBeUndefined()
   })
 
+  it('takes a fork self-enable over an earlier inherited enable', () => {
+    // The inherited prefix may carry the parent's enabled record; a later
+    // self-enable in the child-owned suffix must supply the occupant ranking
+    // instant.
+    expect(lastEnabledAt([
+      modeEvent(0, true, T0),
+      modeEvent(5, true, T0 + 120),
+    ])).toBe(T0 + 120)
+  })
+
   it('ignores unrelated and malformed records without throwing', () => {
     expect(lastEnabledAt([
       sessionEvent(0, 'turn/start', { turn: 1 }),

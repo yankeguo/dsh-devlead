@@ -1143,7 +1143,7 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   + 阶段 3 88，阶段 3 含 agent preset roster、watched-Session 问题路由与排队 inbox 检查）；跳过阶段 2 时
   **127/127**（阶段 1 + 1b + 3）。
 - 本轮最终验证数字（工作树，排队 inbox 输入能力轮）：`pnpm verify` =
-  typecheck 通过 + **26 文件 / 877 tests** + 7 个构建产物；`node scripts/check-packages.mjs` →
+  typecheck 通过 + **26 文件 / 879 tests** + 7 个构建产物；`node scripts/check-packages.mjs` →
   `OK (6 packages)`；E2E 在安装版 rc.5 实跑 installed 与 patch **完整双流各 150/150**
   （phase 1 27 + 1b 12 + 2 23 + 3 88），`--no-worktree` **127/127**。上一轮（0.2.6+ 工具面审计，
   见 [AUDIT](AUDIT.md) §12）为 821 tests / 146/146。

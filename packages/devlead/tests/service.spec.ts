@@ -512,6 +512,37 @@ describe('global single active mode', () => {
     expect(query.readSessionCalls).toBe(0)
   })
 
+  it('does not treat an ordinary fork inherited prefix as a cold occupant', async () => {
+    const query = new FakeSessionQuery()
+    const cache = new FakeProjectionCache()
+    const watchedId = 'ordinary-fork-admission-watched-child'
+    const logs = await buildForkedPersistedLogs({
+      parentId: 'ordinary-fork-admission-parent',
+      childId: 'ordinary-fork-admission-child',
+      buildInherited: (session) => {
+        appendPluginRecord(session, DEVLEAD_MODE_RECORD_TYPE, modeRecord(true, T0))
+        appendPluginRecord(session, DEVLEAD_WATCH_RECORD_TYPE, watchRecord([watchedId], T0))
+      },
+    })
+    // This is the scanActiveSessions branch, not the subagent origin skip: the
+    // fork header has no subagent origin.
+    expect(logs.child.header.origin).not.toBe('subagent')
+    expect(logs.child.inheritedEventCount).toBeGreaterThan(0)
+    seedPersistedLog(query, logs.child)
+    cache.setDevLead('ordinary-fork-admission-child', { enabled: true, sessions: [watchedId] })
+    const harness = await bootService({
+      sessionIds: ['fresh-admission-lead', watchedId],
+      sessionQuery: query,
+      projectionCache: cache,
+    })
+    const fresh = new FakeAgent(requireSession(harness, 'fresh-admission-lead'))
+    harness.agents.add(fresh)
+    await harness.service.setEnabled(fresh.agent, true)
+    expect(harness.service.isEnabled(fresh.agent)).toBe(true)
+    // The cold scan really read the fork log and folded it with its prefix.
+    expect(query.readSessionCalls).toBe(1)
+  })
+
   it('does not rehydrate an ordinary fork as a lead or displace its parent', async () => {
     const query = new FakeSessionQuery()
     const cache = new FakeProjectionCache()
@@ -542,6 +573,10 @@ describe('global single active mode', () => {
     harness.agents.add(watched)
     expect(harness.service.supervisorOf(watched.agent)).toBe('fork-parent-lead')
     expect(harness.service.isSupervised(watched.agent)).toBe(true)
+    // The hub does not expose its watcher index, so observe routing directly:
+    // a report from the watched child must name the real parent, never the fork.
+    const receipt = await harness.service.reportProgress(watched.agent, { message: 'ghost absence probe' })
+    expect(receipt.report.leadSessionId).toBe('fork-parent-lead')
   })
 
   it('refolds a stale fork cache row with its inherited prefix', async () => {
