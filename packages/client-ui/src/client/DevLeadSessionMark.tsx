@@ -18,7 +18,7 @@ import type { SessionListState } from '@deepseek-ai/dsh-api-session-controller/c
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 // Type-only: pulls the ui-workspace SlotMap merge (the sidebar Session-row seats).
 import type {} from '@deepseek-ai/dsh-client-ui-workspace/client'
-import { devLeadRowEnabled, devLeadRowWatched } from './sessionMark.ts'
+import { devLeadRowEnabled, devLeadRowSummaryOf, devLeadRowWatched } from './sessionMark.ts'
 
 /** Full props of the row mark: row identity + runtime hooks + copy. */
 export type DevLeadSessionMarkProps =
@@ -35,7 +35,7 @@ export type DevLeadSessionMarkProps =
 export function DevLeadSessionMark({ sessionId, useSessions, t }: DevLeadSessionMarkProps) {
   // The explicit parameter type keeps this component typed even in a workspace
   // that does not install the shell store package that declares the hook shape.
-  const enabled = useSessions((state: SessionListState) => devLeadRowEnabled(state.byId[sessionId]))
+  const enabled = useSessions((state: SessionListState) => devLeadRowEnabled(devLeadRowSummaryOf(state.byId, sessionId)))
   const watched = useSessions((state: SessionListState) => devLeadRowWatched(sessionId, state.byId))
   if (enabled) {
     // The visible cue is the row ring; this hook carries the active fact for

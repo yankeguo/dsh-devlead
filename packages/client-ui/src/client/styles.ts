@@ -279,13 +279,24 @@ export const styles = `
   flex: none;
 }
 
-.devlead-notification-error {
+/* A turn failure excerpt keeps the error ink; a report's summary/message
+   detail is neutral copy — the kind dot and localized label carry the
+   semantics, so progress/fyi/question text must not read as a failure. */
+.devlead-notification-error,
+.devlead-notification-detail {
   flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
-  color: var(--dsw-alias-label-error, #c0392b);
   font-size: 12px;
   text-overflow: ellipsis;
+}
+
+.devlead-notification-error {
+  color: var(--dsw-alias-label-error, #c0392b);
+}
+
+.devlead-notification-detail {
+  color: var(--dsw-alias-label-secondary, GrayText);
 }
 
 /* Visually hidden but announced: the compact toolbar surface has no inline
@@ -328,7 +339,7 @@ export const styles = `
 [data-row-key^="session:"]:has([data-devlead-active-mark="true"])::after {
   content: '';
   position: absolute;
-  inset: 0 calc(-1 * var(--dsh-sidebar-paint-inset));
+  inset: 0 calc(-1 * var(--dsh-sidebar-paint-inset, 3px));
   border: 1px solid var(--dsw-alias-state-business-primary, #4176e6);
   border-radius: inherit;
   box-shadow: 0 0 0 2px var(--dsw-alias-state-business-tertiary, rgba(65, 118, 230, 0.12));

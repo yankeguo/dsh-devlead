@@ -20,6 +20,7 @@ import type { SessionStatusSnapshot } from '@deepseek-ai/dsh-client-ui-session/c
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import { DEVLEAD_PROJECTION_KEY } from '@yankeguo/dsh-devlead-protocol/client'
 import {
+  epochMillis,
   latestNotification,
   latestReport,
   notificationSummary,
@@ -48,9 +49,12 @@ export function DevLeadBar({
   const summary = summarizeWatched(projection.sessions, rows, statuses)
   const latest = latestNotification(projection.notifications)
   const latestRep = latestReport(projection.reports ?? [])
-  // Both digest families share one strip: the newest retained row wins, and a
-  // report is a mid-turn update rather than a settled-turn transition.
-  const showReport = latestRep !== null && (latest === null || latestRep.at >= latest.at)
+  // Both digest families share one strip: the newest retained row wins (a tie
+  // goes to the report), and a report is a mid-turn update rather than a
+  // settled-turn transition. Both instants are sanitized first: a drifted
+  // non-finite `at` must not poison the comparison.
+  const showReport = latestRep !== null
+    && (latest === null || epochMillis(latestRep.at) >= epochMillis(latest.at))
   const notice = !showReport && latest !== null ? notificationSummary(latest) : null
   const reportNotice = showReport && latestRep !== null ? reportSummary(latestRep) : null
   const tooltip = reportNotice?.tooltip ?? notice?.tooltip ?? t('hint.enabled')
@@ -103,7 +107,7 @@ export function DevLeadBar({
               <span className="devlead-notification-who">{reportNotice.who}</span>
               <span className="devlead-notification-label">{t(reportNotice.labelKey)}</span>
               {reportNotice.detail !== undefined && (
-                <span className="devlead-notification-error">{reportNotice.detail}</span>
+                <span className="devlead-notification-detail">{reportNotice.detail}</span>
               )}
             </span>
           ) : notice === null ? (

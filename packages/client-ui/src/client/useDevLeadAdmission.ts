@@ -42,7 +42,11 @@ export interface DevLeadAdmission {
  * `resetKey` is the projection's enabled flag: any mode change (from the
  * toggle, another client, or a `/devlead` command) invalidates feedback that
  * belonged to the previous attempt, while a rejected toggle leaves the flag
- * untouched so its error stays visible.
+ * untouched so its error stays visible. The invalidation also covers a mode
+ * change that lands *while* a command is in flight: the attempt records the
+ * reset key it was admitted under, and its settle drops the failure when the
+ * key has changed since (clearing pending either way), so a stale failure can
+ * never resurrect on a surface whose mode already moved on.
  * @param executeCommand - injected command face bound to the surface's Session.
  * @param resetKey - value whose change retires the previous attempt's failure.
  * @returns the in-flight flag, the last failure, and the admission callback.
@@ -64,17 +68,28 @@ export function useDevLeadAdmission(
       aliveRef.current = false
     }
   }, [])
+  // The reset key the surface currently renders under. Updated in the same
+  // effect that retires settled failures, so an in-flight attempt can compare
+  // the key it was admitted under against the live one at settle time. (If a
+  // settle lands between the mode-change commit and this effect, the reset
+  // dispatch below still clears the failure it wrote — both orders converge.)
+  const resetKeyRef = useRef(resetKey)
   useEffect(() => {
+    resetKeyRef.current = resetKey
     dispatch({ type: 'reset' })
   }, [resetKey])
 
   const run = (line: string): void => {
     if (!gate.tryEnter()) return
+    const admittedKey = resetKeyRef.current
     dispatch({ type: 'begin' })
     void admitCommand(executeCommand, line).then((failure) => {
       gate.leave()
       if (!aliveRef.current) return
-      dispatch({ type: 'settle', failure: failure ?? null })
+      // A mode change while the command was in flight retires this attempt's
+      // feedback: settle clears pending but must not resurrect a stale failure.
+      const stale = resetKeyRef.current !== admittedKey
+      dispatch({ type: 'settle', failure: stale ? null : failure ?? null })
     })
   }
 

@@ -12,7 +12,7 @@ import {
   DEVLEAD_MODE_PROJECTION_KEY,
   DEVLEAD_WATCH_PROJECTION_KEY,
 } from '@yankeguo/dsh-devlead-protocol/client'
-import { devLeadRowEnabled, devLeadRowWatched } from '../src/client/sessionMark.ts'
+import { devLeadRowEnabled, devLeadRowSummaryOf, devLeadRowWatched } from '../src/client/sessionMark.ts'
 import type { DevLeadRowSummary } from '../src/client/sessionMark.ts'
 
 /** Build one row summary around the projection values under test. */
@@ -82,5 +82,36 @@ describe('devLeadRowWatched', () => {
     })
     expect(devLeadRowWatched('session-1', { lead: noSet })).toBe(false)
     expect(devLeadRowWatched('session-1', { lead: badSet })).toBe(false)
+  })
+
+  it('reads prototype keys as absent rows, and an explicit watch entry still marks', () => {
+    // `byId['toString']` on a plain object answers with an inherited function;
+    // the own-property lookup must treat it as "no row" (fail closed), while a
+    // lead that explicitly lists the id still watches it.
+    expect(devLeadRowSummaryOf({}, 'toString')).toBeUndefined()
+    expect(devLeadRowEnabled(devLeadRowSummaryOf({}, 'constructor'))).toBe(false)
+    expect(devLeadRowWatched('toString', {})).toBe(false)
+    expect(devLeadRowWatched('toString', { lead: lead(['toString']) })).toBe(true)
+  })
+
+  it('ignores empty and non-string watch entries', () => {
+    expect(devLeadRowWatched('', { lead: lead(['']) })).toBe(false)
+    const drift = summary({
+      [DEVLEAD_MODE_PROJECTION_KEY]: { enabled: true },
+      [DEVLEAD_WATCH_PROJECTION_KEY]: { sessions: [42, null, 'session-1'] as never },
+    })
+    expect(devLeadRowWatched('session-1', { lead: drift })).toBe(true)
+  })
+
+  it('derives watched marks per catalog snapshot and reuses a snapshot consistently', () => {
+    // The watched-id set is cached by the catalog's `byId` reference (the
+    // shell publishes a fresh object per update): a new snapshot must reflect
+    // the new watch set, and repeated reads of one snapshot stay consistent.
+    const before = { 'lead-1': lead(['session-1']), 'session-1': summary(undefined) }
+    expect(devLeadRowWatched('session-1', before)).toBe(true)
+    expect(devLeadRowWatched('session-1', before)).toBe(true)
+    const after = { 'lead-1': lead([]), 'session-1': summary(undefined) }
+    expect(devLeadRowWatched('session-1', after)).toBe(false)
+    expect(devLeadRowWatched('session-1', before)).toBe(true)
   })
 })

@@ -142,14 +142,16 @@ describe('failureMessage', () => {
     const translate: DevLeadTranslate = (key, params) => `${key}|${String(params?.session)}`
     expect(failureMessage({ kind: 'rejected', message: message('Webapp (session-1)') }, translate))
       .toBe('error.alreadyActive|Webapp (session-1)')
-    const archived = 'Another Session is already in DevLead mode: session-1. That Session is archived and '
-      + 'could not be released automatically; open it, run /devlead off, then retry.'
-    expect(failureMessage({ kind: 'rejected', message: archived }, translate))
-      .toBe('error.alreadyActive.archived|session-1')
-    // A prefix-shaped message without our instruction stays verbatim rather
-    // than losing text to an over-eager match.
+    // Archived occupants no longer block admission, so the core never emits
+    // an archived refusal variant; a prefix-shaped message without our
+    // instruction stays verbatim rather than losing text to an over-eager match.
     const foreign = 'Another Session is already in DevLead mode: session-1 (host detail).'
     expect(failureMessage({ kind: 'rejected', message: foreign }, translate)).toBe(foreign)
+    // A legacy archived-shaped refusal (the core no longer produces it) has
+    // no special client handling anymore and stays verbatim.
+    const legacyArchived = 'Another Session is already in DevLead mode: session-1. That Session is archived and '
+      + 'could not be released automatically; open it, run /devlead off, then retry.'
+    expect(failureMessage({ kind: 'rejected', message: legacyArchived }, translate)).toBe(legacyArchived)
   })
 
   it('localizes every client-owned fallback', () => {

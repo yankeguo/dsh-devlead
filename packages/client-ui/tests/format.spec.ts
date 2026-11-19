@@ -8,6 +8,7 @@ import {
 } from '@yankeguo/dsh-devlead-protocol/client'
 import type { DevLeadNotification, DevLeadReport } from '@yankeguo/dsh-devlead-protocol/client'
 import {
+  epochMillis,
   latestNotification,
   latestReport,
   notificationSummary,
@@ -185,6 +186,13 @@ describe('summarizeWatched', () => {
     const statuses = new Map([['ghost', { running: true }]])
     expect(summarizeWatched(['ghost'], {}, statuses)).toEqual({ watched: 1, running: 1, missing: 1 })
   })
+
+  it('counts prototype-key watch entries as lost rows, not inherited catalog members', () => {
+    // A plain-object catalog answers `rows['toString']` with an inherited
+    // function; the own-property guard must still report the row as missing.
+    expect(summarizeWatched(['toString', 'constructor'], {}, undefined))
+      .toEqual({ watched: 2, running: 0, missing: 2 })
+  })
 })
 
 
@@ -240,5 +248,45 @@ describe('reportSummary', () => {
   it('returns the newest retained report', () => {
     expect(latestReport([])).toBeNull()
     expect(latestReport([BASE_REPORT])).toBe(BASE_REPORT)
+  })
+
+  it('sanitizes an unusable report instant instead of poisoning the newest-row comparison', () => {
+    for (const at of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+      expect(reportSummary({ ...BASE_REPORT, at }).at).toBe(0)
+    }
+    const drifted = { ...BASE_REPORT, at: 'yesterday' } as unknown as DevLeadReport
+    expect(reportSummary(drifted).at).toBe(0)
+    const { at: _at, ...withoutAt } = BASE_REPORT
+    expect(reportSummary(withoutAt as DevLeadReport).at).toBe(0)
+  })
+
+  it('degrades a drifted report in the tooltip path instead of throwing', () => {
+    // The chip fields guard their own types; the canonical tooltip rides the
+    // shared protocol line, which must tolerate the same drift (missing
+    // message, non-string summary, unknown kind) without a render crash.
+    const drifted = {
+      ...BASE_REPORT,
+      message: undefined,
+      summary: 42,
+      kind: 'urgent',
+    } as unknown as DevLeadReport
+    const summary = reportSummary(drifted)
+    expect(summary.detail).toBeUndefined()
+    expect(summary.labelKey).toBe('report.kind.unknown')
+    // An unknown kind takes the client's own raw fallback (title-only who);
+    // a known kind with drifted text rides the guarded protocol line instead
+    // (covered by the render tests).
+    expect(summary.tooltip).toBe('Fix the parser — report urgent')
+  })
+})
+
+describe('epochMillis', () => {
+  it('keeps finite numbers and degrades everything else to 0', () => {
+    expect(epochMillis(0)).toBe(0)
+    expect(epochMillis(Date.UTC(2026, 0, 5))).toBe(Date.UTC(2026, 0, 5))
+    expect(epochMillis(-1)).toBe(-1)
+    for (const value of [Number.NaN, Number.POSITIVE_INFINITY, undefined, null, '123', {}]) {
+      expect(epochMillis(value)).toBe(0)
+    }
   })
 })

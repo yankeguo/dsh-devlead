@@ -321,7 +321,9 @@ describe('styles', () => {
     expect(styles).toContain('[data-row-key^="session:"]:has([data-devlead-active-mark="true"])::after')
     expect(styles).toContain('border: 1px solid var(--dsw-alias-state-business-primary')
     expect(styles).toContain('border-radius: inherit')
-    expect(styles).toContain('inset: 0 calc(-1 * var(--dsh-sidebar-paint-inset))')
+    // The paint-inset read carries the shell's 3px value as a fallback so a
+    // renamed token degrades to a slightly inset ring, not a broken `inset`.
+    expect(styles).toContain('inset: 0 calc(-1 * var(--dsh-sidebar-paint-inset, 3px))')
     expect(styles).toContain('box-shadow: 0 0 0 2px var(--dsw-alias-state-business-tertiary')
     // The shell row has a 3px transparent border-inline but no top/bottom
     // border. Colouring or resizing it would be asymmetric; the ring must be an
@@ -341,6 +343,20 @@ describe('styles', () => {
     expect(styles).toMatch(/\.devlead-sr-only \{[^}]*clip: rect\(0 0 0 0\);/u)
     // Inline command errors moved to the toolbar toggle's tooltip/live region.
     expect(styles).not.toContain('.devlead-error')
+  })
+
+  it('renders report detail in neutral copy ink, reserving error red for failures', () => {
+    // A report's summary/message is copy, not a failure: the kind dot and
+    // localized label carry the semantics, so progress/fyi/question text must
+    // not read as an error. Only a turn failure excerpt keeps the error ink.
+    expect(styles).toContain('.devlead-notification-detail {')
+    // Anchor to the color-first standalone rules: the shared layout rule
+    // lists both selectors and must not be mistaken for a color rule.
+    const detail = /\.devlead-notification-detail \{\s*(color:[^}]*)\}/u.exec(styles)?.[1] ?? ''
+    expect(detail).toContain('var(--dsw-alias-label-secondary')
+    expect(detail).not.toContain('--dsw-alias-label-error')
+    const error = /\.devlead-notification-error \{\s*(color:[^}]*)\}/u.exec(styles)?.[1] ?? ''
+    expect(error).toContain('var(--dsw-alias-label-error')
   })
 
   it('marks the enabled toggle with the business accent border, not extra layout', () => {
@@ -386,7 +402,7 @@ describe('styles', () => {
     }
   })
 
-  it('pins the token set verified against the DSH 0.2.2-rc.1 through rc.4 themes', () => {
+  it('pins the token set verified against the DSH 0.2.2-rc.1 through rc.5 themes', () => {
     // Every name here was found in the DSH reference theme sources or their
     // shipped consumers; a misspelled or renamed token fails this list.
     expect(themeProperties()).toEqual(new Set([

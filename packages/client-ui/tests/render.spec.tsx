@@ -23,6 +23,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ReactElement, ReactNode } from 'react'
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer'
 import type { SessionListState } from '@deepseek-ai/dsh-api-session-controller/client'
+import type { SessionStatusSnapshot } from '@deepseek-ai/dsh-client-ui-session/client'
 import {
   DEVLEAD_MODE_PROJECTION_KEY,
   DEVLEAD_WATCH_PROJECTION_KEY,
@@ -207,7 +208,10 @@ function surfaceProps(fakes: SurfaceFakes): Record<string, unknown> {
     useProjection: () => fakes.projection,
     useSessions: (selector: (state: SessionListState) => unknown) =>
       selector({ byId: fakes.rows ?? {} } as unknown as SessionListState),
-    useSessionStatus: () => fakes.statuses ?? new Map(),
+    // Symmetric with useSessions: apply the component's selector so a changed
+    // selector shape fails the test instead of silently reading the raw map.
+    useSessionStatus: (selector: (snapshot: SessionStatusSnapshot) => unknown) =>
+      selector((fakes.statuses ?? new Map()) as unknown as SessionStatusSnapshot),
     executeCommand: fakes.executeCommand ?? succeed,
     t: fakes.t ?? t,
   }
@@ -424,6 +428,10 @@ describe('DevLeadBar', () => {
     expect(text).not.toContain(zh['transition.completed'])
     expect(notice.props['title']).toBe(reportLine(report))
     expect(renderer.root.findByProps({ 'data-report-kind': 'blocked' })).toBeDefined()
+    // Report detail is neutral copy, not a failure excerpt: the kind dot and
+    // label carry the semantics, the text must not wear the error ink.
+    expect(renderer.root.findByProps({ className: 'devlead-notification-detail' })).toBeDefined()
+    expect(renderer.root.findAllByProps({ className: 'devlead-notification-error' })).toHaveLength(0)
   })
 
   it('keeps a newer turn notification ahead of an older report', async () => {
@@ -445,6 +453,79 @@ describe('DevLeadBar', () => {
     const text = textOf(renderer.root.findByProps({ className: 'devlead-notice' }))
     expect(text).toContain(zh['transition.completed'])
     expect(text).not.toContain(zh['report.kind.progress'])
+  })
+
+  it('lets a report win an exact instant tie with the latest notification', async () => {
+    const projection: DevLeadProjection = {
+      enabled: true,
+      sessions: ['session-b'],
+      notifications: [NOTIFICATION],
+      reports: [{
+        id: 'session-b:2:report:question:abc',
+        kind: 'question',
+        message: 'which branch should I target?',
+        senderSessionId: 'session-b',
+        leadSessionId: 'lead-1',
+        turn: 2,
+        at: NOTIFICATION.at,
+      }],
+    }
+    const renderer = await mount(<DevLeadBar {...barProps({ projection })} />)
+    const text = textOf(renderer.root.findByProps({ className: 'devlead-notice' }))
+    expect(text).toContain(zh['report.kind.question'])
+    expect(text).not.toContain(zh['transition.completed'])
+  })
+
+  it('keeps a real notification ahead of a report whose drifted instant sanitizes to 0', async () => {
+    // Wire drift: missing message, non-string summary, non-finite instant.
+    // The strip must degrade instead of crashing, and the sanitized instant
+    // (0) must lose to the notification's real instant rather than poisoning
+    // the comparison (`NaN >= x` is always false, but so is `x >= NaN`).
+    const drifted = {
+      id: 'session-b:2:report:progress:abc',
+      kind: 'progress',
+      summary: 42,
+      senderSessionId: 'session-b',
+      leadSessionId: 'lead-1',
+      turn: 2,
+      at: Number.NaN,
+    } as unknown as DevLeadReport
+    const projection: DevLeadProjection = {
+      enabled: true,
+      sessions: ['session-b'],
+      notifications: [NOTIFICATION],
+      reports: [drifted],
+    }
+    const renderer = await mount(<DevLeadBar {...barProps({ projection })} />)
+    const text = textOf(renderer.root.findByProps({ className: 'devlead-notice' }))
+    expect(text).toContain(zh['transition.completed'])
+    expect(text).not.toContain(zh['report.kind.progress'])
+  })
+
+  it('renders a lone drifted report with a degraded tooltip instead of crashing', async () => {
+    const drifted = {
+      id: 'session-b:2:report:progress:abc',
+      kind: 'progress',
+      summary: 42,
+      senderSessionId: 'session-b',
+      leadSessionId: 'lead-1',
+      turn: 2,
+      at: Number.NaN,
+    } as unknown as DevLeadReport
+    const projection: DevLeadProjection = {
+      enabled: true,
+      sessions: ['session-b'],
+      notifications: [],
+      reports: [drifted],
+    }
+    const renderer = await mount(<DevLeadBar {...barProps({ projection })} />)
+    const notice = renderer.root.findByProps({ className: 'devlead-notice' })
+    expect(textOf(notice)).toContain('session-b')
+    expect(textOf(notice)).toContain(zh['report.kind.progress'])
+    // The canonical protocol line tolerates the same drift (no message, a
+    // non-string summary): bare sender id, kind label, no detail suffix.
+    expect(notice.props['title']).toBe('session-b — report progress')
+    expect(renderer.root.findAllByProps({ className: 'devlead-notification-detail' })).toHaveLength(0)
   })
 
   it('renders the English dictionary through the same injected t seat', async () => {
@@ -658,14 +739,6 @@ describe('DevLeadSessionMark', () => {
     expect(renderer.toJSON()).toBeNull()
   })
 
-  it('renders nothing while the row summary says mode is disabled', async () => {
-    const rows: TestRows = {
-      'session-1': { projectionValues: { [DEVLEAD_MODE_PROJECTION_KEY]: { enabled: false } } },
-    }
-    const renderer = await mount(<DevLeadSessionMark {...markProps({ rows })} />)
-    expect(renderer.toJSON()).toBeNull()
-  })
-
   it('renders nothing while the row carries no DevLead summary', async () => {
     const renderer = await mount(<DevLeadSessionMark {...markProps({ rows: {} })} />)
     expect(renderer.toJSON()).toBeNull()
@@ -849,5 +922,42 @@ describe('useDevLeadAdmission', () => {
     expect(
       textOf(renderer.root.findByProps({ 'data-admission-failure': 'true' })),
     ).toBe('')
+  })
+
+  it('drops a failure that settles after the mode changed mid-flight', async () => {
+    const command = deferredAdmission()
+    const executeCommand = vi.fn(() => command.promise)
+    const renderer = await mount(
+      <AdmissionProbe executeCommand={executeCommand} resetKey={false} />,
+    )
+    await act(async () => {
+      renderer.root.findByProps({ 'data-admission-trigger': 'true' }).props['onClick']()
+    })
+    expect(executeCommand).toHaveBeenCalledTimes(1)
+
+    // The mode flips from another source while the command is still in
+    // flight: the pending attempt survives, but its feedback is now stale.
+    await act(async () => {
+      renderer.update(<AdmissionProbe executeCommand={executeCommand} resetKey />)
+    })
+    expect(
+      renderer.root.findByProps({ 'data-admission-trigger': 'true' }).props['data-pending'],
+    ).toBe('true')
+
+    // The attempt settles with a failure that belonged to the old mode: it
+    // must clear pending without resurrecting the stale failure on a surface
+    // whose mode already moved on.
+    command.resolve({ ok: false, error: { code: 'gateway/unavailable', message: 'offline' } })
+    await settle(() => {})
+    const trigger = renderer.root.findByProps({ 'data-admission-trigger': 'true' })
+    expect(trigger.props['data-pending']).toBe('false')
+    expect(trigger.props['data-failure']).toBe('')
+    expect(textOf(renderer.root.findByProps({ 'data-admission-failure': 'true' }))).toBe('')
+
+    // The gate released with the settle: a later attempt is admitted again.
+    await settle(() => {
+      trigger.props['onClick']()
+    })
+    expect(executeCommand).toHaveBeenCalledTimes(2)
   })
 })

@@ -166,7 +166,9 @@ export function summarizeWatched(
     if (typeof candidate !== 'string' || candidate.length === 0) continue
     if (seen.has(candidate)) continue
     seen.add(candidate)
-    const row = rows[candidate]
+    // Own-property lookup: a prototype key (`toString`, `constructor`, …)
+    // must count as a lost row, not read an inherited member as a live one.
+    const row = Object.hasOwn(rows, candidate) ? rows[candidate] : undefined
     if (row === undefined) missing += 1
     // The Client's live UI status outranks the list's host snapshot: a Session
     // that started or finished a turn since the catalog refresh must count
@@ -208,6 +210,19 @@ export function reportLabelKey(kind: string): DevLeadReportKey {
   return isDevLeadReportKind(kind) ? REPORT_LABEL_KEYS[kind] : 'report.kind.unknown'
 }
 
+/**
+ * Wire-drift-safe epoch milliseconds of one digest row. The value crossed the
+ * Remote boundary, so a missing, non-numeric, or non-finite instant must
+ * degrade to a comparable number instead of poisoning a newest-row comparison
+ * (`NaN >= x` is always false, which would silently pin the strip to the older
+ * digest family).
+ * @param value - raw `at` value read from the projection.
+ * @returns the finite instant, or 0 when the wire value is unusable.
+ */
+export function epochMillis(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0
+}
+
 /** Rendered fields of the latest-report chip. */
 export interface DevLeadReportSummary {
   /** Canonical Host digest line, used as the chip's technical tooltip. */
@@ -220,7 +235,7 @@ export interface DevLeadReportSummary {
   readonly labelKey: DevLeadReportKey
   /** Compact summary or message excerpt, when the report carries one. */
   readonly detail: string | undefined
-  /** Epoch milliseconds used to compare with the latest notification. */
+  /** Epoch milliseconds used to compare with the latest notification; 0 when the wire value is unusable. */
   readonly at: number
 }
 
@@ -245,7 +260,7 @@ export function reportSummary(report: DevLeadReport): DevLeadReportSummary {
     kind: String(report.kind),
     labelKey: reportLabelKey(report.kind),
     detail,
-    at: typeof report.at === 'number' ? report.at : 0,
+    at: epochMillis(report.at),
   }
 }
 

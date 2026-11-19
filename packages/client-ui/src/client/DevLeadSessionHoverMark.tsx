@@ -13,7 +13,7 @@ import type { SessionListState } from '@deepseek-ai/dsh-api-session-controller/c
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 // Type-only: pulls the ui-workspace SlotMap merge (the sidebar Session-row seats).
 import type {} from '@deepseek-ai/dsh-client-ui-workspace/client'
-import { devLeadRowEnabled, devLeadRowWatched } from './sessionMark.ts'
+import { devLeadRowEnabled, devLeadRowSummaryOf, devLeadRowWatched } from './sessionMark.ts'
 
 /** Full props of the hover-card section: row identity + runtime hooks + copy. */
 export type DevLeadSessionHoverMarkProps =
@@ -30,7 +30,7 @@ export type DevLeadSessionHoverMarkProps =
 export function DevLeadSessionHoverMark({ sessionId, useSessions, t }: DevLeadSessionHoverMarkProps) {
   // Same structural summary read as the row mark; the explicit selector
   // parameter type keeps the hook typed without the shell store package.
-  const enabled = useSessions((state: SessionListState) => devLeadRowEnabled(state.byId[sessionId]))
+  const enabled = useSessions((state: SessionListState) => devLeadRowEnabled(devLeadRowSummaryOf(state.byId, sessionId)))
   const watched = useSessions((state: SessionListState) => devLeadRowWatched(sessionId, state.byId))
   if (enabled) {
     return (

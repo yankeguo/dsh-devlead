@@ -9,9 +9,9 @@
  */
 
 import { describe, expect, it } from 'vitest'
-import { DEVLEAD_TRANSITIONS } from '@yankeguo/dsh-devlead-protocol/client'
+import { DEVLEAD_REPORT_KINDS, DEVLEAD_TRANSITIONS } from '@yankeguo/dsh-devlead-protocol/client'
 import { en, zh } from '../src/client/locales.ts'
-import { transitionLabelKey } from '../src/client/format.ts'
+import { reportLabelKey, transitionLabelKey } from '../src/client/format.ts'
 import enMeta from '../locale/en.json'
 import zhMeta from '../locale/zh.json'
 
@@ -49,6 +49,22 @@ describe('dictionaries', () => {
     expect(en['row.hover.watched']).toContain('Watched')
   })
 
+  it('explains the mid-turn report/question wake channel in both watch hints', () => {
+    // Reports (including routed questions) wake the lead through the same
+    // coalesced notice path as turn ends; a hint that only names turn ends
+    // misdescribes the mode.
+    expect(zh['hint.enabled']).toContain('轮次结束')
+    expect(zh['hint.enabled']).toContain('中途汇报')
+    expect(zh['hint.enabled']).toContain('提问')
+    expect(zh['row.hover.watched']).toContain('中途汇报')
+    expect(zh['row.hover.watched']).toContain('提问')
+    expect(en['hint.enabled']).toContain('turn ends')
+    expect(en['hint.enabled']).toContain('mid-turn reports')
+    expect(en['hint.enabled']).toContain('questions')
+    expect(en['row.hover.watched']).toContain('mid-turn reports')
+    expect(en['row.hover.watched']).toContain('questions')
+  })
+
   it('labels the toolbar toggle with the brand name in both locales', () => {
     expect(zh['toggle.label']).toBe('DevLead')
     expect(en['toggle.label']).toBe(zh['toggle.label'])
@@ -71,6 +87,25 @@ describe('dictionaries', () => {
       expect(zh[key].length).toBeGreaterThan(0)
       expect(en[key].length).toBeGreaterThan(0)
     }
+  })
+
+  it('localizes every shared protocol report kind', () => {
+    // The runtime twin of the exhaustive label table: a kind added to the
+    // protocol without a localized label must fail here, not render a raw key.
+    for (const kind of DEVLEAD_REPORT_KINDS) {
+      const key = reportLabelKey(kind)
+      expect(zh[key].length).toBeGreaterThan(0)
+      expect(en[key].length).toBeGreaterThan(0)
+    }
+    expect(zh['report.kind.unknown'].length).toBeGreaterThan(0)
+    expect(en['report.kind.unknown'].length).toBeGreaterThan(0)
+  })
+
+  it('retires the archived single-active refusal copy', () => {
+    // Archived occupants no longer block admission, so the core never emits
+    // an archived refusal; the dictionaries must not carry a dead variant.
+    expect(Object.keys(zh).filter(key => key.includes('archived'))).toEqual([])
+    expect(Object.keys(en).filter(key => key.includes('archived'))).toEqual([])
   })
 })
 

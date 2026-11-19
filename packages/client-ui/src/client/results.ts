@@ -131,26 +131,23 @@ const ALREADY_ACTIVE_PREFIX = 'Another Session is already in DevLead mode: '
 /** Suffix separating the occupant label from the actionable instruction. */
 const ALREADY_ACTIVE_INSTRUCTION = '. Run /devlead off there first'
 
-/** Suffix of the archived-unreleased variant. */
-const ALREADY_ACTIVE_ARCHIVED_INSTRUCTION = '. That Session is archived and could not be released automatically;'
-
 /**
  * Recognize the core's single-active refusal so the browser can render it in
  * the user's locale. The command transport carries plain text (no error code),
  * so the refusal's stable prefix/instruction pair is the seam; a message that
- * does not match exactly is returned verbatim below.
+ * does not match exactly is returned verbatim below. Archived occupants no
+ * longer block admission (the core ignores them for admission), so there is
+ * no archived variant to recognize.
  * @param message - Host rejection text.
- * @returns the occupant label and whether the archived variant applies.
+ * @returns the occupant label, when the message is the core refusal.
  */
-function alreadyActiveDetails(message: string): { readonly session: string; readonly archived: boolean } | undefined {
+function alreadyActiveDetails(message: string): { readonly session: string } | undefined {
   if (!message.startsWith(ALREADY_ACTIVE_PREFIX)) return undefined
   const rest = message.slice(ALREADY_ACTIVE_PREFIX.length)
-  const archived = rest.includes(ALREADY_ACTIVE_ARCHIVED_INSTRUCTION)
-  const marker = archived ? ALREADY_ACTIVE_ARCHIVED_INSTRUCTION : ALREADY_ACTIVE_INSTRUCTION
-  const end = rest.indexOf(marker)
+  const end = rest.indexOf(ALREADY_ACTIVE_INSTRUCTION)
   if (end <= 0) return undefined
   const session = rest.slice(0, end).trim()
-  return session.length === 0 ? undefined : { session, archived }
+  return session.length === 0 ? undefined : { session }
 }
 
 /**
@@ -169,7 +166,7 @@ export function failureMessage(failure: DevLeadCommandFailure, t: DevLeadTransla
   if (failure.kind === 'rejected' && failure.message !== undefined) {
     const active = alreadyActiveDetails(failure.message)
     if (active !== undefined) {
-      return t(active.archived ? 'error.alreadyActive.archived' : 'error.alreadyActive', { session: active.session })
+      return t('error.alreadyActive', { session: active.session })
     }
   }
   return failure.message ?? t(FAILURE_FALLBACK_KEYS[failure.kind])
