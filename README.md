@@ -249,11 +249,15 @@ requires Node ≥ 24.9):
 | `0.2.2-rc.5` | same, `rc.5` | **120/120** (Team success branch) |
 | `0.2.2-rc.5` | `DSH_BIN=<cache>/rc5/install/node_modules/@deepseek-ai/dsh/lib/bin.js node scripts/e2e-smoke.mjs --flow installed` | **150/150** (queued-input round rerun on the current harness, includes the experimental worktree phase) |
 | `0.2.2-rc.5` | same, `--flow patch` | **150/150** (same rerun) |
+| `0.2.2-rc.5` | `node scripts/e2e-smoke.mjs --flow installed` (Phase 1c harness, `dsh` on PATH) | **161/161** (question conclude/durable round, includes the experimental worktree phase) |
+| `0.2.2-rc.5` | same, `--flow patch` | **161/161** (same round) |
 
 The 0.3.0 prerelease candidates (0.3.0-rc.1 / 0.3.0-rc.2, not yet promoted as stable) include question routing
-and queued inbox inputs; the current harness adds three phase-3 question-gate checks. The 0.2.6+ audit round reran rc.5 on the current harness: installed `--no-worktree`
-reports **127/127**, and the installed/patch full flows report **150/150** each. A pre-release
-rerun of the full combination is still required by the publishing guide.
+and queued inbox inputs. The Phase 1c harness round adds eleven phase-3 question checks (structured
+multi-question gate payload deep-compare, case-33 batch continuation, action-required wake admission,
+and the `devlead_report` question conclude/durable/memory-only/recovery paths): the installed/patch
+full flows now report **161/161** each on rc.5. A pre-release rerun of the full combination is still
+required by the publishing guide.
 
 Three positive model-selection checks per flow are reported as SKIP on this credential-less
 Host (the real reason is printed); the negative model path and `devlead_list_models` run on every
@@ -522,7 +526,7 @@ rather than implying the directory is unregistered.
 | `devlead_retract_input` | `session`, `input_id` (required; the id `queuedInputs` reports) | `{ sessionId, inputId, retracted }` — withdraw one queued inbox input before it runs; only relay prompts this lead authored (human/scheduled/other producers' inputs are refused); idempotent (`retracted: false` when already consumed or withdrawn); target must be live and not the lead itself |
 | `devlead_watch_session` | `session`, `watching` (required bool) | watch mutation result |
 | `devlead_notifications` | `limit?` (default 20, applied to each digest separately) | `{ notifications, reports, watched }` |
-| `devlead_report` | `message` (required, plain text, max 4000 code points), `kind?` (`progress` default / `blocked` / `decision` / `question` / `fyi`), `summary?` (max 200) | `{ report, durable, queued, warning? }` — visible only in a watched non-lead Session; one-way, never waits for a reply; only for a long-running task's mid-turn milestones (the settled turn already notifies the lead, so no routine progress / final summary; short or linear tasks should not call it); a `question` report is answered in a new turn via `devlead_prompt_session` |
+| `devlead_report` | `message` (required, plain text, max 4000 code points), `kind?` (`progress` default / `blocked` / `decision` / `question` / `fyi`), `summary?` (max 200) | `{ report, durable, queued, warning?, turnEndRequested?, questionId?, guidance? }` — visible only in a watched non-lead Session; one-way, never waits for a reply; only for a long-running task's mid-turn milestones (the settled turn already notifies the lead, so no routine progress / final summary; short or linear tasks should not call it); a durably forwarded `question` sets `turnEndRequested:true` (a turn-end request, not an immediate close) and is answered in a new turn via `devlead_prompt_session` or by steering the child's next step; a memory-only question requests no turn end and its warning asks for a restatement in the final assistant message |
 | `devlead_remove_workspace` | `workspace` (required: id, registered path, or exact title) | `{ workspace, removed }` (pre-removal snapshot) |
 | `devlead_archive_session` | `session` (required), `stop_running?` (default false) | `{ sessionId, archived: true, stopped }` |
 | `devlead_unarchive_session` | `session` (required) | `{ sessionId, archived: false }` |
@@ -548,10 +552,22 @@ long-running watched Session; this is on-demand, omitted when `watch` is false
 (the tool is absent), and never replaces the final turn notification. At most four distinct
 non-question reports are accepted per child turn; `question` reports are exempt from that budget but
 limited to 16 distinct pending Q1 reports per lead/child pair, with overflow failing
-`DEVLEAD_DELIVERY_RATE_LIMITED` before any outbox write. Identical kind+message pairs with identical
-structured questions are idempotent (the same text under a different kind is a new report); the same
-text with different structured questions fails `DEVLEAD_INVALID_INPUT` instead of replacing the first
-payload. A fifth non-question report fails `DEVLEAD_REPORT_RATE_LIMITED`.
+`DEVLEAD_DELIVERY_RATE_LIMITED` before any outbox write; when two concurrent questions race the cap
+and the loser's receipt write fails after its outbox row landed, that row is removed and the same
+explicit error still reaches the child (no orphan row, no swallowed rejection). Identical
+kind+message pairs with identical structured questions are idempotent (the same text under a
+different kind is a new report); the same text with different structured questions fails
+`DEVLEAD_INVALID_INPUT` instead of replacing the first payload. A fifth non-question report fails
+`DEVLEAD_REPORT_RATE_LIMITED`.
+
+A durably forwarded `question` report also requests the end of the child's turn: the tool calls the
+executor's `concludeTurn` marker and the result carries `turnEndRequested:true`, `questionId` (the
+report id), and `guidance`. This is a request, not a forced close — the current tool batch still
+completes and already-queued next-step work still runs before the turn closes, and the answer may
+arrive as a new turn or steer the child's next step while it is still running. When the question
+receipt is memory-only (`durable:false`), no turn end is requested: the warning asks the child to
+restate the question in its final assistant message and end the turn naturally, so a possible-loss
+question never strands a silently closed turn. Other report kinds never request a turn end.
 
 Tools translate the core's `DevLeadError` into a `HarnessError` with a stable code. When reading
 state, trust `lastTurn` / `lastTransition` / `lastError` / `lastAssistant` instead of guessing.
@@ -597,7 +613,10 @@ ignored without `interrupt: true` and for idle/cold targets.
 A watched Session must not ask the human directly. The tool plugin installs a hard
 `tools/pre-execute` gate: an `ask_user_question` call from a watched non-lead Session is denied
 before its question UI runs, formatted into a durable `kind: question` report for the active lead,
-and the child is told to end its turn. The report retains both the bounded text and the structured
+and the child is told to end its turn. The deny is a soft request (the gate cannot force a turn
+end), so the child may keep working; when the forwarded receipt is memory-only, the denial reason
+adds a hint to restate the question in the final assistant message, and a full question queue is
+named explicitly (`DEVLEAD_DELIVERY_RATE_LIMITED`) with the same restatement fallback. The report retains both the bounded text and the structured
 `questions` payload (header/question/options/multi_select). The lead receives a separate
 `[DEV LEAD QUESTION]` next-step wake with the full payload, report id, and observed child state;
 question content is explicitly child-authored data, not a human/runtime instruction. The lead answers

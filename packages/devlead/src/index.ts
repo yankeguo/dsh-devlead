@@ -84,7 +84,7 @@ import {
   normalizeModelSelection,
 } from './dispatch.ts'
 import type { AgentTeamsCapability, NormalizedModelSelection } from './dispatch.ts'
-import { DevLeadError, thrownMessage } from './error.ts'
+import { DevLeadError, isDevLeadError, thrownMessage } from './error.ts'
 import { isOwnRelay, keptInputsOf, queuedInputsOf, restoreInputs } from './inbox.ts'
 import { DevLeadReportOutbox } from './outbox.ts'
 import {
@@ -2029,9 +2029,14 @@ export class DevLeadService extends Service {
   /**
    * Persist a report in the durable outbox (when available) and try to write
    * its lead receipt. The outbox row is only removed after the lead flush
-   * succeeded; otherwise the report remains replayable.
+   * succeeded; otherwise the report remains replayable. A capacity rejection
+   * that lands after the outbox write (two concurrent questions racing the
+   * pair cap) removes the just-written row and rethrows, so the child sees the
+   * explicit error and no orphan row is left behind.
    * @param report - validated report.
    * @returns the child-facing receipt with durability status.
+   * @throws `DEVLEAD_DELIVERY_RATE_LIMITED` when the pair's Q1 pending queue
+   *   filled between the preflight and the receipt write.
    */
   private async deliverReport(report: DevLeadReport): Promise<DevLeadReportReceipt> {
     // Capacity errors must reach the child before an outbox row can make a
@@ -2044,6 +2049,21 @@ export class DevLeadService extends Service {
       try {
         delivered = (await this.hub?.persistReport(report)) ?? false
       } catch (error: unknown) {
+        // The preflight above is not atomic: two concurrent questions can both
+        // pass it at the pair-cap boundary, and the loser's receipt write then
+        // fails inside the hub. That rejection must reach the child as the
+        // explicit capacity error, and the row this call just wrote must not
+        // survive as an orphan that only a later replay would notice.
+        if (isDevLeadError(error) && error.code === 'DEVLEAD_DELIVERY_RATE_LIMITED') {
+          const removed = await this.outbox.delete(report)
+          if (!removed) {
+            this.ctx.logger.warn(
+              `devlead: could not remove the capacity-rejected report "${report.id}" from the outbox; `
+              + 'a later replay will reconcile it',
+            )
+          }
+          throw error
+        }
         this.ctx.logger.warn(
           `devlead: report "${report.id}" is durable but its first delivery attempt failed: ${thrownMessage(error)}`,
         )

@@ -186,11 +186,27 @@ const REPORT_DESCRIPTION =
   + 'progress or a final summary here. Use it only mid-turn, on a long-running task, for a milestone the lead must '
   + 'know before the turn ends: a real blocker, a fork that needs the lead\'s decision, or progress that would '
   + 'change scheduling correctness if it waited; a short or linear task should not call it. Use kind question when '
-  + 'you are blocked on missing information or a decision, then end your turn; the lead answers in a new turn. At '
-  + 'most four non-question reports per turn; question reports are exempt. The result carries '
-  + '`durable` and `queued`; `durable` false means no durable receipt was written on this attempt (storage absent '
-  + 'or the outbox write failed), so treat the warning as a possible-loss receipt and retry when the lead is '
-  + 'reachable.'
+  + 'you are blocked on missing information or a decision, then end your turn; the lead answers in a new turn (or '
+  + 'steers your next step while you are still running). When a question report is durably forwarded the result '
+  + 'sets `turnEndRequested:true`: the tool requests the end of your turn, but the current tool batch still '
+  + 'completes and already-queued next-step work still runs before the turn closes; do not poll or resend. When '
+  + 'the question receipt is not durable, no turn end is requested: restate the question in your final assistant '
+  + 'message and end the turn naturally. At most four non-question reports per turn; question reports are exempt. '
+  + 'The result carries `durable` and `queued`; `durable` false means no durable receipt was written on this '
+  + 'attempt (storage absent or the outbox write failed), so treat the warning as a possible-loss receipt and '
+  + 'retry when the lead is reachable.'
+
+/** Result guidance of a durably forwarded question report (Phase 1c turn-end request). */
+const QUESTION_FORWARDED_GUIDANCE =
+  'The question was forwarded to the DevLead and an answer is requested. Turn end is requested, not forced: '
+  + 'the current tool batch still completes and already-queued next-step work still runs before the turn closes. '
+  + 'The answer may arrive as a new turn or steer your next step while you are still running; do not poll or '
+  + 'resend the question.'
+
+/** Restatement instruction appended when a question receipt is memory-only. */
+const QUESTION_MEMORY_ONLY_RESTATE =
+  'Forwarding is memory-only on this attempt; restate the question in your final assistant message and end '
+  + 'your turn naturally so the DevLead can also read it from the turn notification.'
 
 const REMOVE_WORKSPACE_DESCRIPTION =
   'Close (remove) a DSH Workspace registration: the DSH remove action, not a deletion. The directory, its files, and '
@@ -500,11 +516,34 @@ export function apply(ctx: Context): void {
           ...args.kind === undefined ? {} : { kind: args.kind },
           ...args.summary === undefined ? {} : { summary: args.summary },
         }, exec.signal)
-        return {
+        const base = {
           report: reportValue(receipt.report),
           durable: receipt.durable,
           queued: receipt.queued,
           ...(receipt.warning === undefined ? {} : { warning: receipt.warning }),
+        }
+        if (receipt.report.kind !== 'question') return base
+        // A memory-only question must not request a turn end: the child could
+        // close the turn while the question itself is one crash away from
+        // being lost. The warning asks for a restatement in the final message.
+        if (!receipt.durable) {
+          return {
+            ...base,
+            warning: receipt.warning === undefined
+              ? QUESTION_MEMORY_ONLY_RESTATE
+              : `${receipt.warning}. ${QUESTION_MEMORY_ONLY_RESTATE}`,
+          }
+        }
+        // Durable question: request the turn end through the executor's own
+        // marker. It rides this successful result (`concludesTurn`); the batch
+        // still completes and committed next-step work still runs, so this is
+        // a request, never an immediate close or a cancellation.
+        exec.concludeTurn()
+        return {
+          ...base,
+          turnEndRequested: true,
+          questionId: receipt.report.id,
+          guidance: QUESTION_FORWARDED_GUIDANCE,
         }
       })
     },

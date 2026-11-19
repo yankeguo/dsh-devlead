@@ -138,8 +138,14 @@ const ignoredSchema = zod.object({
   at: zod.number().int().nonnegative().max(DEVLEAD_MAX_INSTANT),
 }).strict()
 
-/** Domain declaration opened lazily through `ctx.storageDomain`. */
-const OUTBOX_SPEC = {
+/**
+ * Domain declaration opened lazily through `ctx.storageDomain`. Exported so
+ * regression tests can parse stored rows with the exact `valueSchema` the real
+ * Host applies at open time (`invalidRecords: 'backup-and-skip'`): a schema
+ * that rejects an already-written row would silently back it up and skip it on
+ * the next restart.
+ */
+export const OUTBOX_SPEC = {
   name: OUTBOX_DOMAIN,
   version: 1,
   layout: 'per-record',

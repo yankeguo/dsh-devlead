@@ -37,9 +37,20 @@
     return the durable lead receipt plus the lead's current report digest.
 
   `devlead-e2e-question` (phase 3)
-    Create a watched child, execute a real `ask_user_question` call through the
-    Host tools pipeline as that child, and return the denial result plus the
-    forwarded `kind: question` report from the lead digest.
+    Create a watched child, execute a real structured multi-question
+    `ask_user_question` call plus a sibling read-only call through the Host
+    tools pipeline as that child, and return the denial result, the batch
+    continuation facts (case 33), the forwarded `kind: question` report with
+    its structured `questions` from the lead digest, and the lead's durable
+    `lane:'action-required'` wake admission.
+
+  `devlead-e2e-question-report` (phase 3)
+    Called inside a watched child: execute a real `devlead_report`
+    `kind: question` batch (plus a sibling call and a pre-queued next-step
+    marker) and return the `turnEndRequested`/`concludesTurn` facts, the lead
+    digest row and wake admission, then a memory-only attempt made by
+    write-protecting the real outbox table directory (durable:false, no turn
+    end, restatement warning), and a durable recovery report.
 
   `devlead-e2e-dispatch` (phase 3)
  *     Exercise creation-time dispatch settings: pick a model from the Host's
@@ -108,8 +119,22 @@
  *   {
  *     childId: string,                      // watched child created for the probe
  *     supervised: boolean,                  // child is watched by the lead
- *     results: [{ callId, isError, content }], // real ask_user_question batch outcome
- *     questionReports: DevLeadReport[]      // forwarded kind=question rows
+ *     expectedQuestions: object[],          // structured payload sent to the gate
+ *     batch: { concluded, results: [{ callId, isError, concludesTurn, value, content }] },
+ *     childStatus: string,                  // case 33: no forced turn end
+ *     childTurnEnds: number,                // case 33: turn/end events after the batch
+ *     questionReports: DevLeadReport[],     // forwarded kind=question rows (with questions)
+ *     wake: { found, boundary, lane, wakeRequested, reportId, excerpt }
+ *   }
+ *
+ *   questionReport:
+ *   {
+ *     supervised: boolean,
+ *     leadId: string,
+ *     markerPending: boolean,               // committed next-step input survived the batch
+ *     durable: { batch, reports: DevLeadReport[], wake },
+ *     memoryOnly: { available, reason? , batch? },
+ *     recovery: { concluded, results }      // durable again after the mode restore
  *   }
  *
  *   close:
@@ -165,7 +190,7 @@
  * @module @yankeguo/dsh-devlead-e2e-probe
  */
 import { randomUUID } from 'node:crypto'
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { CommandDefinitionId } from '@deepseek-ai/dsh-commands/brand'
 
@@ -199,6 +224,8 @@ export const WATCH_CHILD_COMMAND_NAME = 'devlead-e2e-watch-child'
 export const REPORT_COMMAND_NAME = 'devlead-e2e-report'
 /** Drive the watched-Session ask_user_question gate from the lead. */
 export const QUESTION_COMMAND_NAME = 'devlead-e2e-question'
+/** Drive the watched-Session devlead_report question path from inside the child. */
+export const QUESTION_REPORT_COMMAND_NAME = 'devlead-e2e-question-report'
 /** Queued-inbox visibility / ownership / idempotent retraction through the real Host. */
 export const INBOX_COMMAND_NAME = 'devlead-e2e-inbox'
 /** Upper bound for one prompted child turn to settle inside the close command. */
@@ -598,9 +625,74 @@ async function executeReport(ctx, invocation) {
 }
 
 /**
+ * Poll the lead Session log for the durable admission of one question wake:
+ * an `agent/inbox/spliced` event inserting a DevLead notice with
+ * `lane: 'action-required'` at the next-step boundary, naming one of the given
+ * report ids. The splice is the durable admission fact; a later claim by the
+ * lead loop does not erase it.
+ * @param ctx - probe context.
+ * @param lead - lead Agent whose Session log carries the splice.
+ * @param reportIds - forwarded question report identities to match.
+ * @returns the wake facts, or `{ found: false }` after the bounded wait.
+ */
+async function awaitQuestionWake(ctx, lead, reportIds) {
+  const deadline = Date.now() + 10_000
+  for (;;) {
+    const events = lead.session.snapshotEvents()
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const event = events[index]
+      if (event?.type !== 'agent/inbox/spliced') continue
+      const data = event.data ?? {}
+      const inserted = Array.isArray(data.inserted) ? data.inserted : []
+      for (const message of inserted) {
+        const source = message?.source
+        if (source?.kind !== 'devlead' || source?.form !== 'notice' || source?.lane !== 'action-required') continue
+        const text = (message.content ?? [])
+          .filter(block => block?.type === 'text')
+          .map(block => block.text)
+          .join('\n')
+        if (!text.includes('[DEV LEAD QUESTION]')) continue
+        const reportId = reportIds.find(id => text.includes(id))
+        if (reportId === undefined) continue
+        return {
+          found: true,
+          boundary: data.target ?? null,
+          lane: source.lane,
+          wakeRequested: source.wakeRequested === true,
+          reportId,
+          excerpt: text.slice(0, 400),
+        }
+      }
+    }
+    if (Date.now() >= deadline) return { found: false }
+    await sleep(100)
+  }
+}
+
+/** Map one settled tool batch onto the compact facts the harness asserts. */
+function batchFacts(batch) {
+  return {
+    concluded: batch.concluded === true,
+    results: batch.results.map(entry => ({
+      callId: String(entry.callId),
+      isError: entry.result.isError,
+      concludesTurn: entry.result.concludesTurn === true,
+      value: entry.result.isError ? null : entry.result.value,
+      content: entry.result.content,
+    })),
+  }
+}
+
+/**
  * Drive one real `ask_user_question` call through a freshly created watched
  * child and report whether the DevLead question gate denied it before the
  * child's own question UI could run, plus the forwarded lead report.
+ *
+ * Phase 1c additions: the payload is a structured multi-question batch
+ * (options + description + multi_select), a sibling read-only tool call proves
+ * the deny does not end the child's work (case 33: the batch completes, no
+ * forced turn end), and the lead's durable action-required wake admission is
+ * read back from the Session log.
  * @param ctx - probe context.
  * @param invocation - command invocation carrying the lead Agent.
  * @returns success JSON with the call result and question reports, or an error result.
@@ -615,39 +707,204 @@ async function executeQuestion(ctx, invocation) {
       return { kind: 'error', text: 'devlead-e2e-question: watched child is not live' }
     }
     const before = ctx.devLead.reports(lead).length
+    const expectedQuestions = [
+      {
+        id: 'target',
+        question: 'Which e2e target?',
+        header: 'Deploy',
+        options: [{ label: 'Staging', description: 'safe rollback path' }, { label: 'Prod' }],
+        multi_select: false,
+      },
+      {
+        id: 'extras',
+        question: 'Which extras should ship?',
+        header: 'Extras',
+        options: [{ label: 'Metrics', description: 'dashboards' }, { label: 'Alerts' }],
+        multi_select: true,
+      },
+    ]
     const batch = await ctx.tools.execute({
-      calls: [{
-        type: 'tool-call',
-        id: 'e2e-ask-question',
-        name: 'ask_user_question',
-        arguments: JSON.stringify({
-          questions: [{
-            id: 'target',
-            question: 'Which e2e target?',
-            header: 'Deploy',
-            options: [{ label: 'Staging' }, { label: 'Prod' }],
-          }],
-        }),
-      }],
+      calls: [
+        {
+          type: 'tool-call',
+          id: 'e2e-ask-question',
+          name: 'ask_user_question',
+          arguments: JSON.stringify({ questions: expectedQuestions }),
+        },
+        {
+          type: 'tool-call',
+          id: 'e2e-after-deny',
+          name: 'glob',
+          arguments: JSON.stringify({ pattern: '*' }),
+        },
+      ],
       agent: child,
-      signal: AbortSignal.timeout(5_000),
+      signal: AbortSignal.timeout(10_000),
     })
     const questionReports = ctx.devLead.reports(lead).slice(before).filter(report => report.kind === 'question')
+    const wake = await awaitQuestionWake(ctx, lead, questionReports.map(report => report.id))
+    const childEvents = child.session.snapshotEvents()
     return {
       kind: 'success',
       text: JSON.stringify({
         childId,
         supervised: ctx.devLead.isSupervised(child),
-        results: batch.results.map(entry => ({
-          callId: String(entry.callId),
-          isError: entry.result.isError,
-          content: entry.result.content,
-        })),
+        expectedQuestions,
+        batch: batchFacts(batch),
+        // Case 33 facts: the deny is a soft request, so the child's batch kept
+        // running and no turn was forced to end.
+        childStatus: child.status,
+        childTurnEnds: childEvents.filter(event => event.type === 'turn/end').length,
         questionReports,
+        wake,
       }),
     }
   } catch (error) {
     return { kind: 'error', text: `devlead-e2e-question: ${messageOf(error)}` }
+  }
+}
+
+/**
+ * Drive the `devlead_report({kind:'question'})` path from inside a watched
+ * child through the real Host tools pipeline (Phase 1c gate):
+ *
+ * - durable success: the result carries `turnEndRequested:true` and the
+ *   executor marker `concludesTurn`, a sibling tool call still completes
+ *   (the batch is not cancelled), and a pre-queued next-step input survives
+ *   (committed next-step work is not short-circuited);
+ * - the lead digest carries the text question and the lead log records the
+ *   `lane:'action-required'` next-step wake admission;
+ * - memory-only receipt: with the outbox table directory temporarily
+ *   write-protected, the same tool reports `durable:false`, requests no turn
+ *   end, and its warning asks for a restatement in the final assistant
+ *   message; the directory mode is restored afterwards and a recovery report
+ *   proves the outbox is durable again.
+ * @param ctx - probe context.
+ * @param invocation - command invocation carrying the watched child Agent.
+ * @returns success JSON with every read-back fact, or an error result.
+ */
+async function executeQuestionReport(ctx, invocation) {
+  const child = invocation.agent
+  try {
+    const supervised = ctx.devLead.isSupervised(child)
+    const leadId = ctx.devLead.supervisorOf(child)
+    if (!supervised || leadId === undefined) {
+      return { kind: 'success', text: JSON.stringify({ supervised, leadId: null }) }
+    }
+    const lead = ctx.agents.get(leadId)
+    if (lead === undefined) return { kind: 'error', text: 'devlead-e2e-question-report: lead is not live' }
+
+    // One committed next-step input the concluded batch must not discard.
+    const marker = {
+      id: `e2e-nextstep-${randomUUID()}`,
+      role: 'user',
+      content: [{ type: 'text', text: 'e2e pending next-step marker' }],
+      source: { kind: 'user' },
+    }
+    child.inbox.append('next-step', marker)
+
+    // devlead_report carries a `when` condition, so it is only executable
+    // through a step-time resolved tool set (the raw execute path admits
+    // unconditional registrations alone). Resolve exactly like a model step.
+    const signal = AbortSignal.timeout(30_000)
+    const toolSet = await ctx.tools.resolve({ agent: child, modelSelection: modelSelectionOf(child), signal })
+    try {
+      const before = ctx.devLead.reports(lead).length
+      const durableBatch = await ctx.tools.execute({
+        calls: [
+          {
+            type: 'tool-call',
+            id: 'e2e-question-report',
+            name: 'devlead_report',
+            arguments: JSON.stringify({
+              message: 'e2e question: which release train should I target?',
+              kind: 'question',
+              summary: 'e2e release train',
+            }),
+          },
+          {
+            type: 'tool-call',
+            id: 'e2e-question-sibling',
+            name: 'glob',
+            arguments: JSON.stringify({ pattern: '*' }),
+          },
+        ],
+        agent: child,
+        toolSet,
+        signal,
+      })
+      const markerPending = child.inbox.nextStep.some(message => String(message.id) === marker.id)
+      const durableReports = ctx.devLead.reports(lead).slice(before).filter(report => report.kind === 'question')
+      const durableWake = await awaitQuestionWake(ctx, lead, durableReports.map(report => report.id))
+
+      // Memory-only injection: write-protect the real outbox table directory so
+      // the per-record put fails with EACCES and the service falls back to the
+      // explicit non-durable path. The original mode is restored in finally.
+      const home = process.env.DSH_HOME
+      const outboxDir = typeof home === 'string' && home.length > 0
+        ? join(home, 'storages', 'devlead_report_outbox', 'pending')
+        : null
+      let memoryOnly
+      if (outboxDir === null || !existsSync(outboxDir)) {
+        memoryOnly = { available: false, reason: `outbox directory not found: ${outboxDir ?? '(no DSH_HOME)'}` }
+      } else {
+        const originalMode = statSync(outboxDir).mode & 0o777
+        chmodSync(outboxDir, 0o555)
+        try {
+          const batch = await ctx.tools.execute({
+            calls: [{
+              type: 'tool-call',
+              id: 'e2e-question-memory-only',
+              name: 'devlead_report',
+              arguments: JSON.stringify({
+                message: 'e2e question: memory-only path check?',
+                kind: 'question',
+                summary: 'e2e memory-only question',
+              }),
+            }],
+            agent: child,
+            toolSet,
+            signal,
+          })
+          memoryOnly = { available: true, batch: batchFacts(batch) }
+        } finally {
+          chmodSync(outboxDir, originalMode)
+        }
+      }
+
+      // Recovery: the outbox must be durable again after the mode restore.
+      const recoveryBatch = await ctx.tools.execute({
+        calls: [{
+          type: 'tool-call',
+          id: 'e2e-question-recovery',
+          name: 'devlead_report',
+          arguments: JSON.stringify({
+            message: 'e2e question: recovery after the write-protected window?',
+            kind: 'question',
+            summary: 'e2e recovery question',
+          }),
+        }],
+        agent: child,
+        toolSet,
+        signal,
+      })
+
+      return {
+        kind: 'success',
+        text: JSON.stringify({
+          supervised,
+          leadId,
+          markerPending,
+          durable: { batch: batchFacts(durableBatch), reports: durableReports, wake: durableWake },
+          memoryOnly,
+          recovery: batchFacts(recoveryBatch),
+        }),
+      }
+    } finally {
+      toolSet.dispose()
+    }
+  } catch (error) {
+    return { kind: 'error', text: `devlead-e2e-question-report: ${messageOf(error)}` }
   }
 }
 
@@ -953,6 +1210,12 @@ export function apply(ctx) {
     name: QUESTION_COMMAND_NAME,
     description: 'E2E probe: ask a real ask_user_question call through a watched child and report the gate.',
     handler: guarded(QUESTION_COMMAND_NAME, invocation => executeQuestion(ctx, invocation)),
+  })
+  ctx.commands.register({
+    definitionId: CommandDefinitionId(`${DEFINITION_ID}#question-report`),
+    name: QUESTION_REPORT_COMMAND_NAME,
+    description: 'E2E probe: drive devlead_report question conclude/durable paths from inside a watched child.',
+    handler: guarded(QUESTION_REPORT_COMMAND_NAME, invocation => executeQuestionReport(ctx, invocation)),
   })
   ctx.commands.register({
     definitionId: CommandDefinitionId(`${DEFINITION_ID}#inbox`),

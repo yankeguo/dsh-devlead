@@ -1368,6 +1368,50 @@ describe('mid-turn reports', () => {
     expect(storage.table('devlead_report_outbox', 'pending').records.size).toBe(0)
   })
 
+  it('surfaces the concurrent cap race explicitly and leaves no orphan outbox row', async () => {
+    const storage = new FakeStorageDomain()
+    const { harness, child } = await bootReporting({}, { storageDomain: storage })
+    harness.lead.setRunning(true)
+    harness.lead.steer(createDevLeadNoticeMessage('parked action wake', {
+      lane: 'action-required', wakeRequested: true, summary: 'Parked question',
+    }))
+    for (let index = 0; index < 15; index += 1) {
+      await harness.service.reportProgress(child.agent, {
+        kind: 'question', message: `Question ${String(index)}?`,
+      })
+    }
+    // Both calls pass the synchronous capacity preflight at 15 pending; the
+    // loser's receipt write then hits the cap inside the hub. Its just-written
+    // outbox row must be removed and the explicit error must reach the child,
+    // instead of a warn-swallowed { durable: true, queued: true } orphan.
+    const [first, second] = await Promise.allSettled([
+      harness.service.reportProgress(child.agent, { kind: 'question', message: 'Race winner?' }),
+      harness.service.reportProgress(child.agent, { kind: 'question', message: 'Race loser?' }),
+    ])
+    expect([first.status, second.status].sort()).toEqual(['fulfilled', 'rejected'])
+    if (first.status !== 'fulfilled' && second.status !== 'fulfilled') throw new Error('no race winner')
+    const winner = first.status === 'fulfilled' ? first : second
+    const loser = first.status === 'rejected' ? first : second
+    if (winner.status !== 'fulfilled' || loser.status !== 'rejected') throw new Error('unexpected race outcome')
+    expect(winner.value.durable).toBe(true)
+    expect(winner.value.report.kind).toBe('question')
+    const error = loser.reason as { code?: string; message?: string }
+    expect(error.code).toBe('DEVLEAD_DELIVERY_RATE_LIMITED')
+    expect(error.message).toContain('16 pending action-required reports')
+    expect(harness.service.reports(harness.lead.agent)).toHaveLength(16)
+    expect(storage.table('devlead_report_outbox', 'pending').records.size).toBe(0)
+    // The rejected question was not cached as a receipt: once capacity frees,
+    // the same text is accepted as a fresh report.
+    harness.lead.drainInbox()
+    harness.lead.setRunning(false)
+    harness.ctx.emit('agent/status', { agent: harness.lead.agent, status: 'idle' })
+    await flushMicrotasks(64)
+    const retry = await harness.service.reportProgress(child.agent, { kind: 'question', message: 'Race loser?' })
+    expect(retry.durable).toBe(true)
+    expect(harness.service.reports(harness.lead.agent)).toHaveLength(17)
+    expect(storage.table('devlead_report_outbox', 'pending').records.size).toBe(0)
+  })
+
   it('rejects empty, oversized, and malformed reports before writing', async () => {
     const { harness, child } = await bootReporting()
     await expectCodeAsync(

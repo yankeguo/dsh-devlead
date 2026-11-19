@@ -26,6 +26,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { PreToolDecision } from '@deepseek-ai/dsh-tools'
+import { isDevLeadError } from '@yankeguo/dsh-devlead'
 import type { DevLeadService } from '@yankeguo/dsh-devlead'
 import {
   DEVLEAD_MESSAGE_KIND,
@@ -85,10 +86,26 @@ const FORWARDED_REASON = 'Direct user questions are disabled while this Session 
   + 'The question was forwarded to the DevLead as a question report; end your turn now and wait for the '
   + 'DevLead to answer in a new turn. Do not call ask_user_question again or poll for the answer.'
 
+/**
+ * Restatement hint appended when the forwarded receipt is memory-only
+ * (`durable:false`): the deny stays a soft request, and the final assistant
+ * message is the loss-resistant fallback the lead's turn notification carries.
+ */
+const MEMORY_ONLY_SUFFIX = ' The forwarding is memory-only on this attempt (no durable receipt was written); '
+  + 'restate the question in your final assistant message so the DevLead can also read it from the turn '
+  + 'notification.'
+
 /** Denial when forwarding itself failed. */
 const FORWARD_FAILED_REASON = 'Direct user questions are disabled while this Session is watched by a DevLead, '
   + 'and forwarding the question failed. End your turn now and state the question in your final assistant '
   + 'message so the DevLead can read it from the turn notification. Do not call ask_user_question again.'
+
+/** Denial when the lead/child action-required queue is full. */
+const FORWARD_CAPACITY_REASON = 'Direct user questions are disabled while this Session is watched by a DevLead, '
+  + 'and forwarding the question failed because the lead/child question queue is full '
+  + '(DEVLEAD_DELIVERY_RATE_LIMITED). End your turn now and state the question in your final assistant message '
+  + 'so the DevLead can read it from the turn notification; merge the question into an existing report or wait '
+  + 'for the next turn instead of retrying immediately. Do not call ask_user_question again.'
 
 /** Denial when the payload cannot be read well enough to forward. */
 const UNREADABLE_REASON = 'Direct user questions are disabled while this Session is watched by a DevLead, '
@@ -256,19 +273,27 @@ export function registerQuestionRouting(ctx: Context, devLead: DevLeadService): 
     if (isHumanDirectedTurn(exec.agent)) return next()
     const question = formatQuestionReport(exec.arguments)
     if (question === undefined) return { kind: 'deny', reason: UNREADABLE_REASON }
+    let durable = true
     try {
-      await devLead.reportProgress(exec.agent, {
+      const receipt = await devLead.reportProgress(exec.agent, {
         kind: 'question',
         message: question.message,
         summary: question.summary,
         questions: question.questions,
       }, exec.signal)
+      durable = receipt.durable
     } catch (error: unknown) {
       ctx.logger.warn(
         `devlead: could not forward a watched Session's question to its lead: ${messageOf(error)}`,
       )
-      return { kind: 'deny', reason: FORWARD_FAILED_REASON }
+      const reason = isDevLeadError(error) && error.code === 'DEVLEAD_DELIVERY_RATE_LIMITED'
+        ? FORWARD_CAPACITY_REASON
+        : FORWARD_FAILED_REASON
+      return { kind: 'deny', reason }
     }
-    return { kind: 'deny', reason: FORWARDED_REASON }
+    // The gate can only deny (a soft request): `tools/pre-execute` has no
+    // conclude-turn primitive, so the child may keep running. A memory-only
+    // receipt adds the restatement hint instead of claiming durable delivery.
+    return { kind: 'deny', reason: durable ? FORWARDED_REASON : FORWARDED_REASON + MEMORY_ONLY_SUFFIX }
   })
 }

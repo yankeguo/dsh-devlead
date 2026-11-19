@@ -733,7 +733,7 @@ Session 的工作目录切到独立分支/检出，DevLead 用它**可选地**�
 
 ### 4.4 消息传递模型（Proposed，未实现）
 
-> **状态：Phase 1a/1b 已实现；Phase 1c 起仍为 Proposed。** 本节描述完整目标模型；尚未落地的
+> **状态：Phase 1a/1b/1c 已实现；Phase 1d 起仍为 Proposed。** 本节描述完整目标模型；尚未落地的
 > 阶段仍以 §4.1.2（中途汇报）、§4.1.3（问题路由）与 §5（模型工具）的现有行为为准。本节描述把 lead ↔ watched Session 的通信从
 > 「所有方向、所有 kind 都走 `followup`」升级为「按消息类别与目标状态选择投递机制」的设计、
 > 取舍、API 提案、状态机、测试计划与分阶段落地。所有 DSH API 行为已按
@@ -1941,7 +1941,7 @@ Phase 1 前的 hub 只有一个 `pending` / `pendingReports` 队列和一个全�
 | Phase 0 | 本文档（Proposed） | 否 | 文档 review；不改代码 |
 | Phase 1a（已完成） | 抽出纯策略表模块 + 单测；不改变现有行为 | 否 | `pnpm verify` |
 | Phase 1b（已完成） | question `action-required`：完整 payload、结构化 questions、跳过 400ms/queued turn notice、窄化双 wake 规则；16/pair 显式 cap、结构化内容幂等、idle/aborted parked-wake 防死锁/防重 | 否 | `pnpm verify` + fake harness 用例 7/10/11/12/33/34 与 durable inbox 生命周期回归 |
-| Phase 1c | `devlead_report({kind:'question'})` `turnEndRequested` + durable 检查 + 结果/policy | 否 | 用例 8/9；真实 DSH question E2E |
+| Phase 1c（已完成） | `devlead_report({kind:'question'})` `turnEndRequested` + durable 检查 + 结果/policy；F7 gate memory-only 重述提示；N1 cap 竞态孤儿 outbox 行修复；N2 outbox schema 回归 | 否 | 用例 8/9；真实 DSH question E2E（结构化 digest 深比对、action-required wake、用例 33、conclude/durable/recovery） |
 | Phase 1d | `devlead_prompt_session` intent/`question_id`/`idempotency_key` + answer/correction steering + answer record + `answerStatus` admitted/claimed/presented（内存观测）+ `delivery` 结果 + retract/clear-own/source | 否 | 用例 13–25；`pnpm verify` |
 | Phase 1e | T2/P1–P4 路径、questionStatus/answerStatus、notifications/get_session 输出、policy/UI 文案、指标 | 否 | 全量单测/集成/E2E；`pnpm e2e`；UI 验收 |
 | Phase 2 | `idempotency_key` durable、claimed/presented/discarded 的 durable replay/backfill、replay open question、multi-lead 硬门禁、answer TTL、background 背压、`possibleQuestion`、blocking bridge 指标评估（不写原型） | 否 | 全量 + 兼容性 + 指标复盘 |
@@ -1988,9 +1988,10 @@ DSH peer 依赖。最小可交付闭环是 1b + 1c + 1d：question 快、answer 
 ## 5. 模型工具（`@yankeguo/dsh-tool-devlead`）
 
 > 本节描述**当前实现**的工具面。§4.4 对 `devlead_prompt_session`（intent / question_id / idempotency_key）、
-> `devlead_report`（question 设置 `turnEndRequested`、progress 走 background 不唤醒）、
+> `devlead_report`（progress 走 background 不唤醒）、
 > `devlead_notifications`（questionStatus / answerStatus）与 source/record 的变更是
-> **Proposed，未实现**；实现前以本节为准。
+> **Proposed，未实现**；实现前以本节为准。`devlead_report` 的 question `turnEndRequested`
+> （durable 检查 + 结果/policy）已在 Phase 1c 实现，见下表。
 
 14 个主工具都带 `when: ({ agent }) => ctx.devLead.isEnabled(agent)`，只在 DevLead 会话可见；
 `devlead_report` 是唯一的反向面：`when` 为 `ctx.devLead.isSupervised(agent)`，只在被唯一 active lead
@@ -2009,7 +2010,7 @@ DSH peer 依赖。最小可交付闭环是 1b + 1c + 1d：question 快、answer 
 | `devlead_retract_input` | `session`(必填), `input_id`(必填，`queuedInputs` 报告的 Host 消息 id) | `DevLeadRetractedInput`（`{ sessionId, inputId, retracted }`；仅撤本 lead 自投 relay，幂等） |
 | `devlead_watch_session` | `session`(必填), `watching`(必填 bool) | `DevLeadWatchMutation` |
 | `devlead_notifications` | `limit?`(默认 20，分别作用于通知与汇报两个 digest) | `{ notifications, reports, watched: string[] }` |
-| `devlead_report` | `message`(必填，≤4000 码点), `kind?`(默认 progress；progress/blocked/decision/question/fyi), `summary?`(≤200 码点) | `{ report, durable, queued, warning? }`（仅已关注非 lead 会话可见；`when: isSupervised`） |
+| `devlead_report` | `message`(必填，≤4000 码点), `kind?`(默认 progress；progress/blocked/decision/question/fyi), `summary?`(≤200 码点) | `{ report, durable, queued, warning?, turnEndRequested?, questionId?, guidance? }`（仅已关注非 lead 会话可见；`when: isSupervised`；durable question 设置 `turnEndRequested:true` + `questionId` + `guidance` 并调用 `exec.concludeTurn()`；memory-only question 不请求结束 turn，warning 追加重述提示） |
 | `devlead_remove_workspace` | `workspace`(必填，id / 注册路径 / 精确 title) | `{ workspace, removed }`（注销前快照） |
 | `devlead_archive_session` | `session`(必填), `stop_running?`(默认 false) | `{ sessionId, archived: true, stopped }` |
 | `devlead_unarchive_session` | `session`(必填) | `{ sessionId, archived: false }` |

@@ -221,10 +221,10 @@ durable `team/mode`）。模型 API（`modelCatalog`、`Agent.model.select`、`m
 | `0.2.2-rc.5` | 同上，`rc.5` | **120/120**（Team 成功分支） |
 | `0.2.2-rc.5` | `DSH_BIN=<cache>/rc5/install/node_modules/@deepseek-ai/dsh/lib/bin.js node scripts/e2e-smoke.mjs --flow installed` | **150/150**（排队输入轮按当前 harness 重跑，含实验 worktree 阶段） |
 | `0.2.2-rc.5` | 同上，`--flow patch` | **150/150**（同轮重跑） |
+| `0.2.2-rc.5` | `node scripts/e2e-smoke.mjs --flow installed`（Phase 1c harness，PATH 上的 `dsh`） | **161/161**（question conclude/durable 轮，含实验 worktree 阶段） |
+| `0.2.2-rc.5` | 同上，`--flow patch` | **161/161**（同轮） |
 
-0.3.0 的 prerelease 候选（0.3.0-rc.1 / rc.2，尚未 promote 为稳定版）含 question 路由与排队 inbox 输入；当前 harness 的 phase 3 含 3 条 question-gate checks。0.2.6+ 审计轮
-已按当前 harness 重跑 rc.5：installed `--no-worktree` 为 **127/127**，installed/patch 完整双流各
-**150/150**。发布前仍需按发布指南重跑完整组合。
+0.3.0 的 prerelease 候选（0.3.0-rc.1 / rc.2，尚未 promote 为稳定版）含 question 路由与排队 inbox 输入。Phase 1c 的 harness 轮新增 11 条 phase-3 question checks（结构化多问题 gate payload 深比对、用例 33 batch 继续运行、action-required wake admission，以及 `devlead_report` question 的 conclude/durable/memory-only/recovery 路径）：rc.5 的 installed/patch 完整双流现各报 **161/161**。发布前仍需按发布指南重跑完整组合。
 
 每条 flow 有 3 条正向模型选择检查因本机无 provider 凭据记为 SKIP（打印真实原因）；负向
 model 路径与 `devlead_list_models` 在每个版本都真实运行。单元测试使用 rc.1 devDependencies，
@@ -455,7 +455,7 @@ id 与 path，绝不静默取第一个；此时改用 id 或路径。未知引�
 | `devlead_retract_input` | `session`、`input_id`（必填；`queuedInputs` 报告的 id） | `{ sessionId, inputId, retracted }`——在执行前撤回一条排队 inbox 输入；仅限本 lead 自投的 relay prompt（人类/scheduled/其他来源的输入会被拒绝）；幂等（已消费或已撤回时 `retracted: false`）；目标必须 live 且不能是 lead 自身 |
 | `devlead_watch_session` | `session`、`watching`（必填 bool） | watch 变更结果 |
 | `devlead_notifications` | `limit?`（默认 20，分别作用于通知与汇报两个 digest） | `{ notifications, reports, watched }` |
-| `devlead_report` | `message`（必填，纯文本，上限 4000 code points）、`kind?`（默认 `progress` / `blocked` / `decision` / `question` / `fyi`）、`summary?`（上限 200） | `{ report, durable, queued, warning? }`——只在已关注的非 lead 会话可见；单向，不等待回复；只用于长任务的途中关键节点（turn 结束本就通知 lead，故不播报常规进度/最终总结，短任务/线性任务默认不调用）；`question` report 由 lead 在新 turn 里用 `devlead_prompt_session` 回答 |
+| `devlead_report` | `message`（必填，纯文本，上限 4000 code points）、`kind?`（默认 `progress` / `blocked` / `decision` / `question` / `fyi`）、`summary?`（上限 200） | `{ report, durable, queued, warning?, turnEndRequested?, questionId?, guidance? }`——只在已关注的非 lead 会话可见；单向，不等待回复；只用于长任务的途中关键节点（turn 结束本就通知 lead，故不播报常规进度/最终总结，短任务/线性任务默认不调用）；durable 转发的 `question` 会设置 `turnEndRequested:true`（请求结束 turn，不是立即关闭），由 lead 在新 turn 里用 `devlead_prompt_session` 回答，或在 child 仍运行时 steer 其下一步；仅内存的 question 不请求结束 turn，warning 要求在最终 assistant 消息里重述问题 |
 | `devlead_remove_workspace` | `workspace`（必填：id、注册路径或精确 title） | `{ workspace, removed }`（注销前快照） |
 | `devlead_archive_session` | `session`（必填）、`stop_running?`（默认 false） | `{ sessionId, archived: true, stopped }` |
 | `devlead_unarchive_session` | `session`（必填） | `{ sessionId, archived: false }` |
@@ -475,9 +475,18 @@ lead 必须在轮次结束前知道的关键节点：真实阻塞、需 lead 决
 已关注会话的简报中**按需**介绍 `devlead_report`；不是每条简报都写，`watch=false` 时工具不存在，
 因此不要写。报告不能替代最终 turn 通知；每个子会话每轮最多 4 条不同普通报告，`question` report
 不计入该预算，但每个 lead/child pair 最多允许 16 条不同的 pending Q1，超出在写 outbox 前返回
-`DEVLEAD_DELIVERY_RATE_LIMITED`。同轮相同 kind+消息且结构化内容一致时幂等（同文不同 kind 视为新报告）；
-同文但 questions 不同则返回 `DEVLEAD_INVALID_INPUT`，不覆盖第一份 payload；普通报告超预算返回
+`DEVLEAD_DELIVERY_RATE_LIMITED`；两条并发 question 在 cap 边界竞态、败者的 receipt 写入落在
+outbox 行之后时，该行会被删除，同一个显式错误仍会到达 child（不留孤儿行，不吞掉拒绝）。同轮相同
+kind+消息且结构化内容一致时幂等（同文不同 kind 视为新报告）；同文但 questions 不同则返回
+`DEVLEAD_INVALID_INPUT`，不覆盖第一份 payload；普通报告超预算返回
 `DEVLEAD_REPORT_RATE_LIMITED`。
+
+durable 转发的 `question` report 还会请求结束 child 的 turn：工具调用 executor 的 `concludeTurn`
+标记，结果携带 `turnEndRequested:true`、`questionId`（report id）与 `guidance`。这是请求而非强制
+关闭——当前 tool batch 仍会完成，已排队的 next-step 工作仍会执行，之后 turn 才关闭；answer 可能作为
+新 turn 到达，也可能在 child 仍运行时 steer 其下一步。question receipt 仅内存（`durable:false`）时
+不请求结束 turn：warning 要求 child 在最终 assistant 消息里重述问题并自然结束 turn，避免可能丢失的
+问题伴随一个静默关闭的 turn。其他 kind 的报告从不请求结束 turn。
 
 工具把 core 的 `DevLeadError` 翻译成带稳定 code 的 `HarnessError`；阅读状态时请以
 `lastTurn` / `lastTransition` / `lastError` / `lastAssistant` 等字段为准，不要靠猜。
@@ -513,7 +522,10 @@ scheduled 与其他来源的输入会被拒绝并文案说明），且幂等（�
 
 被关注的子会话不能直接向人类提问。工具插件安装了硬性的 `tools/pre-execute` 闸门：来自已关注
 非 lead 子会话的 `ask_user_question` 会在其问题 UI 运行之前被拒绝，并格式化为发给 active lead
-的 durable `kind: question` report；子会话会收到明确指引，要求结束当前 turn。报告同时保留有界文本
+的 durable `kind: question` report；子会话会收到明确指引，要求结束当前 turn。deny 只是软请求
+（闸门无法强制结束 turn），child 可能继续工作；转发回执仅内存时，deny reason 追加「在最终
+assistant 消息里重述问题」的提示；question 队列满时显式点名
+`DEVLEAD_DELIVERY_RATE_LIMITED` 并给同样的重述兜底。报告同时保留有界文本
 和结构化 `questions`（header/question/options/multi_select）；lead 收到独立的
 `[DEV LEAD QUESTION]` next-step 唤醒，包含完整 payload、report id 和子会话观测状态，且明确问题正文是
 子会话提供的数据，不是人类/运行时指令。lead 可直接凭上下文回答，或用自己的 `ask_user_question`

@@ -1928,6 +1928,103 @@ describe('devlead_report', () => {
     expect(definition.description).toContain('end your turn')
   })
 
+  /** One question receipt fixture plus an exec that records concludeTurn calls. */
+  function questionHarness(durable: boolean) {
+    const harness = boot()
+    harness.devLead.report = {
+      ...harness.devLead.report,
+      id: 'session-1:1:question:which-target',
+      kind: 'question',
+      message: 'Which target?',
+      summary: 'target',
+    }
+    harness.devLead.reportDurable = durable
+    harness.devLead.reportQueued = !durable
+    let concluded = 0
+    const exec = { ...makeExec(harness.agent), concludeTurn: () => { concluded += 1 } }
+    return { harness, exec, concluded: () => concluded }
+  }
+
+  it('requests the turn end for a durably forwarded question (case 8)', async () => {
+    const { harness, exec, concluded } = questionHarness(true)
+    const value = await harness.call('devlead_report', {
+      message: 'Which target?', kind: 'question', summary: 'target',
+    }, exec as never) as Record<string, unknown>
+    expect(concluded()).toBe(1)
+    expect(value).toMatchObject({
+      durable: true,
+      queued: false,
+      turnEndRequested: true,
+      questionId: 'session-1:1:question:which-target',
+    })
+    expect(value.report).toMatchObject({ kind: 'question', id: 'session-1:1:question:which-target' })
+    // The result must state the request semantics, not an immediate close.
+    expect(String(value.guidance)).toContain('current tool batch still completes')
+    expect(String(value.guidance)).toContain('next-step work still runs')
+    expect(String(value.guidance)).toContain('do not poll or resend')
+    expect(value).not.toHaveProperty('warning')
+    expectValidOutput(harness, 'devlead_report', value)
+  })
+
+  it('never requests a turn end for non-question kinds', async () => {
+    for (const kind of ['progress', 'blocked', 'decision', 'fyi'] as const) {
+      const { harness, exec, concluded } = questionHarness(true)
+      harness.devLead.report = { ...harness.devLead.report, kind }
+      const value = await harness.call('devlead_report', { message: 'update', kind }, exec as never) as Record<string, unknown>
+      expect(concluded(), kind).toBe(0)
+      expect(value, kind).not.toHaveProperty('turnEndRequested')
+      expect(value, kind).not.toHaveProperty('questionId')
+      expect(value, kind).not.toHaveProperty('guidance')
+      expectValidOutput(harness, 'devlead_report', value)
+    }
+  })
+
+  it('keeps a memory-only question open and asks for a restatement (case 9)', async () => {
+    const { harness, exec, concluded } = questionHarness(false)
+    harness.devLead.reportWarning = 'durable report storage is unavailable on this Host'
+    const value = await harness.call('devlead_report', {
+      message: 'Which target?', kind: 'question',
+    }, exec as never) as Record<string, unknown>
+    expect(concluded()).toBe(0)
+    expect(value).toMatchObject({ durable: false, queued: true })
+    expect(value).not.toHaveProperty('turnEndRequested')
+    expect(value).not.toHaveProperty('questionId')
+    expect(value).not.toHaveProperty('guidance')
+    expect(String(value.warning)).toContain('durable report storage is unavailable')
+    expect(String(value.warning)).toContain('restate the question in your final assistant message')
+    expect(String(value.warning)).toContain('end your turn naturally')
+    expectValidOutput(harness, 'devlead_report', value)
+  })
+
+  it('synthesizes the restatement warning when the core carries none', async () => {
+    const { harness, exec, concluded } = questionHarness(false)
+    const value = await harness.call('devlead_report', {
+      message: 'Which target?', kind: 'question',
+    }, exec as never) as Record<string, unknown>
+    expect(concluded()).toBe(0)
+    expect(value).not.toHaveProperty('turnEndRequested')
+    expect(String(value.warning)).toContain('restate the question in your final assistant message')
+    expectValidOutput(harness, 'devlead_report', value)
+  })
+
+  it('advertises the question turn-end request and the memory-only restatement', () => {
+    const harness = boot()
+    const description = harness.tool('devlead_report').definition.description
+    expect(description).toContain('turnEndRequested:true')
+    expect(description).toContain('current tool batch still completes')
+    expect(description).toContain('next-step work still runs')
+    expect(description).toContain('restate the question in your final assistant message')
+    const reportSchema = harness.tool('devlead_report').definition.output.schema as {
+      properties: { turnEndRequested: { description: string }; questionId: { description: string } }
+    }
+    expect(reportSchema.properties.turnEndRequested.description).toContain('request')
+    expect(reportSchema.properties.turnEndRequested.description).toContain('not an immediate close')
+    expect(reportSchema.properties.questionId.description).toContain('turnEndRequested')
+    const policy = harness.reportSectionText()
+    expect(policy).toContain('turnEndRequested:true')
+    expect(policy).toContain('restate the question in your final assistant message')
+  })
+
   it('positions reports as long-task mid-turn milestones, not turn-end re-broadcasts', () => {
     const harness = boot()
     const description = harness.tool('devlead_report').definition.description
@@ -2163,6 +2260,57 @@ describe('watched Session question routing', () => {
     expect(result.nextCalls).toBe(0)
     expect((result.decision as { reason: string }).reason).toContain('forwarding the question failed')
     expect(harness.warnings.some(warning => warning.includes('could not forward'))).toBe(true)
+  })
+
+  it('appends the restatement hint when the forwarded receipt is memory-only (F7)', async () => {
+    const harness = boot()
+    const child = childAgent('child-memory-only', ['devlead'])
+    harness.devLead.supervised.add(child.id)
+    harness.devLead.reportDurable = false
+    harness.devLead.reportQueued = true
+    harness.devLead.report = { ...harness.devLead.report, kind: 'question' }
+    const result = await harness.preExecute({
+      name: ASK_USER_QUESTION_TOOL,
+      arguments: { questions: [{ id: 'q', question: 'Which?' }] },
+      agent: child,
+      signal: new AbortController().signal,
+    })
+    expect(result.nextCalls).toBe(0)
+    expect(result.decision).toMatchObject({ kind: 'deny' })
+    const reason = (result.decision as { reason: string }).reason
+    expect(reason).toContain('forwarded to the DevLead')
+    expect(reason).toContain('memory-only')
+    expect(reason).toContain('restate the question in your final assistant message')
+    // The durable path keeps the original reason without the memory-only hint.
+    const durableHarness = boot()
+    const durableChild = childAgent('child-durable', ['devlead'])
+    durableHarness.devLead.supervised.add(durableChild.id)
+    const durableResult = await durableHarness.preExecute({
+      name: ASK_USER_QUESTION_TOOL,
+      arguments: { questions: [{ id: 'q', question: 'Which?' }] },
+      agent: durableChild,
+      signal: new AbortController().signal,
+    })
+    expect((durableResult.decision as { reason: string }).reason).not.toContain('memory-only')
+  })
+
+  it('names the full question queue when forwarding hits the delivery cap (F7)', async () => {
+    const harness = boot()
+    const child = childAgent('child-capacity', ['devlead'])
+    harness.devLead.supervised.add(child.id)
+    harness.devLead.failures.set('reportProgress', devLeadFailure('DEVLEAD_DELIVERY_RATE_LIMITED'))
+    const result = await harness.preExecute({
+      name: ASK_USER_QUESTION_TOOL,
+      arguments: { questions: [{ id: 'q', question: 'Which?' }] },
+      agent: child,
+      signal: new AbortController().signal,
+    })
+    expect(result.nextCalls).toBe(0)
+    const reason = (result.decision as { reason: string }).reason
+    expect(reason).toContain('DEVLEAD_DELIVERY_RATE_LIMITED')
+    expect(reason).toContain('queue is full')
+    expect(reason).toContain('state the question in your final assistant message')
+    expect(reason).toContain('Do not call ask_user_question again')
   })
 
   it('does not intercept other tools or calls without an Agent', async () => {

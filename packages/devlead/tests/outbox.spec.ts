@@ -7,7 +7,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { devLeadReport } from '../src/index.ts'
-import { DEVLEAD_REPORT_OUTBOX_RETENTION_MS, DevLeadReportOutbox } from '../src/outbox.ts'
+import { DEVLEAD_REPORT_OUTBOX_RETENTION_MS, DevLeadReportOutbox, OUTBOX_SPEC } from '../src/outbox.ts'
 import { FakeStorageDomain, T0, disposeContext } from './harness.ts'
 
 /** Contexts opened by one test, disposed in afterEach. */
@@ -159,6 +159,111 @@ describe('DevLeadReportOutbox', () => {
     expect(await outbox!.dropForLead('lead-1')).toBe(1)
     expect(outbox!.entries().map(entry => entry.report.message)).toEqual(['lead-2 row'])
     expect(await outbox!.dropForLead('lead-1')).toBe(0)
+  })
+
+  it('parses stored legacy and structured rows with the exact Host open-time schema', async () => {
+    // The real storage-domain facility parses every record with the declared
+    // valueSchema at open and backs up + skips a rejection. Pin the round-trip
+    // through that exact schema so a questions-schema regression cannot turn
+    // already-durable rows into backup-and-skip casualties on the next restart.
+    const schema = OUTBOX_SPEC.tables.pending.valueSchema
+    const storage = new FakeStorageDomain()
+    const outbox = await DevLeadReportOutbox.open(storageContext(storage))
+    const legacy = report('legacy update')
+    const textOnly = devLeadReport({
+      senderSessionId: 'child-text',
+      leadSessionId: 'lead-1',
+      turn: 2,
+      kind: 'question',
+      message: 'A text-only question?',
+      at: T0,
+    })
+    const structured = devLeadReport({
+      senderSessionId: 'child-structured',
+      senderSessionTitle: 'Structured child',
+      senderWorkspaceId: 'ws-1',
+      senderWorkspaceTitle: 'webapp',
+      leadSessionId: 'lead-1',
+      turn: 3,
+      kind: 'question',
+      message: 'Which target?',
+      summary: 'Question: Deploy',
+      questions: [{
+        id: 'target',
+        header: 'Deploy',
+        question: 'Which target?',
+        options: [{ label: 'Staging', description: 'safe' }, { label: 'Prod' }],
+        multi_select: true,
+      }],
+      at: T0,
+    })
+    for (const value of [legacy, textOnly, structured]) {
+      expect(await outbox!.put(value)).toBe(true)
+    }
+    const rows = [...storage.table('devlead_report_outbox', 'pending').records.values()]
+    expect(rows).toHaveLength(3)
+    for (const row of rows) {
+      // Model the durable boundary: the Host re-reads serialized JSON documents.
+      const reread: unknown = JSON.parse(JSON.stringify(row))
+      const parsed = schema.parse(reread)
+      expect(parsed).toEqual(row)
+    }
+    const parsedStructured = schema.parse(JSON.parse(JSON.stringify(
+      rows.find(row => (row as { report: { id: string } }).report.id === structured.id),
+    ))) as { report: { questions?: unknown } }
+    expect(parsedStructured.report.questions).toEqual(structured.questions)
+  })
+
+  it('rejects at the schema boundary the rows the Host would backup-and-skip', () => {
+    const schema = OUTBOX_SPEC.tables.pending.valueSchema
+    const base = { report: report(), enqueuedAt: T0 }
+    expect(schema.safeParse(base).success).toBe(true)
+    const structured = devLeadReport({
+      senderSessionId: 'child-1',
+      leadSessionId: 'lead-1',
+      turn: 1,
+      kind: 'question',
+      message: 'Which target?',
+      questions: [{ question: 'Which target?', options: [{ label: 'Staging' }] }],
+      at: T0,
+    })
+    const questionRow = { report: structured, enqueuedAt: T0 }
+    expect(schema.safeParse(questionRow).success).toBe(true)
+    const invalid: Array<[string, unknown]> = [
+      ['questions on a non-question report', {
+        ...base,
+        report: { ...base.report, questions: [{ question: 'q' }] },
+      }],
+      ['unknown report field', { ...base, report: { ...base.report, extra: true } }],
+      ['unknown question field', {
+        ...questionRow,
+        report: { ...structured, questions: [{ question: 'q', extra: true }] },
+      }],
+      ['unknown option field', {
+        ...questionRow,
+        report: { ...structured, questions: [{ question: 'q', options: [{ label: 'x', extra: true }] }] },
+      }],
+      ['oversized question field', {
+        ...questionRow,
+        report: { ...structured, questions: [{ question: 'q'.repeat(2_001) }] },
+      }],
+      ['too many questions', {
+        ...questionRow,
+        report: { ...structured, questions: Array.from({ length: 33 }, () => ({ question: 'q' })) },
+      }],
+      ['too many options', {
+        ...questionRow,
+        report: {
+          ...structured,
+          questions: [{ question: 'q', options: Array.from({ length: 17 }, () => ({ label: 'x' })) }],
+        },
+      }],
+      ['report id mismatch', { ...base, report: { ...base.report, id: 'forged-id' } }],
+      ['unknown row field', { ...base, extra: true }],
+    ]
+    for (const [label, row] of invalid) {
+      expect(schema.safeParse(row).success, label).toBe(false)
+    }
   })
 
   it('returns undefined without storage-domain and false on write failure', async () => {

@@ -87,11 +87,23 @@
  *                 real `reportProgress` call is durably outboxed (`durable:true`,
  *                 `queued:false` on the default storage composition) and lands
  *                 in the lead's durable digest;
- *               - a real `ask_user_question` call executed through the Host
- *                 tools pipeline as a watched child is denied before the
- *                 child's own question UI runs, and the formatted question
- *                 lands in the lead's durable report digest (the question
- *                 gate);
+ *               - a real structured multi-question `ask_user_question` call
+ *                 executed through the Host tools pipeline as a watched child
+ *                 is denied before the child's own question UI runs, the
+ *                 complete structured payload lands in the lead's durable
+ *                 report digest, and the lead log records the
+ *                 `lane:'action-required'` next-step wake admission (the
+ *                 question gate); the deny stays soft: a sibling read-only
+ *                 call still completes and no child turn is forced to end
+ *                 (case 33);
+ *               - a real `devlead_report({kind:'question'})` batch from inside
+ *                 the watched child: the durable receipt sets
+ *                 `turnEndRequested:true` with the executor `concludesTurn`
+ *                 marker, the batch completes, a committed next-step input
+ *                 survives, and the lead digest/wake carry the text question;
+ *                 a write-protected outbox window produces the memory-only
+ *                 receipt (`durable:false`, no turn end, restatement warning),
+ *                 and a recovery report proves durable delivery returns;
  *               - the assembled `devlead:policy` section carries judgment-based
  *                 closing, its safety boundaries, and the feasibility-triage /
  *                 open-question handoff to the dispatched Session;
@@ -125,15 +137,15 @@
  *                 Agent Teams is version-adaptive: rc.2+ (default composition)
  *                 must apply it, while an rc.1 Host must reject the explicit
  *                 request with DEVLEAD_TEAM_UNAVAILABLE and create nothing.
- *             88 checks.
+ *             99 checks.
  *
  * `--no-worktree` skips phase 2 only (debugging escape hatch when the
  * experimental composition cannot boot on this machine); phases 1, 1b, and 3
  * still run.
  *
- * Check counts: phase 1 = 27, phase 1b = 12, phase 2 = 23, phase 3 = 88, so
- * every flow reports 150/150 checks when all four phases pass (`--no-worktree`
- * skips phase 2: 127/127). Run both flows before a release:
+ * Check counts: phase 1 = 27, phase 1b = 12, phase 2 = 23, phase 3 = 99, so
+ * every flow reports 161/161 checks when all four phases pass (`--no-worktree`
+ * skips phase 2: 138/138). Run both flows before a release:
  *
  *   node scripts/e2e-smoke.mjs --flow patch
  *   node scripts/e2e-smoke.mjs --flow installed
@@ -216,6 +228,8 @@ const PROBE_WATCH_CHILD_COMMAND = 'devlead-e2e-watch-child'
 const PROBE_REPORT_COMMAND = 'devlead-e2e-report'
 /** Drive the watched-Session question gate through a real ask_user_question call. */
 const PROBE_QUESTION_COMMAND = 'devlead-e2e-question'
+/** Drive the devlead_report question conclude/durable paths from inside the watched child. */
+const PROBE_QUESTION_REPORT_COMMAND = 'devlead-e2e-question-report'
 /** Probe command: queued-inbox visibility / ownership / idempotent retraction. */
 const PROBE_INBOX_COMMAND = 'devlead-e2e-inbox'
 /** Exact DevLead tool surface an enabled lead step admits. */
@@ -283,6 +297,15 @@ Environment:
 function messageOf(error) {
   if (error instanceof Error) return error.message
   return String(error)
+}
+
+/** Key-order-insensitive JSON serialization for deep payload comparisons. */
+function stableStringify(value) {
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`
+  if (value !== null && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(',')}}`
+  }
+  return JSON.stringify(value)
 }
 
 /** Hide the launch token in a runtime URL before printing or logging it. */
@@ -1488,21 +1511,26 @@ async function runCloseChecks(client, paths, dshVersion) {
     JSON.stringify(leadReports),
   )
 
-  // Watched-Session question gate: a real ask_user_question call is executed
-  // through the Host tools pipeline as a watched child. The DevLead pre-execute
-  // listener must deny before the child's own question UI runs and forward a
-  // question report into the lead digest.
+  // Watched-Session question gate: a real structured multi-question
+  // ask_user_question call plus a sibling read-only call are executed through
+  // the Host tools pipeline as a watched child. The DevLead pre-execute
+  // listener must deny before the child's own question UI runs, forward the
+  // structured question report into the lead digest, and admit an
+  // action-required wake at the lead's next-step boundary — while the deny
+  // stays a soft request: the sibling call still runs and no turn is forced
+  // to end (case 33).
   const questionProbe = await runProbeCommand(client, leadId, PROBE_QUESTION_COMMAND, DISPATCH_PROBE_TIMEOUT_MS)
   checks.expect(
     'phase 3 watched-child question probe settles success',
     questionProbe.execution?.result?.kind === 'success',
     questionProbe.text.slice(0, 500),
   )
-  const questionResults = Array.isArray(questionProbe.report?.results) ? questionProbe.report.results : []
+  const questionResults = Array.isArray(questionProbe.report?.batch?.results) ? questionProbe.report.batch.results : []
   checks.expect(
     'phase 3 watched child ask_user_question is denied before its UI',
     questionProbe.report?.supervised === true
       && questionResults[0]?.isError === true
+      && questionResults[0]?.concludesTurn === false
       && JSON.stringify(questionResults[0]?.content ?? []).includes('Direct user questions are disabled')
       && JSON.stringify(questionResults[0]?.content ?? []).includes('end your turn'),
     JSON.stringify(questionResults),
@@ -1516,6 +1544,132 @@ async function runCloseChecks(client, paths, dshVersion) {
       && typeof row?.message === 'string'
       && row.message.includes('Which e2e target?')),
     JSON.stringify(questionReports),
+  )
+  const forwardedQuestion = questionReports.find(row => typeof row?.message === 'string'
+    && row.message.includes('Which e2e target?'))
+  checks.expect(
+    'phase 3 gate forwards the complete structured multi-question payload',
+    forwardedQuestion !== undefined
+      && stableStringify(forwardedQuestion.questions) === stableStringify(questionProbe.report?.expectedQuestions),
+    JSON.stringify({ forwarded: forwardedQuestion?.questions, expected: questionProbe.report?.expectedQuestions }),
+  )
+  checks.expect(
+    'phase 3 gate deny keeps the child running: sibling completes, no forced turn end (case 33)',
+    questionResults[1]?.isError === false
+      && questionProbe.report?.batch?.concluded === false
+      && questionProbe.report?.childTurnEnds === 0
+      && questionProbe.report?.childStatus === 'idle',
+    JSON.stringify({
+      sibling: questionResults[1],
+      concluded: questionProbe.report?.batch?.concluded,
+      childTurnEnds: questionProbe.report?.childTurnEnds,
+      childStatus: questionProbe.report?.childStatus,
+    }),
+  )
+  const gateWake = questionProbe.report?.wake ?? {}
+  checks.expect(
+    'phase 3 question wake admits at the lead next-step with lane action-required',
+    gateWake.found === true
+      && gateWake.boundary === 'next-step'
+      && gateWake.lane === 'action-required'
+      && gateWake.wakeRequested === true
+      && gateWake.reportId === forwardedQuestion?.id
+      && String(gateWake.excerpt ?? '').includes('[DEV LEAD QUESTION]'),
+    JSON.stringify(gateWake),
+  )
+
+  // devlead_report question path (Phase 1c): from inside the watched child, a
+  // durable question requests the turn end through the executor marker while
+  // the batch completes and committed next-step work survives; a
+  // write-protected outbox window produces the memory-only receipt with no
+  // turn end and a restatement warning; the outbox then recovers durably.
+  const questionReportProbe = await runProbeCommand(
+    client, watchedChildId, PROBE_QUESTION_REPORT_COMMAND, DISPATCH_PROBE_TIMEOUT_MS,
+  )
+  checks.expect(
+    'phase 3 question-report probe settles success inside the watched child',
+    questionReportProbe.execution?.result?.kind === 'success'
+      && questionReportProbe.report?.supervised === true
+      && questionReportProbe.report?.leadId === leadId,
+    questionReportProbe.text.slice(0, 500),
+  )
+  const durableQuestionResults = Array.isArray(questionReportProbe.report?.durable?.batch?.results)
+    ? questionReportProbe.report.durable.batch.results
+    : []
+  const durableQuestionValue = durableQuestionResults[0]?.value ?? {}
+  checks.expect(
+    'phase 3 durable question sets turnEndRequested and the executor concludesTurn marker',
+    durableQuestionResults[0]?.isError === false
+      && durableQuestionResults[0]?.concludesTurn === true
+      && durableQuestionValue.durable === true
+      && durableQuestionValue.turnEndRequested === true
+      && durableQuestionValue.questionId === durableQuestionValue.report?.id
+      && durableQuestionValue.report?.kind === 'question',
+    JSON.stringify(durableQuestionResults[0]),
+  )
+  checks.expect(
+    'phase 3 question turn-end request completes the batch and keeps committed next-step work',
+    durableQuestionResults[1]?.isError === false
+      && questionReportProbe.report?.durable?.batch?.concluded === true
+      && questionReportProbe.report?.markerPending === true,
+    JSON.stringify({
+      sibling: durableQuestionResults[1]?.callId,
+      concluded: questionReportProbe.report?.durable?.batch?.concluded,
+      markerPending: questionReportProbe.report?.markerPending,
+    }),
+  )
+  checks.expect(
+    'phase 3 question result states the request semantics, not an immediate close',
+    String(durableQuestionValue.guidance ?? '').includes('current tool batch still completes')
+      && String(durableQuestionValue.guidance ?? '').includes('next-step work still runs')
+      && String(durableQuestionValue.guidance ?? '').includes('do not poll or resend'),
+    JSON.stringify(durableQuestionValue.guidance),
+  )
+  const durableQuestionReports = Array.isArray(questionReportProbe.report?.durable?.reports)
+    ? questionReportProbe.report.durable.reports
+    : []
+  checks.expect(
+    'phase 3 text question lands in the lead digest without a structured payload',
+    durableQuestionReports.some(row => row?.kind === 'question'
+      && typeof row?.message === 'string'
+      && row.message.includes('which release train')
+      && row.questions === undefined),
+    JSON.stringify(durableQuestionReports),
+  )
+  const reportWake = questionReportProbe.report?.durable?.wake ?? {}
+  checks.expect(
+    'phase 3 report question wake admits at the lead next-step with lane action-required',
+    reportWake.found === true
+      && reportWake.boundary === 'next-step'
+      && reportWake.lane === 'action-required'
+      && reportWake.wakeRequested === true
+      && String(reportWake.excerpt ?? '').includes('[DEV LEAD QUESTION]'),
+    JSON.stringify(reportWake),
+  )
+  const memoryOnly = questionReportProbe.report?.memoryOnly ?? {}
+  const memoryOnlyResults = Array.isArray(memoryOnly.batch?.results) ? memoryOnly.batch.results : []
+  const memoryOnlyValue = memoryOnlyResults[0]?.value ?? {}
+  checks.expect(
+    'phase 3 memory-only question requests no turn end and asks for a restatement',
+    memoryOnly.available === true
+      && memoryOnlyResults[0]?.isError === false
+      && memoryOnlyResults[0]?.concludesTurn === false
+      && memoryOnly.batch?.concluded === false
+      && memoryOnlyValue.durable === false
+      && memoryOnlyValue.turnEndRequested === undefined
+      && String(memoryOnlyValue.warning ?? '').includes('restate the question in your final assistant message'),
+    JSON.stringify(memoryOnly),
+  )
+  const recoveryResults = Array.isArray(questionReportProbe.report?.recovery?.results)
+    ? questionReportProbe.report.recovery.results
+    : []
+  checks.expect(
+    'phase 3 outbox recovers durable question delivery after the write-protected window',
+    recoveryResults[0]?.isError === false
+      && recoveryResults[0]?.value?.durable === true
+      && recoveryResults[0]?.value?.turnEndRequested === true
+      && recoveryResults[0]?.concludesTurn === true,
+    JSON.stringify(recoveryResults[0]),
   )
 
   // Queued inbox inputs: the probe appends a human and an own-relay input to a

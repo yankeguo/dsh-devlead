@@ -550,7 +550,19 @@ export const REPORT_OUTPUT = jsonOutput({
     },
     warning: {
       type: 'string',
-      description: 'Human warning shown when no durable receipt was written on this attempt (storage unavailable or the outbox write failed) and the receipt is memory-only.',
+      description: 'Human warning shown when no durable receipt was written on this attempt (storage unavailable or the outbox write failed) and the receipt is memory-only. For a question report it also asks the child to restate the question in its final assistant message.',
+    },
+    turnEndRequested: {
+      type: 'boolean',
+      description: 'Present and true only when a question report was durably forwarded: the tool requested the end of the current turn. The current tool batch still completes and already-queued next-step work still runs; the turn closes only after that. This is a request, not an immediate close, and it is absent for non-question kinds and for non-durable questions.',
+    },
+    questionId: {
+      type: 'string',
+      description: 'Report id of the durably forwarded question, present with turnEndRequested; the lead answers in a new turn or by steering this Session.',
+    },
+    guidance: {
+      type: 'string',
+      description: 'Model-facing delivery guidance, present when a question report was durably forwarded.',
     },
   },
 } as const)
