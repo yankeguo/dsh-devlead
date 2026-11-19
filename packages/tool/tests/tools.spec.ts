@@ -1,5 +1,5 @@
 /**
- * Behavior of the thirteen `devlead_*` tools: registration and gating, per-tool
+ * Behavior of the fourteen `devlead_*` tools: registration and gating, per-tool
  * forwarding into `ctx.devLead`, input validation, canonical value projection,
  * error translation, and pure presentation.
  */
@@ -20,11 +20,13 @@ import type {
   DevLeadNotification,
   DevLeadPromptedSession,
   DevLeadRemovedWorkspace,
+  DevLeadReportKind,
   DevLeadSessionView,
   DevLeadUnarchivedSession,
   DevLeadWatchMutation,
   DevLeadWorkspaceView,
 } from '@yankeguo/dsh-devlead-protocol'
+import { DEVLEAD_REPORT_KINDS } from '@yankeguo/dsh-devlead-protocol'
 import { createSessionRequest, DevLeadToolInputError } from '../src/arguments.ts'
 import { DEVLEAD_POLICY_BASE } from '../src/policy.ts'
 import {
@@ -41,6 +43,7 @@ import {
   LIST_MODELS_OUTPUT,
   PROMPT_SESSION_OUTPUT,
   REMOVE_WORKSPACE_OUTPUT,
+  REPORT_SCHEMA,
   UNARCHIVE_SESSION_OUTPUT,
   WATCH_SESSION_OUTPUT,
   type IsolationValue,
@@ -570,6 +573,67 @@ describe('isolation vocabulary', () => {
     }
     expect([...DEVLEAD_ISOLATION_MODES].sort()).toEqual(Object.keys(modes).sort())
     expect([...DEVLEAD_ISOLATION_STATUSES].sort()).toEqual(Object.keys(statuses).sort())
+  })
+})
+
+describe('report kind vocabulary', () => {
+  it('keeps the tool enum and output schema exhaustive against the protocol kinds', () => {
+    const kinds: Record<DevLeadReportKind, true> = {
+      progress: true,
+      blocked: true,
+      decision: true,
+      question: true,
+      fyi: true,
+    }
+    expect([...DEVLEAD_REPORT_KINDS].sort()).toEqual(Object.keys(kinds).sort())
+    const harness = boot()
+    const parameters = harness.tool('devlead_report').definition.parameters as {
+      properties: { kind: { enum: readonly string[] } }
+    }
+    expect(parameters.properties.kind.enum).toEqual([...DEVLEAD_REPORT_KINDS])
+    expect(REPORT_SCHEMA.properties.kind.enum).toEqual([...DEVLEAD_REPORT_KINDS])
+  })
+})
+
+describe('schema semantics', () => {
+  it('annotates every documented parameter default in the schema itself', () => {
+    const harness = boot()
+    const defaults: readonly (readonly [string, string, unknown])[] = [
+      ['devlead_use_workspace', 'create', false],
+      ['devlead_create_session', 'watch', true],
+      ['devlead_create_session', 'isolation', 'none'],
+      ['devlead_prompt_session', 'watch', true],
+      ['devlead_prompt_session', 'interrupt', false],
+      ['devlead_notifications', 'limit', 20],
+      ['devlead_report', 'kind', 'progress'],
+      ['devlead_archive_session', 'stop_running', false],
+    ]
+    for (const [tool, parameter, expected] of defaults) {
+      const parameters = harness.tool(tool).definition.parameters as {
+        properties: Record<string, { default?: unknown }>
+      }
+      expect(parameters.properties[parameter]?.default, `${tool}.${parameter}`).toEqual(expected)
+    }
+  })
+
+  it('classifies the read-only tools as concurrency-safe and keeps mutations exclusive', () => {
+    const harness = boot()
+    const readers = [
+      'devlead_list_workspaces',
+      'devlead_list_models',
+      'devlead_list_agent_presets',
+      'devlead_list_sessions',
+      'devlead_get_session',
+      'devlead_notifications',
+    ]
+    for (const name of readers) {
+      // defineTool wraps the classifier with argument validation, so the probe
+      // must carry the tool's minimal valid arguments.
+      expect(harness.tool(name).definition.isConcurrencySafe?.(MINIMAL_ARGS[name]), name).toBe(true)
+    }
+    for (const name of TOOL_NAMES.filter(name => !readers.includes(name))) {
+      expect(harness.tool(name).definition.isConcurrencySafe, name).toBeUndefined()
+    }
   })
 })
 

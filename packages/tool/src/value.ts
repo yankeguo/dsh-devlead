@@ -13,7 +13,7 @@
  */
 
 import type { InferValue, ValueSchemaSpec } from '@deepseek-ai/dsh-tools'
-import { DEVLEAD_TRANSITIONS } from '@yankeguo/dsh-devlead-protocol'
+import { DEVLEAD_REPORT_KINDS, DEVLEAD_TRANSITIONS } from '@yankeguo/dsh-devlead-protocol'
 import type {
   DevLeadAgentPresetCatalog,
   DevLeadArchivedSession,
@@ -192,7 +192,7 @@ export const REPORT_SCHEMA = {
     kind: {
       type: 'string',
       required: true,
-      enum: ['progress', 'blocked', 'decision', 'question', 'fyi'],
+      enum: [...DEVLEAD_REPORT_KINDS],
       description: 'Why the reporter sent this update.',
     },
     message: { type: 'string', required: true, description: 'Full report text.' },
@@ -401,10 +401,14 @@ export const PROMPT_SESSION_OUTPUT = jsonOutput({
   type: 'object',
   additionalProperties: false,
   properties: {
-    sessionId: { type: 'string', required: true },
-    watched: { type: 'boolean', required: true },
-    resumed: { type: 'boolean', required: true },
-    interrupted: { type: 'boolean', required: true },
+    sessionId: { type: 'string', required: true, description: 'Addressed Session identity.' },
+    watched: { type: 'boolean', required: true, description: 'Whether the Session is watched after this call.' },
+    resumed: { type: 'boolean', required: true, description: 'Whether a cold Session had to be resumed to admit the prompt.' },
+    interrupted: {
+      type: 'boolean',
+      required: true,
+      description: 'Whether the Host was asked to stop running work before admitting the prompt; false for an idle or cold Session.',
+    },
   },
 } as const)
 
@@ -413,9 +417,14 @@ export const WATCH_SESSION_OUTPUT = jsonOutput({
   type: 'object',
   additionalProperties: false,
   properties: {
-    sessionId: { type: 'string', required: true },
-    watched: { type: 'boolean', required: true },
-    sessions: { type: 'array', required: true, items: { type: 'string' } },
+    sessionId: { type: 'string', required: true, description: 'Addressed Session identity.' },
+    watched: { type: 'boolean', required: true, description: 'Whether the Session is watched after this mutation.' },
+    sessions: {
+      type: 'array',
+      required: true,
+      items: { type: 'string' },
+      description: 'The complete watch set after this mutation, in add order (same ids as the watched array of the read tools).',
+    },
   },
 } as const)
 

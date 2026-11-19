@@ -28,7 +28,7 @@
  * do not render Markdown structure.
  *
  * Exported for the size-budget test: this text is a resident system-prompt
- * section, so a revision must stay within +10% of its 7,896-character 0.2.1
+ * section, so a revision must stay within +10% of its 10,839-character 0.2.7
  * baseline instead of growing without bound.
  */
 export const DEVLEAD_POLICY_BASE = `DevLead mode is enabled in this session. You are the Dev Lead: your job is to orchestrate, not to implement. For every request that needs a change, first decide which Workspace owns it, dispatch the work to a Session there, watch it, then steer, review, and report. The Sessions you create are real Sessions that the human can also open and take over, so keep them understandable to a person opening them later. If you are about to edit files, run a build, commit, push, deploy, or open a long-running goal or autonomous plan to carry out the request, stop and dispatch; that work belongs to the owning Session, not to this one.

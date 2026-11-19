@@ -12,7 +12,11 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
-import type { DevLeadReportKind } from '@yankeguo/dsh-devlead-protocol'
+import {
+  DEVLEAD_REPORT_KINDS,
+  DEVLEAD_REPORT_MESSAGE_MAX,
+  DEVLEAD_REPORT_SUMMARY_MAX,
+} from '@yankeguo/dsh-devlead-protocol'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type {} from '@yankeguo/dsh-devlead'
 import {
@@ -87,6 +91,13 @@ const DEFAULT_NOTIFICATIONS_LIMIT = 20
 
 /** Newest retained mid-turn reports `devlead_get_session` adds when reading the lead itself. */
 const SELF_REPORTS_LIMIT = 5
+
+/**
+ * Concurrency classifier of the read-only tools: they only project Host state,
+ * so a batch of sibling reads may overlap instead of running exclusively.
+ * Mutations keep the default exclusive classification.
+ */
+const READ_ONLY_CONCURRENCY_SAFE = (): boolean => true
 
 /**
  * Model-facing description of every `session` argument. Resolution tolerates a
@@ -273,6 +284,7 @@ export function apply(ctx: Context): void {
     parameters: {},
     output: LIST_WORKSPACES_OUTPUT,
     presentCall: presentListWorkspacesCall,
+    isConcurrencySafe: READ_ONLY_CONCURRENCY_SAFE,
     execute(_args, exec) {
       return runTool(async () => ({
         workspaces: (await ctx.devLead.listWorkspaces(exec.signal)).map(workspaceValue),
@@ -286,6 +298,7 @@ export function apply(ctx: Context): void {
     parameters: {},
     output: LIST_MODELS_OUTPUT,
     presentCall: presentListModelsCall,
+    isConcurrencySafe: READ_ONLY_CONCURRENCY_SAFE,
     execute(_args, exec) {
       return runTool(async () => {
         const agent = requireAgent(exec.agent, 'devlead_list_models')
@@ -300,6 +313,7 @@ export function apply(ctx: Context): void {
     parameters: {},
     output: LIST_AGENT_PRESETS_OUTPUT,
     presentCall: presentListAgentPresetsCall,
+    isConcurrencySafe: READ_ONLY_CONCURRENCY_SAFE,
     execute(_args, exec) {
       return runTool(async () => {
         const agent = requireAgent(exec.agent, 'devlead_list_agent_presets')
@@ -324,6 +338,7 @@ export function apply(ctx: Context): void {
       },
       create: {
         type: 'boolean',
+        default: false,
         description: 'Defaults to false. Set true only when the human asked to create the directory.',
       },
     },
@@ -367,6 +382,7 @@ export function apply(ctx: Context): void {
     },
     output: LIST_SESSIONS_OUTPUT,
     presentCall: presentListSessionsCall,
+    isConcurrencySafe: READ_ONLY_CONCURRENCY_SAFE,
     execute(args, exec) {
       return runTool(async () => {
         const agent = requireAgent(exec.agent, 'devlead_list_sessions')
@@ -407,6 +423,7 @@ export function apply(ctx: Context): void {
       },
       watch: {
         type: 'boolean',
+        default: true,
         description: 'Watch the new Session and receive its turn notifications; watched Sessions also gain '
           + 'devlead_report. Defaults to true.',
       },
@@ -420,6 +437,7 @@ export function apply(ctx: Context): void {
       isolation: {
         type: 'string',
         enum: ['none', 'worktree'],
+        default: 'none',
         description: 'Optional checkout isolation for the new Session; defaults to "none". "worktree" asks for a '
           + 'best-effort isolated Git checkout of the owning Workspace for the new Session. It is applied only when '
           + 'the Host composes the experimental Git worktree service, and a non-active outcome (unavailable or '
@@ -474,6 +492,7 @@ export function apply(ctx: Context): void {
     },
     output: GET_SESSION_OUTPUT,
     presentCall: presentGetSessionCall,
+    isConcurrencySafe: READ_ONLY_CONCURRENCY_SAFE,
     execute(args, exec) {
       return runTool(async () => {
         const agent = requireAgent(exec.agent, 'devlead_get_session')
@@ -505,10 +524,12 @@ export function apply(ctx: Context): void {
       },
       watch: {
         type: 'boolean',
+        default: true,
         description: 'Watch the Session after prompting. Defaults to true.',
       },
       interrupt: {
         type: 'boolean',
+        default: false,
         description: 'Defaults to false. Set true only to replace the Session\'s current work: the Host stops its '
           + 'running turn and the work its stop providers report (running subagents, owned jobs, active schedules), '
           + 'discards queued inbox input, then admits this prompt as a new turn. An idle or cold Session is a no-op '
@@ -569,12 +590,14 @@ export function apply(ctx: Context): void {
     parameters: {
       limit: {
         type: 'integer',
+        default: DEFAULT_NOTIFICATIONS_LIMIT,
         description: 'Maximum number of rows to return from each digest: notifications and reports are limited '
           + `separately, newest rows kept. Defaults to ${DEFAULT_NOTIFICATIONS_LIMIT}.`,
       },
     },
     output: NOTIFICATIONS_OUTPUT,
     presentCall: presentNotificationsCall,
+    isConcurrencySafe: READ_ONLY_CONCURRENCY_SAFE,
     execute(args, exec) {
       return runTool(async () => {
         const agent = requireAgent(exec.agent, 'devlead_notifications')
@@ -595,17 +618,19 @@ export function apply(ctx: Context): void {
       message: {
         type: 'string',
         required: true,
-        description: 'Plain-text report: what happened, what it affects, and the next step or decision needed (max 4000 characters).',
+        description: 'Plain-text report: what happened, what it affects, and the next step or decision needed '
+          + `(max ${DEVLEAD_REPORT_MESSAGE_MAX} Unicode code points).`,
       },
       kind: {
         type: 'string',
-        enum: ['progress', 'blocked', 'decision', 'question', 'fyi'],
+        enum: [...DEVLEAD_REPORT_KINDS],
+        default: 'progress',
         description: 'Why this report is being sent; defaults to progress. Use question for a decision or missing '
           + 'information the lead must answer; then end your turn and wait for the lead\'s new turn.',
       },
       summary: {
         type: 'string',
-        description: 'Optional short title for the lead’s digest row (max 200 characters).',
+        description: `Optional short title for the lead's digest row (max ${DEVLEAD_REPORT_SUMMARY_MAX} Unicode code points).`,
       },
     },
     output: REPORT_OUTPUT,
@@ -615,7 +640,7 @@ export function apply(ctx: Context): void {
         const agent = requireAgent(exec.agent, 'devlead_report')
         const receipt = await ctx.devLead.reportProgress(agent, {
           message: args.message,
-          ...args.kind === undefined ? {} : { kind: args.kind as DevLeadReportKind },
+          ...args.kind === undefined ? {} : { kind: args.kind },
           ...args.summary === undefined ? {} : { summary: args.summary },
         }, exec.signal)
         return {
@@ -664,6 +689,7 @@ export function apply(ctx: Context): void {
       },
       stop_running: {
         type: 'boolean',
+        default: false,
         description: 'Defaults to false. Set true only when the human asked to close a Session with running work: '
           + 'the Session is archived first and the Host is then asked to stop its running turn, subagents, jobs, and '
           + 'schedules, without waiting for them to settle.',
