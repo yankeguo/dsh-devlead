@@ -77,6 +77,12 @@ export interface DevLeadNotificationSummary {
   readonly labelKey: DevLeadTransitionKey
   /** Host-authored failure excerpt, when the transition recorded one. */
   readonly error: string | undefined
+  /**
+   * Host-authored assistant excerpt of the settled turn, when one was recorded.
+   * The chip renders this only when {@link error} is absent (a real failure
+   * excerpt wins), but the field stays independent so callers can inspect both.
+   */
+  readonly summary: string | undefined
 }
 
 /**
@@ -99,6 +105,11 @@ export function notificationSummary(notification: DevLeadNotification): DevLeadN
   const error = typeof notification.error === 'string'
     ? excerptLine(notification.error, DEVLEAD_ERROR_EXCERPT_MAX)
     : undefined
+  // The settled turn's assistant excerpt is the chip's only detail on a
+  // successful/blocked turn; a blank stored value must render as absent.
+  const summary = typeof notification.summary === 'string'
+    ? excerptLine(notification.summary, DEVLEAD_ERROR_EXCERPT_MAX)
+    : undefined
   return {
     tooltip,
     who,
@@ -106,15 +117,22 @@ export function notificationSummary(notification: DevLeadNotification): DevLeadN
     transition: String(notification.transition),
     labelKey: transitionLabelKey(notification.transition),
     error,
+    summary,
   }
 }
 
 /**
  * Latest retained notification of one projection, or null while none is retained.
+ * The value crossed the Remote boundary, so a missing or non-array collection
+ * (an older/newer Host shape) degrades to "nothing retained" instead of
+ * throwing inside the strip.
  * @param notifications - retained notifications, oldest first.
- * @returns the newest notification.
+ * @returns the newest notification, or null when the collection is unusable.
  */
-export function latestNotification(notifications: readonly DevLeadNotification[]): DevLeadNotification | null {
+export function latestNotification(
+  notifications: readonly DevLeadNotification[] | undefined,
+): DevLeadNotification | null {
+  if (!Array.isArray(notifications)) return null
   return notifications.at(-1) ?? null
 }
 
@@ -153,10 +171,14 @@ export interface DevLeadWatchedSummary {
  * @returns the watched/running/missing counts.
  */
 export function summarizeWatched(
-  watchedSessions: readonly unknown[],
+  watchedSessions: readonly unknown[] | undefined,
   rows: Readonly<Record<string, DevLeadWatchedRow | undefined>>,
   statuses: ReadonlyMap<string, DevLeadWatchedStatus> | undefined,
 ): DevLeadWatchedSummary {
+  // The watch set crosses the Remote boundary: a missing or non-array value is
+  // an unusable collection, not an empty watch set, but the strip can only
+  // render "nothing to describe" without crashing.
+  if (!Array.isArray(watchedSessions)) return { watched: 0, running: 0, missing: 0 }
   const seen = new Set<string>()
   let running = 0
   let missing = 0
@@ -266,9 +288,12 @@ export function reportSummary(report: DevLeadReport): DevLeadReportSummary {
 
 /**
  * Latest retained report of one projection, or null while none is retained.
+ * Like {@link latestNotification}, an unusable collection from the wire
+ * boundary renders as "nothing retained" instead of throwing.
  * @param reports - retained reports, oldest first.
- * @returns the newest report.
+ * @returns the newest report, or null when the collection is unusable.
  */
-export function latestReport(reports: readonly DevLeadReport[]): DevLeadReport | null {
+export function latestReport(reports: readonly DevLeadReport[] | undefined): DevLeadReport | null {
+  if (!Array.isArray(reports)) return null
   return reports.at(-1) ?? null
 }

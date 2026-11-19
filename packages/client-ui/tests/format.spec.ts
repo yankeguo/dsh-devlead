@@ -72,6 +72,7 @@ describe('notificationSummary', () => {
       transition: 'completed',
       labelKey: 'transition.completed',
       error: undefined,
+      summary: undefined,
     })
   })
 
@@ -114,6 +115,27 @@ describe('notificationSummary', () => {
     expect(notificationSummary({ ...BASE_NOTIFICATION, error: '  ' }).error).toBeUndefined()
   })
 
+  it('exposes the settled turn assistant summary as a bounded single line', () => {
+    const summary = notificationSummary({
+      ...BASE_NOTIFICATION,
+      summary: ' implemented\nthe parser ',
+    })
+    expect(summary.summary).toBe('implemented the parser')
+    expect(summary.summary).not.toContain('\n')
+    // A whitespace-only stored summary is absent, not an empty chip detail.
+    expect(notificationSummary({ ...BASE_NOTIFICATION, summary: ' \t ' }).summary).toBeUndefined()
+    // A real failure excerpt wins at render time, but the summary field stays
+    // available for callers that inspect both facts.
+    const failed = notificationSummary({
+      ...BASE_NOTIFICATION,
+      transition: 'error',
+      error: 'quota exhausted',
+      summary: 'tried the fix',
+    })
+    expect(failed.error).toBe('quota exhausted')
+    expect(failed.summary).toBe('tried the fix')
+  })
+
   it('degrades a future transition literal to the neutral label and a raw tooltip', () => {
     // Simulate a newer Host sending a transition this bundle does not know:
     // the wire value crossed the Remote boundary, so the strip must not throw.
@@ -129,6 +151,10 @@ describe('notificationSummary', () => {
 describe('latestNotification', () => {
   it('returns null while nothing is retained', () => {
     expect(latestNotification([])).toBeNull()
+    // A missing/non-array collection from the wire boundary is unusable, not
+    // an empty digest: the strip must degrade instead of throwing.
+    expect(latestNotification(undefined)).toBeNull()
+    expect(latestNotification({} as unknown as readonly DevLeadNotification[])).toBeNull()
   })
 
   it('returns the newest retained notification, which the fold keeps last', () => {
@@ -178,6 +204,12 @@ describe('summarizeWatched', () => {
 
   it('summarizes an empty watch set as zero everywhere', () => {
     expect(summarizeWatched([], {}, new Map())).toEqual({ watched: 0, running: 0, missing: 0 })
+  })
+
+  it('degrades a missing or non-array watch set to zero counts', () => {
+    expect(summarizeWatched(undefined, {}, undefined)).toEqual({ watched: 0, running: 0, missing: 0 })
+    expect(summarizeWatched({} as unknown as readonly unknown[], {}, undefined))
+      .toEqual({ watched: 0, running: 0, missing: 0 })
   })
 
   it('keeps a live status fact for a Session the catalog lost', () => {
@@ -248,6 +280,8 @@ describe('reportSummary', () => {
   it('returns the newest retained report', () => {
     expect(latestReport([])).toBeNull()
     expect(latestReport([BASE_REPORT])).toBe(BASE_REPORT)
+    expect(latestReport(undefined)).toBeNull()
+    expect(latestReport({} as unknown as readonly DevLeadReport[])).toBeNull()
   })
 
   it('sanitizes an unusable report instant instead of poisoning the newest-row comparison', () => {

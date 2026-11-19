@@ -154,6 +154,23 @@ describe('failureMessage', () => {
     expect(failureMessage({ kind: 'rejected', message: legacyArchived }, translate)).toBe(legacyArchived)
   })
 
+  it('splits the occupant label at the canonical tail, not at instruction text inside a title', () => {
+    const translate: DevLeadTranslate = (key, params) => `${key}|${String(params?.session)}`
+    // A Session title is free text and may itself contain the instruction
+    // sentence. The real instruction is always the final canonical tail, so
+    // the label must keep the quoted-looking text instead of splitting early.
+    const title = 'Build. Run /devlead off there first fix (session-1)'
+    const message = 'Another Session is already in DevLead mode: '
+      + `${title}. Run /devlead off there first, then enable this Session.`
+    expect(failureMessage({ kind: 'rejected', message }, translate))
+      .toBe(`error.alreadyActive|${title}`)
+
+    // The same instruction sentence without the complete canonical tail is
+    // foreign text, not the core refusal: it stays verbatim.
+    const truncated = 'Another Session is already in DevLead mode: session-1. Run /devlead off there first.'
+    expect(failureMessage({ kind: 'rejected', message: truncated }, translate)).toBe(truncated)
+  })
+
   it('localizes every client-owned fallback', () => {
     expect(failureMessage({ kind: 'transport', code: 'x' }, t)).toBe('command failed')
     expect(failureMessage({ kind: 'rejected' }, t)).toBe('command rejected')

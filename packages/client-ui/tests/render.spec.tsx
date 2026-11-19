@@ -401,6 +401,67 @@ describe('DevLeadBar', () => {
     expect(renderer.root.findAllByProps({ className: 'devlead-hint' })).toHaveLength(0)
   })
 
+  it('renders a completed notification assistant summary as neutral detail', async () => {
+    const withSummary: DevLeadNotification = { ...NOTIFICATION, summary: 'implemented the parser' }
+    const projection: DevLeadProjection = {
+      enabled: true,
+      sessions: ['session-b'],
+      notifications: [withSummary],
+      reports: [],
+    }
+    const renderer = await mount(<DevLeadBar {...barProps({ projection })} />)
+    const notice = renderer.root.findByProps({ className: 'devlead-notice' })
+    expect(textOf(notice)).toContain('implemented the parser')
+    // The assistant excerpt is neutral copy; only a real failure excerpt wears
+    // the error ink.
+    expect(renderer.root.findByProps({ className: 'devlead-notification-detail' })).toBeDefined()
+    expect(renderer.root.findAllByProps({ className: 'devlead-notification-error' })).toHaveLength(0)
+    expect(notice.props['title']).toBe(notificationLine(withSummary))
+  })
+
+  it('prefers a real failure excerpt over the assistant summary', async () => {
+    const failed: DevLeadNotification = {
+      ...NOTIFICATION,
+      transition: 'error',
+      error: 'provider quota exhausted',
+      summary: 'tried the fix',
+    }
+    const projection: DevLeadProjection = {
+      enabled: true,
+      sessions: ['session-b'],
+      notifications: [failed],
+      reports: [],
+    }
+    const renderer = await mount(<DevLeadBar {...barProps({ projection })} />)
+    const notice = renderer.root.findByProps({ className: 'devlead-notice' })
+    const text = textOf(notice)
+    expect(text).toContain('provider quota exhausted')
+    expect(text).not.toContain('tried the fix')
+    expect(renderer.root.findByProps({ className: 'devlead-notification-error' })).toBeDefined()
+    expect(renderer.root.findAllByProps({ className: 'devlead-notification-detail' })).toHaveLength(0)
+  })
+
+  it('renders the enabled strip when the projection collections are unusable', async () => {
+    // Wire/version drift: the collections are missing entirely. The dock must
+    // degrade to zero counts and the help hint instead of throwing through the
+    // composer subtree.
+    const drifted = {
+      enabled: true,
+      sessions: undefined,
+      notifications: undefined,
+      reports: undefined,
+    } as unknown as DevLeadProjection
+    const renderer = await mount(<DevLeadBar {...barProps({ projection: drifted })} />)
+    const bar = renderer.root.findByProps({ className: 'devlead-bar' })
+    expect(bar.props['role']).toBe('group')
+    expect(textOf(renderer.root.findByProps({ className: 'devlead-watched' })))
+      .toBe(t('count.watched', { count: 0 }))
+    expect(textOf(renderer.root.findByProps({ className: 'devlead-running' })))
+      .toBe(t('count.running', { count: 0 }))
+    expect(renderer.root.findAllByProps({ className: 'devlead-missing' })).toHaveLength(0)
+    expect(textOf(renderer.root.findByProps({ className: 'devlead-notice' }))).toBe(zh['hint.enabled'])
+  })
+
   it('renders the newest report with sender, kind, and summary', async () => {
     const report: DevLeadReport = {
       id: 'session-b:2:report:blocked:abc',

@@ -132,20 +132,35 @@ const ALREADY_ACTIVE_PREFIX = 'Another Session is already in DevLead mode: '
 const ALREADY_ACTIVE_INSTRUCTION = '. Run /devlead off there first'
 
 /**
+ * Complete canonical tail every core single-active refusal ends with. The
+ * occupant label is free text (a Session title), so matching the instruction
+ * prefix alone can split inside the label; the localized path is only taken
+ * when the whole canonical tail is present at the end of the message.
+ */
+const ALREADY_ACTIVE_TAIL = `${ALREADY_ACTIVE_INSTRUCTION}, then enable this Session.`
+
+/**
  * Recognize the core's single-active refusal so the browser can render it in
  * the user's locale. The command transport carries plain text (no error code),
- * so the refusal's stable prefix/instruction pair is the seam; a message that
- * does not match exactly is returned verbatim below. Archived occupants no
+ * so the refusal's stable prefix/tail pair is the seam; a message that does not
+ * match exactly is returned verbatim below. Archived occupants no
  * longer block admission (the core ignores them for admission), so there is
  * no archived variant to recognize.
+ *
+ * The label is a Session title and may itself contain the instruction text, so
+ * the split takes the *last* instruction occurrence and requires it to be the
+ * canonical tail. A title can therefore never be mistaken for the instruction.
  * @param message - Host rejection text.
  * @returns the occupant label, when the message is the core refusal.
  */
 function alreadyActiveDetails(message: string): { readonly session: string } | undefined {
   if (!message.startsWith(ALREADY_ACTIVE_PREFIX)) return undefined
   const rest = message.slice(ALREADY_ACTIVE_PREFIX.length)
-  const end = rest.indexOf(ALREADY_ACTIVE_INSTRUCTION)
+  const end = rest.lastIndexOf(ALREADY_ACTIVE_INSTRUCTION)
   if (end <= 0) return undefined
+  // The instruction must be the real, final tail — not text quoted inside the
+  // occupant label (which would make the rest of the message a bogus label).
+  if (rest.slice(end) !== ALREADY_ACTIVE_TAIL) return undefined
   const session = rest.slice(0, end).trim()
   return session.length === 0 ? undefined : { session }
 }

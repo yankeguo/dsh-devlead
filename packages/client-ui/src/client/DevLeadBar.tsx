@@ -46,9 +46,17 @@ export function DevLeadBar({
 
   if (projection === undefined || !enabled) return null
 
-  const summary = summarizeWatched(projection.sessions, rows, statuses)
-  const latest = latestNotification(projection.notifications)
-  const latestRep = latestReport(projection.reports ?? [])
+  // Every collection below crossed the Remote boundary. The Host schemas
+  // validate same-version payloads, but a cached bundle can meet a different
+  // Host shape, so an unusable collection degrades to empty instead of
+  // throwing through the composer dock.
+  const watchedSessions = Array.isArray(projection.sessions) ? projection.sessions : []
+  const notifications = Array.isArray(projection.notifications) ? projection.notifications : []
+  const reports = Array.isArray(projection.reports) ? projection.reports : []
+
+  const summary = summarizeWatched(watchedSessions, rows, statuses)
+  const latest = latestNotification(notifications)
+  const latestRep = latestReport(reports)
   // Both digest families share one strip: the newest retained row wins (a tie
   // goes to the report), and a report is a mid-turn update rather than a
   // settled-turn transition. Both instants are sanitized first: a drifted
@@ -128,9 +136,14 @@ export function DevLeadBar({
                 </span>
               )}
               <span className="devlead-notification-label">{t(notice.labelKey)}</span>
-              {notice.error !== undefined && (
+              {notice.error !== undefined ? (
+                // Only a real Host failure excerpt wears the error ink.
                 <span className="devlead-notification-error">{notice.error}</span>
-              )}
+              ) : notice.summary !== undefined ? (
+                // A settled turn's assistant excerpt is neutral detail, like a
+                // report's summary: the dot and label carry the outcome.
+                <span className="devlead-notification-detail">{notice.summary}</span>
+              ) : null}
             </span>
           )}
         </span>
