@@ -85,6 +85,9 @@ export const inject = ['devLead', 'tools', 'systemPrompt']
 /** Default size of the notification digest `devlead_notifications` reads. */
 const DEFAULT_NOTIFICATIONS_LIMIT = 20
 
+/** Newest retained mid-turn reports `devlead_get_session` adds when reading the lead itself. */
+const SELF_REPORTS_LIMIT = 5
+
 /**
  * Model-facing description of every `session` argument. Resolution tolerates a
  * truncated uuid head: the id may omit the leading `session-` prefix.
@@ -163,7 +166,7 @@ const GET_SESSION_DESCRIPTION =
   + 'the Session log, the latest turn number and outcome plus the latest error and assistant excerpts. Address it by '
   + 'full id, a unique id prefix, or the uuid prefix without the "session-" prefix. Use it to inspect state after a '
   + 'wake-up or when the human explicitly asks, not to poll while waiting for a dispatched Session. '
-  + 'When the target is this lead Session itself, the output also carries its newest retained mid-turn reports.'
+  + `When the target is this lead Session itself, the output also carries its ${SELF_REPORTS_LIMIT} newest retained mid-turn reports.`
 
 const PROMPT_SESSION_DESCRIPTION =
   'Admit a follow-up prompt into an existing Session, resuming a cold Session first. The prompt is attributed to this '
@@ -183,11 +186,11 @@ const WATCH_SESSION_DESCRIPTION =
   + 'no longer needs attention. A Session cannot watch itself.'
 
 const NOTIFICATIONS_DESCRIPTION =
-  'Read the retained notification digest of this DevLead Session together with the current watch set. Each entry names '
-  + 'a watched Session whose turn settled and how it ended; the reports array carries mid-turn reports from watched '
-  + 'read it. The digest is newest last. A question report means the watched Session needs a decision; answer it '
-  + 'yourself or ask the human, then relay the answer with devlead_prompt_session. Read it after a wake-up or when '
-  + 'the human explicitly asks, not as a polling loop while waiting for a dispatched Session.'
+  'Read the retained notification digest of this DevLead Session together with the current watch set. Each notification '
+  + 'names a watched Session whose turn settled and how it ended; the reports array carries mid-turn reports from '
+  + 'watched Sessions. Both digests are newest last. A question report means the watched Session needs a decision; '
+  + 'answer it yourself or ask the human, then relay the answer with devlead_prompt_session. Read it after a wake-up '
+  + 'or when the human explicitly asks, not as a polling loop while waiting for a dispatched Session.'
 
 const REPORT_DESCRIPTION =
   'Send a one-way mid-turn report to the single active DevLead Session that watches this Session. Use it for progress '
@@ -476,7 +479,7 @@ export function apply(ctx: Context): void {
         const agent = requireAgent(exec.agent, 'devlead_get_session')
         const session = await ctx.devLead.getSession(agent, requireSessionRef(args.session), exec.signal)
         const reports = String(session.sessionId) === String(agent.id)
-          ? ctx.devLead.reports(agent, { limit: 5 }).map(reportValue)
+          ? ctx.devLead.reports(agent, { limit: SELF_REPORTS_LIMIT }).map(reportValue)
           : undefined
         return {
           session: sessionValue(session),
@@ -566,7 +569,8 @@ export function apply(ctx: Context): void {
     parameters: {
       limit: {
         type: 'integer',
-        description: `Maximum number of retained notifications to return. Defaults to ${DEFAULT_NOTIFICATIONS_LIMIT}.`,
+        description: 'Maximum number of rows to return from each digest: notifications and reports are limited '
+          + `separately, newest rows kept. Defaults to ${DEFAULT_NOTIFICATIONS_LIMIT}.`,
       },
     },
     output: NOTIFICATIONS_OUTPUT,

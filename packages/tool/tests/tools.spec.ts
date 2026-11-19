@@ -1261,6 +1261,10 @@ describe('devlead_get_session', () => {
       makeExec(self),
     )
     expect(value).toEqual({ session: SESSION, reports: harness.devLead.reportDigest })
+    const [, reportOptions] = harness.devLead.callsOf('reports')[0] ?? []
+    expect(reportOptions).toEqual({ limit: 5 })
+    const definition = harness.tool('devlead_get_session').definition
+    expect(definition.description).toContain('its 5 newest retained mid-turn reports')
   })
 
   it('leaves prefix resolution to the core service', async () => {
@@ -1406,11 +1410,27 @@ describe('devlead_notifications', () => {
     })
   })
 
-  it('forwards an explicit limit', async () => {
+  it('forwards an explicit limit to both digests', async () => {
     const harness = boot()
     await harness.call('devlead_notifications', { limit: 5 })
     const [, options] = harness.devLead.callsOf('notifications')[0] ?? []
     expect(options).toEqual({ limit: 5 })
+    const [, reportOptions] = harness.devLead.callsOf('reports')[0] ?? []
+    expect(reportOptions).toEqual({ limit: 5 })
+  })
+
+  it('describes both digests and the per-digest limit without a broken sentence', () => {
+    const harness = boot()
+    const definition = harness.tool('devlead_notifications').definition
+    expect(definition.description).toContain('the reports array carries mid-turn reports from watched Sessions')
+    expect(definition.description).toContain('Both digests are newest last')
+    expect(definition.description).not.toContain('from watched read it')
+    const parameters = definition.parameters as {
+      properties: { limit: { type: string; description: string } }
+    }
+    expect(parameters.properties.limit.type).toBe('integer')
+    expect(parameters.properties.limit.description).toContain('notifications and reports are limited separately')
+    expect(parameters.properties.limit.description).toContain('Defaults to 20')
   })
 
   it('rejects a non-positive limit', async () => {

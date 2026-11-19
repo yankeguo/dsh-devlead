@@ -391,7 +391,7 @@ export const GET_SESSION_OUTPUT = jsonOutput({
     reports: {
       type: 'array',
       items: REPORT_SCHEMA,
-      description: 'When reading this lead Session itself, its newest retained mid-turn reports (oldest first).',
+      description: 'When reading this lead Session itself, its newest retained mid-turn reports (up to five, oldest first).',
     },
   },
 } as const)
