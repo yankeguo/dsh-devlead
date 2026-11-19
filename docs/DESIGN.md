@@ -307,7 +307,7 @@ default: boolean; broken? }[]; reason? }`；`default` 是 Host 有效默认（`s
   只在调用前后检查取消。
 - `createSession`：先在第一个 await 之前**同步预留** watch 槽位（并发调用不会都通过预检后
   才在 setWatching 报超限；槽位在 watch 提交后立即释放，`finally` 兜底）→ 解析目标 Workspace
-  （id / path / 缺省用 lead 自己的 cwd 并自动注册）→ 校验 `workspace.status() === 'ok'`
+  （id / 注册路径 / 精确 title / 缺省用 lead 自己的 cwd 并自动注册）→ 校验 `workspace.status() === 'ok'`
   （已注册但目录消失时返回 `DEVLEAD_DIRECTORY_MISSING`，不让 controller 的自动 mkdir
   把空目录"复活"）→ `ctx.sessionController.create({ workspaceId })`（该调用会把 Session
   挂进 Workspace 的账目）→ **可选的创建时 dispatch 设置**（模型 / Agent Teams，见下）→ 可选
@@ -353,7 +353,7 @@ default: boolean; broken? }[]; reason? }`；`default` 是 Host 有效默认（`s
 - **关闭语义（remove / archive / unarchive）**：`removeWorkspace` / `archiveSession` / `unarchiveSession` 都先
   `assertReady(agent)` 并转发 signal，Host 未组合 registry 时统一走 `requireWorkspaceRegistry`
   的 `DEVLEAD_WORKSPACE_NOT_FOUND`。`removeWorkspace` 用 `resolveWorkspaceReference` 解析
-  id 或 canonical path，在删除前取 `devLeadWorkspaceView` 快照（返回视图即注销前状态），
+  id、canonical path 或精确 title，在删除前取 `devLeadWorkspaceView` 快照（返回视图即注销前状态），
   再调 `workspaceRegistry.delete(id)`——只注销注册记录，**不删目录、文件或 Session 日志**；
   这些 Session 变为未分组（ungrouped），仍可打开/续写，重新注册同一目录会得到全新
   Workspace、不继承旧 Session。`archiveSession` 复用 `resolveSessionReference`（完整 id /
@@ -371,6 +371,18 @@ default: boolean; broken? }[]; reason? }`；`default` 是 Host 有效默认（`s
 - `notifications`：返回本会话 projection 里保留的通知（最新 limit 条；非法 limit 退回默认 20）。
 - `ctx.sessions.flush()` 返回 `false` 只表示"没有组合任何持久化参与者"（headless / SDK
   组合），不是失败；参与者抛出的错误只记 warning，不会让已提交的内存 append 变成抛错。
+
+**Workspace 引用解析（所有带 `workspace` 参数的工具共用）**：`resolveWorkspaceReference`
+按 **id → 注册路径 → 精确 title** 解析。id 是注册表的稳定唯一键；注册路径经
+`workspaceRegistry.resolveByPath` 按 canonical path 唯一匹配（symlink、尾斜杠会先规范化）；
+title 是展示元数据，DSH 0.2.2-rc.1–rc.5 的 WorkspaceRegistry 明确允许不同 canonical path
+共用 display title（源码注释 `Different canonical paths may share a display title`），所以只
+在前两者都不命中时才用。title 匹配对引用与存储值都做 trim，再做**大小写敏感的精确匹配**：
+不做大小写折叠，避免把仅大小写不同的 title 变成第二层歧义与静默近似匹配；`devlead_list_workspaces`
+已经给出精确 title。多个 Workspace 同 title 时抛 `DEVLEAD_WORKSPACE_AMBIGUOUS`，按 registry
+顺序列出每个候选的 `id (path)`，绝不静默选第一个；未命中时 `DEVLEAD_WORKSPACE_NOT_FOUND`
+文案同时说明三种寻址方式，并且只在"仓库尚未注册"的语义下提示 `devlead_use_workspace`，不再
+暗示已注册目录未注册。
 
 错误类：`DevLeadError extends Error { code: DevLeadErrorCode }`，稳定 code 见第 8 节。
 
@@ -628,13 +640,13 @@ Session 的工作目录切到独立分支/检出，DevLead 用它**可选地**�
 | `devlead_list_models` | `{}` | `DevLeadModelCatalog`（default / routableProviders / providers / failures，精简） |
 | `devlead_list_agent_presets` | `{}` | `DevLeadAgentPresetCatalog`（available / presets[id,name?,description?,default,broken?] / reason?） |
 | `devlead_use_workspace` | `path`(必填，绝对路径), `title?`, `create?`(默认 false；显式 true 才 mkdir) | `{ workspace }` |
-| `devlead_list_sessions` | `workspace?`(id 或 path), `watched_only?`, `limit?` | `{ sessions, watched: string[] }` |
-| `devlead_create_session` | `workspace?`, `prompt?`, `title?`, `watch?`(默认 true), `preset?`(Host 定义 id；空白回退插件默认再 Host 默认), `isolation?`(默认 `none`；`worktree` = 尽力隔离), `provider?`+`model?`(成对；可选 `reasoning_effort?`), `agent_teams?` | `DevLeadCreatedSession`（含 `isolation`；请求时含已应用的 `model`/`agentTeams`） |
+| `devlead_list_sessions` | `workspace?`(id / 注册路径 / 精确 title), `watched_only?`, `limit?` | `{ sessions, watched: string[] }` |
+| `devlead_create_session` | `workspace?`(id / 注册路径 / 精确 title), `prompt?`, `title?`, `watch?`(默认 true), `preset?`(Host 定义 id；空白回退插件默认再 Host 默认), `isolation?`(默认 `none`；`worktree` = 尽力隔离), `provider?`+`model?`(成对；可选 `reasoning_effort?`), `agent_teams?` | `DevLeadCreatedSession`（含 `isolation`；请求时含已应用的 `model`/`agentTeams`） |
 | `devlead_get_session` | `session`(必填) | `{ session }` |
 | `devlead_prompt_session` | `session`(必填), `prompt`(必填), `watch?`(默认 true) | `DevLeadPromptedSession` |
 | `devlead_watch_session` | `session`(必填), `watching`(必填 bool) | `DevLeadWatchMutation` |
 | `devlead_notifications` | `limit?`(默认 20) | `{ notifications, watched: string[] }` |
-| `devlead_remove_workspace` | `workspace`(必填，id 或已注册路径) | `{ workspace, removed }`（注销前快照） |
+| `devlead_remove_workspace` | `workspace`(必填，id / 注册路径 / 精确 title) | `{ workspace, removed }`（注销前快照） |
 | `devlead_archive_session` | `session`(必填), `stop_running?`(默认 false) | `{ sessionId, archived: true, stopped }` |
 | `devlead_unarchive_session` | `session`(必填) | `{ sessionId, archived: false }` |
 
@@ -645,7 +657,8 @@ Session 的工作目录切到独立分支/检出，DevLead 用它**可选地**�
   `read`/`search` 类似语义），只依赖已解析参数，保持 replay 纯函数。schema 与 protocol 视图
   类型有编译期一致性约束，运行时还会用编译出的 output schema 校验每个投影值（可选字段按
   lossless JSON 规则省略）。
-- 参数里的 `session`/`workspace` 接受完整 id、路径，或（会话）唯一前缀匹配；`session` 还接受
+- 参数里的 `workspace` 接受 Workspace id、注册路径或精确 title（解析顺序与歧义策略见 §4）；
+  `session` 接受完整 id、路径或唯一前缀匹配；`session` 还接受
   省略 `session-` 前缀的 uuid 第一段/前缀（`views.ts` 的 `matchSessionIds`：例如 `e59ab350`
   解析到 `session-e59ab350-…`），只有在可寻址集合内唯一时才解析。同第一段的多个 Session 仍报
   `DEVLEAD_INVALID_INPUT` 并列出候选（最多 8 个），不猜；零命中仍报 `DEVLEAD_SESSION_NOT_FOUND`，
@@ -871,7 +884,8 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
 | `DEVLEAD_NOT_SUPERVISED` | 当前 Session 不是「非 DevLead + 被唯一 active lead watch」；包括自身是 lead、lead off/归档、unwatch、或历史多 watcher 无唯一关注该会话的 active lead |
 | `DEVLEAD_REPORT_RATE_LIMITED` | 已关注 Session 同一 turn 已发送 4 条不同报告；同轮相同 message 幂等，不计数 |
 | `DEVLEAD_AGENT_NOT_LIVE` | 传入的 Agent 不是注册表中的 live 实例（工具侧绕过 `when` 时也走该码） |
-| `DEVLEAD_WORKSPACE_NOT_FOUND` | 指定 Workspace 引用无法解析，或 Host 未组合 Workspace registry |
+| `DEVLEAD_WORKSPACE_NOT_FOUND` | 指定 Workspace 引用无法解析，或 Host 未组合 Workspace registry；消息说明 id / 注册路径 / 精确 title 三种寻址方式 |
+| `DEVLEAD_WORKSPACE_AMBIGUOUS` | 引用按精确 title 命中多个 Workspace；消息按 registry 顺序列出每个候选的 `id (path)`，要求改用 id 或注册路径 |
 | `DEVLEAD_DIRECTORY_MISSING` | 目录不存在且未显式允许创建（文案提示 retry with `create: true`），或允许创建但创建失败 |
 | `DEVLEAD_MODEL_UNAVAILABLE` | 请求的 provider/model/effort 不可用：Host 未组合 LLM registry、provider 未注册、model 不在该 provider 当前可用列表、或 `resolveCallConfig` 拒绝；消息含完整 route |
 | `DEVLEAD_TEAM_UNAVAILABLE` | 请求 `agent_teams: true` 但 Host 未组合 Agent Teams 服务，或应用 Team 模式失败；消息说明该能力自 DSH 0.2.2-rc.2 起提供/默认组合（rc.1 上可预期），应用阶段还带出已创建的 sessionId |

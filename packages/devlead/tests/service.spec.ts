@@ -1317,6 +1317,88 @@ describe('workspace removal', () => {
     })
   })
 
+  it('resolves a unique registration by exact title, trimmed and case-sensitive', async () => {
+    const registry = new FakeWorkspaceRegistry()
+    const workspace = registry.add({ path: '/tmp/title-repo', title: 'deepcal' })
+    const harness = await bootService({ enabled: true, workspaceRegistry: registry })
+
+    // Case folding is deliberately not a fallback: titles, like ids and paths,
+    // are matched exactly after trimming.
+    const wrongCase = await expectCodeAsync(
+      () => harness.service.removeWorkspace(harness.lead.agent, 'DeepCal'),
+      'DEVLEAD_WORKSPACE_NOT_FOUND',
+    )
+    expect(wrongCase.message).toContain('exact title')
+    expect(registry.deleteCalls).toEqual([])
+
+    await expect(harness.service.removeWorkspace(harness.lead.agent, '  deepcal  ')).resolves.toMatchObject({
+      workspace: { workspaceId: String(workspace.id), title: 'deepcal', path: '/tmp/title-repo' },
+      removed: true,
+    })
+    expect(registry.deleteCalls).toEqual([String(workspace.id)])
+  })
+
+  it('prefers a Workspace id over another Workspace title that spells the same string', async () => {
+    const registry = new FakeWorkspaceRegistry()
+    registry.add({ id: 'ws-id', path: '/tmp/by-id', title: 'Id Space' })
+    registry.add({ path: '/tmp/by-title', title: 'ws-id' })
+    const harness = await bootService({ enabled: true, workspaceRegistry: registry })
+
+    await expect(harness.service.removeWorkspace(harness.lead.agent, 'ws-id')).resolves.toMatchObject({
+      workspace: { workspaceId: 'ws-id', path: '/tmp/by-id' },
+      removed: true,
+    })
+    expect(registry.deleteCalls).toEqual(['ws-id'])
+    // The Workspace whose title was "ws-id" is untouched.
+    expect(registry.list().map(workspace => String(workspace.id))).toEqual(['ws-2'])
+  })
+
+  it('prefers a registered path over a path-shaped title and still reaches a title when the path is unknown', async () => {
+    const registry = new FakeWorkspaceRegistry()
+    registry.add({ id: 'ws-path', path: '/tmp/path-wins', title: 'Path Space' })
+    registry.add({ id: 'ws-title', path: '/tmp/title-holder', title: '/tmp/path-wins' })
+    const harness = await bootService({ enabled: true, workspaceRegistry: registry })
+
+    // The path branch runs before title matching, so the registration that owns
+    // the path wins even though another Workspace uses that string as a title.
+    await expect(harness.service.removeWorkspace(harness.lead.agent, '/tmp/path-wins')).resolves.toMatchObject({
+      workspace: { workspaceId: 'ws-path' },
+      removed: true,
+    })
+    expect(registry.deleteCalls).toEqual(['ws-path'])
+
+    // A title shaped like an unregistered absolute path stays addressable:
+    // path resolution misses, then the exact title match applies.
+    registry.add({ id: 'ws-shaped', path: '/tmp/shaped-holder', title: '/tmp/not-registered' })
+    await expect(
+      harness.service.removeWorkspace(harness.lead.agent, '  /tmp/not-registered  '),
+    ).resolves.toMatchObject({
+      workspace: { workspaceId: 'ws-shaped', path: '/tmp/shaped-holder' },
+      removed: true,
+    })
+    expect(registry.deleteCalls).toEqual(['ws-path', 'ws-shaped'])
+  })
+
+  it('refuses an ambiguous title and lists every candidate id and path', async () => {
+    const registry = new FakeWorkspaceRegistry()
+    registry.add({ id: 'ws-a', path: '/tmp/dup-a', title: 'deepcal' })
+    registry.add({ id: 'ws-b', path: '/tmp/dup-b', title: 'deepcal' })
+    const harness = await bootService({ enabled: true, workspaceRegistry: registry })
+
+    const error = await expectCodeAsync(
+      () => harness.service.removeWorkspace(harness.lead.agent, 'deepcal'),
+      'DEVLEAD_WORKSPACE_AMBIGUOUS',
+    )
+    expect(error.message).toContain('Workspace title "deepcal" is ambiguous')
+    expect(error.message).toContain('2 Workspaces share it')
+    expect(error.message).toContain('ws-a (/tmp/dup-a)')
+    expect(error.message).toContain('ws-b (/tmp/dup-b)')
+    expect(error.message).toContain('pass a Workspace id or registered path')
+    // Ambiguity is never resolved by picking the first registration.
+    expect(registry.deleteCalls).toEqual([])
+    expect(registry.list()).toHaveLength(2)
+  })
+
   it('reports an unknown reference and a missing registry with the workspace code', async () => {
     const registry = new FakeWorkspaceRegistry()
     registry.add({ path: '/tmp/repo-known' })
@@ -1326,7 +1408,18 @@ describe('workspace removal', () => {
       'DEVLEAD_WORKSPACE_NOT_FOUND',
     )
     expect(unknown.message).toContain('no Workspace matches')
+    // The failure teaches all three address forms instead of implying that the
+    // directory was never registered.
+    expect(unknown.message).toContain('Workspace id, a registered directory path, or an exact title')
+    expect(unknown.message).toContain('devlead_list_workspaces')
+    expect(unknown.message).not.toContain('register the repository directory first')
     expect(registry.deleteCalls).toEqual([])
+
+    const blank = await expectCodeAsync(
+      () => harness.service.removeWorkspace(harness.lead.agent, '   '),
+      'DEVLEAD_INVALID_INPUT',
+    )
+    expect(blank.message).toContain('a Workspace reference is required')
 
     const withoutRegistry = await bootService({ enabled: true })
     const missing = await expectCodeAsync(
@@ -1448,6 +1541,16 @@ describe('session listings', () => {
     expect(views.map(view => view.sessionId).sort()).toEqual(['child-beta'])
     const alphaOnly = await harness.service.listSessions(harness.lead.agent, { workspace: '/tmp/alpha' })
     expect(alphaOnly.map(view => view.sessionId)).toEqual(['child-alpha'])
+  })
+
+  it('filters by exact Workspace title, trimmed and case-sensitive', async () => {
+    const { harness } = await bootListing()
+    const byTitle = await harness.service.listSessions(harness.lead.agent, { workspace: '  Alpha Space  ' })
+    expect(byTitle.map(view => view.sessionId)).toEqual(['child-alpha'])
+    await expectCodeAsync(
+      () => harness.service.listSessions(harness.lead.agent, { workspace: 'alpha space' }),
+      'DEVLEAD_WORKSPACE_NOT_FOUND',
+    )
   })
 
   it('rejects an unknown Workspace filter', async () => {
@@ -2398,6 +2501,28 @@ describe('session creation', () => {
     expect(result.session.watched).toBe(false)
     expect(result.session.live).toBe(true)
     expect(durableWatchRecords(harness)).toEqual([])
+  })
+
+  it('resolves the target Workspace by exact title', async () => {
+    const controller = new FakeSessionController()
+    const registry = new FakeWorkspaceRegistry()
+    registry.add({ id: 'ws-title', path: '/tmp/title-space', title: 'Title Space' })
+    const harness = await bootService({
+      enabled: true,
+      sessionController: controller,
+      workspaceRegistry: registry,
+    })
+    controller.createHandler = () => {
+      const session = harness.ctx.sessions.create(SessionId('created-by-title'))
+      harness.agents.add(new FakeAgent(session))
+      return { sessionId: session.id }
+    }
+    const result = await harness.service.createSession(harness.lead.agent, {
+      workspace: '  Title Space  ',
+      watch: false,
+    })
+    expect(controller.createCalls).toEqual([{ workspaceId: 'ws-title' }])
+    expect(result.workspace).toMatchObject({ workspaceId: 'ws-title', path: '/tmp/title-space' })
   })
 
   it('falls back to the configured default preset', async () => {

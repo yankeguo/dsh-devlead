@@ -357,6 +357,8 @@ function friendlyDevLeadError(error: DevLeadError): string {
         + 'Inspect the Session log for the offending plugin:devlead record.'
     case 'DEVLEAD_WORKSPACE_NOT_FOUND':
       return `The Workspace could not be resolved: ${error.message}`
+    case 'DEVLEAD_WORKSPACE_AMBIGUOUS':
+      return `The Workspace reference is ambiguous: ${error.message}. Use one of the listed ids or paths instead.`
     case 'DEVLEAD_DIRECTORY_MISSING':
       return `The target directory is missing: ${error.message}`
     case 'DEVLEAD_MODEL_UNAVAILABLE':

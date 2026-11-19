@@ -429,7 +429,7 @@ projection.
    `preset` is a Host-defined Agent preset id: call `devlead_list_agent_presets` first, do not
    assume a fixed list, and omit or leave it blank to inherit the plugin `defaultAgentPreset`,
    then the Host default/selectedDefault; an unknown id fails creation with a structured error.
-   Pass the **owning Workspace** and
+   Pass the **owning Workspace** as its id, registered path, or exact title, and
    omit `workspace` only when the work truly belongs to the lead's own directory (the new Session
    then lives there). A brief with open questions is expected: the deeper investigation and the
    implementation belong to the Session, not to the lead. The child cannot see this conversation,
@@ -475,20 +475,27 @@ The thirteen lead tools carry `when: ({ agent }) => ctx.devLead.isEnabled(agent)
 visible in a DevLead session. `devlead_report` is the inverse surface: it is visible only in a
 non-DevLead Session watched by the unique active lead.
 
+All `workspace` arguments accept the same three references: a Workspace id, its registered
+canonical directory path, or its exact display title. Resolution tries the id first, then the
+registered path, then the title (trimmed, case-sensitive). A title shared by several Workspaces
+fails with `DEVLEAD_WORKSPACE_AMBIGUOUS` listing every candidate's id and path instead of
+silently choosing one; use the id or path then. An unknown reference now names all three forms
+rather than implying the directory is unregistered.
+
 | Tool | Arguments | Returns (canonical JSON) |
 | --- | --- | --- |
 | `devlead_list_workspaces` | `{}` | `{ workspaces }` |
 | `devlead_list_models` | `{}` | `{ default, routableProviders, providers, failures }` (compact catalog) |
 | `devlead_list_agent_presets` | `{}` | `{ available, presets: [{ id, name?, description?, default, broken? }], reason? }` (Host roster; `available: false` when the Host composes no roster) |
 | `devlead_use_workspace` | `path` (required, absolute), `title?`, `create?` (default false: a missing directory is an error; `true` creates it with `mkdir -p` after the human asked) | `{ workspace }` |
-| `devlead_list_sessions` | `workspace?`, `watched_only?`, `limit?` | `{ sessions, watched }` |
-| `devlead_create_session` | `workspace?`, `prompt?`, `title?`, `watch?` (default true), `preset?` (Host-defined id; blank/omitted falls back to the plugin default then the Host default), `isolation?` (default `none`; `worktree` = best-effort isolated checkout), `provider?`+`model?` (paired; optional `reasoning_effort?`), `agent_teams?` | creation result (including the `isolation` outcome, and the applied `model`/`agentTeams` when requested) |
+| `devlead_list_sessions` | `workspace?` (id, registered path, or exact title), `watched_only?`, `limit?` | `{ sessions, watched }` |
+| `devlead_create_session` | `workspace?` (id, registered path, or exact title), `prompt?`, `title?`, `watch?` (default true), `preset?` (Host-defined id; blank/omitted falls back to the plugin default then the Host default), `isolation?` (default `none`; `worktree` = best-effort isolated checkout), `provider?`+`model?` (paired; optional `reasoning_effort?`), `agent_teams?` | creation result (including the `isolation` outcome, and the applied `model`/`agentTeams` when requested) |
 | `devlead_get_session` | `session` (required) | `{ session, reports? }` — when reading this lead itself, `reports` carries its newest retained reports |
 | `devlead_prompt_session` | `session`, `prompt` (required), `watch?` (default true) | prompt result |
 | `devlead_watch_session` | `session`, `watching` (required bool) | watch mutation result |
 | `devlead_notifications` | `limit?` (default 20) | `{ notifications, reports, watched }` |
 | `devlead_report` | `message` (required, plain text, max 4000 code points), `kind?` (`progress` default / `blocked` / `decision` / `fyi`), `summary?` (max 200) | `{ report, durable, queued, warning? }` — visible only in a watched non-lead Session; one-way, never waits for a reply |
-| `devlead_remove_workspace` | `workspace` (required: id or registered path) | `{ workspace, removed }` (pre-removal snapshot) |
+| `devlead_remove_workspace` | `workspace` (required: id, registered path, or exact title) | `{ workspace, removed }` (pre-removal snapshot) |
 | `devlead_archive_session` | `session` (required), `stop_running?` (default false) | `{ sessionId, archived: true, stopped }` |
 | `devlead_unarchive_session` | `session` (required) | `{ sessionId, archived: false }` |
 
@@ -813,6 +820,7 @@ without it keeps the default single-checkout behavior and reports `unavailable`.
 | `devlead_report` reports `DEVLEAD_INVALID_INPUT` | the message is empty or over 4000 code points, the summary is over 200, or the kind is not `progress` / `blocked` / `decision` / `fyi`. |
 | `/devlead` / tools report `DEVLEAD_PROJECTION_INVALID` | a `plugin:devlead/*` record in this Session's log is corrupt and replay froze. Run `/devlead reset` (human-only; discards the mode, watch set, and notification digest) — `/devlead off` does that implicitly, `/devlead on` refuses until the reset. Old plugin versions cannot recover. |
 | `devlead_use_workspace` reports `DEVLEAD_DIRECTORY_MISSING` | the directory does not exist and creation is not allowed by default. Create it first, or retry with `create: true` once the human explicitly asked for that directory |
+| A Workspace argument reports `DEVLEAD_WORKSPACE_AMBIGUOUS` | several Workspaces share that display title. Use the id or registered path from the candidates listed in the error (or from `devlead_list_workspaces`); the resolver never picks the first match |
 | A cold lead was resumed unexpectedly after a restart | expected default: `wakeColdSession` is `true` since 0.2.0; set it to `false` to keep queued notifications in memory until a human opens the lead Session |
 | `devlead_create_session` reports `isolation.status: "unavailable"` | the profile does not compose DSH's experimental worktree service (the default Web profile never does); either enable the experimental worktree bundle or dispatch writing Sessions serially — the Session was still created and works in the shared checkout |
 | `devlead_create_session` reports `isolation.status: "failed"` | the worktree service is present but creation failed (restrictive sandbox, existing branch name, non-Git checkout, existing checkout path); the `reason` carries the Git/service error, and the Session continues in the shared checkout |

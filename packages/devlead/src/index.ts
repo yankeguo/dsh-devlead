@@ -1136,7 +1136,7 @@ export class DevLeadService extends Service {
    * The returned view is the pre-removal snapshot, so the caller can report
    * what it closed and which Sessions it accounted to.
    * @param agent - exact live lead Agent making the removal.
-   * @param workspace - Workspace id or canonical/registered path.
+   * @param workspace - Workspace id, registered path, or exact display title.
    * @param signal - cancellation checked before the registry write.
    * @returns the pre-removal Workspace view and whether a registration was
    *   removed (`false` when another actor removed it first).
@@ -2739,7 +2739,7 @@ export class DevLeadService extends Service {
    * Resolve the Workspace one created Session should join: the requested
    * reference, or the lead's own directory registered on demand.
    * @param agent - exact live lead Agent.
-   * @param reference - requested Workspace id or path.
+   * @param reference - requested Workspace id, registered path, or exact title.
    * @returns the target Workspace.
    */
   private async createTargetWorkspace(agent: Agent, reference: string | undefined): Promise<Workspace> {

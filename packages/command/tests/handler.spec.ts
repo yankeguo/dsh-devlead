@@ -672,6 +672,7 @@ describe('devlead command friendly error mapping', () => {
     ['DEVLEAD_REPORT_RATE_LIMITED', 'injected DEVLEAD_REPORT_RATE_LIMITED'],
     ['DEVLEAD_AGENT_NOT_LIVE', 'no longer live'],
     ['DEVLEAD_WORKSPACE_NOT_FOUND', 'Workspace could not be resolved'],
+    ['DEVLEAD_WORKSPACE_AMBIGUOUS', 'Workspace reference is ambiguous'],
     ['DEVLEAD_DIRECTORY_MISSING', 'target directory is missing'],
     ['DEVLEAD_MODEL_UNAVAILABLE', 'requested model is not available'],
     ['DEVLEAD_TEAM_UNAVAILABLE', 'Agent Teams is not available'],

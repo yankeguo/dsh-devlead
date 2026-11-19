@@ -180,7 +180,7 @@ export function optionalText(value: string | undefined): string | undefined {
  * Validate a required Workspace reference. A blank reference is a mistake the
  * model should see rather than a silent default, and it is rejected before the
  * core service resolves anything.
- * @param value - model-supplied Workspace id or path.
+ * @param value - model-supplied Workspace id, registered path, or exact title.
  * @returns the trimmed reference.
  * @throws {@link DevLeadToolInputError} when the reference is blank.
  */
@@ -193,7 +193,7 @@ export function requireWorkspaceRef(value: string): string {
 /**
  * Validate an optional Workspace reference; unlike a title, a blank reference is
  * a mistake the model should see rather than a silent default.
- * @param value - optional Workspace id or path.
+ * @param value - optional Workspace id, registered path, or exact title.
  * @returns the trimmed reference, or undefined when omitted.
  * @throws {@link DevLeadToolInputError} when a blank reference was supplied.
  */

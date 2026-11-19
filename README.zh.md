@@ -376,8 +376,8 @@ projection 保持 `enabled: false`，工具条按钮保持 off、状态条不出
 3. 让模型派发任务：`devlead_create_session`（可选 `workspace` / `title` / `preset`），给一个
    **自包含的 prompt**——背景、期望结果、**留给 Session 确认/细化的开放问题**、交付物、如何
    验证、禁止事项；传**归属
-   Workspace**，只有确实属于 lead 自己目录的工作才省略 `workspace`（此时新 Session 就建在该
-   目录）。允许"带开放问题的简报"：更深的调查与实现属于 Session，不需要 lead 先查清所有
+   Workspace** 的 id、注册路径或精确 title，只有确实属于 lead 自己目录的工作才省略 `workspace`
+   （此时新 Session 就建在该目录）。允许"带开放问题的简报"：更深的调查与实现属于 Session，不需要 lead 先查清所有
    细节。子会话看不到当前对话，所有必要事实都要在 prompt 里重述。新会话默认被关注并立即
    开始第一个 turn（空白 Session 在第一个 turn 前不会出现在侧边栏，所以 "创建 + prompt" 是
    常规用法）。`preset` 是 Host 定义的 Agent preset id：先调 `devlead_list_agent_presets`
@@ -412,20 +412,26 @@ projection 保持 `enabled: false`，工具条按钮保持 off、状态条不出
 
 全部工具都带 `when: ({ agent }) => ctx.devLead.isEnabled(agent)`，只在 DevLead 会话中可见：
 
+所有 `workspace` 参数统一接受三种引用：Workspace id、已注册的 canonical 目录路径，或精确的
+显示 title。解析顺序为 id → 注册路径 → title；title 先 trim，再做大小写敏感的精确匹配。多个
+Workspace 共用同一 title 时返回 `DEVLEAD_WORKSPACE_AMBIGUOUS`，按注册表顺序列出每个候选的
+id 与 path，绝不静默取第一个；此时改用 id 或路径。未知引用会同时说明这三种寻址方式，不再
+暗示目录未注册。
+
 | 工具 | 参数 | 返回（canonical JSON） |
 | --- | --- | --- |
 | `devlead_list_workspaces` | `{}` | `{ workspaces }` |
 | `devlead_list_models` | `{}` | `{ default, routableProviders, providers, failures }`（精简目录） |
 | `devlead_list_agent_presets` | `{}` | `{ available, presets: [{ id, name?, description?, default, broken? }], reason? }`（Host roster；Host 未组合 roster 时 `available: false`） |
 | `devlead_use_workspace` | `path`（必填，绝对路径）、`title?`、`create?`（默认 false：缺目录报错；人类明确要求时传 true 才 `mkdir -p`） | `{ workspace }` |
-| `devlead_list_sessions` | `workspace?`、`watched_only?`、`limit?` | `{ sessions, watched }` |
-| `devlead_create_session` | `workspace?`、`prompt?`、`title?`、`watch?`（默认 true）、`preset?`（Host 定义的 id；空白/省略时先回退插件默认 preset，再回退 Host 默认）、`isolation?`（默认 `none`；`worktree` = 尽力提供隔离检出）、`provider?`+`model?`（成对；可选 `reasoning_effort?`）、`agent_teams?` | 创建结果（含 `isolation` 结果；请求时含已应用的 `model`/`agentTeams`） |
+| `devlead_list_sessions` | `workspace?`（id、注册路径或精确 title）、`watched_only?`、`limit?` | `{ sessions, watched }` |
+| `devlead_create_session` | `workspace?`（id、注册路径或精确 title）、`prompt?`、`title?`、`watch?`（默认 true）、`preset?`（Host 定义的 id；空白/省略时先回退插件默认 preset，再回退 Host 默认）、`isolation?`（默认 `none`；`worktree` = 尽力提供隔离检出）、`provider?`+`model?`（成对；可选 `reasoning_effort?`）、`agent_teams?` | 创建结果（含 `isolation` 结果；请求时含已应用的 `model`/`agentTeams`） |
 | `devlead_get_session` | `session`（必填） | `{ session, reports? }`——读取本 lead 自身时，`reports` 携带最近保留的汇报 |
 | `devlead_prompt_session` | `session`、`prompt`（必填）、`watch?`（默认 true） | 续写结果 |
 | `devlead_watch_session` | `session`、`watching`（必填 bool） | watch 变更结果 |
 | `devlead_notifications` | `limit?`（默认 20） | `{ notifications, reports, watched }` |
 | `devlead_report` | `message`（必填，纯文本，上限 4000 code points）、`kind?`（默认 `progress` / `blocked` / `decision` / `fyi`）、`summary?`（上限 200） | `{ report, durable, queued, warning? }`——只在已关注的非 lead 会话可见；单向，不等待回复 |
-| `devlead_remove_workspace` | `workspace`（必填：id 或已注册路径） | `{ workspace, removed }`（注销前快照） |
+| `devlead_remove_workspace` | `workspace`（必填：id、注册路径或精确 title） | `{ workspace, removed }`（注销前快照） |
 | `devlead_archive_session` | `session`（必填）、`stop_running?`（默认 false） | `{ sessionId, archived: true, stopped }` |
 | `devlead_unarchive_session` | `session`（必填） | `{ sessionId, archived: false }` |
 
@@ -683,6 +689,7 @@ config 是整体替换）。
 | `/devlead on` 报 `DEVLEAD_ALREADY_ACTIVE` | 另一个 Session 已占用 Host 级 DevLead 模式。错误会点名占用者；先在那个 Session 执行 `/devlead off`（或归档/删除它），再开启当前 Session。 |
 | `/devlead` / 工具报 `DEVLEAD_PROJECTION_INVALID` | 本会话日志里有一条损坏的 `plugin:devlead/*` 记录，replay 已冻结。运行 `/devlead reset`（人类专属；会丢弃模式 / 关注集合 / 通知 digest）——`/devlead off` 也会隐式 reset，`/devlead on` 在 reset 前会拒绝。旧版本插件无法恢复。 |
 | `devlead_use_workspace` 报 `DEVLEAD_DIRECTORY_MISSING` | 目录不存在且默认不允许创建。先创建目录，或在人类明确要求建该目录后带 `create: true` 重试 |
+| Workspace 参数报 `DEVLEAD_WORKSPACE_AMBIGUOUS` | 多个 Workspace 共用同一显示标题。按错误中（或 `devlead_list_workspaces`）列出的 id / 路径改用唯一引用；解析器不会静默取第一个 |
 | 重启后冷 lead 被自动 resume | 0.2.0 起的预期默认行为：`wakeColdSession` 为 `true`；不希望后台 resume 就设为 `false`，队列会留在内存等人类打开 lead Session |
 | `devlead_create_session` 返回 `isolation.status: "unavailable"` | profile 未组合 DSH 实验性 worktree 服务（默认 Web profile 从不组合）；启用实验性 worktree bundle，或改为串行派发写入型 Session——Session 已创建并仍可在共享 checkout 工作 |
 | `devlead_create_session` 返回 `isolation.status: "failed"` | worktree 服务存在但创建失败（沙箱限制、分支名已存在、非 Git checkout、检出路径已存在等）；`reason` 带 Git/服务错误，Session 仍在共享 checkout 继续 |

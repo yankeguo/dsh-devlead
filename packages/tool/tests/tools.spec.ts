@@ -295,7 +295,11 @@ describe('policy', () => {
       properties: { workspace: { description: string } }
     }
     expect(parameters.properties.workspace.description)
-      .toContain("omit only when the work truly belongs to this lead's directory")
+      .toContain("Omit only when the work truly belongs to this lead's directory")
+    expect(parameters.properties.workspace.description)
+      .toContain('id, registered directory path, or exact display title')
+    expect(parameters.properties.workspace.description)
+      .toContain('DEVLEAD_WORKSPACE_AMBIGUOUS')
   })
 
   it('bounds reconnaissance to feasibility triage and hands deep research to the Session', () => {
@@ -837,6 +841,18 @@ describe('devlead_list_sessions', () => {
     const harness = boot()
     const error = await failureOf(harness.call('devlead_list_sessions', { workspace: ' ' }))
     expect(error.code).toBe('DEVLEAD_INVALID_INPUT')
+  })
+
+  it('advertises title addressing on the workspace filter', () => {
+    const harness = boot()
+    const parameters = harness.tool('devlead_list_sessions').definition.parameters as {
+      properties: { workspace: { description: string } }
+    }
+    const description = parameters.properties.workspace.description
+    expect(description).toContain('Optional Workspace filter')
+    expect(description).toContain('id, registered directory path, or exact display title')
+    expect(description).toContain('trimmed, case-sensitive')
+    expect(description).toContain('DEVLEAD_WORKSPACE_AMBIGUOUS')
   })
 })
 
@@ -1443,7 +1459,10 @@ describe('devlead_remove_workspace', () => {
     const parameters = definition.parameters as {
       properties: { workspace: { description: string } }
     }
-    expect(parameters.properties.workspace.description).toContain('registered')
+    const description = parameters.properties.workspace.description
+    expect(description).toContain('id, registered directory path, or exact display title')
+    expect(description).toContain('DEVLEAD_WORKSPACE_AMBIGUOUS')
+    expect(definition.description).toContain('exact title')
   })
 
   it('rejects a blank or omitted reference before calling the core service', async () => {
@@ -1461,6 +1480,13 @@ describe('devlead_remove_workspace', () => {
     harness.devLead.failures.set('removeWorkspace', devLeadFailure('DEVLEAD_WORKSPACE_NOT_FOUND'))
     const error = await failureOf(harness.call('devlead_remove_workspace', { workspace: 'unknown' }))
     expect(error.code).toBe('DEVLEAD_WORKSPACE_NOT_FOUND')
+  })
+
+  it('translates an ambiguous Workspace title', async () => {
+    const harness = boot()
+    harness.devLead.failures.set('removeWorkspace', devLeadFailure('DEVLEAD_WORKSPACE_AMBIGUOUS'))
+    const error = await failureOf(harness.call('devlead_remove_workspace', { workspace: 'deepcal' }))
+    expect(error.code).toBe('DEVLEAD_WORKSPACE_AMBIGUOUS')
   })
 })
 

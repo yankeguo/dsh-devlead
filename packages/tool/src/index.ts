@@ -92,6 +92,15 @@ const SESSION_ARGUMENT_DESCRIPTION =
   'Session id: the full id, a unique id prefix, or the uuid prefix without the "session-" prefix (for example '
   + 'e59ab350); it resolves only when unique.'
 
+/**
+ * Model-facing description shared by every `workspace` argument. All three
+ * tools resolve the reference the same way, so the wording lives in one place.
+ */
+const WORKSPACE_ARGUMENT_DESCRIPTION =
+  'Address the Workspace by id, registered directory path, or exact display title. Resolution tries the id first, '
+  + 'then the registered path, then the title (trimmed, case-sensitive). A title shared by several Workspaces fails '
+  + 'with DEVLEAD_WORKSPACE_AMBIGUOUS listing their ids and paths; use the id or path then.'
+
 const LIST_MODELS_DESCRIPTION =
   'List the model routes this Host can dispatch to: the Host default selection, routable providers, each provider\'s '
   + 'models with their reasoning efforts and default effort, and any provider whose catalog could not be loaded. Call '
@@ -109,9 +118,9 @@ const LIST_AGENT_PRESETS_DESCRIPTION =
   + 'omitting preset then falls back to the plugin defaultAgentPreset, then the Host default.'
 
 const LIST_WORKSPACES_DESCRIPTION =
-  'List every registered DSH Workspace: its title, canonical directory path, live directory status, and the Sessions '
-  + 'the registry accounts to it. Use it first to decide which Workspace owns a request, before registering a new '
-  + 'Workspace or dispatching a Session.'
+  'List every registered DSH Workspace: its id, title, canonical directory path, live directory status, and the '
+  + 'Sessions the registry accounts to it. Use it first to decide which Workspace owns a request, before registering '
+  + 'a new Workspace or dispatching a Session. Its id, path, and exact title are the accepted Workspace references.'
 
 const USE_WORKSPACE_DESCRIPTION =
   'Register a repository directory as a DSH Workspace so Sessions can be created in it. The path must be absolute, and '
@@ -121,12 +130,13 @@ const USE_WORKSPACE_DESCRIPTION =
 const LIST_SESSIONS_DESCRIPTION =
   'List DSH Sessions this DevLead Session can address: whether each is live, running, watched, or archived, plus '
   + 'latest-turn facts when the Host knows them. Watched and running rows come first. Optionally restrict to one '
-  + 'Workspace or to the watched set; use devlead_get_session for a log detail with the latest turn outcome and '
-  + 'assistant excerpt. Inspect it after a wake-up or when the human explicitly asks, not as a polling loop while '
-  + 'waiting for a dispatched Session.'
+  + 'Workspace (by id, registered path, or exact title) or to the watched set; use devlead_get_session for a log '
+  + 'detail with the latest turn outcome and assistant excerpt. Inspect it after a wake-up or when the human '
+  + 'explicitly asks, not as a polling loop while waiting for a dispatched Session.'
 
 const CREATE_SESSION_DESCRIPTION =
-  'Create an ordinary DSH Session in a Workspace and optionally start it with a prompt. The child inherits the Host '
+  'Create an ordinary DSH Session in a Workspace (addressed by id, registered path, or exact title) and optionally '
+  + 'start it with a prompt. The child inherits the Host '
   + 'default model unless you explicitly pin provider/model (plus optional reasoning_effort); pin only when the human '
   + 'explicitly asked, or the brief needs cost/capability routing or reproducibility, and call devlead_list_models '
   + 'first so provider/model/effort are real. Agent Teams is your judgment: complex, multi-step, or parallel work that '
@@ -187,7 +197,8 @@ const REMOVE_WORKSPACE_DESCRIPTION =
   'Close (remove) a DSH Workspace registration: the DSH remove action, not a deletion. The directory, its files, and '
   + 'every Session log stay untouched, but the Workspace\'s Sessions become ungrouped: they stay openable and '
   + 'continuable, yet no longer appear under that Workspace, and re-registering the same directory creates a brand new '
-  + 'Workspace that does not adopt them. Address it by Workspace id or registered path. Use your judgment to remove '
+  + 'Workspace that does not adopt them. Address it by Workspace id, registered path, or exact title. Use your '
+  + 'judgment to remove '
   + 'registrations that are clearly stale, duplicate, or empty, or that you created, or when the human asks to tidy up; '
   + 'do not remove a Workspace the human is using, and report what you closed and why. When tidying up, prefer '
   + 'archiving finished Sessions over unregistering their Workspace; removal has the wider blast radius. The returned '
@@ -294,7 +305,8 @@ export function apply(ctx: Context): void {
       },
       title: {
         type: 'string',
-        description: 'Optional display title for a newly registered Workspace; an already-registered path keeps its current title.',
+        description: 'Optional display title for a newly registered Workspace; the exact title also becomes an '
+          + 'addressable reference for workspace arguments. An already-registered path keeps its current title.',
       },
       create: {
         type: 'boolean',
@@ -328,7 +340,7 @@ export function apply(ctx: Context): void {
     parameters: {
       workspace: {
         type: 'string',
-        description: 'Optional Workspace id or registered path to restrict the listing to.',
+        description: `Optional Workspace filter. ${WORKSPACE_ARGUMENT_DESCRIPTION}`,
       },
       watched_only: {
         type: 'boolean',
@@ -366,7 +378,7 @@ export function apply(ctx: Context): void {
     parameters: {
       workspace: {
         type: 'string',
-        description: 'Workspace id or registered path of the owning Workspace; omit only when the work truly belongs '
+        description: `The owning Workspace. ${WORKSPACE_ARGUMENT_DESCRIPTION} Omit only when the work truly belongs `
           + 'to this lead\'s directory.',
       },
       prompt: {
@@ -599,7 +611,7 @@ export function apply(ctx: Context): void {
       workspace: {
         type: 'string',
         required: true,
-        description: 'Workspace id or registered canonical path of the Workspace to close (remove).',
+        description: `The Workspace to close (remove). ${WORKSPACE_ARGUMENT_DESCRIPTION}`,
       },
     },
     output: REMOVE_WORKSPACE_OUTPUT,

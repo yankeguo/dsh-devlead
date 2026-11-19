@@ -1,8 +1,9 @@
 /**
  * Read-side composition of the DevLead views: Workspace rows, Session rows
  * with live Agent state and folded log facts, and reference resolution
- * (id / path / unique id prefix, including a truncated uuid head whose
- * `session-` prefix the caller omitted).
+ * (Workspace id / registered path / exact title; Session exact id / unique id
+ * prefix, including a truncated uuid head whose `session-` prefix the caller
+ * omitted).
  *
  * Every optional capability is read through `ctx.get(...)` so a composition
  * without the API Session controller, Session query engine, title service, or
@@ -481,13 +482,32 @@ export async function devLeadSessionViews(
 }
 
 /**
- * Resolve one Workspace reference: a record id, a registered path, or a
- * directory path the registry already knows.
+ * Render one ambiguous-title candidate as `id (path)`, the stable identity pair
+ * a caller can use to disambiguate.
+ * @param workspace - candidate Workspace.
+ * @returns the candidate label.
+ */
+function workspaceCandidateLabel(workspace: Workspace): string {
+  return `${workspace.id} (${workspace.path})`
+}
+
+/**
+ * Resolve one Workspace reference: a record id, a registered path, or an exact
+ * display title.
+ *
+ * The order is deliberate. Ids and registered paths are uniqueness keys of the
+ * registry, so they win whenever they match; titles are display metadata that
+ * several Workspaces may share (DSH 0.2.2-rc.1 through rc.5 explicitly allow
+ * different canonical paths to share a display title), so they are resolved
+ * last. Title matching trims both sides and stays case-sensitive, matching the
+ * case-sensitive id/path vocabulary instead of folding near-matches.
  * @param ctx - host context.
- * @param reference - Workspace id or path.
+ * @param reference - Workspace id, registered directory path, or title.
  * @param signal - cancellation checked before and after the path lookup.
  * @returns the resolved Workspace.
- * @throws {@link DevLeadError} `DEVLEAD_WORKSPACE_NOT_FOUND` when nothing matches.
+ * @throws {@link DevLeadError} `DEVLEAD_INVALID_INPUT` for a blank reference,
+ *   `DEVLEAD_WORKSPACE_AMBIGUOUS` when a title matches several Workspaces, and
+ *   `DEVLEAD_WORKSPACE_NOT_FOUND` when nothing matches.
  */
 export async function resolveWorkspaceReference(
   ctx: Context,
@@ -499,7 +519,13 @@ export async function resolveWorkspaceReference(
     throw new DevLeadError('this Host composes no Workspace registry', 'DEVLEAD_WORKSPACE_NOT_FOUND')
   }
   const trimmed = reference.trim()
-  const byId = registry.list().find(workspace => workspace.id === trimmed)
+  if (trimmed.length === 0) {
+    throw new DevLeadError('a Workspace reference is required', 'DEVLEAD_INVALID_INPUT')
+  }
+  // One snapshot serves both metadata lookups; the path lookup goes through the
+  // registry's canonical resolver so symlinks and trailing slashes still match.
+  const workspaces = registry.list()
+  const byId = workspaces.find(workspace => workspace.id === trimmed)
   if (byId !== undefined) return byId
   try {
     signal?.throwIfAborted()
@@ -507,11 +533,23 @@ export async function resolveWorkspaceReference(
     if (byPath !== undefined) return byPath
   } catch (error: unknown) {
     rethrowIfAborted(error, signal)
-    // A path outside the registry falls through to the not-found failure.
+    // A relative, missing, or unregistered path cannot name a Workspace;
+    // fall through to exact-title resolution.
   }
   signal?.throwIfAborted()
+  const byTitle = workspaces.filter(workspace => workspace.title.trim() === trimmed)
+  const only = byTitle[0]
+  if (only !== undefined && byTitle.length === 1) return only
+  if (byTitle.length > 1) {
+    throw new DevLeadError(
+      `Workspace title "${trimmed}" is ambiguous: ${byTitle.length} Workspaces share it: `
+      + `${byTitle.map(workspaceCandidateLabel).join(', ')}; pass a Workspace id or registered path instead`,
+      'DEVLEAD_WORKSPACE_AMBIGUOUS',
+    )
+  }
   throw new DevLeadError(
-    `no Workspace matches "${reference}"; register the repository directory first with devlead_use_workspace`,
+    `no Workspace matches "${reference}"; pass a Workspace id, a registered directory path, or an exact title from `
+    + 'devlead_list_workspaces. If the repository is not registered yet, add it with devlead_use_workspace.',
     'DEVLEAD_WORKSPACE_NOT_FOUND',
   )
 }

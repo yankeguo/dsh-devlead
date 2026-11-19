@@ -502,7 +502,7 @@ export interface DevLeadAgentPresetCatalog {
  * through a later prompt.
  */
 export interface DevLeadCreateSessionRequest {
-  /** Target Workspace id or registered path. Omitted uses the lead's own directory. */
+  /** Target Workspace id, registered path, or exact display title. Omitted uses the lead's own directory. */
   readonly workspace?: string
   /** Optional initial prompt the new Session runs immediately. */
   readonly prompt?: string
