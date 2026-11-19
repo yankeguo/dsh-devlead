@@ -1465,6 +1465,8 @@ export class FakeStorageTable {
 class FakeStorageDomainHandle {
   /** Tables by declared name. */
   readonly tables = new Map<string, FakeStorageTable>()
+  /** Whether a handle currently holds the domain open (single-open facility). */
+  opened = true
 
   constructor(names: readonly string[]) {
     for (const name of names) this.tables.set(name, new FakeStorageTable())
@@ -1476,13 +1478,17 @@ class FakeStorageDomainHandle {
     return table
   }
 
-  async close(): Promise<void> {}
+  async close(): Promise<void> {
+    this.opened = false
+  }
 }
 
 /**
- * In-memory `ctx.storageDomain` stand-in. Domains survive a domain-handle
- * close, so booting a second service over the same fake models a Host restart
- * with durable outbox rows still on disk.
+ * In-memory `ctx.storageDomain` stand-in. Domain data survives a handle close,
+ * so booting a second service over the same fake models a Host restart with
+ * durable outbox rows still on disk. Like the real facility, a domain name is
+ * single-open: opening it while a previous handle has not closed refuses with
+ * `already-open`, which is how a dispose/close race becomes visible to tests.
  */
 export class FakeStorageDomain {
   /** Persisted domains by name. */
@@ -1493,9 +1499,14 @@ export class FakeStorageDomain {
     const tableNames = Object.keys((spec as { tables?: Record<string, unknown> }).tables ?? {})
     if (typeof name !== 'string' || name.length === 0) throw new Error('fake storage domain requires a name')
     let domain = this.domains.get(name)
+    if (domain !== undefined && domain.opened) {
+      throw new Error(`storage domain "${name}" is already open`)
+    }
     if (domain === undefined) {
       domain = new FakeStorageDomainHandle(tableNames)
       this.domains.set(name, domain)
+    } else {
+      domain.opened = true
     }
     return domain
   }

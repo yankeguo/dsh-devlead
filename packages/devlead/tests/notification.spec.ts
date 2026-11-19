@@ -329,6 +329,20 @@ describe('DevLeadNotificationHub wake coalescing', () => {
     expect(notificationRecords(lead.session)).toHaveLength(2)
   })
 
+  it('delivers past an inbox message without a source instead of stranding the batch', async () => {
+    installFakeTimers()
+    const harness = await bootHub({ batchMs: 400 })
+    const lead = onlyLead(harness)
+    // A damaged or migrated log can restore an inbox message without a source
+    // (the inbox projection does not shape-validate persisted messages). The
+    // flush must treat it as "not a DevLead notice" and still deliver.
+    lead.agent.inbox.nextTurn.push({} as never)
+    appendTurnEnd(harness.watched, 1)
+    await vi.advanceTimersByTimeAsync(400)
+    await flushMicrotasks()
+    expect(lead.agent.followups).toHaveLength(1)
+  })
+
   it('delivers a retained batch immediately when the lead becomes idle', async () => {
     installFakeTimers()
     const harness = await bootHub({ batchMs: 400 })
@@ -731,6 +745,27 @@ describe('cold lead delivery', () => {
     await vi.advanceTimersByTimeAsync(400)
     await flushMicrotasks()
     expect(lead.agent.followups).toHaveLength(1)
+  })
+
+  it('gives up resuming a cold lead after the bounded attempt cap and warns', async () => {
+    installFakeTimers()
+    const controller = new FakeSessionController()
+    const harness = await bootHub({ batchMs: 400, wakeColdSession: true, sessionController: controller })
+    const lead = onlyLead(harness)
+    controller.resolveHandler = () => ({ error: { message: 'busy', code: 'session/agent-busy' } })
+    harness.agents.remove(String(lead.agent.id))
+    const warn = vi.spyOn(harness.ctx.logger, 'warn')
+    appendTurnEnd(harness.watched, 1)
+    await vi.advanceTimersByTimeAsync(400)
+    // Each failed resume arms one 1s retry, up to the attempt cap.
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      await vi.advanceTimersByTimeAsync(1_000)
+      await flushMicrotasks()
+    }
+    expect(controller.resolveCalls).toHaveLength(5)
+    expect(warn.mock.calls.some(call => String(call[0]).includes('giving up resuming cold lead'))).toBe(true)
+    expect(notificationRecords(lead.session)).toHaveLength(1)
+    warn.mockRestore()
   })
 
   it('does not resume a cold lead without a Session controller', async () => {

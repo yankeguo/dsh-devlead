@@ -258,8 +258,12 @@ export function devLeadReport(input: {
   const workspaceTitle = input.senderWorkspaceTitle === undefined
     ? undefined
     : excerptLine(input.senderWorkspaceTitle, DEVLEAD_ERROR_EXCERPT_MAX)
+  // The id and the stored turn must agree: the strict fold recomputes the id
+  // from the stored turn, so clamping only one side would write a record the
+  // writer's own fold rejects.
+  const turn = Number.isSafeInteger(input.turn) && input.turn >= 0 ? input.turn : 0
   return {
-    id: devLeadReportId(input.senderSessionId, input.turn, input.kind, message),
+    id: devLeadReportId(input.senderSessionId, turn, input.kind, message),
     kind: input.kind,
     message,
     ...(summary === undefined ? {} : { summary }),
@@ -268,7 +272,7 @@ export function devLeadReport(input: {
     ...(input.senderWorkspaceId === undefined ? {} : { senderWorkspaceId: input.senderWorkspaceId }),
     ...(workspaceTitle === undefined ? {} : { senderWorkspaceTitle: workspaceTitle }),
     leadSessionId: input.leadSessionId,
-    turn: Number.isSafeInteger(input.turn) && input.turn >= 0 ? input.turn : 0,
+    turn,
     at: representableInstant(input.at, Date.now()),
   }
 }

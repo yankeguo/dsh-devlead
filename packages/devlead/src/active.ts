@@ -110,12 +110,9 @@ export function activeSessionLabel(occupant: DevLeadActiveSession): string {
  * Build the stable refusal for a second Session trying to enable DevLead.
  *
  * The message always names the occupant and tells the human how to switch.
- * The archived variant is used when the occupant is archived and the service
- * could not release it automatically (no live Session and no resumable
- * Session controller); it keeps the manual recovery actionable instead of
- * leaving the new Session with a vague failure.
+ * Archived holders no longer produce a refusal of their own: they are ignored
+ * for admission and surfaced through `/devlead status` instead.
  * @param occupant - Session holding the mode.
- * @param archivedUnreleased - whether release failed for an archived holder.
  * @returns the refusal text.
  */
 export function alreadyActiveMessage(occupant: DevLeadActiveSession): string {

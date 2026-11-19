@@ -13,9 +13,9 @@ Admission is serialized in-process and scans live projections plus the durable c
 
 `reportProgress(agent, { message, kind?, summary? }, signal?)` lets a watched, non-DevLead Session
 send a one-way report to its unique active lead. It resolves the active lead that watches it through
-the hub's reverse index, validates size/kind, deduplicates identical messages within a turn, enforces four
-distinct reports per turn (`DEVLEAD_REPORT_RATE_LIMITED`), and otherwise refuses with
-`DEVLEAD_NOT_SUPERVISED`. The receipt is `{ report, durable, queued, warning? }`.
+the hub's reverse index, validates size/kind, deduplicates identical kind+message pairs within a turn, enforces four
+distinct non-question reports per turn (`DEVLEAD_REPORT_RATE_LIMITED`; `question` reports are exempt
+from that budget), and otherwise refuses with `DEVLEAD_NOT_SUPERVISED`. The receipt is `{ report, durable, queued, warning? }`.
 
 The report is first written to a durable outbox (`devlead_report_outbox` over the optional
 `storageDomain` KV facility), then a `plugin:devlead/report` receipt is appended to the lead's

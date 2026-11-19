@@ -91,6 +91,51 @@ describe('DevLeadReportOutbox', () => {
     expect(second!.ignoredIds()).toEqual([])
   })
 
+  it('degrades to undefined while the domain name is still held open', async () => {
+    const storage = new FakeStorageDomain()
+    const first = await DevLeadReportOutbox.open(storageContext(storage))
+    expect(first).toBeDefined()
+    // The real facility refuses a second open until the first handle closes;
+    // the outbox must degrade instead of throwing into service init.
+    expect(await DevLeadReportOutbox.open(storageContext(storage))).toBeUndefined()
+    await first!.close()
+    expect(await DevLeadReportOutbox.open(storageContext(storage))).toBeDefined()
+  })
+
+  it('guards writes, reads, and tombstones after close', async () => {
+    const storage = new FakeStorageDomain()
+    const outbox = await DevLeadReportOutbox.open(storageContext(storage))
+    await outbox!.put(report())
+    await outbox!.rememberIgnored('session-archived')
+    await outbox!.close()
+    expect(outbox!.available).toBe(false)
+    expect(await outbox!.put(report('late'))).toBe(false)
+    expect(await outbox!.delete(report())).toBe(false)
+    expect(outbox!.entries()).toEqual([])
+    expect(outbox!.ignoredIds()).toEqual([])
+    expect(await outbox!.rememberIgnored('session-late')).toBe(false)
+    await outbox!.forgetIgnored('session-archived')
+    // The rows survive the handle close on disk.
+    expect(storage.table('devlead_report_outbox', 'pending').records.size).toBe(1)
+  })
+
+  it('drops only the rows of one lead', async () => {
+    const storage = new FakeStorageDomain()
+    const outbox = await DevLeadReportOutbox.open(storageContext(storage))
+    await outbox!.put(report('lead-1 row'))
+    await outbox!.put(devLeadReport({
+      senderSessionId: 'child-2',
+      leadSessionId: 'lead-2',
+      turn: 1,
+      kind: 'progress',
+      message: 'lead-2 row',
+      at: T0,
+    }))
+    expect(await outbox!.dropForLead('lead-1')).toBe(1)
+    expect(outbox!.entries().map(entry => entry.report.message)).toEqual(['lead-2 row'])
+    expect(await outbox!.dropForLead('lead-1')).toBe(0)
+  })
+
   it('returns undefined without storage-domain and false on write failure', async () => {
     expect(await DevLeadReportOutbox.open(new Context())).toBeUndefined()
 

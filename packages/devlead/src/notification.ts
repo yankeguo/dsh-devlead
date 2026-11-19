@@ -834,7 +834,17 @@ export class DevLeadNotificationHub {
     }
     this.persistUnsaved(agent.session, runtime)
     if (runtime.pending.length === 0 && runtime.pendingReports.length === 0) return
-    if (this.hasQueuedNotice(agent)) {
+    let queuedNotice = false
+    try {
+      queuedNotice = this.hasQueuedNotice(agent)
+    } catch (error: unknown) {
+      // An unreadable inbox must not strand the batch: deliver rather than
+      // leaving the pending rows without a timer or a retry.
+      this.ctx.logger.warn(
+        `devlead: could not inspect the inbox of lead "${runtime.sessionId}" for a queued notice: ${thrownMessage(error)}`,
+      )
+    }
+    if (queuedNotice) {
       // The batch stays pending: a notice already in the inbox will point the
       // model at the durable digest. Re-check on the bounded retry timer, and
       // let the idle-status hook deliver immediately if the notice is consumed
@@ -924,8 +934,12 @@ export class DevLeadNotificationHub {
    */
   private hasQueuedNotice(agent: Agent): boolean {
     return [...agent.inbox.nextTurn, ...agent.inbox.nextStep].some((message) => {
-      const source = message.source as { kind?: unknown; form?: unknown }
-      return source.kind === DEVLEAD_MESSAGE_KIND && source.form === 'notice'
+      // The inbox projection restores persisted messages without shape
+      // validation, so a damaged or migrated log can carry a message without a
+      // source; treat it as "not a DevLead notice" instead of throwing out of
+      // the fire-and-forget flush.
+      const source = message.source as { kind?: unknown; form?: unknown } | undefined
+      return source?.kind === DEVLEAD_MESSAGE_KIND && source?.form === 'notice'
     })
   }
 

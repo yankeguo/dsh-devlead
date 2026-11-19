@@ -570,12 +570,12 @@ async function resolveExactSession(
   const { ctx } = deps
   const sessionId = toSessionId(reference)
   const live = ctx.agents.get(sessionId) !== undefined
-  if (deps.watchedSessions.includes(reference)) return { sessionId, live }
   const session = ctx.sessions.get(sessionId) ?? ctx.agents.get(sessionId)?.session
-  if (session !== undefined) {
-    if (session.header.origin === 'subagent') return undefined
-    return { sessionId, live }
-  }
+  // A hand-edited watch set must not make a subagent Session addressable: the
+  // listing path filters subagents, and the exact path applies the same rule.
+  if (session !== undefined && session.header.origin === 'subagent') return undefined
+  if (deps.watchedSessions.includes(reference)) return { sessionId, live }
+  if (session !== undefined) return { sessionId, live }
   const query = ctx.get('sessionQuery')
   if (query === undefined) return undefined
   try {

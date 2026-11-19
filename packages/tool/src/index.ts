@@ -197,7 +197,8 @@ const REPORT_DESCRIPTION =
   + 'turn to end. Use kind question when you are blocked on missing information or a decision, '
   + 'then end your turn; the lead answers in a new turn (directly, or after asking the human). Keep the message '
   + 'concise and actionable; at most four distinct non-question reports are accepted per turn, question reports are '
-  + 'exempt from that budget, identical messages are deduplicated, and no target Session can be chosen. The result '
+  + 'exempt from that budget, the same kind and message in one turn is deduplicated, and no target Session can be '
+  + 'chosen. The result '
   + 'carries `durable` and `queued`; when `durable` is false the Host has no durable storage and the warning must be '
   + 'treated as a possible-loss receipt.'
 

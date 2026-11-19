@@ -695,6 +695,21 @@ describe('mid-turn reports', () => {
       .toEqual(['durable update'])
   })
 
+  it('releases the outbox domain on dispose so a reload opens it durably again', async () => {
+    const storage = new FakeStorageDomain()
+    const first = await bootReporting({}, { storageDomain: storage })
+    const before = await first.harness.service.reportProgress(first.child.agent, { message: 'before reload' })
+    expect(before.durable).toBe(true)
+    // dispose must await the domain close: the facility releases the name only
+    // after a full close, and an `already-open` refusal would silently degrade
+    // every report of the reloaded instance to the non-durable fallback.
+    await first.harness.dispose()
+    const second = await bootReporting({}, { storageDomain: storage })
+    const after = await second.harness.service.reportProgress(second.child.agent, { message: 'after reload' })
+    expect(after.durable).toBe(true)
+    expect(after.warning).toBeUndefined()
+  })
+
   it('leaves the outbox row when the lead flush fails and replays it after restart', async () => {
     const storage = new FakeStorageDomain()
     const flushFailure = new Error('simulated persistence failure')
@@ -749,8 +764,10 @@ describe('mid-turn reports', () => {
 
   it('uses the explicit non-durable fallback when outbox writes fail', async () => {
     const storage = new FakeStorageDomain()
-    await storage.open({ name: 'devlead_report_outbox', tables: { pending: {}, ignored: {} } })
+    const seeded = await storage.open({ name: 'devlead_report_outbox', tables: { pending: {}, ignored: {} } })
     storage.table('devlead_report_outbox', 'pending').putError = new Error('storage read-only')
+    // Release the single-open name so the service under test can open it.
+    await seeded.close()
     const { harness, child } = await bootReporting({}, { storageDomain: storage })
     const receipt = await harness.service.reportProgress(child.agent, { message: 'fallback update' })
     expect(receipt.durable).toBe(false)
@@ -775,6 +792,21 @@ describe('mid-turn reports', () => {
     )
     expect(error.message).toContain('4')
     expect(harness.service.reports(harness.lead.agent)).toHaveLength(4)
+  })
+
+  it('delivers the same text as a question after a progress report instead of swallowing it', async () => {
+    const { harness, child } = await bootReporting()
+    const progress = await harness.service.reportProgress(child.agent, { message: 'Which target?' })
+    // The question gate can forward text the child already reported as
+    // progress; the upgrade to the answer-seeking channel must still arrive.
+    const question = await harness.service.reportProgress(child.agent, { kind: 'question', message: 'Which target?' })
+    expect(question.report.kind).toBe('question')
+    expect(question.report.id).not.toBe(progress.report.id)
+    expect(harness.service.reports(harness.lead.agent).map(report => report.kind)).toEqual(['progress', 'question'])
+    // Same kind and text stays idempotent.
+    const again = await harness.service.reportProgress(child.agent, { kind: 'question', message: 'Which target?' })
+    expect(again.report.id).toBe(question.report.id)
+    expect(harness.service.reports(harness.lead.agent)).toHaveLength(2)
   })
 
   it('lets a question report through the exhausted progress budget', async () => {
@@ -1783,6 +1815,29 @@ describe('session listings', () => {
       'DEVLEAD_SESSION_UNAVAILABLE',
     )
     expect(harness.service.view(harness.lead.agent).sessions).toEqual([])
+    expect(target.followups).toHaveLength(0)
+  })
+
+  it('keeps the automatic watch when an interrupt stop was committed but admission failed', async () => {
+    const harness = await bootService({ enabled: true, sessionIds: ['target'] })
+    const target = new FakeAgent(requireSession(harness, 'target'))
+    target.setRunning(true)
+    target.failFollowups = 1
+    harness.agents.add(target)
+    const stops: string[] = []
+    harness.ctx.on('workspace/session-stop', ({ sessionId }) => {
+      stops.push(String(sessionId))
+      target.setRunning(false)
+    })
+    const error = await expectCodeAsync(
+      () => harness.service.promptSession(harness.lead.agent, 'target', 'replace', { interrupt: true }),
+      'DEVLEAD_SESSION_UNAVAILABLE',
+    )
+    expect(error.message).toContain('already asked to stop')
+    expect(stops).toEqual(['target'])
+    // The stop cannot be rolled back, so the watch must survive: it is the
+    // lead's path to observe the cancelled turn and retry the prompt.
+    expect(harness.service.view(harness.lead.agent).sessions).toEqual(['target'])
     expect(target.followups).toHaveLength(0)
   })
 

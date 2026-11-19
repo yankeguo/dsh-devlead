@@ -218,6 +218,23 @@ interface PromptAdmission {
   readonly interrupted: boolean
 }
 
+/**
+ * Admission failure after the interrupt stop was already requested. The stop
+ * cannot be rolled back, so the watch this prompt added must survive: it is the
+ * lead's only path to observe the cancelled turn and retry the replacement
+ * prompt. Rolling it back would strand a stopped Session unwatched.
+ */
+class DevLeadInterruptedAdmissionError extends DevLeadError {
+  /**
+   * @param message - failure text naming both the admission failure and the
+   *   already-committed stop.
+   */
+  constructor(message: string) {
+    super(message, 'DEVLEAD_SESSION_UNAVAILABLE')
+    this.name = 'DevLeadInterruptedAdmissionError'
+  }
+}
+
 /** Loader schema for the DevLead core service. */
 export const Config: z<Config> = z.object({
   notificationBatchMs: z.number().step(1).min(0).max(MAX_TIMER_DELAY_MS).default(400),
@@ -544,7 +561,10 @@ export class DevLeadService extends Service {
         this.disposeRehydrationRetry()
         this.outboxInjection?.dispose()
         this.outboxInjection = undefined
-        void this.outbox?.close()
+        // Awaited by cordis: the storage facility releases the domain name only
+        // after a full close, so a reload must not race the next instance's open
+        // into an `already-open` refusal that silently degrades durable reports.
+        return this.outbox?.close()
       }
     }.bind(this), 'devlead: cold rehydration')
     // A resumed Session can carry an old enabled mode. Reconcile before the
@@ -1532,7 +1552,9 @@ export class DevLeadService extends Service {
         signal,
       })
     } catch (error: unknown) {
-      if (added) {
+      // An interrupt whose stop was already committed keeps the watch: the
+      // lead must still observe the cancelled turn and retry the prompt.
+      if (added && !(error instanceof DevLeadInterruptedAdmissionError)) {
         // No signal: the caller's cancellation already happened, and the
         // compensating write must still run. A rollback failure is a warning:
         // the original failure is what the caller must see.
@@ -1865,7 +1887,8 @@ export class DevLeadService extends Service {
    * for a cold lead by the hub), then the lead is woken through the same
    * coalesced notice path as turn notifications. This method returns after the
    * receipt/queue decision and never waits for the lead's next turn, so the
-   * reporter is not blocked. Same-message reports in one turn are idempotent;
+   * reporter is not blocked. Same-kind same-message reports in one turn are
+   * idempotent (the same text under a different kind is a new report);
    * more than {@link DEVLEAD_REPORT_MAX_PER_TURN} distinct non-question reports
    * in one turn are refused. `question` reports are the answer-seeking channel
    * used by the watched-Session question router, so they are exempt from that
@@ -1934,7 +1957,11 @@ export class DevLeadService extends Service {
     if (previous === undefined || previous.turn !== turn || previous.leadSessionId !== leadSessionId) {
       this.reportState.set(reporterId, state)
     }
-    const duplicate = state.messages.get(message)
+    // The idempotency key mirrors the durable report identity (kind included):
+    // re-sending the same text as a question after a progress report is an
+    // upgrade to the answer-seeking channel, not a duplicate to swallow.
+    const dedupKey = `${kind}\u0000${message}`
+    const duplicate = state.messages.get(dedupKey)
     if (duplicate !== undefined) return duplicate
     // Questions are a control-flow channel, not progress chatter: they must
     // reach the lead even after four ordinary reports in the same turn.
@@ -1970,7 +1997,7 @@ export class DevLeadService extends Service {
     })
     signal?.throwIfAborted()
     const receipt = await this.deliverReport(report)
-    state.messages.set(message, receipt)
+    state.messages.set(dedupKey, receipt)
     if (this.reportState.size > 512) {
       const oldest = this.reportState.keys().next().value
       if (oldest !== undefined) this.reportState.delete(oldest)
@@ -1979,13 +2006,15 @@ export class DevLeadService extends Service {
   }
 
   /**
-   * Read the retained mid-turn report digest of one live lead.
+   * Read the retained mid-turn report digest of one live lead. Like
+   * {@link notifications}, this is an audit read: a disabled lead may still
+   * inspect what it retained while the mode was on.
    * @param agent - exact live lead Agent.
    * @param options - optional newest-row limit, defaulting to 20.
    * @returns detached reports, oldest first.
    */
   reports(agent: Agent, options: { limit?: number } = {}): DevLeadReport[] {
-    this.assertReady(agent)
+    this.assertLive(agent)
     const state = this.strictStateOf(agent.session)
     const limit = options.limit ?? 20
     const effective = Number.isSafeInteger(limit) && limit > 0 ? limit : 20
@@ -2187,6 +2216,8 @@ export class DevLeadService extends Service {
       const sessionId = String(session.id)
       if (seen.has(sessionId)) return
       seen.add(sessionId)
+      // Subagent Sessions are not lead candidates, matching the listing path.
+      if (session.header.origin === 'subagent') return
       const state = this.projectionHandle.stateOf(session)
       if (state.failure !== null || !state.enabled) return
       const title = this.ctx.get('sessionTitle')?.get(session)?.title
@@ -3009,10 +3040,13 @@ export class DevLeadService extends Service {
     try {
       target.followup(createDevLeadPromptMessage(text, leadAgent))
     } catch (error: unknown) {
-      throw new DevLeadError(
-        `could not admit a prompt into Session "${sessionId}": ${thrownMessage(error)}`,
-        'DEVLEAD_SESSION_UNAVAILABLE',
-      )
+      const detail = `could not admit a prompt into Session "${sessionId}": ${thrownMessage(error)}`
+      if (interrupted) {
+        throw new DevLeadInterruptedAdmissionError(
+          `${detail}; the running work was already asked to stop, so the Session keeps its watch — retry the prompt`,
+        )
+      }
+      throw new DevLeadError(detail, 'DEVLEAD_SESSION_UNAVAILABLE')
     }
     await this.flushDurably(target.session, `prompt into Session "${sessionId}"`)
     return { resumed, interrupted }
