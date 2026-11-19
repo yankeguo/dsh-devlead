@@ -119,18 +119,16 @@ const WORKSPACE_ARGUMENT_DESCRIPTION =
 const LIST_MODELS_DESCRIPTION =
   'List the model routes this Host can dispatch to: the Host default selection, routable providers, each provider\'s '
   + 'models with their reasoning efforts and default effort, and any provider whose catalog could not be loaded. Call '
-  + 'this before pinning provider/model/reasoning_effort on devlead_create_session. Most dispatches should omit the '
-  + 'model parameters and inherit the Host default; only pin a model when the human explicitly asked, or the brief '
-  + 'needs cost/capability routing or reproducibility.'
+  + 'this before pinning provider/model/reasoning_effort on devlead_create_session; the pinning rules live on those '
+  + 'parameters.'
 
 const LIST_AGENT_PRESETS_DESCRIPTION =
   'List the Agent preset roster this Host currently defines for Session creation. Each entry carries the id accepted by '
   + 'devlead_create_session preset, its published name/description when available, a default marker (the Host effective '
   + 'default: selectedDefault when configured, otherwise its base default), and a broken reason when the preset cannot '
   + 'compose a Session. Call this before setting preset and never assume a fixed list; standard and ptc are examples on '
-  + 'some Hosts, not a complete vocabulary. An unknown or unusable preset fails creation with a structured error rather '
-  + 'than being silently ignored. If the Host composes no roster, the result reports available false with a reason; '
-  + 'omitting preset then falls back to the plugin defaultAgentPreset, then the Host default.'
+  + 'some Hosts, not a complete vocabulary. If the Host composes no roster, the result reports available false with a '
+  + 'reason; the preset parameter of devlead_create_session states the fallback and rejection rules.'
 
 const LIST_WORKSPACES_DESCRIPTION =
   'List every registered DSH Workspace: its id, title, canonical directory path, live directory status, and the '
@@ -138,9 +136,9 @@ const LIST_WORKSPACES_DESCRIPTION =
   + 'a new Workspace or dispatching a Session. Its id, path, and exact title are the accepted Workspace references.'
 
 const USE_WORKSPACE_DESCRIPTION =
-  'Register a repository directory as a DSH Workspace so Sessions can be created in it. The path must be absolute, and '
-  + 'an already-registered path is reused with its existing title. A missing directory is an error by default: set '
-  + 'create to true only when the human explicitly asked to create that directory.'
+  'Register a repository directory as a DSH Workspace so Sessions can be created in it. An already-registered path is '
+  + 'reused idempotently. A missing directory is an error by default: set create to true only when the human explicitly '
+  + 'asked to create that directory.'
 
 const LIST_SESSIONS_DESCRIPTION =
   'List DSH Sessions this DevLead Session can address: whether each is live, running, watched, or archived, plus '
@@ -150,33 +148,24 @@ const LIST_SESSIONS_DESCRIPTION =
   + 'explicitly asks, not as a polling loop while waiting for a dispatched Session.'
 
 const CREATE_SESSION_DESCRIPTION =
-  'Create an ordinary DSH Session in a Workspace (addressed by id, registered path, or exact title) and optionally '
-  + 'start it with a prompt. The child inherits the Host '
-  + 'default model unless you explicitly pin provider/model (plus optional reasoning_effort); pin only when the human '
-  + 'explicitly asked, or the brief needs cost/capability routing or reproducibility, and call devlead_list_models '
-  + 'first so provider/model/effort are real. Agent Teams is your judgment: complex, multi-step, or parallel work that '
-  + 'benefits from subagent collaboration may set agent_teams true; simple linear work should omit it; obey an explicit '
-  + 'human on/off. Agent Teams requires DSH 0.2.2-rc.2 or newer with the Agent Teams service composed; when the Host '
-  + 'reports it unavailable, continue without Team mode instead of retrying or blocking. Never change the Host/profile '
-  + 'default, and do not upgrade or downgrade a model on your own. Both '
-  + 'settings are creation-time only; the model is validated before the Session is created. Use devlead_list_agent_presets '
-  + 'before pinning a preset: omitted or blank follows the plugin defaultAgentPreset, then the Host default/selectedDefault, '
-  + 'and an unknown or unusable preset fails creation with a structured error rather than being silently ignored. The Session '
-  + 'is a real Session the human can open and take over, not a subagent. It runs independently, so after this call end the '
-  + 'turn instead '
+  'Create an ordinary DSH Session in a Workspace and optionally start it with a prompt. The Session is a real Session '
+  + 'the human can open and take over, not a subagent. Use it to dispatch the owning Workspace\'s work to that Session '
+  + 'instead of doing the work yourself from this lead session; the brief may carry open questions, because the '
+  + 'Session owns the deeper investigation and the implementation. The child inherits the Host default model unless '
+  + 'you explicitly pin provider/model (plus optional reasoning_effort); preset and agent_teams follow the same '
+  + 'inherit-by-default stance. These are creation-time only settings, and each parameter states its pinning rules '
+  + 'and what to call first. Never change the Host/profile default, and do not upgrade or downgrade a model on your '
+  + 'own. It runs independently, so after this call end the turn instead '
   + 'of waiting: never sleep, never poll devlead_get_session, devlead_list_sessions, or devlead_notifications, and '
   + 'never call wait_agent to wait for it. A watched Session is the default, and its settled turn starts a new turn '
-  + 'of this lead session with the wake-up message. Use it to dispatch the owning Workspace\'s work to that Session '
-  + 'instead of doing the work yourself from this lead session; the brief may carry open questions, because the '
-  + 'Session owns the deeper investigation and the implementation. When watched, the child can use devlead_report '
+  + 'of this lead session with the wake-up message. When watched, the child can use devlead_report '
   + 'for key progress, real blockers, or decisions; mention it in a long, multi-stage, or blockage-prone brief, and '
   + 'omit that advice with watch=false (the tool is absent).'
 
 const GET_SESSION_DESCRIPTION =
   'Read one Session in detail: whether it is live and running, whether it is archived, and, when the Host can read '
-  + 'the Session log, the latest turn number and outcome plus the latest error and assistant excerpts. Address it by '
-  + 'full id, a unique id prefix, or the uuid prefix without the "session-" prefix. Use it to inspect state after a '
-  + 'wake-up or when the human explicitly asks, not to poll while waiting for a dispatched Session. '
+  + 'the Session log, the latest turn number and outcome plus the latest error and assistant excerpts. Use it to '
+  + 'inspect state after a wake-up or when the human explicitly asks, not to poll while waiting for a dispatched Session. '
   + `When the target is this lead Session itself, the output also carries its ${SELF_REPORTS_LIMIT} newest retained mid-turn reports.`
 
 const PROMPT_SESSION_DESCRIPTION =
@@ -185,10 +174,8 @@ const PROMPT_SESSION_DESCRIPTION =
   + 'turn instead of waiting: its settled turn starts a new turn of this lead session with the wake-up message. A '
   + 'watched Session gains devlead_report; in a long or blockage-prone continuation, tell it to send key progress, '
   + 'blockers, or decisions. With watch=false the tool is unavailable. Default delivery queues the prompt behind the '
-  + 'Session\'s current turn; set interrupt true only to replace that work: the Host stops the running turn and the '
-  + 'work its stop providers report (running subagents, owned jobs, active schedules), discards queued inbox input, '
-  + 'then admits this prompt as a new turn. An idle or cold Session is a no-op and receives the prompt normally. '
-  + 'The interrupted turn still produces the normal watched-turn notification (cancelled) before the replacement turn.'
+  + 'Session\'s current turn; set interrupt true only to replace that work, with the exact stop-and-replace semantics '
+  + 'described on the interrupt parameter.'
 
 const WATCH_SESSION_DESCRIPTION =
   'Add one Session to, or remove it from, this DevLead Session\'s watch set. A watch is a one-way follow '
@@ -204,21 +191,21 @@ const NOTIFICATIONS_DESCRIPTION =
   + 'or when the human explicitly asks, not as a polling loop while waiting for a dispatched Session.'
 
 const REPORT_DESCRIPTION =
-  'Send a one-way mid-turn report to the single active DevLead Session that watches this Session. Use it for progress '
-  + 'worth acting on, a real blocker, a decision the lead or human must make, an important finding, or a question '
-  + 'that needs the lead\'s answer, instead of waiting for the turn to end. It is a one-way channel: the lead cannot '
-  + 'reply through the report itself. Use kind question when you are blocked on missing information or a decision, '
+  'Send a one-way mid-turn report to the single active DevLead Session that watches this Session; the lead cannot '
+  + 'reply through the report itself. Use it for progress worth acting on, a real blocker, a decision the lead or '
+  + 'human must make, an important finding, or a question that needs the lead\'s answer, instead of waiting for the '
+  + 'turn to end. Use kind question when you are blocked on missing information or a decision, '
   + 'then end your turn; the lead answers in a new turn (directly, or after asking the human). Keep the message '
   + 'concise and actionable; at most four distinct non-question reports are accepted per turn, question reports are '
   + 'exempt from that budget, identical messages are deduplicated, and no target Session can be chosen. The result '
   + 'carries `durable` and `queued`; when `durable` is false the Host has no durable storage and the warning must be '
-  + 'treated as a possible-loss receipt. Selected kind: progress (default), blocked, decision, question, or fyi.'
+  + 'treated as a possible-loss receipt.'
 
 const REMOVE_WORKSPACE_DESCRIPTION =
   'Close (remove) a DSH Workspace registration: the DSH remove action, not a deletion. The directory, its files, and '
   + 'every Session log stay untouched, but the Workspace\'s Sessions become ungrouped: they stay openable and '
   + 'continuable, yet no longer appear under that Workspace, and re-registering the same directory creates a brand new '
-  + 'Workspace that does not adopt them. Address it by Workspace id, registered path, or exact title. Use your '
+  + 'Workspace that does not adopt them. Use your '
   + 'judgment to remove '
   + 'registrations that are clearly stale, duplicate, or empty, or that you created, or when the human asks to tidy up; '
   + 'do not remove a Workspace the human is using, and report what you closed and why. When tidying up, prefer '
@@ -234,8 +221,8 @@ const ARCHIVE_SESSION_DESCRIPTION =
   + 'stale, duplicate, empty, or one you created. Do not archive a Session the human is using or talking to now, and '
   + 'never use closing to hide a failure. By default a Session with '
   + 'running work (a turn, subagents, jobs, or schedules) is refused with DEVLEAD_SESSION_ACTIVE; set stop_running '
-  + 'true only when you mean to cancel that work: the flag archives the Session first and then asks the Host to stop '
-  + 'it through the same providers the human\'s own stop action uses, without waiting for it to settle. This lead '
+  + 'true only when you mean to cancel that work, with the archive-then-stop semantics described on the stop_running '
+  + 'parameter. This lead '
   + 'Session cannot archive itself: ask the human to close it from the sidebar. Report what you archived and why.'
 
 const UNARCHIVE_SESSION_DESCRIPTION =
@@ -463,10 +450,11 @@ export function apply(ctx: Context): void {
       },
       agent_teams: {
         type: 'boolean',
-        description: 'Agent Teams for the new Session: true for complex, multi-step, or parallel work that benefits from '
+        description: 'Agent Teams is your judgment: true for complex, multi-step, or parallel work that benefits from '
           + 'subagent collaboration, false to disable, omit for simple linear work (Host default). Obey an explicit '
           + 'human on/off. Creation-time only. true requires DSH 0.2.2-rc.2 or newer with the Agent Teams service '
-          + 'composed; otherwise it fails with DEVLEAD_TEAM_UNAVAILABLE—omit it and continue without Team mode.',
+          + 'composed; otherwise it fails with DEVLEAD_TEAM_UNAVAILABLE—omit it and continue without Team mode '
+          + 'instead of retrying or blocking.',
       },
     },
     output: CREATE_SESSION_OUTPUT,
@@ -690,9 +678,9 @@ export function apply(ctx: Context): void {
       stop_running: {
         type: 'boolean',
         default: false,
-        description: 'Defaults to false. Set true only when the human asked to close a Session with running work: '
+        description: 'Defaults to false. Set true only when you mean to cancel that Session\'s running work: '
           + 'the Session is archived first and the Host is then asked to stop its running turn, subagents, jobs, and '
-          + 'schedules, without waiting for them to settle.',
+          + 'schedules, without waiting for them to settle. The safety boundaries are on the tool description.',
       },
     },
     output: ARCHIVE_SESSION_OUTPUT,

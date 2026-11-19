@@ -211,8 +211,6 @@ describe('registration', () => {
       }
       expect(parameters.properties.session.description).toContain(expected)
     }
-    expect(harness.tool('devlead_get_session').definition.description)
-      .toContain('or the uuid prefix without the "session-" prefix')
   })
 
   it('gates lead tools on DevLead mode and the report tool on the watch relationship', async () => {
@@ -361,14 +359,20 @@ describe('policy', () => {
     expect(text).toContain('Team availability depends on the Host composition and DSH version')
     expect(text).toContain('continue without Team instead of retrying or blocking')
     const createSession = harness.tool('devlead_create_session').definition
-    expect(createSession.description).toContain('devlead_list_models')
     expect(createSession.description).toContain('inherits the Host default model')
-    expect(createSession.description).toContain('Agent Teams is your judgment')
+    // The pinning rules live on the parameters, not repeated in the description.
     const parameters = createSession.parameters as {
-      properties: { provider: { description: string }; agent_teams: { description: string } }
+      properties: {
+        provider: { description: string }
+        model: { description: string }
+        agent_teams: { description: string }
+      }
     }
     expect(parameters.properties['provider']?.description).toContain('Omit to inherit the Host default')
+    expect(parameters.properties['model']?.description).toContain('call devlead_list_models first')
+    expect(parameters.properties['agent_teams']?.description).toContain('Agent Teams is your judgment')
     expect(parameters.properties['agent_teams']?.description).toContain('Obey an explicit human on/off')
+    expect(createSession.description).not.toContain('Agent Teams is your judgment')
   })
 
   it('teaches Host-defined preset discovery, fallback, and rejection', () => {
@@ -379,10 +383,9 @@ describe('policy', () => {
     expect(text).toContain('plugin defaultAgentPreset')
     expect(text).toContain('Host default/selectedDefault')
     expect(text).toContain('never guess an id')
+    // The fallback and rejection rules live on the preset parameter; the tool
+    // description only carries the inherit-by-default stance.
     const createSession = harness.tool('devlead_create_session').definition
-    expect(createSession.description).toContain('devlead_list_agent_presets')
-    expect(createSession.description).toContain('defaultAgentPreset')
-    expect(createSession.description).toContain('unknown or unusable preset fails creation')
     const parameters = createSession.parameters as {
       properties: { preset: { description: string } }
     }
@@ -625,13 +628,13 @@ describe('schema semantics', () => {
       'devlead_list_sessions',
       'devlead_get_session',
       'devlead_notifications',
-    ]
+    ] as const
     for (const name of readers) {
       // defineTool wraps the classifier with argument validation, so the probe
       // must carry the tool's minimal valid arguments.
       expect(harness.tool(name).definition.isConcurrencySafe?.(MINIMAL_ARGS[name]), name).toBe(true)
     }
-    for (const name of TOOL_NAMES.filter(name => !readers.includes(name))) {
+    for (const name of TOOL_NAMES.filter(name => !(readers as readonly string[]).includes(name))) {
       expect(harness.tool(name).definition.isConcurrencySafe, name).toBeUndefined()
     }
   })
@@ -758,9 +761,13 @@ describe('devlead_list_models', () => {
     expect(definition.description).toContain('Host default selection')
     expect(definition.description).toContain('routable providers')
     expect(definition.description).toContain('reasoning efforts')
-    expect(definition.description).toContain('Most dispatches should omit the model parameters')
     expect(definition.description).toContain('devlead_create_session')
     expect((definition.parameters as { properties: Record<string, unknown> }).properties).toEqual({})
+    // The omit-by-default dispatch guidance lives on the create parameters.
+    const createParameters = harness.tool('devlead_create_session').definition.parameters as {
+      properties: { provider: { description: string } }
+    }
+    expect(createParameters.properties.provider.description).toContain('Omit to inherit the Host default')
   })
 
   it('translates a missing-controller failure', async () => {
@@ -805,7 +812,6 @@ describe('devlead_list_agent_presets', () => {
     expect(definition.description).toContain('never assume a fixed list')
     expect(definition.description).toContain('standard and ptc are examples')
     expect(definition.description).toContain('available false with a reason')
-    expect(definition.description).toContain('defaultAgentPreset')
     expect((definition.parameters as { properties: Record<string, unknown> }).properties).toEqual({})
     const value = AGENT_PRESET_CATALOG
     const text = renderedText(harness, 'devlead_list_agent_presets', value)
@@ -1251,8 +1257,6 @@ describe('devlead_create_session dispatch settings', () => {
     expect(definition.description).toContain('agent_teams')
     expect(definition.description).toContain('creation-time only')
     expect(definition.description).toContain('inherits the Host default model')
-    expect(definition.description).toContain('call devlead_list_models first')
-    expect(definition.description).toContain('Agent Teams is your judgment')
     expect(definition.description).toContain('Never change the Host/profile default')
     const parameters = definition.parameters as {
       properties: Record<string, { type: string; description: string }>
@@ -1264,7 +1268,9 @@ describe('devlead_create_session dispatch settings', () => {
       'agent_teams',
     ]))
     expect(parameters.properties['provider']?.type).toBe('string')
+    expect(parameters.properties['model']?.description).toContain('call devlead_list_models first')
     expect(parameters.properties['agent_teams']?.type).toBe('boolean')
+    expect(parameters.properties['agent_teams']?.description).toContain('Agent Teams is your judgment')
     expect(parameters.properties['agent_teams']?.description).toContain('Creation-time only')
     expect(parameters.properties['agent_teams']?.description).toContain('DSH 0.2.2-rc.2')
   })
@@ -1389,17 +1395,16 @@ describe('devlead_prompt_session', () => {
     const definition = harness.tool('devlead_prompt_session').definition
     expect(definition.description).toContain('Default delivery queues the prompt behind')
     expect(definition.description).toContain('set interrupt true only to replace that work')
-    expect(definition.description).toContain('running subagents, owned jobs, active schedules')
-    expect(definition.description).toContain('discards queued inbox input')
-    expect(definition.description).toContain('An idle or cold Session is a no-op')
-    expect(definition.description).toContain('watched-turn notification (cancelled)')
+    // The stop-and-replace mechanics live on the interrupt parameter, stated once.
     const parameters = definition.parameters as {
       properties: { interrupt: { type: string; description: string } }
     }
     expect(parameters.properties.interrupt.type).toBe('boolean')
     expect(parameters.properties.interrupt.description).toContain('Defaults to false')
     expect(parameters.properties.interrupt.description).toContain('running subagents, owned jobs, active schedules')
+    expect(parameters.properties.interrupt.description).toContain('discards queued inbox input')
     expect(parameters.properties.interrupt.description).toContain('An idle or cold Session is a no-op')
+    expect(parameters.properties.interrupt.description).toContain('watched-turn notification as cancelled')
   })
 
   it('rejects a blank session or prompt before calling the core', async () => {
@@ -1719,7 +1724,6 @@ describe('devlead_remove_workspace', () => {
     const description = parameters.properties.workspace.description
     expect(description).toContain('id, registered directory path, or exact display title')
     expect(description).toContain('DEVLEAD_WORKSPACE_AMBIGUOUS')
-    expect(definition.description).toContain('exact title')
   })
 
   it('rejects a blank or omitted reference before calling the core service', async () => {
