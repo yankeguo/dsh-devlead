@@ -503,7 +503,7 @@ rather than implying the directory is unregistered.
 | `devlead_prompt_session` | `session`, `prompt` (required), `watch?` (default true), `interrupt?` (default false: queue behind the running turn; `true` = stop the running turn and Host-reported subagent/job/schedule work, discard queued input, then admit a new turn; idle/cold = no-op) | prompt result (including `interrupted`) |
 | `devlead_watch_session` | `session`, `watching` (required bool) | watch mutation result |
 | `devlead_notifications` | `limit?` (default 20, applied to each digest separately) | `{ notifications, reports, watched }` |
-| `devlead_report` | `message` (required, plain text, max 4000 code points), `kind?` (`progress` default / `blocked` / `decision` / `question` / `fyi`), `summary?` (max 200) | `{ report, durable, queued, warning? }` — visible only in a watched non-lead Session; one-way, never waits for a reply; a `question` report is answered in a new turn via `devlead_prompt_session` |
+| `devlead_report` | `message` (required, plain text, max 4000 code points), `kind?` (`progress` default / `blocked` / `decision` / `question` / `fyi`), `summary?` (max 200) | `{ report, durable, queued, warning? }` — visible only in a watched non-lead Session; one-way, never waits for a reply; only for a long-running task's mid-turn milestones (the settled turn already notifies the lead, so no routine progress / final summary; short or linear tasks should not call it); a `question` report is answered in a new turn via `devlead_prompt_session` |
 | `devlead_remove_workspace` | `workspace` (required: id, registered path, or exact title) | `{ workspace, removed }` (pre-removal snapshot) |
 | `devlead_archive_session` | `session` (required), `stop_running?` (default false) | `{ sessionId, archived: true, stopped }` |
 | `devlead_unarchive_session` | `session` (required) | `{ sessionId, archived: false }` |
@@ -519,8 +519,12 @@ the child can retry after the lead is available. Outbox rows are pruned after 7 
 never returns; `/devlead reset` drops that lead's pending rows. The receipt appears in the
 `devLead` projection, the status strip, `/devlead` status, `devlead_notifications`, and
 `devlead_get_session` when reading the lead itself. A running lead gets the report at its next
-reachable step. The lead may optionally introduce `devlead_report` in the brief for a long,
-multi-stage, or blockage-prone watched Session; this is on-demand, omitted when `watch` is false
+reachable step. A settled turn already notifies the lead, so `devlead_report` is only for a
+long-running task's mid-turn milestones the lead must know before the turn ends: a real blocker, a
+fork that needs the lead's decision, progress that would change scheduling correctness if it
+waited, or a question. Routine progress and final summaries are not reported, and short or linear
+tasks should not call it. The lead may optionally introduce the tool in the brief for such a
+long-running watched Session; this is on-demand, omitted when `watch` is false
 (the tool is absent), and never replaces the final turn notification. At most four distinct
 non-question reports are accepted per child turn; `question` reports are exempt from that budget;
 identical kind+message pairs in one turn are idempotent (the same text under a different kind is a

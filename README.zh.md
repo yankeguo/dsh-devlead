@@ -439,7 +439,7 @@ id 与 path，绝不静默取第一个；此时改用 id 或路径。未知引�
 | `devlead_prompt_session` | `session`、`prompt`（必填）、`watch?`（默认 true）、`interrupt?`（默认 false：排在运行中 turn 之后；`true` = 停掉运行中 turn 与 Host 报告的 subagent/job/schedule 工作、丢弃排队输入，再投递新 turn；空闲/冷会话为 no-op） | 续写结果（含 `interrupted`） |
 | `devlead_watch_session` | `session`、`watching`（必填 bool） | watch 变更结果 |
 | `devlead_notifications` | `limit?`（默认 20，分别作用于通知与汇报两个 digest） | `{ notifications, reports, watched }` |
-| `devlead_report` | `message`（必填，纯文本，上限 4000 code points）、`kind?`（默认 `progress` / `blocked` / `decision` / `question` / `fyi`）、`summary?`（上限 200） | `{ report, durable, queued, warning? }`——只在已关注的非 lead 会话可见；单向，不等待回复；`question` report 由 lead 在新 turn 里用 `devlead_prompt_session` 回答 |
+| `devlead_report` | `message`（必填，纯文本，上限 4000 code points）、`kind?`（默认 `progress` / `blocked` / `decision` / `question` / `fyi`）、`summary?`（上限 200） | `{ report, durable, queued, warning? }`——只在已关注的非 lead 会话可见；单向，不等待回复；只用于长任务的途中关键节点（turn 结束本就通知 lead，故不播报常规进度/最终总结，短任务/线性任务默认不调用）；`question` report 由 lead 在新 turn 里用 `devlead_prompt_session` 回答 |
 | `devlead_remove_workspace` | `workspace`（必填：id、注册路径或精确 title） | `{ workspace, removed }`（注销前快照） |
 | `devlead_archive_session` | `session`（必填）、`stop_running?`（默认 false） | `{ sessionId, archived: true, stopped }` |
 | `devlead_unarchive_session` | `session`（必填） | `{ sessionId, archived: false }` |
@@ -452,9 +452,12 @@ cold / 归档 / 未 resume 时 outbox 行保留，下次启动或 lead 激活时
 子会话可在 lead 可用后重试。outbox 行最多保留 7 天，`/devlead reset` 会丢弃该 lead 的待投递
 报告。receipt 出现在 `devLead` projection、状态条、`/devlead` 状态、`devlead_notifications`，
 读取 lead 自身时也出现在 `devlead_get_session`。lead 通过通知的合并唤醒通道被唤醒；运行中的
-lead 在下一步收到。lead 可在长任务、多阶段或可能中途阻塞的已关注会话简报中**按需**介绍
-`devlead_report`；不是每条简报都写，`watch=false` 时工具不存在，因此不要写。报告不能替代最终
-turn 通知；每个子会话每轮最多 4 条不同普通报告，`question` report 不计入该预算；同轮相同
+lead 在下一步收到。子会话 turn 结束本来就会通知 lead，因此 `devlead_report` 只用于**长任务途中**
+lead 必须在轮次结束前知道的关键节点：真实阻塞、需 lead 决策的分叉、等待会影响调度正确性的关键
+进展、或提问；常规进度与最终总结不要重复播报，短任务/线性任务默认不调用。lead 可在此类长任务
+已关注会话的简报中**按需**介绍 `devlead_report`；不是每条简报都写，`watch=false` 时工具不存在，
+因此不要写。报告不能替代最终 turn 通知；每个子会话每轮最多 4 条不同普通报告，`question` report
+不计入该预算；同轮相同
 kind+消息幂等（同文不同 kind 视为新报告），普通报告超预算返回 `DEVLEAD_REPORT_RATE_LIMITED`。
 
 工具把 core 的 `DevLeadError` 翻译成带稳定 code 的 `HarnessError`；阅读状态时请以

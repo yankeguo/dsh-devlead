@@ -83,8 +83,13 @@ report); more than four distinct non-question reports in a turn fails
 `DEVLEAD_INVALID_INPUT`. A separate
 `devlead:report-policy` prompt section tells the child when to use it and that the final turn still
 uses the normal turn-end notification; the lead policy explains how to act on incoming reports and
-when to invite them in a brief: optionally for a long, multi-stage, or blockage-prone watched
-Session, never when `watch` is false, and never as a replacement for the final turn notice.
+when to invite them in a brief: optionally for a long-running watched Session whose mid-turn
+milestones matter, never for short linear work, never when `watch` is false, and never as a
+replacement for the final turn notice. The tool description and the child policy narrow the call
+scope: the settled turn already notifies the lead, so a report is only a long-running task's
+mid-turn milestone the lead must know before the turn ends (a real blocker, a decision fork,
+scheduling-critical progress, or a question) — never routine progress or a final summary, and a
+short or linear task should not call it.
 The outbox is replayed after a restart/lead activation and cleared only after the lead log flush;
 rows are pruned after seven days, and `/devlead reset` drops that lead's pending rows.
 
@@ -132,8 +137,11 @@ durable outbox，lead 日志 flush 成功后才清理；Host 无 storage 时 `du
 参数；同轮相同 kind+消息幂等（同文不同 kind 视为新报告），每轮最多 4 条不同普通报告（`question`
 报告不计入该预算），超限报
 `DEVLEAD_REPORT_RATE_LIMITED`，关系不成立报 `DEVLEAD_NOT_SUPERVISED`。报告写入 lead 的 durable receipt，进入状态条、`/devlead` 状态与
-`devlead_notifications`，并复用通知的合并唤醒/冷启动队列。lead 可在长任务、多阶段或可能阻塞的
-已关注会话简报中按需介绍 `devlead_report`；`watch=false` 时不要写，报告也不能替代最终 turn 通知。
+`devlead_notifications`，并复用通知的合并唤醒/冷启动队列。lead 仅可在长任务且途中节点重要的
+已关注会话简报中按需介绍 `devlead_report`（短线性任务不邀请）；`watch=false` 时不要写，报告也
+不能替代最终 turn 通知。工具描述与子会话侧 policy 同时收窄调用范围：turn 结束自带通知，report
+只用于长任务途中 lead 必须在轮次结束前知道的关键节点（真实阻塞/需 lead 决策的分叉/等待会影响
+调度正确性的关键进展/提问），常规进度与最终总结不重复播报，短任务/线性任务默认不调用。
 工具插件还安装硬性 `tools/pre-execute` 问题闸门：已关注非 lead 子会话的 `ask_user_question` 在其
 问题 UI 运行前被拒绝，格式化为发给 active lead 的 durable `kind: question` report，子会话被要求
 结束 turn、等 lead 用 `devlead_prompt_session` 在新 turn 里回答；未关注会话、lead 自己的提问、

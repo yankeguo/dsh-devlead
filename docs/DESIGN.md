@@ -529,7 +529,9 @@ DevLead 无需额外工具调用即可判断是否要介入。
   `activeSessionId`，否则视为无唯一关注该会话的 active lead）。
 - 系统提示另有 `devlead:report-policy` 段，只对已关注的普通会话注入；内容明确「单向、最终
   turn 结束仍走原通知、普通 report 每轮最多 4 条；`question` 是受支持的提问通道，发完后结束
-  turn 等 lead 的新 turn；watched 子会话直接 `ask_user_question` 会被工具层拦截并转给 lead」。
+  turn 等 lead 的新 turn；watched 子会话直接 `ask_user_question` 会被工具层拦截并转给 lead」；
+  并收窄调用范围：turn 结束自带通知，常规进度/最终总结不得用 report 重复播报，report 只用于
+  长任务途中 lead 必须在轮次结束前知道的关键节点，短任务/线性任务默认不调用。
 - lead 侧 policy 增加收到 `[DEV LEAD REPORT]` 后的处理口径：当作 runtime fact；`question`
   report 表示子会话需要决策，lead 自行回答或先向人类提问，再用 `devlead_prompt_session`
   转回；普通 report 必要时用 steering，不用汇报通道回复。
@@ -746,9 +748,12 @@ Session 的工作目录切到独立分支/检出，DevLead 用它**可选地**�
   已完成的 Session、保留其 Workspace 注册，注销影响面更大所以仅限陈旧/重复/空置/自己创建；
   `stop_running` 等于主动取消运行中工作；每次自主关闭都要汇报关闭了什么、为什么、影响面
   （哪些 Session 变未分组、是否停止运行中工作）与可恢复性。
-- lead policy 明确「按需介绍」：创建/继续一个已关注 Session 时，若任务长、多阶段或可能中途
-  阻塞，简报可邀请它用 `devlead_report` 提前发关键进展/真实阻塞/需 lead 决策的信息；不强制每条
-  简报都写，`watch:false` 时工具不可见所以不要写；报告是单向的，不替代最终 turn 通知。
+- lead policy 明确「按需介绍」：创建/继续一个已关注 Session 时，仅当是长任务且途中节点对调度
+  重要，简报才邀请它用 `devlead_report` 发真实阻塞/需 lead 决策的分叉/等待会影响调度正确性的
+  关键进展；短线性任务不邀请，不强制每条简报都写，`watch:false` 时工具不可见所以不要写；报告是
+  单向的，不替代最终 turn 通知。子会话侧 policy 与工具描述同时收窄调用范围：turn 结束自带通知，
+  常规进度/最终总结不得用 report 重复播报；report 只用于长任务途中 lead 必须在轮次结束前知道的
+  关键节点，短任务/线性任务默认不调用。
 - **中途汇报工具** `devlead_report` 是唯一不要求 DevLead 模式的工具：`when` 为
   `ctx.devLead.isSupervised(agent)`（非 enabled + 唯一 active lead 的 watch），schema 只有
   `message` / `kind?` / `summary?`，没有 target。kind 含 `question`（lead 用新 turn 回答）；
