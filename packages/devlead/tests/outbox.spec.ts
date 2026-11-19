@@ -7,7 +7,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { devLeadReport } from '../src/index.ts'
-import { DEVLEAD_REPORT_OUTBOX_RETENTION_MS, DevLeadReportOutbox, OUTBOX_SPEC } from '../src/outbox.ts'
+import { DEVLEAD_REPORT_OUTBOX_RETENTION_MS, DevLeadReportOutbox, OUTBOX_SPEC, devLeadOutboxKey } from '../src/outbox.ts'
 import { FakeStorageDomain, T0, disposeContext } from './harness.ts'
 
 /** Contexts opened by one test, disposed in afterEach. */
@@ -212,6 +212,67 @@ describe('DevLeadReportOutbox', () => {
       rows.find(row => (row as { report: { id: string } }).report.id === structured.id),
     ))) as { report: { questions?: unknown } }
     expect(parsedStructured.report.questions).toEqual(structured.questions)
+  })
+
+  it('pins the domain declaration the real Host opens (per-record, backup-and-skip)', () => {
+    expect(OUTBOX_SPEC.layout).toBe('per-record')
+    expect(OUTBOX_SPEC.invalidRecords).toBe('backup-and-skip')
+    expect(OUTBOX_SPEC.tables.pending.valueSchema).toBeDefined()
+    expect(OUTBOX_SPEC.tables.ignored.valueSchema).toBeDefined()
+  })
+
+  it('reopens structured and legacy rows through the open-time schema parse', async () => {
+    // FakeStorageDomain.open parses every existing record with the declared
+    // valueSchema exactly like the real facility, so this close/reopen is the
+    // restart path itself, not just a direct schema call.
+    const storage = new FakeStorageDomain()
+    const first = await DevLeadReportOutbox.open(storageContext(storage))
+    const structured = devLeadReport({
+      senderSessionId: 'child-reopen',
+      leadSessionId: 'lead-1',
+      turn: 1,
+      kind: 'question',
+      message: 'Which target?',
+      questions: [{
+        id: 'target',
+        header: 'Deploy',
+        question: 'Which target?',
+        options: [{ label: 'Staging', description: 'safe' }],
+        multi_select: true,
+      }],
+      at: T0,
+    })
+    expect(await first!.put(structured)).toBe(true)
+    expect(await first!.put(report('legacy reopen'))).toBe(true)
+    await first!.close()
+    const second = await DevLeadReportOutbox.open(storageContext(storage))
+    expect(second).toBeDefined()
+    const entries = second!.entries()
+    expect(entries).toHaveLength(2)
+    expect(entries.find(entry => entry.report.id === structured.id)?.report.questions).toEqual(structured.questions)
+    expect(entries.find(entry => entry.report.message === 'legacy reopen')?.report).not.toHaveProperty('questions')
+    expect(storage.table('devlead_report_outbox', 'pending').backups.size).toBe(0)
+  })
+
+  it('backs up and skips an invalid row at open instead of reading it', async () => {
+    const storage = new FakeStorageDomain()
+    const first = await DevLeadReportOutbox.open(storageContext(storage))
+    const valid = report('surviving row')
+    expect(await first!.put(valid)).toBe(true)
+    await first!.close()
+    // A schema regression would leave exactly this kind of row on disk:
+    // questions attached to a non-question report. The reopen must move it
+    // aside (backup-and-skip), not read it and not reject the whole domain.
+    const invalid = {
+      report: { ...valid, questions: [{ question: 'q' }] },
+      enqueuedAt: T0,
+    }
+    storage.table('devlead_report_outbox', 'pending').records.set(devLeadOutboxKey(valid), invalid)
+    const second = await DevLeadReportOutbox.open(storageContext(storage))
+    expect(second).toBeDefined()
+    expect(second!.entries()).toEqual([])
+    const table = storage.table('devlead_report_outbox', 'pending')
+    expect(table.backups.get(devLeadOutboxKey(valid))).toEqual(invalid)
   })
 
   it('rejects at the schema boundary the rows the Host would backup-and-skip', () => {

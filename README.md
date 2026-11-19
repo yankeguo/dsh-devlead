@@ -251,13 +251,21 @@ requires Node ≥ 24.9):
 | `0.2.2-rc.5` | same, `--flow patch` | **150/150** (same rerun) |
 | `0.2.2-rc.5` | `node scripts/e2e-smoke.mjs --flow installed` (Phase 1c harness, `dsh` on PATH) | **161/161** (question conclude/durable round, includes the experimental worktree phase) |
 | `0.2.2-rc.5` | same, `--flow patch` | **161/161** (same round) |
+| `0.2.2-rc.5` | `node scripts/e2e-smoke.mjs --flow installed` (Phase 1c evidence follow-up, pinned totals) | **174/174** (171 PASS + 3 SKIP; real scripted child turns, includes the experimental worktree phase) |
+| `0.2.2-rc.5` | same, `--flow patch` | **174/174** (same round) |
 
 The 0.3.0 prerelease candidates (0.3.0-rc.1 / 0.3.0-rc.2, not yet promoted as stable) include question routing
-and queued inbox inputs. The Phase 1c harness round adds eleven phase-3 question checks (structured
-multi-question gate payload deep-compare, case-33 batch continuation, action-required wake admission,
-and the `devlead_report` question conclude/durable/memory-only/recovery paths): the installed/patch
-full flows now report **161/161** each on rc.5. A pre-release rerun of the full combination is still
-required by the publishing guide.
+and queued inbox inputs. The Phase 1c harness rounds add the question-gate and `devlead_report` question
+checks (structured multi-question payload deep-compare, full wake-payload deep-compare, action-required
+wake admission, conclude/durable/memory-only paths, and a writability-recovery report with no replay claim)
+plus two **real prompted child turns** driven by a scripted `llm/stream` script (real agent-loop
+turn/step/tool events, no provider credential): a concluding question batch still runs a committed
+next-step marker in a later real step before the single completed `turn/end`, and a gate-denied
+`ask_user_question` does not stop the model from continuing (case 33). Per-phase check totals are pinned
+(27 / 12 / 23 / 112, baseline DSH 0.2.2-rc.5; a deleted check fails the phase), PASS and SKIP are reported
+separately, and the installed/patch full flows report **174/174** each (171 PASS + 3 credential-less SKIP;
+`--no-worktree`: **151/151**). A pre-release rerun of the full combination is still required by the
+publishing guide.
 
 Three positive model-selection checks per flow are reported as SKIP on this credential-less
 Host (the real reason is printed); the negative model path and `devlead_list_models` run on every
@@ -1002,16 +1010,22 @@ providers, failures). When a credential-less Host exposes no model catalog, the 
 checks are reported as SKIP with the reason instead of being faked. The watched-child surface is
 exercised too: the child sees exactly `devlead_report`, its report lands in the lead digest as a
 durable receipt, and its `ask_user_question` call is denied and forwarded to the lead as a
-`question` report, and queued-inbox visibility/ownership/idempotent-retraction checks. Per-phase and total check counts are **150/150 per flow** (phase 1 = 27,
-phase 1b = 12, phase 2 = 23, phase 3 = 88, including the three question-gate and four inbox checks);
-`--no-worktree` skips only the experimental phase, reporting
-**127/127** (phases 1 + 1b + 3) for debugging. The compatibility runs above used each release's
-harness: npm-installed `0.2.2-rc.1` through `0.2.2-rc.5` CLIs (`DSH_BIN`, `--no-worktree`) reported
-**120/120** each — on rc.1 the Team success checks become expected-unavailable assertions
+`question` report, and queued-inbox visibility/ownership/idempotent-retraction checks. The Phase 1c
+rounds add the full question evidence: structured gate payload and full wake-payload deep-compares,
+the `devlead_report` conclude/durable/memory-only paths with a writability-recovery report (no replay
+claim), and two real prompted child turns against a scripted `llm/stream` script (real turn/step/tool
+events): the concluding question batch still runs a committed next-step marker in a later step before
+the single completed `turn/end`, and a gate deny does not stop the model continuing (case 33).
+Per-phase totals are pinned (a deleted check fails the phase) and PASS/SKIP print separately:
+**174/174 per flow** (phase 1 = 27, phase 1b = 12, phase 2 = 23, phase 3 = 112; 171 PASS + 3
+credential-less SKIP), baseline DSH 0.2.2-rc.5; `--no-worktree` skips only the experimental phase,
+reporting **151/151** (phases 1 + 1b + 3) for debugging. The compatibility runs above used each
+release's harness: npm-installed `0.2.2-rc.1` through `0.2.2-rc.5` CLIs (`DSH_BIN`, `--no-worktree`)
+reported **120/120** each — on rc.1 the Team success checks become expected-unavailable assertions
 (`DEVLEAD_TEAM_UNAVAILABLE`, no Session created), while rc.2–rc.5 run the Team success path — and
 the rc.4 / rc.5 installed and patch flows passed **143/143** with the worktree phase. The 0.2.6+
 audit round reran rc.5 on the then-current harness (`--no-worktree` 123/123, full flows 146/146);
-the queued-input round reran rc.5 on the current harness: `--no-worktree` **127/127** and the
+the queued-input round reran rc.5 on its harness: `--no-worktree` **127/127** and the
 installed/patch full flows **150/150** each. The probe is a private
 test-only package under `scripts/e2e-probe/`, not a published or workspace package. The profile
 mutations happen only in the throwaway profile under `os.tmpdir()`; no pnpm install, network, or

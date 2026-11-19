@@ -100,10 +100,19 @@
  *                 the watched child: the durable receipt sets
  *                 `turnEndRequested:true` with the executor `concludesTurn`
  *                 marker, the batch completes, a committed next-step input
- *                 survives, and the lead digest/wake carry the text question;
- *                 a write-protected outbox window produces the memory-only
- *                 receipt (`durable:false`, no turn end, restatement warning),
- *                 and a recovery report proves durable delivery returns;
+ *                 survives, and the lead digest/wake carry the text question
+ *                 (full wake payload deep-compare); a write-protected outbox
+ *                 window produces the memory-only receipt (`durable:false`,
+ *                 no turn end, restatement warning), and a fresh recovery
+ *                 report proves writability/durable delivery returned (no
+ *                 automatic-replay claim);
+ *               - two REAL prompted child turns against a scripted
+ *                 `llm/stream` script (real agent-loop events, no provider
+ *                 credential): a concluding question batch still runs a
+ *                 committed next-step marker in a later real step before the
+ *                 single completed turn/end, and a gate-denied
+ *                 `ask_user_question` does not stop the scripted model from
+ *                 continuing with later steps (case 33);
  *               - the assembled `devlead:policy` section carries judgment-based
  *                 closing, its safety boundaries, and the feasibility-triage /
  *                 open-question handoff to the dispatched Session;
@@ -137,15 +146,18 @@
  *                 Agent Teams is version-adaptive: rc.2+ (default composition)
  *                 must apply it, while an rc.1 Host must reject the explicit
  *                 request with DEVLEAD_TEAM_UNAVAILABLE and create nothing.
- *             99 checks.
+ *             112 checks.
  *
  * `--no-worktree` skips phase 2 only (debugging escape hatch when the
  * experimental composition cannot boot on this machine); phases 1, 1b, and 3
  * still run.
  *
- * Check counts: phase 1 = 27, phase 1b = 12, phase 2 = 23, phase 3 = 99, so
- * every flow reports 161/161 checks when all four phases pass (`--no-worktree`
- * skips phase 2: 138/138). Run both flows before a release:
+ * Check counts are PINNED per phase (EXPECTED_CHECKS, baseline DSH
+ * 0.2.2-rc.5): phase 1 = 27, phase 1b = 12, phase 2 = 23, phase 3 = 112, so
+ * every flow reports 174/174 checks (171 PASS + 3 credential-less SKIP) when
+ * all four phases pass (`--no-worktree` skips phase 2: 151/151). A deleted or
+ * added check fails the phase through the count pin. Run both flows before a
+ * release:
  *
  *   node scripts/e2e-smoke.mjs --flow patch
  *   node scripts/e2e-smoke.mjs --flow installed
@@ -230,6 +242,18 @@ const PROBE_REPORT_COMMAND = 'devlead-e2e-report'
 const PROBE_QUESTION_COMMAND = 'devlead-e2e-question'
 /** Drive the devlead_report question conclude/durable paths from inside the watched child. */
 const PROBE_QUESTION_REPORT_COMMAND = 'devlead-e2e-question-report'
+/** Real scripted child turn: a concluding question batch still runs committed next-step work. */
+const PROBE_QUESTION_TURN_COMMAND = 'devlead-e2e-question-turn'
+/** Real scripted child turn: a native-gate deny does not stop the model continuing (case 33). */
+const PROBE_QUESTION_CONTINUE_COMMAND = 'devlead-e2e-question-continue'
+/**
+ * Pinned per-phase check totals of the current harness (baseline: DSH
+ * 0.2.2-rc.5). `Checks.summarize` fails when a phase reports a different
+ * count, so deleting or silently skipping a check cannot pass unnoticed.
+ */
+const EXPECTED_CHECKS = { phase1: 27, phase1b: 12, phase2: 23, phase3: 112 }
+/** DSH version the pinned totals and scripted-turn contracts are verified against. */
+const BASELINE_DSH_VERSION = '0.2.2-rc.5'
 /** Probe command: queued-inbox visibility / ownership / idempotent retraction. */
 const PROBE_INBOX_COMMAND = 'devlead-e2e-inbox'
 /** Exact DevLead tool surface an enabled lead step admits. */
@@ -885,12 +909,21 @@ class Checks {
     console.log(`SKIP ${name} :: ${reason}`)
   }
 
-  /** Fail with the collected check list when anything failed. */
-  summarize() {
+  /**
+   * Fail with the collected check list when anything failed, and pin the
+   * phase total: a deleted or silently dropped check changes the count and
+   * fails the phase even when every remaining check passes. PASS and SKIP
+   * are reported separately; skips still count toward the pinned total.
+   * @param expected - pinned check total of this phase ({@link EXPECTED_CHECKS}).
+   */
+  summarize(expected) {
     const failed = this.results.filter(result => !result.ok)
     const skipped = this.results.filter(result => result.skipped === true).length
-    const suffix = skipped === 0 ? '' : ` (${String(skipped)} skipped; see SKIP lines)`
-    console.log(`\n${this.results.length - failed.length}/${this.results.length} checks passed${suffix}`)
+    const passed = this.results.length - failed.length - skipped
+    console.log(`\n${String(passed)} PASS + ${String(skipped)} SKIP = ${String(this.results.length)} checks (expected ${String(expected)})`)
+    if (this.results.length !== expected) {
+      throw new Error(`check count drift: expected ${String(expected)} checks, ran ${String(this.results.length)} (a check was deleted or added without updating EXPECTED_CHECKS)`)
+    }
     if (failed.length > 0) throw new Error(`failed checks: ${failed.map(result => result.name).join(', ')}`)
   }
 }
@@ -1029,7 +1062,7 @@ async function runChecks(client, paths) {
     notification?.error?.slice(0, 120),
   )
 
-  checks.summarize()
+  checks.summarize(EXPECTED_CHECKS.phase1)
   // The restart phase continues against the same durable Sessions; hand over
   // every identity its assertions need. The final `/devlead status` and
   // `/devlead off` checks deliberately run there: they exercise the lead after
@@ -1138,7 +1171,7 @@ async function runRehydrationChecks(client, paths, state) {
   const mode3 = (await client.projections(leadId))?.values?.devLeadMode
   checks.expect('devLeadMode projection reports disabled after /devlead off', mode3?.enabled === false)
 
-  checks.summarize()
+  checks.summarize(EXPECTED_CHECKS.phase1b)
   return checks.results.length
 }
 
@@ -1292,7 +1325,7 @@ async function runWorktreeChecks(client, paths) {
     off?.result?.text?.split('\n')[0],
   )
 
-  checks.summarize()
+  checks.summarize(EXPECTED_CHECKS.phase2)
   return checks.results.length
 }
 
@@ -1575,7 +1608,27 @@ async function runCloseChecks(client, paths, dshVersion) {
       && gateWake.wakeRequested === true
       && gateWake.reportId === forwardedQuestion?.id
       && String(gateWake.excerpt ?? '').includes('[DEV LEAD QUESTION]'),
-    JSON.stringify(gateWake),
+    JSON.stringify({ ...gateWake, text: undefined }),
+  )
+  // Deep-compare the FULL wake payload: every question line, every option
+  // label/description, and both multi-select flags, plus the answer routing.
+  const expectedWakeLines = []
+  for (const question of questionProbe.report?.expectedQuestions ?? []) {
+    expectedWakeLines.push(`- question: [${question.id}] ${question.header}: ${question.question}`)
+    for (const option of question.options ?? []) {
+      expectedWakeLines.push(`  - ${option.label}${option.description === undefined ? '' : ` — ${option.description}`}`)
+    }
+    expectedWakeLines.push(`  (multi-select: ${question.multi_select === true ? 'yes' : 'no'})`)
+  }
+  const gateWakeText = String(gateWake.text ?? '')
+  checks.expect(
+    'phase 3 gate wake payload deep-compares every question, option, description, and multi-select flag',
+    gateWake.found === true
+      && expectedWakeLines.length >= 8
+      && expectedWakeLines.every(line => gateWakeText.includes(line))
+      && gateWakeText.includes(`- question report: ${forwardedQuestion?.id}`)
+      && gateWakeText.includes(`  session: "${questionProbe.report?.childId}"`),
+    JSON.stringify({ missing: expectedWakeLines.filter(line => !gateWakeText.includes(line)), text: gateWakeText.slice(0, 1200) }),
   )
 
   // devlead_report question path (Phase 1c): from inside the watched child, a
@@ -1620,8 +1673,8 @@ async function runCloseChecks(client, paths, dshVersion) {
   )
   checks.expect(
     'phase 3 question result states the request semantics, not an immediate close',
-    String(durableQuestionValue.guidance ?? '').includes('current tool batch still completes')
-      && String(durableQuestionValue.guidance ?? '').includes('next-step work still runs')
+    String(durableQuestionValue.guidance ?? '').includes('not an immediate close')
+      && String(durableQuestionValue.guidance ?? '').includes('the turn ends after the current tool batch and any committed next-step work')
       && String(durableQuestionValue.guidance ?? '').includes('do not poll or resend'),
     JSON.stringify(durableQuestionValue.guidance),
   )
@@ -1644,7 +1697,19 @@ async function runCloseChecks(client, paths, dshVersion) {
       && reportWake.lane === 'action-required'
       && reportWake.wakeRequested === true
       && String(reportWake.excerpt ?? '').includes('[DEV LEAD QUESTION]'),
-    JSON.stringify(reportWake),
+    JSON.stringify({ ...reportWake, text: undefined }),
+  )
+  const reportWakeText = String(reportWake.text ?? '')
+  const textQuestionRow = durableQuestionReports.find(row => typeof row?.message === 'string'
+    && row.message.includes('which release train'))
+  checks.expect(
+    'phase 3 report question wake carries the full text question and answer routing',
+    reportWake.found === true
+      && textQuestionRow !== undefined
+      && String(textQuestionRow.message).split('\n').every(line => reportWakeText.includes(`  ${line}`))
+      && reportWakeText.includes(`- question report: ${textQuestionRow.id}`)
+      && reportWakeText.includes(`  session: "${watchedChildId}"`),
+    JSON.stringify({ text: reportWakeText.slice(0, 1200), row: textQuestionRow?.id }),
   )
   const memoryOnly = questionReportProbe.report?.memoryOnly ?? {}
   const memoryOnlyResults = Array.isArray(memoryOnly.batch?.results) ? memoryOnly.batch.results : []
@@ -1663,13 +1728,154 @@ async function runCloseChecks(client, paths, dshVersion) {
   const recoveryResults = Array.isArray(questionReportProbe.report?.recovery?.results)
     ? questionReportProbe.report.recovery.results
     : []
+  // This check only proves writability (and therefore durable delivery)
+  // returned after the mode restore; it is a fresh report, not an automatic
+  // replay of the memory-only one (Phase 1c implements no replay).
   checks.expect(
-    'phase 3 outbox recovers durable question delivery after the write-protected window',
+    'phase 3 outbox writability restores durable question delivery (fresh report, no replay claim)',
     recoveryResults[0]?.isError === false
       && recoveryResults[0]?.value?.durable === true
       && recoveryResults[0]?.value?.turnEndRequested === true
       && recoveryResults[0]?.concludesTurn === true,
     JSON.stringify(recoveryResults[0]),
+  )
+
+  // Real prompted child turn (scripted llm/stream, real agent-loop events):
+  // the durable question concludes its batch, but the committed next-step
+  // marker steered during the batch must still run in a later real step
+  // before the single turn/end. markerPending alone would only prove queue
+  // state; these checks read the durable log and the model requests.
+  const questionTurnProbe = await runProbeCommand(client, leadId, PROBE_QUESTION_TURN_COMMAND, DISPATCH_PROBE_TIMEOUT_MS)
+  checks.expect(
+    'phase 3 scripted question-turn probe settles success with a real child log',
+    questionTurnProbe.execution?.result?.kind === 'success'
+      && typeof questionTurnProbe.report?.childId === 'string'
+      && (questionTurnProbe.report?.eventCount ?? 0) > 0,
+    questionTurnProbe.text.slice(0, 500),
+  )
+  const turnFacts = questionTurnProbe.report ?? {}
+  checks.expect(
+    'phase 3 scripted child turn has real turns/steps and one natural completed turn/end',
+    (turnFacts.turns ?? 0) >= 1
+      && (turnFacts.steps ?? 0) >= 2
+      && turnFacts.turnEnds === 1
+      && turnFacts.turnEndReason === 'completed',
+    JSON.stringify({
+      turns: turnFacts.turns, steps: turnFacts.steps, turnEnds: turnFacts.turnEnds,
+      turnEndReason: turnFacts.turnEndReason, eventCount: turnFacts.eventCount,
+    }),
+  )
+  const scriptedQuestionResult = (turnFacts.toolResults ?? []).find(entry => entry?.name === 'devlead_report')
+  checks.expect(
+    'phase 3 scripted durable question carries turnEndRequested and the concludesTurn marker',
+    scriptedQuestionResult?.isError === false
+      && scriptedQuestionResult?.concludesTurn === true
+      && scriptedQuestionResult?.value?.durable === true
+      && scriptedQuestionResult?.value?.turnEndRequested === true
+      && scriptedQuestionResult?.value?.questionId === scriptedQuestionResult?.value?.report?.id,
+    JSON.stringify(scriptedQuestionResult),
+  )
+  checks.expect(
+    'phase 3 committed next-step marker runs in a later real step after the concluding batch, before turn/end',
+    (turnFacts.questionResultIndex ?? -1) >= 0
+      && (turnFacts.markerMessageIndex ?? -1) > turnFacts.questionResultIndex
+      && Array.isArray(turnFacts.stepStarts) && turnFacts.stepStarts.length >= 2
+      // The marker is admitted inside the second step: its user/message lands
+      // after that step/start and before the single turn/end.
+      && turnFacts.stepStarts[1] < turnFacts.markerMessageIndex
+      && turnFacts.turnEndIndex > turnFacts.markerMessageIndex
+      && turnFacts.markerPendingAfter === false,
+    JSON.stringify({
+      questionResultIndex: turnFacts.questionResultIndex,
+      markerMessageIndex: turnFacts.markerMessageIndex,
+      stepStarts: turnFacts.stepStarts,
+      turnEndIndex: turnFacts.turnEndIndex,
+      markerPendingAfter: turnFacts.markerPendingAfter,
+    }),
+  )
+  const turnRequests = Array.isArray(turnFacts.requests) ? turnFacts.requests : []
+  checks.expect(
+    'phase 3 second model request really saw the marker (two intercepted requests, batch then marker step)',
+    turnRequests.length === 2
+      // The second request's history carries the first step's tool calls, and
+      // its user inputs carry the committed marker text.
+      && (turnRequests[1]?.toolNames ?? []).includes('devlead_report')
+      && (turnRequests[1]?.toolNames ?? []).includes('glob')
+      && typeof turnFacts.markerText === 'string'
+      && (turnRequests[1]?.userTexts ?? []).some(text => text.includes(turnFacts.markerText)),
+    JSON.stringify(turnRequests),
+  )
+  const turnQuestionReports = Array.isArray(turnFacts.questionReports) ? turnFacts.questionReports : []
+  const turnWake = turnFacts.wake ?? {}
+  checks.expect(
+    'phase 3 scripted question reaches the lead digest and action-required wake',
+    turnQuestionReports.some(row => row?.kind === 'question'
+      && typeof row?.message === 'string'
+      && row.message.includes('which channel'))
+      && turnWake.found === true
+      && turnWake.boundary === 'next-step'
+      && turnWake.lane === 'action-required',
+    JSON.stringify({ reports: turnQuestionReports, wake: { ...turnWake, text: undefined } }),
+  )
+
+  // Case 33 with a REAL prompted child: the scripted model's ask_user_question
+  // is gate-denied, then the model keeps working (another tool-call step and a
+  // final text step). The deny must not force the turn to end.
+  const questionContinueProbe = await runProbeCommand(client, leadId, PROBE_QUESTION_CONTINUE_COMMAND, DISPATCH_PROBE_TIMEOUT_MS)
+  checks.expect(
+    'phase 3 scripted gate-continue probe settles success with a real child log',
+    questionContinueProbe.execution?.result?.kind === 'success'
+      && typeof questionContinueProbe.report?.childId === 'string'
+      && (questionContinueProbe.report?.eventCount ?? 0) > 0,
+    questionContinueProbe.text.slice(0, 500),
+  )
+  const continueFacts = questionContinueProbe.report ?? {}
+  const continueRequests = Array.isArray(continueFacts.requests) ? continueFacts.requests : []
+  checks.expect(
+    'phase 3 denied model really continues: three requests, later steps, one natural completed turn/end (case 33)',
+    continueRequests.length === 3
+      && (continueFacts.steps ?? 0) >= 3
+      && continueFacts.turnEnds === 1
+      && continueFacts.turnEndReason === 'completed',
+    JSON.stringify({
+      requests: continueRequests.length, steps: continueFacts.steps,
+      turnEnds: continueFacts.turnEnds, turnEndReason: continueFacts.turnEndReason,
+    }),
+  )
+  const deniedAskResult = (continueFacts.toolResults ?? []).find(entry => entry?.name === 'ask_user_question')
+  checks.expect(
+    'phase 3 scripted ask_user_question is denied without a concludesTurn marker',
+    deniedAskResult?.isError === true
+      && deniedAskResult?.concludesTurn === false
+      && JSON.stringify(deniedAskResult?.content ?? []).includes('Direct user questions are disabled'),
+    JSON.stringify(deniedAskResult),
+  )
+  const continuedGlobResult = (continueFacts.toolResults ?? []).find(entry => entry?.name === 'glob')
+  checks.expect(
+    'phase 3 later tool call runs after the deny and before the natural turn/end',
+    continuedGlobResult?.isError === false
+      && (continueFacts.askResultIndex ?? -1) >= 0
+      && (continueFacts.globCallIndex ?? -1) > continueFacts.askResultIndex
+      && (continueFacts.globResultIndex ?? -1) > continueFacts.askResultIndex
+      && continueFacts.turnEndIndex > continueFacts.globResultIndex,
+    JSON.stringify({
+      askResultIndex: continueFacts.askResultIndex,
+      globCallIndex: continueFacts.globCallIndex,
+      globResultIndex: continueFacts.globResultIndex,
+      turnEndIndex: continueFacts.turnEndIndex,
+    }),
+  )
+  const continueReports = Array.isArray(continueFacts.questionReports) ? continueFacts.questionReports : []
+  const continueWake = continueFacts.wake ?? {}
+  checks.expect(
+    'phase 3 continued child question reaches the lead digest and action-required wake',
+    continueReports.some(row => row?.kind === 'question'
+      && typeof row?.message === 'string'
+      && row.message.includes('Which e2e continue target?'))
+      && continueWake.found === true
+      && continueWake.boundary === 'next-step'
+      && continueWake.lane === 'action-required',
+    JSON.stringify({ reports: continueReports, wake: { ...continueWake, text: undefined } }),
   )
 
   // Queued inbox inputs: the probe appends a human and an own-relay input to a
@@ -2024,7 +2230,7 @@ async function runCloseChecks(client, paths, dshVersion) {
     JSON.stringify(inspectOffAgain.report?.policy),
   )
 
-  checks.summarize()
+  checks.summarize(EXPECTED_CHECKS.phase3)
   return checks.results.length
 }
 
@@ -2162,14 +2368,19 @@ async function runFlow(options) {
     }
     if (process.exitCode === 1) return
     const total = phaseOneState.count + phaseOneBCount + (phaseTwoCount ?? 0) + phaseThreeCount
-    console.log(`\nE2E SMOKE PASS (${options.flow})`)
-    console.log(`  phase 1 (default profile): ${String(phaseOneState.count)}/${String(phaseOneState.count)} checks`)
-    console.log(`  phase 1b (cold lead rehydration): ${String(phaseOneBCount)}/${String(phaseOneBCount)} checks`)
-    if (phaseTwoCount !== undefined) {
-      console.log(`  phase 2 (experimental worktree composition): ${String(phaseTwoCount)}/${String(phaseTwoCount)} checks`)
+    const expectedTotal = EXPECTED_CHECKS.phase1 + EXPECTED_CHECKS.phase1b
+      + (options.worktree ? EXPECTED_CHECKS.phase2 : 0) + EXPECTED_CHECKS.phase3
+    console.log(`\nE2E SMOKE PASS (${options.flow}, DeepSeek Harness ${dshVersion})`)
+    if (dshVersion !== BASELINE_DSH_VERSION) {
+      console.log(`  note: pinned check totals are verified against ${BASELINE_DSH_VERSION}; this run used ${dshVersion}`)
     }
-    console.log(`  phase 3 (close tools, dispatch routing, and triage policy): ${String(phaseThreeCount)}/${String(phaseThreeCount)} checks`)
-    console.log(`  total: ${String(total)}/${String(total)} checks${options.worktree ? '' : '; phase 2 skipped (--no-worktree)'}; logs: ${paths.logs}`)
+    console.log(`  phase 1 (default profile): ${String(phaseOneState.count)}/${String(EXPECTED_CHECKS.phase1)} checks`)
+    console.log(`  phase 1b (cold lead rehydration): ${String(phaseOneBCount)}/${String(EXPECTED_CHECKS.phase1b)} checks`)
+    if (phaseTwoCount !== undefined) {
+      console.log(`  phase 2 (experimental worktree composition): ${String(phaseTwoCount)}/${String(EXPECTED_CHECKS.phase2)} checks`)
+    }
+    console.log(`  phase 3 (close tools, dispatch routing, and triage policy): ${String(phaseThreeCount)}/${String(EXPECTED_CHECKS.phase3)} checks`)
+    console.log(`  total: ${String(total)}/${String(expectedTotal)} checks (PASS + SKIP; see per-phase lines)${options.worktree ? '' : '; phase 2 skipped (--no-worktree)'}; logs: ${paths.logs}`)
   } catch (error) {
     console.error(`\nE2E SMOKE FAIL (${options.flow}): ${messageOf(error)}`)
     console.error(`--- scratch root kept at ${paths.base} ---`)

@@ -223,8 +223,10 @@ durable `team/mode`）。模型 API（`modelCatalog`、`Agent.model.select`、`m
 | `0.2.2-rc.5` | 同上，`--flow patch` | **150/150**（同轮重跑） |
 | `0.2.2-rc.5` | `node scripts/e2e-smoke.mjs --flow installed`（Phase 1c harness，PATH 上的 `dsh`） | **161/161**（question conclude/durable 轮，含实验 worktree 阶段） |
 | `0.2.2-rc.5` | 同上，`--flow patch` | **161/161**（同轮） |
+| `0.2.2-rc.5` | `node scripts/e2e-smoke.mjs --flow installed`（Phase 1c 证据 follow-up，pin 总数） | **174/174**（171 PASS + 3 SKIP；真实 scripted child turn，含实验 worktree 阶段） |
+| `0.2.2-rc.5` | 同上，`--flow patch` | **174/174**（同轮） |
 
-0.3.0 的 prerelease 候选（0.3.0-rc.1 / rc.2，尚未 promote 为稳定版）含 question 路由与排队 inbox 输入。Phase 1c 的 harness 轮新增 11 条 phase-3 question checks（结构化多问题 gate payload 深比对、用例 33 batch 继续运行、action-required wake admission，以及 `devlead_report` question 的 conclude/durable/memory-only/recovery 路径）：rc.5 的 installed/patch 完整双流现各报 **161/161**。发布前仍需按发布指南重跑完整组合。
+0.3.0 的 prerelease 候选（0.3.0-rc.1 / rc.2，尚未 promote 为稳定版）含 question 路由与排队 inbox 输入。Phase 1c 的 harness 轮新增 question-gate 与 `devlead_report` question checks（结构化多问题 payload 深比对、完整 wake payload 深比对、action-required wake admission、conclude/durable/memory-only 路径，以及只证明恢复可写性、不宣称自动 replay 的 recovery report），并新增两条**真实 prompted child turn**：用 scripted `llm/stream` 脚本驱动真实 agent-loop turn/step/tool 事件（无需 provider 凭据）——conclude 的 question batch 之后，已提交的 next-step marker 仍会在后续真实 step 中执行、先于唯一 completed `turn/end`；被 gate deny 的 `ask_user_question` 不会阻止模型继续运行（用例 33）。每阶段 check 总数已 pin（27 / 12 / 23 / 112，基线 DSH 0.2.2-rc.5；删 check 会使该阶段失败），PASS 与 SKIP 分开输出；rc.5 的 installed/patch 完整双流各报 **174/174**（171 PASS + 3 条无凭据 SKIP；`--no-worktree`：**151/151**）。发布前仍需按发布指南重跑完整组合。
 
 每条 flow 有 3 条正向模型选择检查因本机无 provider 凭据记为 SKIP（打印真实原因）；负向
 model 路径与 `devlead_list_models` 在每个版本都真实运行。单元测试使用 rc.1 devDependencies，
@@ -833,13 +835,19 @@ dispatch 设置也走真实 Host：从 `modelCatalog()` 选模型（目录为空
 `devlead_report`，报告以 durable receipt 进入 lead digest，其 `ask_user_question` 被拒绝并作为
 `question` report 转给 lead；无 provider 凭据时正向模型检查记为 **SKIP**
 并报告原因（不伪造）；`devlead_list_models` 返回精简 Host 目录（default/providers/failures）。
-两条加载流各 **150/150**（阶段 1 27 + 阶段 1b 12 + 阶段 2 23 + 阶段 3 88，含 3 条 question-gate
-与 4 条排队 inbox checks）；调试时可加 `--no-worktree` 跳过阶段 2（**127/127**，阶段 1 + 1b + 3）。上面的兼容运行
+Phase 1c 轮补齐完整 question 证据：结构化 gate payload 与完整 wake payload 深比对、
+`devlead_report` conclude/durable/memory-only 路径与只证明恢复可写性的 recovery report（不宣称
+replay），以及两条 scripted `llm/stream` 驱动的**真实 prompted child turn**（真实 turn/step/tool
+事件）：conclude 的 question batch 之后已提交 next-step marker 仍在后续 step 执行、先于唯一
+completed `turn/end`；gate deny 不阻止模型继续（用例 33）。每阶段总数已 pin（删 check 会失败），
+PASS/SKIP 分开输出：两条加载流各 **174/174**（阶段 1 27 + 阶段 1b 12 + 阶段 2 23 + 阶段 3 112；
+171 PASS + 3 条无凭据 SKIP），基线 DSH 0.2.2-rc.5；调试时可加 `--no-worktree` 跳过阶段 2
+（**151/151**，阶段 1 + 1b + 3）。上面的兼容运行
 使用各自发布时点的 harness：用 npm 安装的 `0.2.2-rc.1` – `0.2.2-rc.5` CLI（`DSH_BIN`）各报告
 **120/120**——rc.1 上 Team 成功检查改为「预期不可用」（`DEVLEAD_TEAM_UNAVAILABLE`、不创建
 Session），rc.2–rc.5 走 Team 成功路径；rc.4 / rc.5 的 installed 与 patch 完整 flow 各通过
 **143/143**。0.2.6+ 审计轮曾按当时 harness 重跑 rc.5（`--no-worktree` 123/123、完整双流 146/146）；
-排队输入轮已按当前 harness 重跑 rc.5：`--no-worktree` **127/127**，installed/patch 完整双流各
+排队输入轮按其 harness 重跑 rc.5：`--no-worktree` **127/127**，installed/patch 完整双流各
 **150/150**。probe 是
 `scripts/e2e-probe/` 下的私有测试包，不发布、不属于 workspace 包；profile 变更只发生在
 `os.tmpdir()` 下的一次性 profile，不涉及 pnpm install / 网络 / lockfile。

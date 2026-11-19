@@ -198,10 +198,10 @@ const REPORT_DESCRIPTION =
 
 /** Result guidance of a durably forwarded question report (Phase 1c turn-end request). */
 const QUESTION_FORWARDED_GUIDANCE =
-  'The question was forwarded to the DevLead and an answer is requested. Turn end is requested, not forced: '
-  + 'the current tool batch still completes and already-queued next-step work still runs before the turn closes. '
-  + 'The answer may arrive as a new turn or steer your next step while you are still running; do not poll or '
-  + 'resend the question.'
+  'The question was forwarded to the DevLead and an answer is requested. This is not an immediate close; '
+  + 'the turn ends after the current tool batch and any committed next-step work — the request cannot veto '
+  + 'them. The answer may arrive as a new turn or steer your next step while you are still running; do not '
+  + 'poll or resend the question.'
 
 /** Restatement instruction appended when a question receipt is memory-only. */
 const QUESTION_MEMORY_ONLY_RESTATE =

@@ -1959,9 +1959,30 @@ describe('devlead_report', () => {
     })
     expect(value.report).toMatchObject({ kind: 'question', id: 'session-1:1:question:which-target' })
     // The result must state the request semantics, not an immediate close.
-    expect(String(value.guidance)).toContain('current tool batch still completes')
-    expect(String(value.guidance)).toContain('next-step work still runs')
+    expect(String(value.guidance)).toContain('not an immediate close')
+    expect(String(value.guidance)).toContain('the turn ends after the current tool batch and any committed next-step work')
+    expect(String(value.guidance)).toContain('cannot veto')
     expect(String(value.guidance)).toContain('do not poll or resend')
+    expect(value).not.toHaveProperty('warning')
+    expectValidOutput(harness, 'devlead_report', value)
+  })
+
+  it('requests the turn end for a durable question whose receipt is still queued (cold lead)', async () => {
+    const { harness, exec, concluded } = questionHarness(true)
+    // durable:true + queued:true models a cold lead: the outbox row is safe,
+    // the lead receipt has not flushed yet. Durability, not delivery, gates
+    // the turn-end request.
+    harness.devLead.reportQueued = true
+    const value = await harness.call('devlead_report', {
+      message: 'Which target?', kind: 'question',
+    }, exec as never) as Record<string, unknown>
+    expect(concluded()).toBe(1)
+    expect(value).toMatchObject({
+      durable: true,
+      queued: true,
+      turnEndRequested: true,
+      questionId: 'session-1:1:question:which-target',
+    })
     expect(value).not.toHaveProperty('warning')
     expectValidOutput(harness, 'devlead_report', value)
   })

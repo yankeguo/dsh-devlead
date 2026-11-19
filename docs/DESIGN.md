@@ -1941,7 +1941,7 @@ Phase 1 前的 hub 只有一个 `pending` / `pendingReports` 队列和一个全�
 | Phase 0 | 本文档（Proposed） | 否 | 文档 review；不改代码 |
 | Phase 1a（已完成） | 抽出纯策略表模块 + 单测；不改变现有行为 | 否 | `pnpm verify` |
 | Phase 1b（已完成） | question `action-required`：完整 payload、结构化 questions、跳过 400ms/queued turn notice、窄化双 wake 规则；16/pair 显式 cap、结构化内容幂等、idle/aborted parked-wake 防死锁/防重 | 否 | `pnpm verify` + fake harness 用例 7/10/11/12/33/34 与 durable inbox 生命周期回归 |
-| Phase 1c（已完成） | `devlead_report({kind:'question'})` `turnEndRequested` + durable 检查 + 结果/policy；F7 gate memory-only 重述提示；N1 cap 竞态孤儿 outbox 行修复；N2 outbox schema 回归 | 否 | 用例 8/9；真实 DSH question E2E（结构化 digest 深比对、action-required wake、用例 33、conclude/durable/recovery） |
+| Phase 1c（已完成） | `devlead_report({kind:'question'})` `turnEndRequested` + durable 检查 + 结果/policy；F7 gate memory-only 重述提示；N1 cap 竞态孤儿 outbox 行修复（含 delete 失败分支）；N2 outbox schema 回归（含 open-time backup-and-skip） | 否 | 用例 8/9（含 durable+queued）；真实 DSH question E2E（结构化 digest/wake payload 深比对、action-required wake、conclude/durable/recovery、scripted `llm/stream` 真实 child turn：next-step marker 后续 step 执行 + 用例 33 模型继续） |
 | Phase 1d | `devlead_prompt_session` intent/`question_id`/`idempotency_key` + answer/correction steering + answer record + `answerStatus` admitted/claimed/presented（内存观测）+ `delivery` 结果 + retract/clear-own/source | 否 | 用例 13–25；`pnpm verify` |
 | Phase 1e | T2/P1–P4 路径、questionStatus/answerStatus、notifications/get_session 输出、policy/UI 文案、指标 | 否 | 全量单测/集成/E2E；`pnpm e2e`；UI 验收 |
 | Phase 2 | `idempotency_key` durable、claimed/presented/discarded 的 durable replay/backfill、replay open question、multi-lead 硬门禁、answer TTL、background 背压、`possibleQuestion`、blocking bridge 指标评估（不写原型） | 否 | 全量 + 兼容性 + 指标复盘 |
@@ -2400,9 +2400,11 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   `team/mode` 与 false 关闭。版本与探测不一致会直接失败（rc.1 出现服务或 rc.2+ 缺少服务都能
   暴露）。
   patch 与 installed 两条加载流都跑完整多阶段；`--no-worktree` 跳过阶段 2（阶段 1、1b、3 仍
-  运行，调试用）。两条加载流完整组合的计数为 **150/150**（阶段 1 27 + 阶段 1b 12 + 阶段 2 23
-  + 阶段 3 88，阶段 3 含 agent preset roster、watched-Session 问题路由与排队 inbox 检查）；跳过阶段 2 时
-  **127/127**（阶段 1 + 1b + 3）。
+  运行，调试用）。每阶段 check 总数已 pin（`EXPECTED_CHECKS`，删/增 check 未更新 pin 会失败），
+  PASS 与 SKIP 分开输出；基线 DSH 0.2.2-rc.5 的两条加载流完整组合计数为 **174/174**
+  （阶段 1 27 + 阶段 1b 12 + 阶段 2 23 + 阶段 3 112，阶段 3 含 agent preset roster、
+  watched-Session 问题路由、排队 inbox、question conclude/durable/memory-only 与两条 scripted
+  真实 child turn 检查；171 PASS + 3 条无凭据 SKIP）；跳过阶段 2 时 **151/151**（阶段 1 + 1b + 3）。
 - 本轮最终验证数字（工作树，排队 inbox 输入能力轮）：`pnpm verify` =
   typecheck 通过 + **26 文件 / 879 tests** + 7 个构建产物；`node scripts/check-packages.mjs` →
   `OK (6 packages)`；E2E 在安装版 rc.5 实跑 installed 与 patch **完整双流各 150/150**

@@ -1680,8 +1680,12 @@ export function queuedMessage(id: string, source: unknown, text = 'queued instru
 export class FakeStorageTable {
   /** Persisted records by key. */
   readonly records = new Map<string, unknown>()
+  /** Records moved aside by open-time `backup-and-skip`, by key. */
+  readonly backups = new Map<string, unknown>()
   /** When set, every put rejects with this failure. */
   putError: Error | undefined
+  /** When set, every single-key delete rejects with this failure. */
+  deleteError: Error | undefined
   /** Number of durable puts attempted. */
   putCalls = 0
   /** Number of table snapshots requested (outbox prune/read sweeps). */
@@ -1707,6 +1711,7 @@ export class FakeStorageTable {
   }
 
   async delete(key: string): Promise<boolean> {
+    if (this.deleteError !== undefined) throw this.deleteError
     return this.records.delete(key)
   }
 
@@ -1759,7 +1764,11 @@ export class FakeStorageDomain {
 
   async open(spec: unknown): Promise<FakeStorageDomainHandle> {
     const name = (spec as { name?: unknown }).name
-    const tableNames = Object.keys((spec as { tables?: Record<string, unknown> }).tables ?? {})
+    const tableSpecs = (spec as {
+      tables?: Record<string, { valueSchema?: { parse(value: unknown): unknown } } | undefined>
+    }).tables ?? {}
+    const tableNames = Object.keys(tableSpecs)
+    const invalidRecords = (spec as { invalidRecords?: unknown }).invalidRecords
     if (typeof name !== 'string' || name.length === 0) throw new Error('fake storage domain requires a name')
     let domain = this.domains.get(name)
     if (domain !== undefined && domain.opened) {
@@ -1770,6 +1779,30 @@ export class FakeStorageDomain {
       this.domains.set(name, domain)
     } else {
       domain.opened = true
+    }
+    // Open-time record validation, mirroring the real storage-domain facility:
+    // every existing record is parsed with the declared valueSchema; a
+    // rejection is backed up and skipped under `invalidRecords:
+    // 'backup-and-skip'`, and otherwise rejects the whole open. Writes are not
+    // schema-checked, exactly like the real facility (the schema judges reads).
+    for (const [tableName, tableSpec] of Object.entries(tableSpecs)) {
+      const schema = tableSpec?.valueSchema
+      if (schema === undefined) continue
+      const table = domain.table(tableName)
+      for (const [key, value] of [...table.records.entries()]) {
+        let valid = true
+        try {
+          schema.parse(value)
+        } catch {
+          valid = false
+        }
+        if (valid) continue
+        if (invalidRecords !== 'backup-and-skip') {
+          throw new Error(`storage domain "${name}" table "${tableName}" record "${key}" is invalid`)
+        }
+        table.backups.set(key, value)
+        table.records.delete(key)
+      }
     }
     const gate = this.openGate
     if (gate !== undefined) await gate

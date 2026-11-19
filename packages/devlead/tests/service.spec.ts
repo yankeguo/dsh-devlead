@@ -1412,6 +1412,38 @@ describe('mid-turn reports', () => {
     expect(storage.table('devlead_report_outbox', 'pending').records.size).toBe(0)
   })
 
+  it('keeps the explicit capacity error and the row when the race cleanup delete fails', async () => {
+    const storage = new FakeStorageDomain()
+    const { harness, child } = await bootReporting({}, { storageDomain: storage })
+    harness.lead.setRunning(true)
+    harness.lead.steer(createDevLeadNoticeMessage('parked action wake', {
+      lane: 'action-required', wakeRequested: true, summary: 'Parked question',
+    }))
+    for (let index = 0; index < 15; index += 1) {
+      await harness.service.reportProgress(child.agent, {
+        kind: 'question', message: `Question ${String(index)}?`,
+      })
+    }
+    const warn = vi.spyOn(harness.ctx.logger, 'warn')
+    const table = storage.table('devlead_report_outbox', 'pending')
+    table.deleteError = new Error('outbox delete unavailable')
+    const [first, second] = await Promise.allSettled([
+      harness.service.reportProgress(child.agent, { kind: 'question', message: 'Race winner?' }),
+      harness.service.reportProgress(child.agent, { kind: 'question', message: 'Race loser?' }),
+    ])
+    expect([first.status, second.status].sort()).toEqual(['fulfilled', 'rejected'])
+    const loser = first.status === 'rejected' ? first : second
+    if (loser.status !== 'rejected') throw new Error('expected the race loser to reject')
+    // The cleanup delete failed, but the child still sees the original
+    // capacity error (never a swallowed durable receipt), the loser's row is
+    // retained for a later replay, and the failed cleanup is warned about.
+    expect((loser.reason as { code?: string }).code).toBe('DEVLEAD_DELIVERY_RATE_LIMITED')
+    const rows = [...table.records.values()] as Array<{ report: { message: string } }>
+    expect(rows.some(row => row.report.message === 'Race loser?')).toBe(true)
+    expect(warn.mock.calls.some(([message]) =>
+      String(message).includes('could not remove the capacity-rejected report'))).toBe(true)
+  })
+
   it('rejects empty, oversized, and malformed reports before writing', async () => {
     const { harness, child } = await bootReporting()
     await expectCodeAsync(

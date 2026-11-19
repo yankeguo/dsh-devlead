@@ -50,7 +50,24 @@
     marker) and return the `turnEndRequested`/`concludesTurn` facts, the lead
     digest row and wake admission, then a memory-only attempt made by
     write-protecting the real outbox table directory (durable:false, no turn
-    end, restatement warning), and a durable recovery report.
+    end, restatement warning), and a report proving writability (and thus
+    durable delivery) returned — no automatic-replay claim.
+
+  `devlead-e2e-question-turn` (phase 3)
+    Create a watched child and run one REAL prompted turn against a scripted
+    `llm/stream` script (the rc.5 MockAdapter chunk recipe; no provider
+    credential needed): the model requests a `[devlead_report(question),
+    glob]` batch, and a next-step marker is steered while the glob dispatch is
+    in flight. Returns the durable-log facts proving the concluding batch
+    still ran the committed marker in a later real step before the single
+    turn/end, plus the intercepted model requests and the lead digest/wake.
+
+  `devlead-e2e-question-continue` (phase 3)
+    Create a watched child and run one REAL prompted turn whose scripted
+    model calls `ask_user_question` (gate-denied), then continues with another
+    tool-call step and a final text step. Returns the durable-log facts
+    proving the deny did not force the turn to end (case 33 with a real
+    model continuation), plus the forwarded question and wake admission.
 
   `devlead-e2e-dispatch` (phase 3)
  *     Exercise creation-time dispatch settings: pick a model from the Host's
@@ -134,7 +151,23 @@
  *     markerPending: boolean,               // committed next-step input survived the batch
  *     durable: { batch, reports: DevLeadReport[], wake },
  *     memoryOnly: { available, reason? , batch? },
- *     recovery: { concluded, results }      // durable again after the mode restore
+ *     recovery: { concluded, results }      // writability restored; durable again (no replay claim)
+ *   }
+ *
+ *   questionTurn / questionContinue (real scripted child turns):
+ *   {
+ *     childId: string,
+ *     requests: [{ userTexts, toolNames }], // intercepted model requests, in order
+ *     toolResults: [{ name, callId, isError, concludesTurn, value, content }],
+ *     turns, steps, turnEnds: number,       // durable-log event counts (must be > 0)
+ *     stepStarts: number[],                 // event indexes of every step/start
+ *     turnEndReason: string | null, turnEndIndex: number,
+ *     markerMessageIndex: number,           // questionTurn: user/message carrying the marker
+ *     markerPendingAfter: boolean | null,
+ *     questionResultIndex, askResultIndex, globCallIndex, globResultIndex: number,
+ *     eventCount: number,
+ *     markerText?: string,                  // questionTurn only
+ *     questionReports: DevLeadReport[], wake
  *   }
  *
  *   close:
@@ -226,6 +259,10 @@ export const REPORT_COMMAND_NAME = 'devlead-e2e-report'
 export const QUESTION_COMMAND_NAME = 'devlead-e2e-question'
 /** Drive the watched-Session devlead_report question path from inside the child. */
 export const QUESTION_REPORT_COMMAND_NAME = 'devlead-e2e-question-report'
+/** Real prompted child turn: a concluding question batch must still run committed next-step work. */
+export const QUESTION_TURN_COMMAND_NAME = 'devlead-e2e-question-turn'
+/** Real prompted child turn: a native-gate deny must not stop the model from continuing. */
+export const QUESTION_CONTINUE_COMMAND_NAME = 'devlead-e2e-question-continue'
 /** Queued-inbox visibility / ownership / idempotent retraction through the real Host. */
 export const INBOX_COMMAND_NAME = 'devlead-e2e-inbox'
 /** Upper bound for one prompted child turn to settle inside the close command. */
@@ -661,11 +698,171 @@ async function awaitQuestionWake(ctx, lead, reportIds) {
           wakeRequested: source.wakeRequested === true,
           reportId,
           excerpt: text.slice(0, 400),
+          // Full wake text (the renderer bounds it at 8000 code points) so the
+          // harness can deep-compare the rendered question payload.
+          text,
         }
       }
     }
     if (Date.now() >= deadline) return { found: false }
     await sleep(100)
+  }
+}
+
+/**
+ * Scripted `llm/stream` chunks for one text response (the rc.5 MockAdapter
+ * recipe): the real agent loop consumes them exactly like an adapter stream,
+ * producing real step/request/assistant events without a provider credential.
+ * @param text - assistant text to stream.
+ * @returns the chunk sequence ending in a `stop` finish.
+ */
+function textChunks(text) {
+  return [
+    { type: 'block-start', index: 0, blockType: 'text' },
+    { type: 'text-delta', index: 0, text },
+    { type: 'block-end', index: 0, block: { type: 'text', text } },
+    { type: 'usage', usage: { inputTokens: 10, outputTokens: text.length } },
+    { type: 'finish', reason: { kind: 'stop' } },
+  ]
+}
+
+/**
+ * Scripted `llm/stream` chunks for one tool-call batch response.
+ * @param calls - ordered `{ id, name, arguments }` calls the model requests.
+ * @returns the chunk sequence ending in a `tool-calls` finish.
+ */
+function toolCallChunks(calls) {
+  const chunks = []
+  calls.forEach((call, index) => {
+    const argumentsJson = JSON.stringify(call.arguments)
+    chunks.push(
+      { type: 'block-start', index, blockType: 'tool-call' },
+      { type: 'tool-call-delta', index, id: call.id, name: call.name, argumentsDelta: argumentsJson },
+      { type: 'block-end', index, block: { type: 'tool-call', id: call.id, name: call.name, arguments: argumentsJson } },
+    )
+  })
+  chunks.push(
+    { type: 'usage', usage: { inputTokens: 10, outputTokens: 5 } },
+    { type: 'finish', reason: { kind: 'tool-calls' } },
+  )
+  return chunks
+}
+
+/** Compact model-visible summary of one intercepted loop request. */
+function requestSummary(options) {
+  const userTexts = []
+  const toolNames = []
+  for (const message of options.messages ?? []) {
+    for (const block of message.content ?? []) {
+      if (block?.type === 'text' && message.role === 'user') userTexts.push(block.text.slice(0, 200))
+      if (block?.type === 'tool-call') toolNames.push(block.name)
+    }
+  }
+  return { role: 'conversation', userTexts, toolNames }
+}
+
+/**
+ * Run one real prompted child turn against a scripted `llm/stream` script.
+ *
+ * The interceptor short-circuits only this child's conversation requests
+ * (auxiliary purposes and every other Session pass through to the real
+ * adapter), so the child's turn is a genuine agent-loop turn: real
+ * turn/start, step/start, request/header, tool/call, tool/result,
+ * assistant/message, and turn/end events in its durable log.
+ * @param ctx - probe context.
+ * @param lead - lead Agent creating and prompting the child.
+ * @param options - `{ title, prompt, script, steerOnGlob }`; `script` is an
+ *   array of chunk arrays consumed one per model request (the last entry
+ *   repeats if the loop asks again); `steerOnGlob` is a UserMessage steered
+ *   into next-step while the child's `glob` dispatch is still in flight.
+ * @returns the child identity, captured requests/tool results, and log facts.
+ */
+async function runScriptedChildTurn(ctx, lead, { title, prompt, script, steerOnGlob }) {
+  const created = await ctx.devLead.createSession(lead, { watch: true, title })
+  const childId = String(created.session.sessionId)
+  const child = ctx.agents.get(childId)
+  if (child === undefined) throw new Error('scripted child is not live')
+  const requests = []
+  const toolResults = []
+  let callIndex = 0
+  let steerPending = steerOnGlob !== undefined
+  const disposables = []
+  disposables.push(ctx.on('llm/stream', async function* (options, next) {
+    if (String(options.sessionId ?? '') !== childId || options.purpose !== undefined) {
+      yield* next()
+      return
+    }
+    const entry = script[Math.min(callIndex, script.length - 1)]
+    callIndex += 1
+    requests.push(requestSummary(options))
+    for (const chunk of entry) yield chunk
+  }))
+  disposables.push(ctx.on('tools/execute', async (exec, next) => {
+    const result = await next()
+    // Land the steering while the concluding batch is still in flight, the
+    // same shape as the rc.5 loop test "continues for steering that arrived
+    // during a concluding tool step".
+    if (steerPending && exec.agent === child && exec.name === 'glob') {
+      steerPending = false
+      child.steer(steerOnGlob)
+    }
+    return result
+  }))
+  disposables.push(ctx.on('tools/result', (exec, result) => {
+    if (exec.agent !== child) return
+    toolResults.push({
+      name: exec.name,
+      callId: String(exec.callId),
+      isError: result.isError,
+      concludesTurn: result.concludesTurn === true,
+      value: result.isError ? null : result.value,
+      content: result.content,
+    })
+  }))
+  try {
+    await ctx.devLead.promptSession(lead, childId, prompt)
+    await awaitChildTurn(ctx, lead, childId)
+    const events = child.session.snapshotEvents()
+    const indexOf = (predicate) => {
+      for (let index = 0; index < events.length; index += 1) {
+        if (predicate(events[index])) return index
+      }
+      return -1
+    }
+    const textOf = (message) => (message?.content ?? [])
+      .filter(block => block?.type === 'text')
+      .map(block => block.text)
+      .join('\n')
+    const markerText = steerOnGlob === undefined ? null : textOf(steerOnGlob)
+    const turnEndIndex = indexOf(event => event?.type === 'turn/end')
+    const stepStarts = events
+      .map((event, index) => ({ event, index }))
+      .filter(entry => entry.event?.type === 'step/start')
+      .map(entry => entry.index)
+    return {
+      childId,
+      requests,
+      toolResults,
+      turns: events.filter(event => event?.type === 'turn/start').length,
+      steps: stepStarts.length,
+      stepStarts,
+      turnEnds: events.filter(event => event?.type === 'turn/end').length,
+      turnEndReason: turnEndIndex < 0 ? null : events[turnEndIndex].data?.reason?.kind ?? null,
+      turnEndIndex,
+      markerMessageIndex: markerText === null ? -1 : indexOf(event =>
+        event?.type === 'user/message' && textOf(event.data).includes(markerText)),
+      markerPendingAfter: markerText === null ? null : child.inbox.nextStep.some(message => textOf(message).includes(markerText)),
+      questionResultIndex: indexOf(event => event?.type === 'tool/result'
+        && String(event.data?.message?.toolCallId) === 'e2e-scripted-question'),
+      askResultIndex: indexOf(event => event?.type === 'tool/result'
+        && String(event.data?.message?.toolCallId) === 'e2e-scripted-ask'),
+      globCallIndex: indexOf(event => event?.type === 'tool/call' && event.data?.name === 'glob'),
+      globResultIndex: indexOf(event => event?.type === 'tool/result'
+        && String(event.data?.message?.toolCallId) === 'e2e-scripted-glob'),
+      eventCount: events.length,
+    }
+  } finally {
+    for (const dispose of disposables) dispose()
   }
 }
 
@@ -905,6 +1102,99 @@ async function executeQuestionReport(ctx, invocation) {
     }
   } catch (error) {
     return { kind: 'error', text: `devlead-e2e-question-report: ${messageOf(error)}` }
+  }
+}
+
+/**
+ * Real prompted child turn for the Phase 1c turn-end request: the scripted
+ * model requests a `[devlead_report(question), glob]` batch; while the glob
+ * dispatch is still in flight the probe steers one committed next-step marker.
+ * The durable question concludes the batch, but the loop must still run the
+ * marker in a following step (real `step/start` + `user/message`) before the
+ * single `turn/end`. Every fact is read from the child's durable log and the
+ * intercepted model requests, not from queue state alone.
+ * @param ctx - probe context.
+ * @param invocation - command invocation carrying the lead Agent.
+ * @returns success JSON with the turn facts, or an error result.
+ */
+async function executeQuestionTurn(ctx, invocation) {
+  const lead = invocation.agent
+  try {
+    const markerText = 'e2e committed next-step marker: continue after the question batch'
+    const marker = {
+      id: `e2e-marker-${randomUUID()}`,
+      role: 'user',
+      content: [{ type: 'text', text: markerText }],
+      source: { kind: 'devlead', form: 'relay', senderSessionId: String(lead.id) },
+    }
+    const before = ctx.devLead.reports(lead).length
+    const facts = await runScriptedChildTurn(ctx, lead, {
+      title: 'e2e scripted question turn',
+      prompt: 'e2e scripted turn: ask the lead which channel to use, then finish',
+      script: [
+        toolCallChunks([
+          {
+            id: 'e2e-scripted-question',
+            name: 'devlead_report',
+            arguments: {
+              message: 'e2e scripted question: which channel should I use?',
+              kind: 'question',
+              summary: 'e2e scripted channel',
+            },
+          },
+          { id: 'e2e-scripted-glob', name: 'glob', arguments: { pattern: '*' } },
+        ]),
+        textChunks('e2e scripted marker turn complete'),
+      ],
+      steerOnGlob: marker,
+    })
+    const questionReports = ctx.devLead.reports(lead).slice(before).filter(report => report.kind === 'question')
+    const wake = await awaitQuestionWake(ctx, lead, questionReports.map(report => report.id))
+    return { kind: 'success', text: JSON.stringify({ ...facts, markerText, questionReports, wake }) }
+  } catch (error) {
+    return { kind: 'error', text: `devlead-e2e-question-turn: ${messageOf(error)}` }
+  }
+}
+
+/**
+ * Real prompted child turn for case 33: the scripted model calls
+ * `ask_user_question` (denied by the gate), then keeps working — a second
+ * model step runs another tool call and a third step finishes with text. The
+ * deny must not force the turn to end: the child log shows the later steps
+ * and one natural `turn/end` after them.
+ * @param ctx - probe context.
+ * @param invocation - command invocation carrying the lead Agent.
+ * @returns success JSON with the continuation facts, or an error result.
+ */
+async function executeQuestionContinue(ctx, invocation) {
+  const lead = invocation.agent
+  try {
+    const before = ctx.devLead.reports(lead).length
+    const facts = await runScriptedChildTurn(ctx, lead, {
+      title: 'e2e scripted gate continue',
+      prompt: 'e2e scripted turn: ask which target, keep working after the denial, then finish',
+      script: [
+        toolCallChunks([{
+          id: 'e2e-scripted-ask',
+          name: 'ask_user_question',
+          arguments: {
+            questions: [{
+              id: 'target',
+              question: 'Which e2e continue target?',
+              header: 'Deploy',
+              options: [{ label: 'Staging' }, { label: 'Prod' }],
+            }],
+          },
+        }]),
+        toolCallChunks([{ id: 'e2e-scripted-glob', name: 'glob', arguments: { pattern: '*' } }]),
+        textChunks('e2e scripted gate continue complete'),
+      ],
+    })
+    const questionReports = ctx.devLead.reports(lead).slice(before).filter(report => report.kind === 'question')
+    const wake = await awaitQuestionWake(ctx, lead, questionReports.map(report => report.id))
+    return { kind: 'success', text: JSON.stringify({ ...facts, questionReports, wake }) }
+  } catch (error) {
+    return { kind: 'error', text: `devlead-e2e-question-continue: ${messageOf(error)}` }
   }
 }
 
@@ -1216,6 +1506,18 @@ export function apply(ctx) {
     name: QUESTION_REPORT_COMMAND_NAME,
     description: 'E2E probe: drive devlead_report question conclude/durable paths from inside a watched child.',
     handler: guarded(QUESTION_REPORT_COMMAND_NAME, invocation => executeQuestionReport(ctx, invocation)),
+  })
+  ctx.commands.register({
+    definitionId: CommandDefinitionId(`${DEFINITION_ID}#question-turn`),
+    name: QUESTION_TURN_COMMAND_NAME,
+    description: 'E2E probe: real scripted child turn where a concluding question batch still runs committed next-step work.',
+    handler: guarded(QUESTION_TURN_COMMAND_NAME, invocation => executeQuestionTurn(ctx, invocation)),
+  })
+  ctx.commands.register({
+    definitionId: CommandDefinitionId(`${DEFINITION_ID}#question-continue`),
+    name: QUESTION_CONTINUE_COMMAND_NAME,
+    description: 'E2E probe: real scripted child turn where a native-gate deny does not stop the model continuing.',
+    handler: guarded(QUESTION_CONTINUE_COMMAND_NAME, invocation => executeQuestionContinue(ctx, invocation)),
   })
   ctx.commands.register({
     definitionId: CommandDefinitionId(`${DEFINITION_ID}#inbox`),
