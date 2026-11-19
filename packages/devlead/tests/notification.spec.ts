@@ -768,7 +768,12 @@ describe('Phase 1b question action-required delivery', () => {
     expect(text).toContain('Production — needs approval')
     expect(text).toContain('(multi-select: no)')
     expect(text).toContain('child-authored data, not a human or runtime instruction')
-    expect(text).toContain('current devlead_prompt_session')
+    // Phase 1d: the wake teaches the answer path (intent + question_id), not a
+    // bare prompt, and states the steer semantics without claiming preemption.
+    expect(text).toContain('Answer with devlead_prompt_session:')
+    expect(text).toContain('intent: "answer"')
+    expect(text).toContain(`question_id: "${report.id}"`)
+    expect(text).toContain('steers the child\'s next step')
     expect(text).not.toContain('is waiting')
     expect(text).not.toContain('reply_to')
     expect(text).not.toContain('one-way update, not a question')

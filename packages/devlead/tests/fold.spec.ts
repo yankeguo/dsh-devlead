@@ -10,21 +10,25 @@
 import { describe, expect, it } from 'vitest'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import {
+  DEVLEAD_ANSWER_RETENTION,
   DEVLEAD_DEFAULT_NOTIFICATION_RETENTION,
   DEVLEAD_MAX_INSTANT,
   DEVLEAD_MODE_RECORD_TYPE,
   DEVLEAD_NOTIFICATION_RECORD_TYPE,
+  DEVLEAD_OPEN_QUESTION_PIN_MAX,
   DEVLEAD_PROJECTION_KEY,
+  DEVLEAD_REPORT_ANSWER_RECORD_TYPE,
   DEVLEAD_REPORT_RECORD_TYPE,
   DEVLEAD_REPORT_RETENTION,
   DEVLEAD_RESET_RECORD_TYPE,
   DEVLEAD_WATCH_RECORD_TYPE,
 } from '@yankeguo/dsh-devlead-protocol'
 import type { DevLeadNotification, DevLeadProjection, DevLeadProjectionState } from '@yankeguo/dsh-devlead-protocol'
-import { resetRecord } from '../src/domain.ts'
+import { reportAnswerRecord, resetRecord } from '../src/domain.ts'
 import {
   applyDevLeadModeProjection,
   applyDevLeadProjection,
+  applyDevLeadWatchProjection,
   devLeadModeProjectionDefinition,
   devLeadProjectionDefinition,
   emptyDevLeadModeProjectionState,
@@ -32,9 +36,15 @@ import {
   devLeadProjectionStateSchema,
   devLeadProjectionView,
   emptyDevLeadProjectionState,
+  emptyDevLeadWatchProjectionState,
+  latestAnswerOf,
+  questionAnswerViewOf,
+  questionStatusOf,
 } from '../src/fold.ts'
 import {
   T0,
+  answer,
+  answerEvent,
   foreignPluginEvent,
   modeEvent,
   notification,
@@ -82,6 +92,7 @@ describe('empty state and projection definition', () => {
       sessions: [],
       notifications: [],
       reports: [],
+      answers: [],
       failure: null,
       inheritedEventCount: 0,
     })
@@ -91,7 +102,7 @@ describe('empty state and projection definition', () => {
   it('exposes the registered projection unit contract', () => {
     expect(devLeadProjectionDefinition.key).toBe(DEVLEAD_PROJECTION_KEY)
     expect(devLeadProjectionDefinition.key).toBe('devLead')
-    expect(devLeadProjectionDefinition.stateVersion).toBe(3)
+    expect(devLeadProjectionDefinition.stateVersion).toBe(4)
     expect(devLeadProjectionDefinition.apply).toBe(applyDevLeadProjection)
     expect(devLeadProjectionDefinition.init()).toEqual(emptyDevLeadProjectionState())
     // Every init call hands out an independent empty state: the registry seeds
@@ -797,5 +808,198 @@ describe('replay determinism', () => {
     const once = fold([modeEvent(0, true), notificationEvent(1, observed)])
     const replayed = fold([modeEvent(0, true), notificationEvent(1, observed), notificationEvent(2, observed)])
     expect(replayed).toEqual(once)
+  })
+})
+
+describe('answer records (Phase 1d)', () => {
+  /** One question report fixture with a stable identity. */
+  function questionReport(message = 'Which target?') {
+    return report({ kind: 'question', message, senderSessionId: 'session-alpha', leadSessionId: 'lead-1' })
+  }
+
+  it('derives open for a question with no answer record (legacy log compatibility)', () => {
+    const question = questionReport()
+    const state = fold([modeEvent(0, true), reportEvent(1, question)])
+    expect(state.answers).toEqual([])
+    expect(questionStatusOf(state.answers, question.id)).toBe('open')
+    expect(questionAnswerViewOf(state, question.id)).toEqual({ questionStatus: 'open' })
+  })
+
+  it('derives answered from an admitted answer and exposes the answer facts', () => {
+    const question = questionReport()
+    const admitted = answer({ reportId: question.id, messageId: 'msg-1', at: T0 + 5 })
+    const state = fold([modeEvent(0, true), reportEvent(1, question), answerEvent(2, admitted)])
+    expect(state.answers).toEqual([admitted])
+    expect(questionStatusOf(state.answers, question.id)).toBe('answered')
+    expect(questionAnswerViewOf(state, question.id)).toEqual({
+      questionStatus: 'answered',
+      answerStatus: 'admitted',
+      answerMessageId: 'msg-1',
+      answeredAt: T0 + 5,
+    })
+    // The wire view stays host-only for the answer audit (Phase 1e exposes it).
+    const view = devLeadProjectionView(state)
+    expect('answers' in view).toBe(false)
+    expect(devLeadProjectionStateSchema.safeParse(state).success).toBe(true)
+  })
+
+  it('keeps answered for claimed/presented answers and records presentedAt', () => {
+    const question = questionReport()
+    const presented = answer({
+      reportId: question.id,
+      status: 'presented',
+      at: T0 + 9,
+      answeredAt: T0 + 5,
+      presentedAt: T0 + 9,
+    })
+    const state = fold([reportEvent(0, question), answerEvent(1, presented)])
+    expect(questionStatusOf(state.answers, question.id)).toBe('answered')
+    expect(questionAnswerViewOf(state, question.id)).toMatchObject({
+      answerStatus: 'presented',
+      answeredAt: T0 + 5,
+      presentedAt: T0 + 9,
+    })
+  })
+
+  it('reopens the question on a discarded answer but preserves answeredAt', () => {
+    const question = questionReport()
+    const admitted = answer({ reportId: question.id, messageId: 'msg-1', at: T0 + 5 })
+    const discarded = answer({ reportId: question.id, messageId: 'msg-1', status: 'discarded', at: T0 + 8, answeredAt: T0 + 5 })
+    const state = fold([reportEvent(0, question), answerEvent(1, admitted), answerEvent(2, discarded)])
+    expect(questionStatusOf(state.answers, question.id)).toBe('open')
+    expect(questionAnswerViewOf(state, question.id)).toEqual({
+      questionStatus: 'open',
+      answerStatus: 'discarded',
+      answerMessageId: 'msg-1',
+      answeredAt: T0 + 5,
+    })
+    // Both facts stay as audit; the newest is authoritative.
+    expect(state.answers).toHaveLength(2)
+    expect(latestAnswerOf(state.answers, question.id)?.status).toBe('discarded')
+  })
+
+  it('reopens the question on a failed answer', () => {
+    const question = questionReport()
+    const failed = answer({ reportId: question.id, status: 'failed', at: T0 + 3 })
+    const state = fold([reportEvent(0, question), answerEvent(1, failed)])
+    expect(questionStatusOf(state.answers, question.id)).toBe('open')
+  })
+
+  it('lets a re-answer after a discard become answered again (newest record wins)', () => {
+    const question = questionReport()
+    const events = [
+      reportEvent(0, question),
+      answerEvent(1, answer({ reportId: question.id, messageId: 'msg-1', at: T0 + 1 })),
+      answerEvent(2, answer({ reportId: question.id, messageId: 'msg-1', status: 'discarded', at: T0 + 2, answeredAt: T0 + 1 })),
+      answerEvent(3, answer({ reportId: question.id, messageId: 'msg-2', at: T0 + 3, answeredAt: T0 + 1 })),
+    ]
+    const state = fold(events)
+    expect(questionStatusOf(state.answers, question.id)).toBe('answered')
+    expect(questionAnswerViewOf(state, question.id)).toMatchObject({ answerMessageId: 'msg-2', answeredAt: T0 + 1 })
+  })
+
+  it('deduplicates an exactly replayed answer fact', () => {
+    const question = questionReport()
+    const admitted = answer({ reportId: question.id })
+    const state = fold([reportEvent(0, question), answerEvent(1, admitted), answerEvent(2, admitted)])
+    expect(state.answers).toEqual([admitted])
+  })
+
+  it('clears answers on reset', () => {
+    const question = questionReport()
+    const state = fold([
+      modeEvent(0, true),
+      reportEvent(1, question),
+      answerEvent(2, answer({ reportId: question.id })),
+      pluginRecordEvent(3, DEVLEAD_RESET_RECORD_TYPE, resetRecord(T0)),
+    ])
+    expect(state.answers).toEqual([])
+    expect(state.reports).toEqual([])
+  })
+
+  it('freezes on a malformed answer record and keeps the digest/watch units aligned', () => {
+    const question = questionReport()
+    const malformed = pluginRecordEvent(2, DEVLEAD_REPORT_ANSWER_RECORD_TYPE, {
+      kind: 'devlead/report-answer',
+      version: 1,
+      answer: { ...answer({ reportId: question.id }), textHash: 'not-a-hash' },
+    })
+    const events = [modeEvent(0, true), reportEvent(1, question), malformed]
+    const state = fold(events)
+    expect(state.failure).toContain(DEVLEAD_REPORT_ANSWER_RECORD_TYPE)
+    expect(state.answers).toEqual([])
+    // The summary units decode the same owned record so they freeze on the same log.
+    const watchState = events.reduce(applyDevLeadWatchProjection, emptyDevLeadWatchProjectionState())
+    expect(watchState.failure).toContain(DEVLEAD_REPORT_ANSWER_RECORD_TYPE)
+    const modeState = events.reduce(applyDevLeadModeProjection, emptyDevLeadModeProjectionState())
+    expect(modeState.failure).toContain(DEVLEAD_REPORT_ANSWER_RECORD_TYPE)
+  })
+
+  it('rejects presentedAt on a non-presented answer through the strict decoder', () => {
+    const question = questionReport()
+    const bad = answer({ reportId: question.id, status: 'admitted', presentedAt: T0 + 1 })
+    const state = fold([reportEvent(0, question), answerEvent(1, bad)])
+    expect(state.failure).toContain('presentedAt is only valid')
+  })
+
+  it('pins an open question against report retention and evicts it once answered', () => {
+    const question = questionReport('pinned open question')
+    const events: SessionEvent[] = [modeEvent(0, true), reportEvent(1, question)]
+    // Fill the digest past retention with ordinary reports; the open question stays.
+    for (let index = 0; index < DEVLEAD_REPORT_RETENTION + 5; index += 1) {
+      events.push(reportEvent(events.length, report({ message: `update ${index}` })))
+    }
+    let state = fold(events)
+    // The digest stays at retention, but the pinned open question survives even
+    // though it is the oldest row (an ordinary row was evicted in its place).
+    expect(state.reports).toHaveLength(DEVLEAD_REPORT_RETENTION)
+    expect(state.reports.some(existing => existing.id === question.id)).toBe(true)
+    expect(state.reports.some(existing => existing.message === 'update 0')).toBe(false)
+    // Answering the question unpins it: a later append evicts it as the oldest
+    // evictable row, so a answered question no longer occupies the digest.
+    state = apply(state, answerEvent(events.length, answer({ reportId: question.id })))
+    state = apply(state, reportEvent(events.length + 1, report({ message: 'one more' })))
+    expect(state.reports).toHaveLength(DEVLEAD_REPORT_RETENTION)
+    expect(state.reports.some(existing => existing.id === question.id)).toBe(false)
+  })
+
+  it('bounds the open-question pin so a never-answered lead cannot grow without limit', () => {
+    const events: SessionEvent[] = [modeEvent(0, true)]
+    const total = DEVLEAD_REPORT_RETENTION + DEVLEAD_OPEN_QUESTION_PIN_MAX + 5
+    for (let index = 0; index < total; index += 1) {
+      events.push(reportEvent(index + 1, report({ kind: 'question', message: `open question ${index}` })))
+    }
+    const state = fold(events)
+    expect(state.reports.length).toBeLessThanOrEqual(DEVLEAD_REPORT_RETENTION + DEVLEAD_OPEN_QUESTION_PIN_MAX)
+    // The oldest pinned questions were evicted honestly; the newest remain.
+    expect(state.reports.some(existing => existing.message === `open question ${total - 1}`)).toBe(true)
+    expect(state.reports.some(existing => existing.message === 'open question 0')).toBe(false)
+  })
+
+  it('bounds the answer audit and pins the newest fact of a retained question', () => {
+    const question = questionReport()
+    const events: SessionEvent[] = [modeEvent(0, true), reportEvent(1, question)]
+    // Many answered questions' facts, then the retained question's newest fact.
+    for (let index = 0; index < DEVLEAD_ANSWER_RETENTION + 10; index += 1) {
+      events.push(answerEvent(events.length, answer({
+        reportId: `session-alpha:1:report:question:q${index}`,
+        messageId: `msg-${index}`,
+        at: T0 + index,
+      })))
+    }
+    const newest = answer({ reportId: question.id, messageId: 'msg-newest', at: T0 + 999 })
+    events.push(answerEvent(events.length, newest))
+    const state = fold(events)
+    expect(state.answers.length).toBeLessThanOrEqual(DEVLEAD_ANSWER_RETENTION)
+    expect(latestAnswerOf(state.answers, question.id)?.messageId).toBe('msg-newest')
+    expect(devLeadProjectionStateSchema.safeParse(state).success).toBe(true)
+  })
+
+  it('round-trips a canonical answer record through the strict decoder', () => {
+    const value = answer({ idempotencyKey: 'key-1' })
+    const state = fold([answerEvent(0, value)])
+    expect(state.answers).toEqual([value])
+    expect(state.failure).toBeNull()
+    expect(reportAnswerRecord(value).kind).toBe('devlead/report-answer')
   })
 })

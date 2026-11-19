@@ -15,16 +15,20 @@ import type { ProjectionDefinition } from '@deepseek-ai/dsh-session-projection'
 import { z as zod } from 'zod'
 import type { ZodType } from 'zod'
 import {
+  DEVLEAD_ANSWER_RETENTION,
   DEVLEAD_DEFAULT_NOTIFICATION_RETENTION,
   DEVLEAD_ERROR_EXCERPT_MAX,
+  DEVLEAD_IDEMPOTENCY_KEY_MAX,
   DEVLEAD_MAX_INSTANT,
   DEVLEAD_MODE_PROJECTION_KEY,
   DEVLEAD_MODE_RECORD_TYPE,
   DEVLEAD_NOTIFICATION_RECORD_TYPE,
+  DEVLEAD_OPEN_QUESTION_PIN_MAX,
   DEVLEAD_PROJECTION_KEY,
   DEVLEAD_QUESTIONS_MAX,
   DEVLEAD_QUESTION_FIELD_MAX,
   DEVLEAD_QUESTION_OPTIONS_MAX,
+  DEVLEAD_REPORT_ANSWER_RECORD_TYPE,
   DEVLEAD_REPORT_KINDS,
   DEVLEAD_REPORT_MESSAGE_MAX,
   DEVLEAD_REPORT_RECORD_TYPE,
@@ -43,8 +47,11 @@ import type {
   DevLeadProjection,
   DevLeadProjectionState,
   DevLeadQuestion,
+  DevLeadQuestionAnswerView,
   DevLeadQuestionOption,
+  DevLeadQuestionStatus,
   DevLeadReport,
+  DevLeadReportAnswer,
   DevLeadReportKind,
   DevLeadTransition,
   DevLeadWatchProjection,
@@ -52,6 +59,7 @@ import type {
 import {
   decodeModeRecord,
   decodeNotificationRecord,
+  decodeReportAnswerRecord,
   decodeReportRecord,
   decodeResetRecord,
   decodeWatchRecord,
@@ -69,6 +77,7 @@ export function emptyDevLeadProjectionState(inheritedEventCount = 0): DevLeadPro
     sessions: [],
     notifications: [],
     reports: [],
+    answers: [],
     failure: null,
     inheritedEventCount,
   }
@@ -161,6 +170,165 @@ const reportSchema: ZodType<DevLeadReport> = zod.object({
   { message: 'report id must match senderSessionId, turn, kind, and message' },
 ) as ZodType<DevLeadReport>
 
+/** Wire schema validating one retained answer lifecycle record. */
+const answerSchema: ZodType<DevLeadReportAnswer> = zod.object({
+  reportId: zod.string().min(1),
+  leadSessionId: zod.string().min(1),
+  sessionId: zod.string().min(1),
+  messageId: zod.string().min(1),
+  at: zod.number().int().nonnegative().max(DEVLEAD_MAX_INSTANT),
+  status: zod.enum(['admitted', 'claimed', 'presented', 'discarded', 'failed']),
+  textHash: zod.string().regex(/^[0-9a-f]{64}$/u),
+  answeredAt: zod.number().int().nonnegative().max(DEVLEAD_MAX_INSTANT).optional(),
+  presentedAt: zod.number().int().nonnegative().max(DEVLEAD_MAX_INSTANT).optional(),
+  idempotencyKey: zod.string().min(1).refine(
+    value => Array.from(value).length <= DEVLEAD_IDEMPOTENCY_KEY_MAX,
+    { message: `idempotency key must be at most ${DEVLEAD_IDEMPOTENCY_KEY_MAX} code points` },
+  ).optional(),
+  textExcerpt: excerptSchema.optional(),
+  primitive: zod.enum(['followup', 'steer']).optional(),
+  boundary: zod.enum(['next-turn', 'next-step']).optional(),
+  wakeRequested: zod.boolean().optional(),
+}).strict().refine(
+  answer => answer.presentedAt === undefined || answer.status === 'presented',
+  { message: 'answer presentedAt is only valid when status is "presented"' },
+) as ZodType<DevLeadReportAnswer>
+
+/**
+ * Newest answer lifecycle record of one question report, in log order. The
+ * newest record is authoritative for `questionStatus`; older records are audit.
+ * @param answers - retained answer records, oldest first.
+ * @param reportId - question report identity.
+ * @returns the newest record, or undefined when the question has no answer.
+ */
+export function latestAnswerOf(
+  answers: readonly DevLeadReportAnswer[],
+  reportId: string,
+): DevLeadReportAnswer | undefined {
+  for (let index = answers.length - 1; index >= 0; index -= 1) {
+    const answer = answers[index]
+    if (answer !== undefined && answer.reportId === reportId) return answer
+  }
+  return undefined
+}
+
+/**
+ * Derive the question lifecycle from the newest answer record. An answer in
+ * `admitted`/`claimed`/`presented` marks the question answered; a
+ * `discarded`/`failed` answer (or no answer) leaves it open. `expired` and
+ * `cancelled` have no durable writer in Phase 1d (TTL/cancellation triggers
+ * are Phase 2), so the fold never derives them.
+ * @param answers - retained answer records, oldest first.
+ * @param reportId - question report identity.
+ * @returns the derived question status.
+ */
+export function questionStatusOf(
+  answers: readonly DevLeadReportAnswer[],
+  reportId: string,
+): DevLeadQuestionStatus {
+  const latest = latestAnswerOf(answers, reportId)
+  if (latest === undefined) return 'open'
+  return latest.status === 'discarded' || latest.status === 'failed' ? 'open' : 'answered'
+}
+
+/**
+ * Project the durable question/answer state of one question report. The
+ * runtime overlays its in-memory inbox observation on top of this view.
+ * @param state - current fold state.
+ * @param reportId - question report identity.
+ * @returns the derived view, or undefined when the report is not a retained question.
+ */
+export function questionAnswerViewOf(
+  state: DevLeadProjectionState,
+  reportId: string,
+): DevLeadQuestionAnswerView | undefined {
+  const report = state.reports.find(existing => existing.id === reportId)
+  if (report === undefined || report.kind !== 'question') return undefined
+  const latest = latestAnswerOf(state.answers, reportId)
+  const questionStatus = questionStatusOf(state.answers, reportId)
+  if (latest === undefined) return { questionStatus }
+  // answeredAt survives a discard: the writer carries the first admission
+  // instant forward on every record, so a reopen does not erase it.
+  const answeredAt = latest.answeredAt ?? (latest.status === 'admitted' || latest.status === 'claimed'
+    || latest.status === 'presented' ? latest.at : undefined)
+  return {
+    questionStatus,
+    answerStatus: latest.status,
+    answerMessageId: latest.messageId,
+    ...(answeredAt === undefined ? {} : { answeredAt }),
+    ...(latest.presentedAt === undefined ? {} : { presentedAt: latest.presentedAt }),
+  }
+}
+
+/** Whether one retained report is an open question the retention must pin. */
+function isOpenQuestion(report: DevLeadReport, answers: readonly DevLeadReportAnswer[]): boolean {
+  return report.kind === 'question' && questionStatusOf(answers, report.id) === 'open'
+}
+
+/**
+ * Trim the report digest to its retention while pinning open questions. An
+ * unanswered question must stay addressable by `question_id`, so it is not
+ * evicted with the ordinary digest; the pin itself is bounded, and beyond it
+ * the oldest pinned question is evicted honestly (a later `question_id` then
+ * reports not-found instead of addressing a silently dropped question).
+ * @param reports - retained reports, oldest first.
+ * @param answers - retained answer records driving the pin decision.
+ * @returns the trimmed digest, or the same reference when nothing changed.
+ */
+function trimReports(
+  reports: readonly DevLeadReport[],
+  answers: readonly DevLeadReportAnswer[],
+): readonly DevLeadReport[] {
+  if (reports.length <= DEVLEAD_REPORT_RETENTION) return reports
+  const next = [...reports]
+  while (next.length > DEVLEAD_REPORT_RETENTION) {
+    const evictable = next.findIndex(report => !isOpenQuestion(report, answers))
+    if (evictable >= 0) {
+      next.splice(evictable, 1)
+      continue
+    }
+    // Every retained report is a pinned open question: allow the bounded pin
+    // growth, then evict the oldest pin so the projection stays bounded.
+    if (next.length <= DEVLEAD_REPORT_RETENTION + DEVLEAD_OPEN_QUESTION_PIN_MAX) break
+    next.shift()
+  }
+  return next
+}
+
+/**
+ * Append one answer lifecycle record to a bounded audit, deduplicating an
+ * exact replayed fact so a replayed log converges. The newest record of a
+ * retained question is pinned against eviction; beyond the retention the
+ * oldest non-pinned record goes first.
+ * @param answers - retained answer records, oldest first.
+ * @param answer - observed lifecycle fact.
+ * @param reports - retained reports whose newest answers must stay derivable.
+ * @returns the next retained audit.
+ */
+function retainAnswer(
+  answers: readonly DevLeadReportAnswer[],
+  answer: DevLeadReportAnswer,
+  reports: readonly DevLeadReport[],
+): readonly DevLeadReportAnswer[] {
+  const duplicate = answers.some(existing => existing.reportId === answer.reportId
+    && existing.messageId === answer.messageId
+    && existing.status === answer.status
+    && existing.at === answer.at)
+  if (duplicate) return answers
+  let next = [...answers, answer]
+  if (next.length <= DEVLEAD_ANSWER_RETENTION) return next
+  const retainedQuestions = new Set(reports.map(report => report.id))
+  const newestOf = new Map<string, DevLeadReportAnswer>()
+  for (const entry of next) newestOf.set(entry.reportId, entry)
+  while (next.length > DEVLEAD_ANSWER_RETENTION) {
+    const evictable = next.findIndex(entry => newestOf.get(entry.reportId) !== entry
+      || !retainedQuestions.has(entry.reportId))
+    if (evictable >= 0) next.splice(evictable, 1)
+    else next.shift()
+  }
+  return next
+}
+
 /** Compare every notification fact except the additive wake-suppression pair. */
 function sameNotificationPayload(left: DevLeadNotification, right: DevLeadNotification): boolean {
   return left.id === right.id
@@ -211,20 +379,20 @@ function retainNotification(
 }
 
 /**
- * Append one report to a bounded digest, dropping an already-retained identity.
+ * Append one report to a bounded digest, dropping an already-retained identity
+ * and pinning open questions against eviction.
  * @param reports - retained reports, oldest first.
  * @param report - report to retain.
+ * @param answers - retained answer records driving the open-question pin.
  * @returns the retained list, or the same reference when unchanged.
  */
 function retainReport(
   reports: readonly DevLeadReport[],
   report: DevLeadReport,
+  answers: readonly DevLeadReportAnswer[],
 ): readonly DevLeadReport[] {
   if (reports.some(existing => existing.id === report.id)) return reports
-  const next = [...reports, report]
-  return next.length <= DEVLEAD_REPORT_RETENTION
-    ? next
-    : next.slice(next.length - DEVLEAD_REPORT_RETENTION)
+  return trimReports([...reports, report], answers)
 }
 
 /**
@@ -251,10 +419,16 @@ export const devLeadProjectionStateSchema: ZodType<DevLeadProjectionState> = zod
       { message: 'notification ids must be unique' },
     ),
   reports: zod.array(reportSchema)
-    .max(DEVLEAD_REPORT_RETENTION)
+    .max(DEVLEAD_REPORT_RETENTION + DEVLEAD_OPEN_QUESTION_PIN_MAX)
     .refine(
       reports => new Set(reports.map(report => report.id)).size === reports.length,
       { message: 'report ids must be unique' },
+    ),
+  answers: zod.array(answerSchema)
+    .max(DEVLEAD_ANSWER_RETENTION)
+    .refine(
+      answers => new Set(answers.map(answer => `${answer.reportId}\u0000${answer.messageId}\u0000${answer.status}\u0000${answer.at}`)).size === answers.length,
+      { message: 'answer lifecycle facts must be unique' },
     ),
   failure: zod.string().min(1).nullable(),
   inheritedEventCount: zod.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
@@ -363,8 +537,18 @@ export function applyDevLeadProjection(
       }
       case DEVLEAD_REPORT_RECORD_TYPE: {
         const report = decodeReportRecord(record.data)
-        const reports = retainReport(state.reports, report)
+        const reports = retainReport(state.reports, report, state.answers)
         return reports === state.reports ? state : { ...state, reports }
+      }
+      case DEVLEAD_REPORT_ANSWER_RECORD_TYPE: {
+        const answer = decodeReportAnswerRecord(record.data)
+        const answers = retainAnswer(state.answers, answer, state.reports)
+        if (answers === state.answers) return state
+        // An answer can unpin a previously pinned open question (it became
+        // answered) or re-pin it (a discard reopened it), so the report digest
+        // is re-trimmed against the new answer state.
+        const reports = trimReports(state.reports, answers)
+        return { ...state, answers, ...(reports === state.reports ? {} : { reports }) }
       }
       default:
         return state
@@ -416,9 +600,10 @@ export const devLeadProjectionDefinition = {
     // conversation reads it: keep it out of every Session summary/list row.
     summary: false,
   },
-  // 3: adds the fork-inherited prefix length (version 2 added reports); older
-  // cache rows are discarded and refolded from the durable log.
-  stateVersion: 3,
+  // 4: adds the answer lifecycle audit (version 3 added the fork-inherited
+  // prefix length, version 2 added reports); older cache rows are discarded
+  // and refolded from the durable log.
+  stateVersion: 4,
 } satisfies ProjectionDefinition<'devLead', DevLeadProjectionState>
 
 /**
@@ -522,6 +707,9 @@ export function applyDevLeadWatchProjection(
         return state
       case DEVLEAD_REPORT_RECORD_TYPE:
         decodeReportRecord(record.data)
+        return state
+      case DEVLEAD_REPORT_ANSWER_RECORD_TYPE:
+        decodeReportAnswerRecord(record.data)
         return state
       default:
         return state
@@ -653,6 +841,9 @@ export function applyDevLeadModeProjection(
         return state
       case DEVLEAD_REPORT_RECORD_TYPE:
         decodeReportRecord(record.data)
+        return state
+      case DEVLEAD_REPORT_ANSWER_RECORD_TYPE:
+        decodeReportAnswerRecord(record.data)
         return state
       default:
         return state

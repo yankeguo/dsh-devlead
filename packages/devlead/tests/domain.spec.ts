@@ -22,22 +22,28 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import {
   assistantExcerpt,
+  answerTextHash,
+  createDevLeadBackgroundMessage,
   createDevLeadNoticeMessage,
   createDevLeadPromptMessage,
   decodeModeRecord,
   decodeNotification,
   decodeNotificationRecord,
   decodeReport,
+  decodeReportAnswer,
+  decodeReportAnswerRecord,
   decodeWatchRecord,
   devLeadNotification,
   devLeadReport,
   failureExcerpt,
   modeRecord,
   notificationRecord,
+  reportAnswerRecord,
   representableInstant,
   watchRecord,
 } from '../src/domain.ts'
 import { T0 } from './harness.ts'
+import { answer } from './fixtures.ts'
 
 /** One canonical mode payload. */
 function modePayload(): Record<string, unknown> {
@@ -115,9 +121,49 @@ describe('builders', () => {
   it('attributes relay and notice messages to the devlead kind', () => {
     const lead = { id: SessionId('lead-session') } as unknown as Agent
     const relay = createDevLeadPromptMessage('work', lead)
-    expect(relay.source).toEqual({ kind: 'devlead', form: 'relay', senderSessionId: 'lead-session' })
+    expect(relay.source).toEqual({
+      kind: 'devlead',
+      form: 'relay',
+      senderSessionId: 'lead-session',
+      intent: 'instruction',
+      wakeRequested: true,
+    })
     const notice = createDevLeadNoticeMessage('digest')
     expect(notice.source).toEqual({ kind: 'devlead', form: 'notice' })
+  })
+
+  it('stamps answer/correction intent and question metadata on relay sources', () => {
+    const lead = { id: SessionId('lead-session') } as unknown as Agent
+    const answer = createDevLeadPromptMessage('use staging', lead, {
+      intent: 'answer',
+      questionId: 'child:1:report:question:abc',
+      idempotencyKey: 'key-1',
+    })
+    expect(answer.source).toEqual({
+      kind: 'devlead',
+      form: 'relay',
+      senderSessionId: 'lead-session',
+      intent: 'answer',
+      wakeRequested: true,
+      questionId: 'child:1:report:question:abc',
+      idempotencyKey: 'key-1',
+    })
+    const correction = createDevLeadPromptMessage('stop', lead, { intent: 'correction' })
+    expect(correction.source).toMatchObject({ form: 'relay', intent: 'correction', wakeRequested: true })
+  })
+
+  it('builds a background notice that does not request a wake and names its lead', () => {
+    const lead = { id: SessionId('lead-session') } as unknown as Agent
+    const background = createDevLeadBackgroundMessage('context', lead)
+    expect(background.source).toEqual({
+      kind: 'devlead',
+      form: 'notice',
+      senderSessionId: 'lead-session',
+      intent: 'background',
+      wakeRequested: false,
+      lane: 'background',
+      summary: 'Background context from DevLead',
+    })
   })
 
   it('adds optional wake classification to notice sources without changing the default', () => {
@@ -330,5 +376,44 @@ describe('excerpt helpers', () => {
     expect(DEVLEAD_MODE_RECORD_TYPE).toBe('plugin:devlead/mode')
     expect(DEVLEAD_WATCH_RECORD_TYPE).toBe('plugin:devlead/watch')
     expect(DEVLEAD_NOTIFICATION_RECORD_TYPE).toBe('plugin:devlead/notification')
+  })
+})
+
+describe('answer record decoder (Phase 1d)', () => {
+  it('round-trips a canonical admitted answer and its record envelope', () => {
+    const value = answer({ idempotencyKey: 'key-1' })
+    expect(decodeReportAnswer(value)).toEqual(value)
+    expect(decodeReportAnswerRecord(reportAnswerRecord(value))).toEqual(value)
+  })
+
+  it('hashes the trimmed answer text deterministically', () => {
+    expect(answerTextHash('use staging')).toBe(answerTextHash('use staging'))
+    expect(answerTextHash('use staging')).not.toBe(answerTextHash('use prod'))
+    expect(answerTextHash('use staging')).toMatch(/^[0-9a-f]{64}$/u)
+  })
+
+  it('rejects an unknown status, a forged hash, and an unexpected field', () => {
+    expect(() => decodeReportAnswer({ ...answer(), status: 'pending' })).toThrow('status')
+    expect(() => decodeReportAnswer({ ...answer(), textHash: 'xyz' })).toThrow('textHash')
+    expect(() => decodeReportAnswer({ ...answer(), extra: true })).toThrow('unexpected field "extra"')
+  })
+
+  it('rejects presentedAt on a non-presented answer and a wrong envelope', () => {
+    expect(() => decodeReportAnswer({ ...answer(), status: 'admitted', presentedAt: T0 })).toThrow('presentedAt')
+    expect(() => decodeReportAnswerRecord({ kind: 'devlead/report-answer', version: 2, answer: answer() }))
+      .toThrow('unsupported version')
+    expect(() => decodeReportAnswerRecord({ kind: 'devlead/report', version: 1, answer: answer() }))
+      .toThrow('unexpected kind')
+  })
+
+  it('accepts a presented answer with presentedAt and a discarded answer without it', () => {
+    const presented = answer({ status: 'presented', presentedAt: T0 + 1 })
+    expect(decodeReportAnswer(presented)).toEqual(presented)
+    const discarded = answer({ status: 'discarded' })
+    expect(decodeReportAnswer(discarded).status).toBe('discarded')
+  })
+
+  it('rejects an over-long idempotency key', () => {
+    expect(() => decodeReportAnswer({ ...answer(), idempotencyKey: 'x'.repeat(201) })).toThrow('idempotencyKey')
   })
 })

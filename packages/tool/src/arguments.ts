@@ -17,7 +17,9 @@ import type {
   DevLeadInterruptInboxPolicy,
   DevLeadIsolationMode,
   DevLeadModelSelection,
+  DevLeadPromptIntent,
 } from '@yankeguo/dsh-devlead-protocol'
+import { DEVLEAD_PROMPT_INTENTS } from '@yankeguo/dsh-devlead-protocol'
 import { TOOL_PARAMETERS } from './parameters.ts'
 
 /**
@@ -127,6 +129,14 @@ export interface GetSessionArgs {
 export interface PromptSessionArgs {
   readonly session: string
   readonly prompt: string
+  /**
+   * Requested semantic intent. Kept as a raw string here: the tool schema's
+   * enum is the model-facing contract, and {@link optionalPromptIntent}
+   * hand-checks the same vocabulary.
+   */
+  readonly intent?: string
+  readonly question_id?: string
+  readonly idempotency_key?: string
   readonly watch?: boolean
   readonly interrupt?: boolean
   /**
@@ -304,6 +314,24 @@ export function optionalInterruptInbox(value: string | undefined): DevLeadInterr
   if (value === undefined) return undefined
   if (value === 'clear-all' || value === 'keep' || value === 'clear-own') return value
   throw new DevLeadToolInputError(`interrupt_inbox must be "clear-all", "keep", or "clear-own", received "${value}"`)
+}
+
+/**
+ * Validate an optional prompt intent.
+ *
+ * The tool schema already restricts the model-facing enum; this hand-check
+ * keeps direct callers on the same vocabulary and gives them the core's stable
+ * invalid-input code instead of a loosely typed request.
+ * @param value - optional intent supplied by the caller.
+ * @returns the validated intent, or undefined when omitted (the core defaults to instruction).
+ * @throws {@link DevLeadToolInputError} when the value is not a known intent.
+ */
+export function optionalPromptIntent(value: string | undefined): DevLeadPromptIntent | undefined {
+  if (value === undefined) return undefined
+  if (DEVLEAD_PROMPT_INTENTS.includes(value as DevLeadPromptIntent)) return value as DevLeadPromptIntent
+  throw new DevLeadToolInputError(
+    `intent must be "instruction", "answer", "correction", or "background", received "${value}"`,
+  )
 }
 
 /**

@@ -20,8 +20,10 @@ import type { UserMessage } from '@deepseek-ai/dsh-llm'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 // Type-only: pulls the Session type tables and the plugin-record map into this program.
 import type {} from '@deepseek-ai/dsh-session/types'
+import { createHash } from 'node:crypto'
 import {
   DEVLEAD_ERROR_EXCERPT_MAX,
+  DEVLEAD_IDEMPOTENCY_KEY_MAX,
   DEVLEAD_MAX_INSTANT,
   DEVLEAD_MESSAGE_KIND,
   DEVLEAD_NOTIFICATION_RECORD_TYPE,
@@ -30,6 +32,7 @@ import {
   DEVLEAD_QUESTION_FIELD_MAX,
   DEVLEAD_QUESTION_OPTIONS_MAX,
   DEVLEAD_RECORD_VERSION,
+  DEVLEAD_REPORT_ANSWER_RECORD_TYPE,
   DEVLEAD_REPORT_MESSAGE_MAX,
   DEVLEAD_REPORT_RECORD_TYPE,
   DEVLEAD_REPORT_SUMMARY_MAX,
@@ -44,12 +47,15 @@ import {
   notificationId,
 } from '@yankeguo/dsh-devlead-protocol'
 import type {
+  DevLeadAnswerStatus,
   DevLeadModeRecord,
   DevLeadNotification,
   DevLeadNotificationRecord,
   DevLeadQuestion,
   DevLeadQuestionOption,
   DevLeadReport,
+  DevLeadReportAnswer,
+  DevLeadReportAnswerRecord,
   DevLeadReportKind,
   DevLeadReportRecord,
   DevLeadResetRecord,
@@ -60,6 +66,7 @@ import { thrownMessage } from './error.ts'
 
 export {
   DEVLEAD_ERROR_EXCERPT_MAX,
+  DEVLEAD_IDEMPOTENCY_KEY_MAX,
   DEVLEAD_MAX_INSTANT,
   DEVLEAD_MESSAGE_KIND,
   DEVLEAD_NOTIFICATION_RECORD_TYPE,
@@ -68,6 +75,7 @@ export {
   DEVLEAD_QUESTION_FIELD_MAX,
   DEVLEAD_QUESTION_OPTIONS_MAX,
   DEVLEAD_RECORD_VERSION,
+  DEVLEAD_REPORT_ANSWER_RECORD_TYPE,
   DEVLEAD_REPORT_MESSAGE_MAX,
   DEVLEAD_REPORT_RECORD_TYPE,
   DEVLEAD_REPORT_SUMMARY_MAX,
@@ -85,6 +93,8 @@ export type {
   DevLeadQuestion,
   DevLeadQuestionOption,
   DevLeadReport,
+  DevLeadReportAnswer,
+  DevLeadReportAnswerRecord,
   DevLeadReportKind,
   DevLeadReportRecord,
   DevLeadResetRecord,
@@ -97,6 +107,17 @@ export interface DevLeadRelayMessageSource {
   readonly form: 'relay'
   /** Session id of the lead Agent that authored the prompt. */
   readonly senderSessionId: SessionId
+  /**
+   * Semantic intent the runtime stamped at admission. A legacy relay without
+   * an intent is an `instruction`; `answer` also carries `questionId`.
+   */
+  readonly intent?: 'instruction' | 'answer' | 'correction'
+  /** Whether the admission requested a driver wake (always true for a relay). */
+  readonly wakeRequested?: boolean
+  /** Question report identity an answer addresses, when this is one. */
+  readonly questionId?: string
+  /** Lead-supplied idempotency key echoed onto the message, when provided. */
+  readonly idempotencyKey?: string
 }
 
 /** Durable attribution of the runtime wake-up digest addressed to the lead itself. */
@@ -112,6 +133,10 @@ export interface DevLeadNoticeMessageSource {
   readonly summary?: string
   /** Report associated with an action-required notice, when one exists. */
   readonly reportId?: string
+  /** Lead Session that authored a background context notice, when it is one. */
+  readonly senderSessionId?: SessionId
+  /** `background` for lead-authored context that does not request a wake. */
+  readonly intent?: 'background'
 }
 
 /** Union of the two DevLead message sources. */
@@ -134,22 +159,73 @@ declare module '@deepseek-ai/dsh-session/types' {
     'plugin:devlead/notification': DevLeadNotificationRecord
     /** One mid-turn report from a watched Session to its lead. */
     'plugin:devlead/report': DevLeadReportRecord
+    /** One answer lifecycle fact for a question report of the lead. */
+    'plugin:devlead/report-answer': DevLeadReportAnswerRecord
     /** Reset marker discarding every earlier DevLead record of the Session. */
     'plugin:devlead/reset': DevLeadResetRecord
   }
 }
 
+/** Runtime-stamped delivery metadata of one lead-authored relay prompt. */
+export interface DevLeadPromptMessageMetadata {
+  /** Semantic intent of the prompt; defaults to `instruction`. */
+  readonly intent?: 'instruction' | 'answer' | 'correction'
+  /** Question report identity an answer addresses. */
+  readonly questionId?: string
+  /** Lead-supplied idempotency key, when provided. */
+  readonly idempotencyKey?: string
+}
+
 /**
  * Build the durable user message that admits a lead-authored prompt into a
- * watched Session.
+ * watched Session. The source is always written by the runtime; the model
+ * cannot supply or forge it.
  * @param text - prompt text.
+ * @param lead - exact live lead Agent that authored it.
+ * @param metadata - intent/question/idempotency facts stamped at admission.
+ * @returns the identified user message.
+ */
+export function createDevLeadPromptMessage(
+  text: string,
+  lead: Agent,
+  metadata: DevLeadPromptMessageMetadata = {},
+): UserMessage {
+  const intent = metadata.intent ?? 'instruction'
+  return createUserMessage({
+    content: [{ type: 'text', text }],
+    source: {
+      kind: DEVLEAD_MESSAGE_KIND,
+      form: 'relay',
+      senderSessionId: lead.id,
+      intent,
+      wakeRequested: true,
+      ...(metadata.questionId === undefined ? {} : { questionId: metadata.questionId }),
+      ...(metadata.idempotencyKey === undefined ? {} : { idempotencyKey: metadata.idempotencyKey }),
+    },
+  })
+}
+
+/**
+ * Build the durable user message that injects lead-authored background context
+ * into a watched Session without requesting a driver wake. It is a
+ * `notice`-form context (not a relay prompt), so the question gate keeps
+ * scanning past it for the human who opened the turn.
+ * @param text - background context text.
  * @param lead - exact live lead Agent that authored it.
  * @returns the identified user message.
  */
-export function createDevLeadPromptMessage(text: string, lead: Agent): UserMessage {
+export function createDevLeadBackgroundMessage(text: string, lead: Agent): UserMessage {
   return createUserMessage({
     content: [{ type: 'text', text }],
-    source: { kind: DEVLEAD_MESSAGE_KIND, form: 'relay', senderSessionId: lead.id },
+    source: {
+      kind: DEVLEAD_MESSAGE_KIND,
+      form: 'notice',
+      senderSessionId: lead.id,
+      intent: 'background',
+      wakeRequested: false,
+      lane: 'background',
+      summary: 'Background context from DevLead',
+    },
   })
 }
 
@@ -324,6 +400,29 @@ export function devLeadReport(input: {
  */
 export function reportRecord(report: DevLeadReport): DevLeadReportRecord {
   return { kind: 'devlead/report', version: DEVLEAD_RECORD_VERSION, report }
+}
+
+/**
+ * Hash one trimmed answer prompt into the stable same-text retry key. The
+ * hash covers the lead's answer text only, not the runtime-added question
+ * prefix, so a retry with the same prompt matches across restarts.
+ * @param text - trimmed answer prompt.
+ * @returns lowercase SHA-256 hex digest.
+ */
+export function answerTextHash(text: string): string {
+  return createHash('sha256').update(text, 'utf8').digest('hex')
+}
+
+/**
+ * Build one durable answer lifecycle record. The caller (the core service)
+ * validates the question and the admission before calling this factory; the
+ * factory normalizes the excerpt into the same bounded single-line form the
+ * decoder accepts.
+ * @param answer - answer lifecycle fact already validated by the service.
+ * @returns the record payload.
+ */
+export function reportAnswerRecord(answer: DevLeadReportAnswer): DevLeadReportAnswerRecord {
+  return { kind: 'devlead/report-answer', version: DEVLEAD_RECORD_VERSION, answer }
 }
 
 /**
@@ -654,6 +753,103 @@ export function decodeReportRecord(value: unknown): DevLeadReport {
   expectFields(record, label, ['kind', 'version', 'report'])
   expectEnvelope(record, DEVLEAD_REPORT_RECORD_TYPE, 'devlead/report')
   return decodeReport(record.report)
+}
+
+/** Every answer lifecycle status the durable record may carry. */
+const ANSWER_STATUSES: readonly DevLeadAnswerStatus[] = ['admitted', 'claimed', 'presented', 'discarded', 'failed']
+
+/**
+ * Decode one persisted answer lifecycle value.
+ * @param value - persisted answer fact.
+ * @returns the decoded answer fact.
+ * @throws when the value is not a valid answer fact.
+ */
+export function decodeReportAnswer(value: unknown): DevLeadReportAnswer {
+  const record = expectRecord(value, DEVLEAD_REPORT_ANSWER_RECORD_TYPE)
+  const label = 'report answer'
+  expectFields(record, label, [
+    'reportId',
+    'leadSessionId',
+    'sessionId',
+    'messageId',
+    'at',
+    'status',
+    'textHash',
+  ], [
+    'answeredAt',
+    'presentedAt',
+    'idempotencyKey',
+    'textExcerpt',
+    'primitive',
+    'boundary',
+    'wakeRequested',
+  ])
+  for (const key of ['reportId', 'leadSessionId', 'sessionId', 'messageId'] as const) {
+    if (typeof record[key] !== 'string' || (record[key] as string).length === 0) {
+      throw new Error(`${label} ${key} must be a non-empty string`)
+    }
+  }
+  if (!ANSWER_STATUSES.includes(record.status as DevLeadAnswerStatus)) {
+    throw new Error(`${label} status ${JSON.stringify(record.status)} is not recognized`)
+  }
+  const status = record.status as DevLeadAnswerStatus
+  if (typeof record.textHash !== 'string' || !/^[0-9a-f]{64}$/u.test(record.textHash)) {
+    throw new Error(`${label} textHash must be a lowercase SHA-256 hex digest`)
+  }
+  const answeredAt = record.answeredAt === undefined
+    ? undefined
+    : decodeInstant(record.answeredAt, `${label} answeredAt`)
+  const presentedAt = record.presentedAt === undefined
+    ? undefined
+    : decodeInstant(record.presentedAt, `${label} presentedAt`)
+  if (presentedAt !== undefined && status !== 'presented') {
+    throw new Error(`${label} presentedAt is only valid when status is "presented"`)
+  }
+  const idempotencyKey = record.idempotencyKey === undefined
+    ? undefined
+    : decodeExcerptWithMax(record.idempotencyKey, `${label} idempotencyKey`, DEVLEAD_IDEMPOTENCY_KEY_MAX)
+  const textExcerpt = record.textExcerpt === undefined
+    ? undefined
+    : decodeExcerpt(record.textExcerpt, `${label} textExcerpt`)
+  if (record.primitive !== undefined && record.primitive !== 'followup' && record.primitive !== 'steer') {
+    throw new Error(`${label} primitive is not recognized`)
+  }
+  if (record.boundary !== undefined && record.boundary !== 'next-turn' && record.boundary !== 'next-step') {
+    throw new Error(`${label} boundary is not recognized`)
+  }
+  if (record.wakeRequested !== undefined && typeof record.wakeRequested !== 'boolean') {
+    throw new Error(`${label} wakeRequested must be a boolean when present`)
+  }
+  return {
+    reportId: record.reportId as string,
+    leadSessionId: record.leadSessionId as string,
+    sessionId: record.sessionId as string,
+    messageId: record.messageId as string,
+    at: decodeInstant(record.at, `${label} at`),
+    status,
+    textHash: record.textHash,
+    ...(answeredAt === undefined ? {} : { answeredAt }),
+    ...(presentedAt === undefined ? {} : { presentedAt }),
+    ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
+    ...(textExcerpt === undefined ? {} : { textExcerpt }),
+    ...(record.primitive === undefined ? {} : { primitive: record.primitive }),
+    ...(record.boundary === undefined ? {} : { boundary: record.boundary }),
+    ...(record.wakeRequested === undefined ? {} : { wakeRequested: record.wakeRequested }),
+  }
+}
+
+/**
+ * Decode one persisted answer lifecycle record.
+ * @param value - persisted payload.
+ * @returns the decoded answer fact.
+ * @throws when the payload is not a valid answer record.
+ */
+export function decodeReportAnswerRecord(value: unknown): DevLeadReportAnswer {
+  const record = expectRecord(value, DEVLEAD_REPORT_ANSWER_RECORD_TYPE)
+  const label = 'report answer record'
+  expectFields(record, label, ['kind', 'version', 'answer'])
+  expectEnvelope(record, DEVLEAD_REPORT_ANSWER_RECORD_TYPE, 'devlead/report-answer')
+  return decodeReportAnswer(record.answer)
 }
 
 /**

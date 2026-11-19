@@ -113,6 +113,22 @@
  *                 single completed turn/end, and a gate-denied
  *                 `ask_user_question` does not stop the scripted model from
  *                 continuing with later steps (case 33);
+ *               - Phase 1d answer routing: a REAL scripted child turn where the
+ *                 lead answers the running child's forwarded question via
+ *                 `promptSession(intent:'answer')` during the glob dispatch — the
+ *                 answer steers next-step and is presented in a later real step
+ *                 before the single completed turn/end, the same-key/same-text
+ *                 retry returns the original receipt, a different answer conflicts
+ *                 (DEVLEAD_QUESTION_ALREADY_ANSWERED), and the lead's durable
+ *                 answer record + derived view report answered/presented;
+ *               - Phase 1d answer inbox lifecycle: running-child answer delivery
+ *                 metadata (queuedInputs intent/questionId/wakeRequested/
+ *                 deliveryState), retraction refusing the answer but accepting
+ *                 background/instruction, background injecting without a wake,
+ *                 and running-child interrupt `clear-own` keeping the pending
+ *                 answer (dropping the own instruction, keeping human input)
+ *                 while `clear-all` discards it and reopens the question through
+ *                 the real workspace/session-stop fan-out;
  *               - the assembled `devlead:policy` section carries judgment-based
  *                 closing, its safety boundaries, and the feasibility-triage /
  *                 open-question handoff to the dispatched Session;
@@ -146,16 +162,16 @@
  *                 Agent Teams is version-adaptive: rc.2+ (default composition)
  *                 must apply it, while an rc.1 Host must reject the explicit
  *                 request with DEVLEAD_TEAM_UNAVAILABLE and create nothing.
- *             112 checks.
+ *             126 checks.
  *
  * `--no-worktree` skips phase 2 only (debugging escape hatch when the
  * experimental composition cannot boot on this machine); phases 1, 1b, and 3
  * still run.
  *
  * Check counts are PINNED per phase (EXPECTED_CHECKS, baseline DSH
- * 0.2.2-rc.5): phase 1 = 27, phase 1b = 12, phase 2 = 23, phase 3 = 112, so
- * every flow reports 174/174 checks (171 PASS + 3 credential-less SKIP) when
- * all four phases pass (`--no-worktree` skips phase 2: 151/151). A deleted or
+ * 0.2.2-rc.5): phase 1 = 27, phase 1b = 12, phase 2 = 23, phase 3 = 126, so
+ * every flow reports 188/188 checks (185 PASS + 3 credential-less SKIP) when
+ * all four phases pass (`--no-worktree` skips phase 2: 165/165). A deleted or
  * added check fails the phase through the count pin. Run both flows before a
  * release:
  *
@@ -246,12 +262,16 @@ const PROBE_QUESTION_REPORT_COMMAND = 'devlead-e2e-question-report'
 const PROBE_QUESTION_TURN_COMMAND = 'devlead-e2e-question-turn'
 /** Real scripted child turn: a native-gate deny does not stop the model continuing (case 33). */
 const PROBE_QUESTION_CONTINUE_COMMAND = 'devlead-e2e-question-continue'
+/** Real scripted child turn: the lead answers a running child via steer (Phase 1d). */
+const PROBE_ANSWER_TURN_COMMAND = 'devlead-e2e-answer-turn'
+/** Answer inbox lifecycle: delivery metadata, retract refusal, clear-own/clear-all (Phase 1d). */
+const PROBE_ANSWER_INBOX_COMMAND = 'devlead-e2e-answer-inbox'
 /**
  * Pinned per-phase check totals of the current harness (baseline: DSH
  * 0.2.2-rc.5). `Checks.summarize` fails when a phase reports a different
  * count, so deleting or silently skipping a check cannot pass unnoticed.
  */
-const EXPECTED_CHECKS = { phase1: 27, phase1b: 12, phase2: 23, phase3: 112 }
+const EXPECTED_CHECKS = { phase1: 27, phase1b: 12, phase2: 23, phase3: 126 }
 /** DSH version the pinned totals and scripted-turn contracts are verified against. */
 const BASELINE_DSH_VERSION = '0.2.2-rc.5'
 /** Probe command: queued-inbox visibility / ownership / idempotent retraction. */
@@ -1911,6 +1931,170 @@ async function runCloseChecks(client, paths, dshVersion) {
       && inboxAfter.length === 1
       && inboxAfter[0]?.id === inboxHumanRow?.id,
     JSON.stringify({ first: inboxProbe.report?.first, second: inboxProbe.report?.second, after: inboxAfter }),
+  )
+
+  // Phase 1d answer routing with a REAL prompted child: the lead answers a
+  // running child's forwarded question via steer during the glob dispatch; the
+  // answer must be presented in a later real step before the single turn/end,
+  // the same-key/same-text retry must return the original receipt, and a
+  // different answer must conflict. Facts come from the durable log, the
+  // intercepted model requests, the lead's durable answer record, and the
+  // derived question/answer view.
+  const answerTurnProbe = await runProbeCommand(client, leadId, PROBE_ANSWER_TURN_COMMAND, DISPATCH_PROBE_TIMEOUT_MS)
+  checks.expect(
+    'phase 1d scripted answer-turn probe settles success with a real child log',
+    answerTurnProbe.execution?.result?.kind === 'success'
+      && typeof answerTurnProbe.report?.childId === 'string'
+      && (answerTurnProbe.report?.eventCount ?? 0) > 0,
+    answerTurnProbe.text.slice(0, 500),
+  )
+  const answerFacts = answerTurnProbe.report?.answerFacts ?? {}
+  const answerDelivery = answerFacts.answerReceipt?.delivery ?? {}
+  checks.expect(
+    'phase 1d answer steers the running child next-step with a wake and echoes question_id',
+    answerDelivery.primitive === 'steer'
+      && answerDelivery.boundary === 'next-step'
+      && answerDelivery.wakeRequested === true
+      && typeof answerDelivery.messageId === 'string'
+      && answerDelivery.questionId === answerFacts.questionId
+      && answerFacts.childStatusAtAnswer === 'running',
+    JSON.stringify({ answerDelivery, questionId: answerFacts.questionId, childStatusAtAnswer: answerFacts.childStatusAtAnswer }),
+  )
+  checks.expect(
+    'phase 1d same-key/same-text answer retry returns the original receipt; a different answer conflicts',
+    answerFacts.retryReceipt?.delivery?.messageId === answerDelivery.messageId
+      && answerFacts.conflictCode === 'DEVLEAD_QUESTION_ALREADY_ANSWERED',
+    JSON.stringify({ retry: answerFacts.retryReceipt?.delivery, conflictCode: answerFacts.conflictCode }),
+  )
+  const answerTurnFacts = answerTurnProbe.report ?? {}
+  checks.expect(
+    'phase 1d answer is presented in a later real step after the question batch, before the single completed turn/end',
+    (answerTurnFacts.questionResultIndex ?? -1) >= 0
+      && (answerTurnFacts.answerMessageIndex ?? -1) > answerTurnFacts.questionResultIndex
+      && Array.isArray(answerTurnFacts.stepStarts) && answerTurnFacts.stepStarts.length >= 2
+      && answerTurnFacts.stepStarts[1] < answerTurnFacts.answerMessageIndex
+      && answerTurnFacts.turnEndIndex > answerTurnFacts.answerMessageIndex
+      && answerTurnFacts.answerPendingAfter === false
+      && (answerTurnFacts.turns ?? 0) >= 1
+      && answerTurnFacts.turnEnds === 1
+      && answerTurnFacts.turnEndReason === 'completed',
+    JSON.stringify({
+      questionResultIndex: answerTurnFacts.questionResultIndex,
+      answerMessageIndex: answerTurnFacts.answerMessageIndex,
+      stepStarts: answerTurnFacts.stepStarts,
+      turnEndIndex: answerTurnFacts.turnEndIndex,
+      answerPendingAfter: answerTurnFacts.answerPendingAfter,
+      turnEndReason: answerTurnFacts.turnEndReason,
+    }),
+  )
+  const answerRequests = Array.isArray(answerTurnFacts.requests) ? answerTurnFacts.requests : []
+  checks.expect(
+    'phase 1d second model request really saw the answer text',
+    answerRequests.length === 2
+      && typeof answerTurnFacts.answerText === 'string'
+      && (answerRequests[1]?.userTexts ?? []).some(text => text.includes(answerTurnFacts.answerText)),
+    JSON.stringify(answerRequests),
+  )
+  const answerRecords = Array.isArray(answerTurnFacts.answerRecords) ? answerTurnFacts.answerRecords : []
+  const answerView = answerTurnFacts.questionAnswerView ?? {}
+  checks.expect(
+    'phase 1d durable answer record is admitted and the derived view reports answered/presented',
+    answerRecords.some(record => record?.status === 'admitted' && record?.messageId === answerDelivery.messageId)
+      && answerView.questionStatus === 'answered'
+      && answerView.answerStatus === 'presented'
+      && answerView.answerMessageId === answerDelivery.messageId,
+    JSON.stringify({ answerRecords, answerView }),
+  )
+  const answerWake = answerTurnFacts.wake ?? {}
+  const answerQuestionReports = Array.isArray(answerTurnFacts.questionReports) ? answerTurnFacts.questionReports : []
+  checks.expect(
+    'phase 1d answered question reached the lead digest and action-required wake',
+    answerQuestionReports.some(row => row?.kind === 'question' && row?.id === answerFacts.questionId)
+      && answerWake.found === true
+      && answerWake.boundary === 'next-step'
+      && answerWake.lane === 'action-required',
+    JSON.stringify({ reports: answerQuestionReports, wake: { ...answerWake, text: undefined } }),
+  )
+
+  // Phase 1d answer inbox lifecycle: idle-child delivery metadata + retract
+  // refusal + background, and running-child clear-own/clear-all through the
+  // real workspace/session-stop fan-out.
+  const answerInboxProbe = await runProbeCommand(client, leadId, PROBE_ANSWER_INBOX_COMMAND, DISPATCH_PROBE_TIMEOUT_MS)
+  checks.expect(
+    'phase 1d answer-inbox probe settles success with metadata/clear-own/clear-all facts',
+    answerInboxProbe.execution?.result?.kind === 'success'
+      && answerInboxProbe.report?.metadata !== null && typeof answerInboxProbe.report?.metadata === 'object'
+      && answerInboxProbe.report?.clearOwn !== null && typeof answerInboxProbe.report?.clearOwn === 'object'
+      && answerInboxProbe.report?.clearAll !== null && typeof answerInboxProbe.report?.clearAll === 'object',
+    answerInboxProbe.text.slice(0, 500),
+  )
+  const metaFacts = answerInboxProbe.report?.metadata ?? {}
+  checks.expect(
+    'phase 1d answer steers a running child next-step and the derived view reports answered/admitted',
+    metaFacts.answerDelivery?.primitive === 'steer'
+      && metaFacts.answerDelivery?.boundary === 'next-step'
+      && metaFacts.viewAfterAnswer?.questionStatus === 'answered'
+      && metaFacts.viewAfterAnswer?.answerStatus === 'admitted',
+    JSON.stringify({ answerDelivery: metaFacts.answerDelivery, viewAfterAnswer: metaFacts.viewAfterAnswer }),
+  )
+  const metaQueued = Array.isArray(metaFacts.queued) ? metaFacts.queued : []
+  const metaAnswerRow = metaQueued.find(row => row?.id === metaFacts.answerDelivery?.messageId)
+  checks.expect(
+    'phase 1d queuedInputs carries the answer intent/questionId/wakeRequested/deliveryState',
+    metaAnswerRow?.intent === 'answer'
+      && metaAnswerRow?.questionId === metaFacts.questionId
+      && metaAnswerRow?.wakeRequested === true
+      && metaAnswerRow?.deliveryState === 'admitted'
+      && metaAnswerRow?.boundary === 'next-step',
+    JSON.stringify(metaAnswerRow),
+  )
+  checks.expect(
+    'phase 1d retract refuses the answer but accepts background and instruction; the answer stays pending',
+    metaFacts.answerRetract?.refused === true
+      && metaFacts.answerRetract?.code === 'DEVLEAD_INVALID_INPUT'
+      && metaFacts.backgroundRetract?.retracted === true
+      && metaFacts.instructionRetract?.retracted === true
+      && metaFacts.answerStillPending === true,
+    JSON.stringify({
+      answerRetract: metaFacts.answerRetract,
+      backgroundRetract: metaFacts.backgroundRetract,
+      instructionRetract: metaFacts.instructionRetract,
+      answerStillPending: metaFacts.answerStillPending,
+    }),
+  )
+  checks.expect(
+    'phase 1d background injects next-step without requesting a wake',
+    metaFacts.backgroundDelivery?.primitive === 'inject'
+      && metaFacts.backgroundDelivery?.boundary === 'next-step'
+      && metaFacts.backgroundDelivery?.wakeRequested === false,
+    JSON.stringify(metaFacts.backgroundDelivery),
+  )
+  const clearOwnFacts = answerInboxProbe.report?.clearOwn ?? {}
+  checks.expect(
+    'phase 1d clear-own keeps the pending answer and human input, drops the own instruction, question stays answered',
+    clearOwnFacts.answerPending === true
+      && clearOwnFacts.humanPending === true
+      && clearOwnFacts.ownInstructionPending === false
+      && clearOwnFacts.viewAfter?.questionStatus === 'answered'
+      && clearOwnFacts.replacement?.interrupted === true
+      && clearOwnFacts.replacement?.retainedInputs === 2,
+    JSON.stringify({
+      answerPending: clearOwnFacts.answerPending,
+      humanPending: clearOwnFacts.humanPending,
+      ownInstructionPending: clearOwnFacts.ownInstructionPending,
+      viewAfter: clearOwnFacts.viewAfter,
+      replacement: clearOwnFacts.replacement,
+    }),
+  )
+  const clearAllFacts = answerInboxProbe.report?.clearAll ?? {}
+  const clearAllRecords = Array.isArray(clearAllFacts.answerRecords) ? clearAllFacts.answerRecords : []
+  checks.expect(
+    'phase 1d clear-all discards the pending answer, reopens the question, and records the discard durably',
+    clearAllFacts.answerPending === false
+      && clearAllFacts.viewAfter?.questionStatus === 'open'
+      && clearAllFacts.viewAfter?.answerStatus === 'discarded'
+      && clearAllRecords.some(record => record?.status === 'discarded' && record?.messageId === clearAllFacts.answerMessageId),
+    JSON.stringify({ answerPending: clearAllFacts.answerPending, viewAfter: clearAllFacts.viewAfter, answerRecords: clearAllRecords }),
   )
 
   // Creation-time dispatch settings: the probe creates real Sessions with a

@@ -10,22 +10,27 @@ import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import {
   DEVLEAD_MODE_RECORD_TYPE,
   DEVLEAD_NOTIFICATION_RECORD_TYPE,
+  DEVLEAD_REPORT_ANSWER_RECORD_TYPE,
   DEVLEAD_REPORT_RECORD_TYPE,
   DEVLEAD_WATCH_RECORD_TYPE,
 } from '@yankeguo/dsh-devlead-protocol'
 import type {
+  DevLeadAnswerStatus,
   DevLeadNotification,
   DevLeadQuestion,
   DevLeadReport,
+  DevLeadReportAnswer,
   DevLeadReportKind,
   DevLeadTransition,
   DevLeadWakeSuppressionReason,
 } from '@yankeguo/dsh-devlead-protocol'
 import {
+  answerTextHash,
   devLeadNotification,
   devLeadReport,
   modeRecord,
   notificationRecord,
+  reportAnswerRecord,
   reportRecord,
   watchRecord,
 } from '../src/domain.ts'
@@ -220,4 +225,55 @@ export function report(overrides: ReportOverrides = {}): DevLeadReport {
  */
 export function reportEvent(seq: number, value: DevLeadReport, time: number = T0): SessionEvent {
   return pluginRecordEvent(seq, DEVLEAD_REPORT_RECORD_TYPE, reportRecord(value), time)
+}
+
+/** Overrides accepted by the {@link answer} fixture. */
+export interface AnswerOverrides {
+  readonly reportId?: string
+  readonly leadSessionId?: string
+  readonly sessionId?: string
+  readonly messageId?: string
+  readonly at?: number
+  readonly status?: DevLeadAnswerStatus
+  readonly text?: string
+  readonly answeredAt?: number
+  readonly presentedAt?: number
+  readonly idempotencyKey?: string
+}
+
+/**
+ * Build one durable answer lifecycle fact with a valid text hash.
+ * @param overrides - explicit answer fields.
+ * @returns the answer payload.
+ */
+export function answer(overrides: AnswerOverrides = {}): DevLeadReportAnswer {
+  const status = overrides.status ?? 'admitted'
+  const at = overrides.at ?? T0
+  return {
+    reportId: overrides.reportId ?? 'session-alpha:1:report:question:abc',
+    leadSessionId: overrides.leadSessionId ?? 'lead-1',
+    sessionId: overrides.sessionId ?? 'session-alpha',
+    messageId: overrides.messageId ?? 'msg-answer-1',
+    at,
+    status,
+    textHash: answerTextHash(overrides.text ?? 'use staging'),
+    answeredAt: overrides.answeredAt ?? at,
+    ...(overrides.presentedAt === undefined ? {} : { presentedAt: overrides.presentedAt }),
+    ...(overrides.idempotencyKey === undefined ? {} : { idempotencyKey: overrides.idempotencyKey }),
+    textExcerpt: overrides.text ?? 'use staging',
+    primitive: 'steer',
+    boundary: 'next-step',
+    wakeRequested: true,
+  }
+}
+
+/**
+ * Build one committed durable answer lifecycle event.
+ * @param seq - log position.
+ * @param value - answer payload.
+ * @param time - event timestamp.
+ * @returns the committed event.
+ */
+export function answerEvent(seq: number, value: DevLeadReportAnswer, time: number = T0): SessionEvent {
+  return pluginRecordEvent(seq, DEVLEAD_REPORT_ANSWER_RECORD_TYPE, reportAnswerRecord(value), time)
 }

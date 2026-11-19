@@ -21,6 +21,7 @@ import {
   defaultedLimit,
   optionalInterruptInbox,
   optionalPositiveInteger,
+  optionalPromptIntent,
   optionalText,
   optionalWorkspaceRef,
   requireAbsolutePath,
@@ -144,28 +145,36 @@ const GET_SESSION_DESCRIPTION =
   'Read one Session in detail: whether it is live and running, whether it is archived, and, when the Host can read '
   + 'the Session log, the latest turn number and outcome plus the latest error and assistant excerpts. While a live '
   + 'Agent owns the target, the output also lists its queued inbox inputs (id, boundary, source, text excerpt, enqueue '
-  + 'time), so stale or duplicate queued instructions can be identified before they run. Use it to '
+  + 'time, and for DevLead messages the intent/questionId/wakeRequested plus a tracked answer\'s deliveryState), so '
+  + 'stale or duplicate queued instructions can be identified before they run and answers distinguished from '
+  + 'instructions. Use it to '
   + 'inspect state after a wake-up or when the human explicitly asks, not to poll while waiting for a dispatched Session. '
   + `When the target is this lead Session itself, the output also carries its ${SELF_REPORTS_LIMIT} newest retained mid-turn reports.`
 
 const PROMPT_SESSION_DESCRIPTION =
-  'Admit a follow-up prompt into an existing Session, resuming a cold Session first. The prompt is attributed to this '
+  'Admit a prompt into an existing Session, resuming a cold Session first. The prompt is attributed to this '
   + 'DevLead Session. Archived Sessions are rejected. The Session is watched by default, so after this call end the '
   + 'turn instead of waiting: its settled turn starts a new turn of this lead session with the wake-up message. A '
   + 'watched Session gains devlead_report for mid-turn milestones; mention it only in a long-running continuation. '
-  + 'With watch=false this call only skips adding a watch: an '
-  + 'already-watched Session stays watched and keeps devlead_report, so use devlead_watch_session with '
-  + 'watching:false to remove it. Default delivery queues the prompt behind the Session\'s current turn; set '
-  + 'interrupt true only to replace that work, with stop-and-replace semantics on the interrupt parameter and the '
-  + 'inbox retention options on interrupt_inbox.'
+  + 'With watch=false this call only skips adding a watch: an already-watched Session stays watched and keeps '
+  + 'devlead_report, so use devlead_watch_session with watching:false to remove it. The intent selects delivery: '
+  + 'instruction (default) queues a new next-turn boundary behind the current turn; answer (requires question_id) '
+  + 'replies to a [DEV LEAD QUESTION] report and steers the child\'s next step; correction changes the current '
+  + 'approach and also steers; background injects non-urgent context without a wake. steer is next-step priority, '
+  + 'not preemption or isolation: the current model request/tool batch finishes first, and an idle answer may share '
+  + 'a request with an older next-turn input. Set interrupt true only to replace the current work (cancel + new '
+  + 'turn), with inbox retention on interrupt_inbox. The result delivery reports the actual primitive/boundary/wake '
+  + 'and the messageId (for retract); it is an admission receipt, not a presented confirmation.'
 
 const RETRACT_INPUT_DESCRIPTION =
   'Withdraw one queued inbox input from a Session before it runs, addressed by the id devlead_get_session reports '
-  + 'in queuedInputs. Only relay prompts this lead Session authored can be withdrawn; human, scheduled, and other '
-  + 'producers\' queued inputs are refused with an explanation — they are not yours to remove. Idempotent: an input '
-  + 'already consumed or withdrawn reports retracted false. The target must be live (a cold Session has no folded '
-  + 'inbox) and cannot be this lead Session itself. Use it to clean up a stale or misdelivered instruction you '
-  + 'queued, instead of layering another prompt on top of it.'
+  + 'in queuedInputs. Your own instruction/correction relay prompts and background notices can be withdrawn; an '
+  + 'answer is refused (removing it would desynchronize the question state from the child inbox — to discard an '
+  + 'answer and reopen its question use interrupt:true with interrupt_inbox:"clear-all"). Human, scheduled, and '
+  + 'other producers\' queued inputs are refused with an explanation — they are not yours to remove. Idempotent: an '
+  + 'input already consumed or withdrawn reports retracted false. The target must be live (a cold Session has no '
+  + 'folded inbox) and cannot be this lead Session itself. Use it to clean up a stale or misdelivered instruction '
+  + 'you queued, instead of layering another prompt on top of it.'
 
 const WATCH_SESSION_DESCRIPTION =
   'Add one Session to, or remove it from, this DevLead Session\'s watch set. A watch is a one-way follow '
@@ -176,9 +185,13 @@ const WATCH_SESSION_DESCRIPTION =
 const NOTIFICATIONS_DESCRIPTION =
   'Read the retained notification digest of this DevLead Session together with the current watch set. Each notification '
   + 'names a watched Session whose turn settled and how it ended; the reports array carries mid-turn reports from '
-  + 'watched Sessions. Both digests are newest last. A question report means the watched Session needs a decision; '
-  + 'answer it yourself or ask the human, then relay the answer with devlead_prompt_session. Read it after a wake-up '
-  + 'or when the human explicitly asks, not as a polling loop while waiting for a dispatched Session.'
+  + 'watched Sessions. Both digests are newest last. A question report carries questionStatus (open/answered/expired/'
+  + 'cancelled) and, when answered, answerStatus (admitted/claimed/presented/discarded/failed): filter open questions '
+  + 'with questionStatus === "open", and note that answered does not mean presented (only presented is delivery '
+  + 'completion). Answer an open question yourself or ask the human, then relay with devlead_prompt_session intent '
+  + '"answer" and the report id as question_id. The [DEV LEAD QUESTION] wake already carries the full question, so the '
+  + 'normal path needs no digest read; use this for history or a lost wake. Read it after a wake-up or when the human '
+  + 'explicitly asks, not as a polling loop while waiting for a dispatched Session.'
 
 const REPORT_DESCRIPTION =
   'Send a one-way mid-turn report to the active DevLead Session that watches this Session; the lead cannot reply '
@@ -400,7 +413,10 @@ export function apply(ctx: Context): void {
         const agent = requireAgent(exec.agent, 'devlead_get_session')
         const session = await ctx.devLead.getSession(agent, requireSessionRef(args.session), exec.signal)
         const reports = String(session.sessionId) === String(agent.id)
-          ? ctx.devLead.reports(agent, { limit: SELF_REPORTS_LIMIT }).map(reportValue)
+          ? ctx.devLead.reports(agent, { limit: SELF_REPORTS_LIMIT }).map(report => reportValue(
+            report,
+            report.kind === 'question' ? ctx.devLead.questionAnswerView(agent, report.id) : undefined,
+          ))
           : undefined
         const queuedInputs = ctx.devLead.sessionQueuedInputs(agent, session.sessionId, exec.signal)
         return {
@@ -423,6 +439,9 @@ export function apply(ctx: Context): void {
         assertKnownArguments(args, TOOL_ARGUMENT_KEYS.devlead_prompt_session)
         const agent = requireAgent(exec.agent, 'devlead_prompt_session')
         const interruptInbox = optionalInterruptInbox(args.interrupt_inbox)
+        const intent = optionalPromptIntent(args.intent)
+        const questionId = optionalText(args.question_id)
+        const idempotencyKey = optionalText(args.idempotency_key)
         const prompted = await ctx.devLead.promptSession(
           agent,
           requireSessionRef(args.session),
@@ -431,6 +450,9 @@ export function apply(ctx: Context): void {
             watch: args.watch ?? true,
             interrupt: args.interrupt ?? false,
             ...interruptInbox === undefined ? {} : { interruptInbox },
+            ...intent === undefined ? {} : { intent },
+            ...questionId === undefined ? {} : { questionId },
+            ...idempotencyKey === undefined ? {} : { idempotencyKey },
             signal: exec.signal,
           },
         )
@@ -494,7 +516,10 @@ export function apply(ctx: Context): void {
         const limit = defaultedLimit(args.limit, 'limit', DEFAULT_NOTIFICATIONS_LIMIT)
         return {
           notifications: ctx.devLead.notifications(agent, { limit }).map(notificationValue),
-          reports: ctx.devLead.reports(agent, { limit }).map(reportValue),
+          reports: ctx.devLead.reports(agent, { limit }).map(report => reportValue(
+            report,
+            report.kind === 'question' ? ctx.devLead.questionAnswerView(agent, report.id) : undefined,
+          )),
           watched: watchedIds(ctx.devLead.view(agent)),
         }
       })

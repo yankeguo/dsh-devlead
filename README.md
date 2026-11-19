@@ -253,6 +253,8 @@ requires Node ≥ 24.9):
 | `0.2.2-rc.5` | same, `--flow patch` | **161/161** (same round) |
 | `0.2.2-rc.5` | `node scripts/e2e-smoke.mjs --flow installed` (Phase 1c evidence follow-up, pinned totals) | **174/174** (171 PASS + 3 SKIP; real scripted child turns, includes the experimental worktree phase) |
 | `0.2.2-rc.5` | same, `--flow patch` | **174/174** (same round) |
+| `0.2.2-rc.5` | `node scripts/e2e-smoke.mjs --flow installed` (Phase 1d answer routing, pinned totals) | **188/188** (185 PASS + 3 SKIP; real scripted answer steer + idempotency + clear-own/clear-all) |
+| `0.2.2-rc.5` | same, `--flow patch` | **188/188** (same round) |
 
 The 0.3.0 prerelease candidates (0.3.0-rc.1 / 0.3.0-rc.2, not yet promoted as stable) include question routing
 and queued inbox inputs. The Phase 1c harness rounds add the question-gate and `devlead_report` question
@@ -261,11 +263,18 @@ wake admission, conclude/durable/memory-only paths, and a writability-recovery r
 plus two **real prompted child turns** driven by a scripted `llm/stream` script (real agent-loop
 turn/step/tool events, no provider credential): a concluding question batch still runs a committed
 next-step marker in a later real step before the single completed `turn/end`, and a gate-denied
-`ask_user_question` does not stop the model from continuing (case 33). Per-phase check totals are pinned
-(27 / 12 / 23 / 112, baseline DSH 0.2.2-rc.5; a deleted check fails the phase), PASS and SKIP are reported
-separately, and the installed/patch full flows report **174/174** each (171 PASS + 3 credential-less SKIP;
-`--no-worktree`: **151/151**). A pre-release rerun of the full combination is still required by the
-publishing guide.
+`ask_user_question` does not stop the model from continuing (case 33). The Phase 1d round adds a real
+scripted child turn where the lead **answers a running child via `intent:"answer"` steer** during the glob
+dispatch (the answer is presented in a later real step before the single completed `turn/end`, the
+same-key/same-text retry returns the original receipt, a different answer conflicts, and the durable answer
+record + derived view report answered/presented), plus the answer inbox lifecycle (queuedInputs
+intent/questionId/wakeRequested/deliveryState, retraction refusing the answer but accepting
+background/instruction, and running-child interrupt `clear-own` keeping the pending answer while `clear-all`
+discards it and reopens the question through the real `workspace/session-stop` fan-out). Per-phase check
+totals are pinned (27 / 12 / 23 / 126, baseline DSH 0.2.2-rc.5; a deleted check fails the phase), PASS and
+SKIP are reported separately, and the installed/patch full flows report **188/188** each (185 PASS + 3
+credential-less SKIP; `--no-worktree`: **165/165**). A pre-release rerun of the full combination is still
+required by the publishing guide.
 
 Three positive model-selection checks per flow are reported as SKIP on this credential-less
 Host (the real reason is printed); the negative model path and `devlead_list_models` run on every
@@ -491,9 +500,13 @@ projection.
    / `devlead_get_session` to inspect state, `devlead_prompt_session` to follow up or dispatch
    new work, and `devlead_notifications` to read the digest. By default a new prompt queues
    behind a running turn; pass `interrupt: true` only when the new instruction should replace
-   the child's current work. A watched child's question arrives as a `question` report: answer
-   it from context or ask the human from the lead, then relay the answer with
-   `devlead_prompt_session`.
+   the child's current work. A watched child's question arrives as a `[DEV LEAD QUESTION]` wake
+   carrying the full question and its report id: answer it from context or ask the human from
+   the lead, then relay with `devlead_prompt_session` `intent: "answer"` and `question_id` set to
+   that report id. The answer steers the child's next step (opening a turn if it is idle) instead
+   of waiting for the running turn to settle — next-step priority, not preemption or isolation.
+   `intent: "correction"` also steers; `intent: "background"` injects non-urgent context without
+   a wake.
 6. Before finishing a turn, the model reports to the human: which Workspaces and Sessions it
    created, changed, or closed (and why it closed them), what each child was asked to do, how
    the latest turn ended, whether any implementation work was (exceptionally) done directly in
@@ -529,11 +542,11 @@ rather than implying the directory is unregistered.
 | `devlead_use_workspace` | `path` (required, absolute), `title?`, `create?` (default false: a missing directory is an error; `true` creates it with `mkdir -p` after the human asked) | `{ workspace }` |
 | `devlead_list_sessions` | `workspace?` (id, registered path, or exact title), `watched_only?`, `limit?` | `{ sessions, watched }` |
 | `devlead_create_session` | `workspace?` (id, registered path, or exact title), `prompt?`, `title?`, `watch?` (default true), `preset?` (Host-defined id; blank/omitted falls back to the plugin default then the Host default), `isolation?` (default `none`; `worktree` = best-effort isolated checkout), `provider?`+`model?` (paired; optional `reasoning_effort?`), `agent_teams?` | creation result (including the `isolation` outcome, and the applied `model`/`agentTeams` when requested) |
-| `devlead_get_session` | `session` (required) | `{ session, reports?, queuedInputs? }` — when reading this lead itself, `reports` carries its 5 newest retained reports; while the target is live, `queuedInputs` lists its pending inbox inputs (id, boundary, source kind/form/sender, text excerpt, enqueue time) so stale or duplicate queued instructions can be identified before they run |
-| `devlead_prompt_session` | `session`, `prompt` (required), `watch?` (default true), `interrupt?` (default false: queue behind the running turn; `true` = stop the running turn and Host-reported subagent/job/schedule work, discard queued input, then admit a new turn; idle/cold = no-op), `interrupt_inbox?` (default `clear-all`; `keep` restores every pending input after the stop, `clear-own` restores everything except this lead's own relay prompts; restored inputs keep their id and queue order ahead of the replacement prompt; ignored without `interrupt` and for idle/cold targets) | prompt result (including `interrupted`, and `retainedInputs` when a retention policy ran) |
-| `devlead_retract_input` | `session`, `input_id` (required; the id `queuedInputs` reports) | `{ sessionId, inputId, retracted }` — withdraw one queued inbox input before it runs; only relay prompts this lead authored (human/scheduled/other producers' inputs are refused); idempotent (`retracted: false` when already consumed or withdrawn); target must be live and not the lead itself |
+| `devlead_get_session` | `session` (required) | `{ session, reports?, queuedInputs? }` — when reading this lead itself, `reports` carries its 5 newest retained reports (question reports include `questionStatus`/`answerStatus`); while the target is live, `queuedInputs` lists its pending inbox inputs (id, boundary, source kind/form/sender, text excerpt, enqueue time, and for DevLead messages `intent`/`questionId`/`wakeRequested`, plus a tracked answer's `deliveryState`) so stale or duplicate queued instructions can be identified before they run |
+| `devlead_prompt_session` | `session`, `prompt` (required), `intent?` (default `instruction`; `answer` requires `question_id` and steers the next step, `correction` steers, `background` injects without a wake), `question_id?` (only with `answer`), `idempotency_key?` (max 200 code points; same key + same text returns the original receipt), `watch?` (default true), `interrupt?` (default false: queue behind the running turn; `true` = stop the running turn and Host-reported subagent/job/schedule work, discard queued input per `interrupt_inbox`, then admit a new turn; idle/cold = no-op; illegal with `background`), `interrupt_inbox?` (default `clear-all`; `keep` restores every pending input after the stop, `clear-own` restores everything except this lead's own instruction/correction relays and background notices but **keeps pending answers**; `clear-all` discards answers and reopens their questions; restored inputs keep their id and queue order ahead of the replacement prompt; ignored without `interrupt` and for idle/cold targets) | prompt result including `interrupted`, `retainedInputs` when a retention policy ran, and a `delivery` receipt `{ primitive, boundary, wakeRequested, messageId, questionId?, idempotencyKey? }` (admission receipt, not a presented confirmation; no internal lane) |
+| `devlead_retract_input` | `session`, `input_id` (required; the id `queuedInputs` reports) | `{ sessionId, inputId, retracted }` — withdraw one queued inbox input before it runs; this lead's own instruction/correction relays and background notices are retractable, an **answer is refused** (removing it would desynchronize the question state; use `interrupt:true` + `interrupt_inbox:"clear-all"` to discard one and reopen its question); human/scheduled/other producers' inputs are refused; idempotent (`retracted: false` when already consumed or withdrawn); target must be live and not the lead itself |
 | `devlead_watch_session` | `session`, `watching` (required bool) | watch mutation result |
-| `devlead_notifications` | `limit?` (default 20, applied to each digest separately) | `{ notifications, reports, watched }` |
+| `devlead_notifications` | `limit?` (default 20, applied to each digest separately) | `{ notifications, reports, watched }` — question reports carry `questionStatus` (`open`/`answered`/`expired`/`cancelled`) and, when answered, `answerStatus` (`admitted`/`claimed`/`presented`/`discarded`/`failed`) plus `answerMessageId`/`answeredAt`/`presentedAt`; filter open questions with `questionStatus === "open"` (answered ≠ presented; only presented is delivery completion) |
 | `devlead_report` | `message` (required, plain text, max 4000 code points), `kind?` (`progress` default / `blocked` / `decision` / `question` / `fyi`), `summary?` (max 200) | `{ report, durable, queued, warning?, turnEndRequested?, questionId?, guidance? }` — visible only in a watched non-lead Session; one-way, never waits for a reply; only for a long-running task's mid-turn milestones (the settled turn already notifies the lead, so no routine progress / final summary; short or linear tasks should not call it); a durably forwarded `question` sets `turnEndRequested:true` (a turn-end request, not an immediate close) and is answered in a new turn via `devlead_prompt_session` or by steering the child's next step; a memory-only question requests no turn end and its warning asks for a restatement in the final assistant message |
 | `devlead_remove_workspace` | `workspace` (required: id, registered path, or exact title) | `{ workspace, removed }` (pre-removal snapshot) |
 | `devlead_archive_session` | `session` (required), `stop_running?` (default false) | `{ sessionId, archived: true, stopped }` |
@@ -604,19 +617,43 @@ turn notifies separately. The result's `interrupted` field reports whether a sto
 requested (`false` when the option was omitted, or when there was no running turn). Stop-provider
 failures are logged and do not block the replacement prompt.
 
+The `intent` selects the delivery primitive through the runtime policy table (the model never
+picks a transport): `instruction` (default) queues a next-turn boundary; `answer` (with
+`question_id`) and `correction` steer the next step; `background` injects context without
+requesting a wake. An answer is validated against the lead's durable question report: an open
+question accepts a new answer, an answered question accepts only a same-text/same-`idempotency_key`
+retry (which returns the original receipt without a second delivery), and a different answer fails
+`DEVLEAD_QUESTION_ALREADY_ANSWERED`; an unknown/foreign/expired/cancelled question fails
+`DEVLEAD_QUESTION_NOT_FOUND`. Admission writes a durable `plugin:devlead/report-answer` record
+(`admitted`), and the runtime observes the answer's inbox lifecycle in memory — `claimed` when a
+proposed pre-step takes it, `presented` only when it enters an entered step's `user/message`, and
+`discarded` (reopening the question) on a rejected pre-step, an inbox discard, or a `clear-all`
+interrupt. `questionStatus` (`open`/`answered`) and `answerStatus` are separate: answered does not
+mean presented. The result's `delivery` receipt reports the actual primitive/boundary/wake and the
+stable `messageId`; it is an admission receipt, not a presented confirmation, and exposes no
+internal lane. steer is next-step priority, not preemption or isolation: the current model
+request/tool batch finishes first, and an idle answer may share a request with an older next-turn
+input — use `interrupt: true` to replace the current work instead.
+
 Queued inbox inputs are visible, retractable, and survivable across an interrupt. While the target
 is live, `devlead_get_session` adds `queuedInputs`: each pending message's stable id, boundary
 (`next-turn` / `next-step`), source kind/form/sender, a bounded text excerpt, and its enqueue
-instant — so stale or duplicate queued instructions can be identified before they run.
-`devlead_retract_input` withdraws one such input by id; only relay prompts this lead Session
-authored are retractable (human, scheduled, and other producers' inputs are refused with an
-explanation), and the call is idempotent (`retracted: false` once the input is consumed or
-withdrawn). Because the Host stop providers always clear the inbox, `interrupt_inbox` retention is
-a snapshot before the stop and a restore of the same identified messages after it: `keep` restores
-every pending input, `clear-own` everything except this lead's own relay prompts, in their original
-queue order ahead of the replacement prompt; the result reports `retainedInputs` when a retention
-policy ran. The default `clear-all` keeps the historical behavior exactly, and the policy is
-ignored without `interrupt: true` and for idle/cold targets.
+instant — plus, for DevLead messages, the `intent`/`questionId`/`wakeRequested` and a tracked
+answer's `deliveryState` (`admitted`/`claimed`) — so stale or duplicate queued instructions can be
+identified before they run and answers distinguished from instructions.
+`devlead_retract_input` withdraws one such input by id: this lead's own instruction/correction
+relays and background notices are retractable, an **answer is refused** (removing it would
+desynchronize the question state from the child inbox; use `interrupt:true` with
+`interrupt_inbox:"clear-all"` to discard one and reopen its question), human/scheduled/other
+producers' inputs are refused with an explanation, and the call is idempotent (`retracted: false`
+once the input is consumed or withdrawn). Because the Host stop providers always clear the inbox,
+`interrupt_inbox` retention is a snapshot before the stop and a restore of the same identified
+messages after it: `keep` restores every pending input, `clear-own` everything except this lead's
+own instruction/correction relays and background notices but **keeps pending answers**, in their
+original queue order ahead of the replacement prompt; the result reports `retainedInputs` when a
+retention policy ran. The default `clear-all` discards everything (including answers, which are
+recorded `discarded` and reopen their questions), and the policy is ignored without
+`interrupt: true` and for idle/cold targets.
 
 A watched Session must not ask the human directly. The tool plugin installs a hard
 `tools/pre-execute` gate: an `ask_user_question` call from a watched non-lead Session is denied

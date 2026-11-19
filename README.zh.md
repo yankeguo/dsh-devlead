@@ -225,8 +225,10 @@ durable `team/mode`）。模型 API（`modelCatalog`、`Agent.model.select`、`m
 | `0.2.2-rc.5` | 同上，`--flow patch` | **161/161**（同轮） |
 | `0.2.2-rc.5` | `node scripts/e2e-smoke.mjs --flow installed`（Phase 1c 证据 follow-up，pin 总数） | **174/174**（171 PASS + 3 SKIP；真实 scripted child turn，含实验 worktree 阶段） |
 | `0.2.2-rc.5` | 同上，`--flow patch` | **174/174**（同轮） |
+| `0.2.2-rc.5` | `node scripts/e2e-smoke.mjs --flow installed`（Phase 1d answer routing，pin 总数） | **188/188**（185 PASS + 3 SKIP；真实 scripted answer steer + 幂等 + clear-own/clear-all） |
+| `0.2.2-rc.5` | 同上，`--flow patch` | **188/188**（同轮） |
 
-0.3.0 的 prerelease 候选（0.3.0-rc.1 / rc.2，尚未 promote 为稳定版）含 question 路由与排队 inbox 输入。Phase 1c 的 harness 轮新增 question-gate 与 `devlead_report` question checks（结构化多问题 payload 深比对、完整 wake payload 深比对、action-required wake admission、conclude/durable/memory-only 路径，以及只证明恢复可写性、不宣称自动 replay 的 recovery report），并新增两条**真实 prompted child turn**：用 scripted `llm/stream` 脚本驱动真实 agent-loop turn/step/tool 事件（无需 provider 凭据）——conclude 的 question batch 之后，已提交的 next-step marker 仍会在后续真实 step 中执行、先于唯一 completed `turn/end`；被 gate deny 的 `ask_user_question` 不会阻止模型继续运行（用例 33）。每阶段 check 总数已 pin（27 / 12 / 23 / 112，基线 DSH 0.2.2-rc.5；删 check 会使该阶段失败），PASS 与 SKIP 分开输出；rc.5 的 installed/patch 完整双流各报 **174/174**（171 PASS + 3 条无凭据 SKIP；`--no-worktree`：**151/151**）。发布前仍需按发布指南重跑完整组合。
+0.3.0 的 prerelease 候选（0.3.0-rc.1 / rc.2，尚未 promote 为稳定版）含 question 路由与排队 inbox 输入。Phase 1c 的 harness 轮新增 question-gate 与 `devlead_report` question checks（结构化多问题 payload 深比对、完整 wake payload 深比对、action-required wake admission、conclude/durable/memory-only 路径，以及只证明恢复可写性、不宣称自动 replay 的 recovery report），并新增两条**真实 prompted child turn**：用 scripted `llm/stream` 脚本驱动真实 agent-loop turn/step/tool 事件（无需 provider 凭据）——conclude 的 question batch 之后，已提交的 next-step marker 仍会在后续真实 step 中执行、先于唯一 completed `turn/end`；被 gate deny 的 `ask_user_question` 不会阻止模型继续运行（用例 33）。Phase 1d 轮新增一条真实 scripted child turn：lead 在 glob dispatch 期间用 `intent:"answer"` **steer 回答运行中的 child**（答案在后续真实 step 中 presented、先于唯一 completed `turn/end`；同键/同文本重试返回原 receipt；不同答案冲突；durable answer record 与派生视图报 answered/presented），以及 answer inbox 生命周期（queuedInputs 的 intent/questionId/wakeRequested/deliveryState、retract 拒绝 answer 但接受 background/instruction、运行中 child interrupt `clear-own` 保留 pending answer 而 `clear-all` 丢弃并重新 open question，经真实 `workspace/session-stop` fan-out）。每阶段 check 总数已 pin（27 / 12 / 23 / 126，基线 DSH 0.2.2-rc.5；删 check 会使该阶段失败），PASS 与 SKIP 分开输出；rc.5 的 installed/patch 完整双流各报 **188/188**（185 PASS + 3 条无凭据 SKIP；`--no-worktree`：**165/165**）。发布前仍需按发布指南重跑完整组合。
 
 每条 flow 有 3 条正向模型选择检查因本机无 provider 凭据记为 SKIP（打印真实原因）；负向
 model 路径与 `devlead_list_models` 在每个版本都真实运行。单元测试使用 rc.1 devDependencies，
@@ -418,8 +420,11 @@ projection 保持 `enabled: false`，工具条按钮保持 off、状态条不出
    `devlead_list_sessions` / `devlead_get_session` 查看状态，用 `devlead_prompt_session`
    继续追问或派发新任务，用 `devlead_notifications` 读取通知摘要。默认情况下，新提示词会排在
    运行中的 turn 之后；只有确实要替换子会话当前工作时才传 `interrupt: true`。被关注子会话的
-   提问会以 `question` report 到达：lead 自行回答，或从 lead 侧向人类提问后再用
-   `devlead_prompt_session` 把答案转回。
+   提问会以 `[DEV LEAD QUESTION]` wake 到达，携带完整问题与 report id：lead 自行回答，或从
+   lead 侧向人类提问后再用 `devlead_prompt_session` `intent: "answer"` 并把 `question_id` 设为
+   该 report id 转回答案。答案会 steer 子会话的下一步（空闲时开一个 turn），而不是等运行中的
+   turn 结束——这是 next-step 优先，不是抢占，也不保证与旧 next-turn 输入隔离。
+   `intent: "correction"` 同样 steer；`intent: "background"` 注入非紧急上下文、不请求唤醒。
 6. 模型在结束 turn 前向人类汇报：创建/改动/关闭了哪些 Workspace 与 Session（关闭的要说
    原因）、每个子会话被要求做什么、最近一轮如何结束、是否（例外地）在 lead 会话里直接做了
    实现、有什么需要人类决策。
@@ -452,11 +457,11 @@ id 与 path，绝不静默取第一个；此时改用 id 或路径。未知引�
 | `devlead_use_workspace` | `path`（必填，绝对路径）、`title?`、`create?`（默认 false：缺目录报错；人类明确要求时传 true 才 `mkdir -p`） | `{ workspace }` |
 | `devlead_list_sessions` | `workspace?`（id、注册路径或精确 title）、`watched_only?`、`limit?` | `{ sessions, watched }` |
 | `devlead_create_session` | `workspace?`（id、注册路径或精确 title）、`prompt?`、`title?`、`watch?`（默认 true）、`preset?`（Host 定义的 id；空白/省略时先回退插件默认 preset，再回退 Host 默认）、`isolation?`（默认 `none`；`worktree` = 尽力提供隔离检出）、`provider?`+`model?`（成对；可选 `reasoning_effort?`）、`agent_teams?` | 创建结果（含 `isolation` 结果；请求时含已应用的 `model`/`agentTeams`） |
-| `devlead_get_session` | `session`（必填） | `{ session, reports?, queuedInputs? }`——读取本 lead 自身时，`reports` 携带最近 5 条保留汇报；目标 live 时，`queuedInputs` 列出其排队 inbox 输入（id、boundary、来源 kind/form/sender、文本摘要、入队时间），便于在过期/重复的排队指示执行前识别它们 |
-| `devlead_prompt_session` | `session`、`prompt`（必填）、`watch?`（默认 true）、`interrupt?`（默认 false：排在运行中 turn 之后；`true` = 停掉运行中 turn 与 Host 报告的 subagent/job/schedule 工作、丢弃排队输入，再投递新 turn；空闲/冷会话为 no-op）、`interrupt_inbox?`（默认 `clear-all`；`keep` 在停止后恢复全部排队输入，`clear-own` 恢复除本 lead 自投 relay 外的全部；恢复的输入保留原 id 与队列顺序、排在替换 prompt 之前；无 `interrupt` 或空闲/冷目标时忽略） | 续写结果（含 `interrupted`；保留策略实际执行时含 `retainedInputs`） |
-| `devlead_retract_input` | `session`、`input_id`（必填；`queuedInputs` 报告的 id） | `{ sessionId, inputId, retracted }`——在执行前撤回一条排队 inbox 输入；仅限本 lead 自投的 relay prompt（人类/scheduled/其他来源的输入会被拒绝）；幂等（已消费或已撤回时 `retracted: false`）；目标必须 live 且不能是 lead 自身 |
+| `devlead_get_session` | `session`（必填） | `{ session, reports?, queuedInputs? }`——读取本 lead 自身时，`reports` 携带最近 5 条保留汇报（question report 带 `questionStatus`/`answerStatus`）；目标 live 时，`queuedInputs` 列出其排队 inbox 输入（id、boundary、来源 kind/form/sender、文本摘要、入队时间，DevLead 消息带 `intent`/`questionId`/`wakeRequested`，被跟踪 answer 带 `deliveryState`），便于在过期/重复的排队指示执行前识别它们 |
+| `devlead_prompt_session` | `session`、`prompt`（必填）、`intent?`（默认 `instruction`；`answer` 需 `question_id` 并 steer 下一步，`correction` steer，`background` 注入但不唤醒）、`question_id?`（仅 `answer`）、`idempotency_key?`（≤200 code points；同键同文本返回原 receipt）、`watch?`（默认 true）、`interrupt?`（默认 false：排在运行中 turn 之后；`true` = 停掉运行中 turn 与 Host 报告的 subagent/job/schedule 工作、按 `interrupt_inbox` 丢弃排队输入，再投递新 turn；空闲/冷会话为 no-op；`background` 时非法）、`interrupt_inbox?`（默认 `clear-all`；`keep` 在停止后恢复全部排队输入，`clear-own` 恢复除本 lead 自投 instruction/correction relay 与 background notice 外的全部、但**保留 pending answer**；`clear-all` 丢弃 answer 并重新 open 其 question；恢复的输入保留原 id 与队列顺序、排在替换 prompt 之前；无 `interrupt` 或空闲/冷目标时忽略） | 续写结果（含 `interrupted`；保留策略实际执行时含 `retainedInputs`；必填 `delivery` receipt `{ primitive, boundary, wakeRequested, messageId, questionId?, idempotencyKey? }`——admission 回执，不是 presented 确认，无内部 lane） |
+| `devlead_retract_input` | `session`、`input_id`（必填；`queuedInputs` 报告的 id） | `{ sessionId, inputId, retracted }`——在执行前撤回一条排队 inbox 输入；本 lead 自投的 instruction/correction relay 与 background notice 可撤，**answer 拒绝撤回**（撤回会让 question 状态与 child inbox 不一致；要丢弃 answer 并重新 open question 用 `interrupt:true` + `interrupt_inbox:"clear-all"`）；人类/scheduled/其他来源的输入会被拒绝；幂等（已消费或已撤回时 `retracted: false`）；目标必须 live 且不能是 lead 自身 |
 | `devlead_watch_session` | `session`、`watching`（必填 bool） | watch 变更结果 |
-| `devlead_notifications` | `limit?`（默认 20，分别作用于通知与汇报两个 digest） | `{ notifications, reports, watched }` |
+| `devlead_notifications` | `limit?`（默认 20，分别作用于通知与汇报两个 digest） | `{ notifications, reports, watched }`——question report 带 `questionStatus`（`open`/`answered`/`expired`/`cancelled`），已回答时带 `answerStatus`（`admitted`/`claimed`/`presented`/`discarded`/`failed`）及 `answerMessageId`/`answeredAt`/`presentedAt`；用 `questionStatus === "open"` 过滤待答问题（answered ≠ presented，只有 presented 才是投递完成） |
 | `devlead_report` | `message`（必填，纯文本，上限 4000 code points）、`kind?`（默认 `progress` / `blocked` / `decision` / `question` / `fyi`）、`summary?`（上限 200） | `{ report, durable, queued, warning?, turnEndRequested?, questionId?, guidance? }`——只在已关注的非 lead 会话可见；单向，不等待回复；只用于长任务的途中关键节点（turn 结束本就通知 lead，故不播报常规进度/最终总结，短任务/线性任务默认不调用）；durable 转发的 `question` 会设置 `turnEndRequested:true`（请求结束 turn，不是立即关闭），由 lead 在新 turn 里用 `devlead_prompt_session` 回答，或在 child 仍运行时 steer 其下一步；仅内存的 question 不请求结束 turn，warning 要求在最终 assistant 消息里重述问题 |
 | `devlead_remove_workspace` | `workspace`（必填：id、注册路径或精确 title） | `{ workspace, removed }`（注销前快照） |
 | `devlead_archive_session` | `session`（必填）、`stop_running?`（默认 false） | `{ sessionId, archived: true, stopped }` |
@@ -511,16 +516,36 @@ subagent 后代、杀掉所属 job、删除活跃 schedule 行，并默认丢弃
 请求了停止（未传选项或没有运行中的 turn 时为 false）。stop provider 失败只记日志，不阻塞
 替换提示词。
 
+`intent` 经运行时策略表选择投递原语（模型不选 transport）：`instruction`（默认）排一个
+next-turn 边界；`answer`（带 `question_id`）与 `correction` steer 下一步；`background` 注入
+上下文但不请求唤醒。answer 会对照 lead 的 durable question report 校验：open question 接受新
+answer；已 answered 的 question 只接受同文本/同 `idempotency_key` 的幂等重试（返回原 receipt、
+不重复投递），不同 answer 报 `DEVLEAD_QUESTION_ALREADY_ANSWERED`；未知/非本 lead/已过期/已取消
+的 question 报 `DEVLEAD_QUESTION_NOT_FOUND`。admission 写一条 durable
+`plugin:devlead/report-answer` 记录（`admitted`），运行时在内存观测 answer 的 inbox 生命周期——
+被 proposed pre-step 取出时 `claimed`，只有进入 entered step 的 `user/message` 才 `presented`，
+pre-step 被 reject/inbox discard/`clear-all` interrupt 时 `discarded`（重新 open question）。
+`questionStatus`（`open`/`answered`）与 `answerStatus` 是两套状态：answered 不等于 presented。
+结果的 `delivery` receipt 报告实际 primitive/boundary/wake 与稳定 `messageId`；它是 admission
+回执，不是 presented 确认，也不暴露内部 lane。steer 是 next-step 优先，不是抢占，也不保证隔离：
+当前 model request/tool batch 先完成，空闲 answer 可能与一条旧 next-turn 输入进入同一 request——
+要替换当前工作请用 `interrupt: true`。
+
 排队 inbox 输入可见、可撤、可在 interrupt 中保留。目标 live 时 `devlead_get_session` 附带
 `queuedInputs`：每条排队消息的稳定 id、boundary（`next-turn`/`next-step`）、来源
-kind/form/sender、有界文本摘要与入队时间——便于在过期/重复的排队指示执行前识别它们。
-`devlead_retract_input` 按 id 撤回一条排队输入；仅限本 lead 自投的 relay prompt（人类、
-scheduled 与其他来源的输入会被拒绝并文案说明），且幂等（输入已消费或已撤回时
-`retracted: false`）。由于 Host stop provider 固定清空 inbox，`interrupt_inbox` 的保留实现为
-「停止前快照 → 照常 stop → 以原 id/原 boundary 恢复」：`keep` 恢复全部排队输入，`clear-own`
-恢复除本 lead 自投 relay 外的全部，恢复消息按原队列顺序排在替换 prompt 之前；保留策略实际
-执行时结果含 `retainedInputs`。默认 `clear-all` 与历史行为完全一致；无 `interrupt: true` 或
-空闲/冷目标时策略被忽略。
+kind/form/sender、有界文本摘要与入队时间，DevLead 消息还带 `intent`/`questionId`/
+`wakeRequested`，被跟踪的 answer 带 `deliveryState`（`admitted`/`claimed`）——便于在过期/重复
+的排队指示执行前识别它们，并区分 instruction 与 answer。`devlead_retract_input` 按 id 撤回一条
+排队输入：本 lead 自投的 instruction/correction relay 与 background notice 可撤，**answer 拒绝
+撤回**（撤回会让 question 状态与 child inbox 不一致；要丢弃 answer 并重新 open question 用
+`interrupt:true` + `interrupt_inbox:"clear-all"`）；人类、scheduled 与其他来源的输入会被拒绝并
+文案说明；幂等（输入已消费或已撤回时 `retracted: false`）。由于 Host stop provider 固定清空
+inbox，`interrupt_inbox` 的保留实现为「停止前快照 → 照常 stop → 以原 id/原 boundary 恢复」：
+`keep` 恢复全部排队输入，`clear-own` 恢复除本 lead 自投 instruction/correction relay 与
+background notice 外的全部、但**保留 pending answer**（移除 answer 会让 question 状态与 inbox
+不一致），恢复消息按原队列顺序排在替换 prompt 之前；保留策略实际执行时结果含 `retainedInputs`。
+默认 `clear-all` 丢弃一切（含 answer，被丢弃的 answer 记 `discarded` 并重新 open 其 question）；
+无 `interrupt: true` 或空闲/冷目标时策略被忽略。
 
 被关注的子会话不能直接向人类提问。工具插件安装了硬性的 `tools/pre-execute` 闸门：来自已关注
 非 lead 子会话的 `ask_user_question` 会在其问题 UI 运行之前被拒绝，并格式化为发给 active lead

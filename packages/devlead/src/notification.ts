@@ -194,8 +194,9 @@ export type DevLeadObservedChildState = 'running' | 'idle' | 'cold'
 
 /**
  * Render one action-required question batch with the complete structured payload.
- * The current prompt tool remains the answer path; Phase 1b adds no answer-only
- * parameters and never asks the model to use one.
+ * The wake teaches the Phase 1d answer path: `devlead_prompt_session` with
+ * `intent:'answer'` and the question report id, so the lead can reply without
+ * first reading the digest.
  */
 export function renderDevLeadQuestionNotice(
   reports: readonly DevLeadReport[],
@@ -237,9 +238,13 @@ export function renderDevLeadQuestionNotice(
       lines.push('- question:', ...report.message.split('\n').map(line => `  ${line}`))
     }
     lines.push(
-      'Answer with the current devlead_prompt_session tool:',
+      'Answer with devlead_prompt_session:',
       `  session: "${report.senderSessionId}"`,
+      '  intent: "answer"',
+      `  question_id: "${report.id}"`,
       '  prompt: "<your answer>"',
+      'The answer steers the child\'s next step (a new turn if it is idle); it does not preempt the current '
+        + 'model request or tool batch. Use interrupt:true only to replace the child\'s current work.',
     )
   }
   lines.push('If you need the human, ask them first with ask_user_question, then relay the answer.')

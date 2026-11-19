@@ -169,12 +169,22 @@ export class FakeAgent {
   readonly followups: UserMessage[] = []
   /** Every message admitted through {@link steer}, in order. */
   readonly steers: UserMessage[] = []
+  /** Every message admitted through {@link inject}, in order. */
+  readonly injects: UserMessage[] = []
   /** Cross-primitive admission order for mixed-lane scheduling assertions. */
-  readonly admissions: Array<'followup' | 'steer'> = []
+  readonly admissions: Array<'followup' | 'steer' | 'inject'> = []
   /** When positive, the next {@link followup} calls throw instead of admitting. */
   failFollowups = 0
   /** When positive, the next {@link steer} calls throw instead of admitting. */
   failSteers = 0
+  /** When positive, the next {@link inject} calls throw instead of admitting. */
+  failInjects = 0
+  /**
+   * Optional live-event emitter the harness wires to the cordis Context, so a
+   * scripted claim/discard dispatches the same `agent/inbox/claimed` /
+   * `agent/inbox/discarded` events the real agent loop emits.
+   */
+  emitLiveEvent?: (type: string, payload: unknown) => void
   /** Simulate a non-idle activity whose abort signal reclassifies waking input. */
   abortedActivity = false
   /** Model selections recorded by the core through `agent.model.select`. */
@@ -267,6 +277,17 @@ export class FakeAgent {
     this.appendInput(this.abortedActivity && this.status !== 'idle' ? 'next-turn' : 'next-step', message)
   }
 
+  /** Queue one background context message at next-step without requesting a wake. */
+  inject(message: UserMessage): void {
+    if (this.failInjects > 0) {
+      this.failInjects -= 1
+      throw new Error('fake agent refused the inject')
+    }
+    this.injects.push(message)
+    this.admissions.push('inject')
+    this.appendInput('next-step', message)
+  }
+
   /** Drop every pending inbox message, emulating a drain by the driven loop. */
   drainInbox(): void {
     this.inbox.nextTurn.splice(0)
@@ -279,14 +300,23 @@ export class FakeAgent {
    * delivery-retry boundary: the notice disappears with no turn executed.
    */
   cancelInbox(): void {
-    this.removeInput('next-step', this.inbox.nextStep.length, true)
-    this.removeInput('next-turn', this.inbox.nextTurn.length, true)
+    const discarded = [
+      ...this.removeInput('next-step', this.inbox.nextStep.length, true),
+      ...this.removeInput('next-turn', this.inbox.nextTurn.length, true),
+    ]
+    for (const message of discarded) {
+      this.emitLiveEvent?.('agent/inbox/discarded', { agent: this.agent, message })
+    }
   }
 
   /** Claim all next-step input; reject consumes it without a presented message. */
   claimNextStep(options: { readonly present?: boolean; readonly turn?: number } = {}): UserMessage[] {
     const claimed = this.removeInput('next-step', this.inbox.nextStep.length, false)
-    this.presentClaimed(claimed, options.turn ?? 1, options.present ?? true)
+    const turn = options.turn ?? 1
+    for (const message of claimed) {
+      this.emitLiveEvent?.('agent/inbox/claimed', { agent: this.agent, message, turn })
+    }
+    this.presentClaimed(claimed, turn, options.present ?? true)
     return claimed
   }
 
@@ -296,7 +326,11 @@ export class FakeAgent {
       ...this.removeInput('next-step', this.inbox.nextStep.length, false),
       ...this.removeInput('next-turn', 1, false),
     ]
-    this.presentClaimed(claimed, options.turn ?? 1, options.present ?? true)
+    const turn = options.turn ?? 1
+    for (const message of claimed) {
+      this.emitLiveEvent?.('agent/inbox/claimed', { agent: this.agent, message, turn })
+    }
+    this.presentClaimed(claimed, turn, options.present ?? true)
     return claimed
   }
 
@@ -311,6 +345,8 @@ export class FakeAgentRegistry {
   private readonly byId = new Map<string, FakeAgent>()
   /** Number of {@link turnBoundaryOf} folds requested, for listing-cost assertions. */
   turnBoundaryCalls = 0
+  /** Live-event emitter wired to each registered Agent (set by the boot harness). */
+  emitter: ((type: string, payload: unknown) => void) | undefined
 
   /**
    * Register one fake Agent, replacing any previous identity.
@@ -318,6 +354,7 @@ export class FakeAgentRegistry {
    * @returns this registry, for chaining.
    */
   add(agent: FakeAgent): this {
+    if (this.emitter !== undefined) agent.emitLiveEvent = this.emitter
     this.byId.set(String(agent.id), agent)
     return this
   }
@@ -1489,6 +1526,9 @@ export async function bootService(options: BootServiceOptions = {}): Promise<Ser
   if (options.watched !== undefined) appendPluginRecord(leadSession, DEVLEAD_WATCH_RECORD_TYPE, watchRecord(options.watched, T0))
   options.seedLead?.(leadSession)
   const agents = new FakeAgentRegistry()
+  // Wire scripted inbox claims/discards to the real cordis event dispatch, so
+  // the service's answer lifecycle listeners observe them exactly as in production.
+  agents.emitter = (type, payload) => { ctx.emit(type as never, payload as never) }
   const lead = new FakeAgent(leadSession)
   if (options.registerLeadAgent !== false) agents.add(lead)
   options.extraAgents?.(agents, sessions)

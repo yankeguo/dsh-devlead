@@ -64,6 +64,21 @@ describe('translateToolError', () => {
     expect((translated as HarnessError).message).toContain('16 questions are pending')
   })
 
+  it('maps the Phase 1d question-answer failures to their stable codes', () => {
+    for (const [code, message] of [
+      ['DEVLEAD_QUESTION_NOT_FOUND', 'no question report "q" was found'],
+      ['DEVLEAD_QUESTION_ALREADY_ANSWERED', 'question "q" was already answered'],
+    ] as const) {
+      const translated = translateToolError(new DevLeadError(message, code))
+      expect(translated).toBeInstanceOf(HarnessError)
+      expect((translated as HarnessError).code).toBe(code)
+      expect((translated as HarnessError).message).toBe(message)
+      // A code-only duplicate (duplicated core package) maps too.
+      const duplicate = translateToolError(codeOnlyError(code, message))
+      expect((duplicate as HarnessError).code).toBe(code)
+    }
+  })
+
   it('maps tool input errors to DEVLEAD_INVALID_INPUT', () => {
     const translated = translateToolError(new DevLeadToolInputError('prompt must not be empty'))
     expect(translated).toBeInstanceOf(HarnessError)

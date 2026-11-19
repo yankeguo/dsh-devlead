@@ -797,6 +797,7 @@ describe('schema semantics', () => {
       ['devlead_create_session', 'watch', true],
       ['devlead_create_session', 'isolation', 'none'],
       ['devlead_prompt_session', 'watch', true],
+      ['devlead_prompt_session', 'intent', 'instruction'],
       ['devlead_prompt_session', 'interrupt', false],
       ['devlead_prompt_session', 'interrupt_inbox', 'clear-all'],
       ['devlead_notifications', 'limit', 20],
@@ -1573,7 +1574,8 @@ describe('devlead_get_session', () => {
     const definition = harness.tool('devlead_get_session').definition
     expect(definition.description).toContain('While a live Agent owns the target')
     expect(definition.description)
-      .toContain('lists its queued inbox inputs (id, boundary, source, text excerpt, enqueue time)')
+      .toContain('lists its queued inbox inputs (id, boundary, source, text excerpt, enqueue time')
+    expect(definition.description).toContain('intent/questionId/wakeRequested')
     const schema = definition.output.schema as {
       properties: { queuedInputs: { description: string } }
     }
@@ -1603,7 +1605,13 @@ describe('devlead_prompt_session', () => {
     expect(sessionId).toBe('session-1')
     expect(prompt).toBe('continue with tests')
     expect(options).toEqual({ watch: true, interrupt: false, signal: harness.exec.signal })
-    expect(value).toEqual({ sessionId: 'session-1', watched: true, resumed: false, interrupted: false })
+    expect(value).toEqual({
+      sessionId: 'session-1',
+      watched: true,
+      resumed: false,
+      interrupted: false,
+      delivery: { primitive: 'followup', boundary: 'next-turn', wakeRequested: true, messageId: 'msg-prompt-1' },
+    })
   })
 
   it('honors an explicit watch=false', async () => {
@@ -1615,7 +1623,13 @@ describe('devlead_prompt_session', () => {
 
   it('forwards an explicit interrupt and reports the outcome', async () => {
     const harness = boot()
-    harness.devLead.prompted = { sessionId: 'session-1', watched: true, resumed: false, interrupted: true }
+    harness.devLead.prompted = {
+      sessionId: 'session-1',
+      watched: true,
+      resumed: false,
+      interrupted: true,
+      delivery: { primitive: 'followup', boundary: 'next-turn', wakeRequested: true, messageId: 'msg-prompt-1' },
+    }
     const value = await harness.call('devlead_prompt_session', {
       session: 'session-1',
       prompt: 'replace the current work',
@@ -1623,7 +1637,13 @@ describe('devlead_prompt_session', () => {
     })
     const [, , , options] = harness.devLead.callsOf('promptSession')[0] ?? []
     expect(options).toEqual({ watch: true, interrupt: true, signal: harness.exec.signal })
-    expect(value).toEqual({ sessionId: 'session-1', watched: true, resumed: false, interrupted: true })
+    expect(value).toEqual({
+      sessionId: 'session-1',
+      watched: true,
+      resumed: false,
+      interrupted: true,
+      delivery: { primitive: 'followup', boundary: 'next-turn', wakeRequested: true, messageId: 'msg-prompt-1' },
+    })
   })
 
   it('forwards an explicit interrupt inbox policy and reports retained inputs', async () => {
@@ -1634,6 +1654,7 @@ describe('devlead_prompt_session', () => {
       resumed: false,
       interrupted: true,
       retainedInputs: 2,
+      delivery: { primitive: 'followup', boundary: 'next-turn', wakeRequested: true, messageId: 'msg-prompt-1' },
     }
     const value = await harness.call('devlead_prompt_session', {
       session: 'session-1',
@@ -1649,6 +1670,7 @@ describe('devlead_prompt_session', () => {
       resumed: false,
       interrupted: true,
       retainedInputs: 2,
+      delivery: { primitive: 'followup', boundary: 'next-turn', wakeRequested: true, messageId: 'msg-prompt-1' },
     })
     expectValidOutput(harness, 'devlead_prompt_session', value)
   })
@@ -1670,7 +1692,7 @@ describe('devlead_prompt_session', () => {
   it('advertises the inbox policy on the parameter, default-off and interrupt-scoped', () => {
     const harness = boot()
     const definition = harness.tool('devlead_prompt_session').definition
-    expect(definition.description).toContain('the inbox retention options on interrupt_inbox')
+    expect(definition.description).toContain('with inbox retention on interrupt_inbox')
     expect(definition.description).toContain('With watch=false this call only skips adding a watch')
     expect(definition.description).toContain('an already-watched Session stays watched')
     expect(definition.description).toContain('devlead_watch_session with watching:false')
@@ -1680,7 +1702,9 @@ describe('devlead_prompt_session', () => {
     expect(parameters.properties.interrupt_inbox.type).toBe('string')
     expect(parameters.properties.interrupt_inbox.description).toContain('defaults to "clear-all"')
     expect(parameters.properties.interrupt_inbox.description).toContain('the historical behavior')
-    expect(parameters.properties.interrupt_inbox.description).toContain('except the relay prompts this lead Session authored')
+    expect(parameters.properties.interrupt_inbox.description)
+      .toContain('except the instruction/correction relay prompts and background notices this lead Session authored')
+    expect(parameters.properties.interrupt_inbox.description).toContain('Pending answer messages are always kept by "clear-own"')
     expect(parameters.properties.interrupt_inbox.description).toContain('keep their id and queue order ahead of the replacement prompt')
     expect(parameters.properties.interrupt_inbox.description).toContain('Ignored without interrupt:true')
     expect(parameters.properties.interrupt_inbox.description).toContain('retainedInputs')
@@ -1689,8 +1713,8 @@ describe('devlead_prompt_session', () => {
   it('advertises interrupt as explicit, scoped, and default-off', () => {
     const harness = boot()
     const definition = harness.tool('devlead_prompt_session').definition
-    expect(definition.description).toContain('Default delivery queues the prompt behind')
-    expect(definition.description).toContain('set interrupt true only to replace that work')
+    expect(definition.description).toContain('instruction (default) queues a new next-turn boundary behind the current turn')
+    expect(definition.description).toContain('Set interrupt true only to replace the current work')
     // The stop-and-replace mechanics live on the interrupt parameter, stated once.
     const parameters = definition.parameters as {
       properties: { interrupt: { type: string; description: string } }
@@ -1771,8 +1795,10 @@ describe('devlead_retract_input', () => {
     const harness = boot()
     const definition = harness.tool('devlead_retract_input').definition
     expect(definition.description).toContain('the id devlead_get_session reports in queuedInputs')
-    expect(definition.description).toContain('Only relay prompts this lead Session authored can be withdrawn')
-    expect(definition.description).toContain('human, scheduled, and other producers')
+    expect(definition.description)
+      .toContain('Your own instruction/correction relay prompts and background notices can be withdrawn')
+    expect(definition.description).toContain('an answer is refused')
+    expect(definition.description).toContain('Human, scheduled, and other producers')
     expect(definition.description).toContain('already consumed or withdrawn reports retracted false')
     expect(definition.description).toContain('cannot be this lead Session itself')
     expect(definition.description).toContain('instead of layering another prompt on top of it')
@@ -2201,6 +2227,23 @@ describe('watched Session question routing', () => {
     expect(isHumanDirectedTurn(childAgent('child-human-steered', ['devlead', 'user']))).toBe(true)
   })
 
+  it('skips a lead background notice so it does not mask the human who opened the turn', () => {
+    const background = { kind: 'devlead', form: 'notice', wakeRequested: false, lane: 'background' }
+    // A background injection after the human prompt must not erase the human.
+    expect(isHumanDirectedTurn(childAgent('child-bg-after-human', ['user', background]))).toBe(true)
+    // Background alone is non-actionable context: no human is present.
+    expect(isHumanDirectedTurn(childAgent('child-bg-only', [background]))).toBe(false)
+    // An action-required devlead notice is lead-directed, not skipped context.
+    const action = { kind: 'devlead', form: 'notice', wakeRequested: true, lane: 'action-required' }
+    expect(isHumanDirectedTurn(childAgent('child-action-after-human', ['user', action]))).toBe(false)
+    // An answer relay is lead-directed too.
+    const answer = { kind: 'devlead', form: 'relay', intent: 'answer', questionId: 'q', wakeRequested: true }
+    expect(isHumanDirectedTurn(childAgent('child-answer-after-human', ['user', answer]))).toBe(false)
+    // A devlead notice without the background markers is treated as lead-directed.
+    const plainNotice = { kind: 'devlead', form: 'notice' }
+    expect(isHumanDirectedTurn(childAgent('child-plain-notice', ['user', plainNotice]))).toBe(false)
+  })
+
   it('forwards a watched child question and denies the direct UI call', async () => {
     const harness = boot()
     const child = childAgent('child-question', ['devlead'])
@@ -2600,5 +2643,172 @@ describe('presentation', () => {
     const text = renderedText(harness, 'devlead_get_session', value)
     expect(JSON.parse(text)).toEqual({ session: SESSION })
     expect(text).toBe(JSON.stringify(value))
+  })
+})
+
+describe('devlead_prompt_session intent surface (Phase 1d)', () => {
+  it('forwards a trimmed intent, question_id, and idempotency_key', async () => {
+    const harness = boot()
+    await harness.call('devlead_prompt_session', {
+      session: 'session-1',
+      prompt: 'use staging',
+      intent: 'answer',
+      question_id: '  report-q  ',
+      idempotency_key: '  k1  ',
+    })
+    const [, , , options] = harness.devLead.callsOf('promptSession')[0] ?? []
+    expect(options).toEqual({
+      watch: true,
+      interrupt: false,
+      intent: 'answer',
+      questionId: 'report-q',
+      idempotencyKey: 'k1',
+      signal: harness.exec.signal,
+    })
+  })
+
+  it('omits intent/question/idempotency when absent and treats blank as omitted', async () => {
+    const harness = boot()
+    await harness.call('devlead_prompt_session', { session: 'session-1', prompt: 'go', question_id: '  ', idempotency_key: '  ' })
+    const [, , , options] = harness.devLead.callsOf('promptSession')[0] ?? []
+    expect(options).toEqual({ watch: true, interrupt: false, signal: harness.exec.signal })
+  })
+
+  it('rejects an unknown intent through the schema enum', async () => {
+    const harness = boot()
+    const error = await failureOf(harness.call('devlead_prompt_session', { session: 'session-1', prompt: 'go', intent: 'steer' }))
+    expect(error.code).toBe('INVALID_ARGS')
+    expect(harness.devLead.callsOf('promptSession')).toHaveLength(0)
+  })
+
+  it('projects the delivery receipt without exposing an internal lane', async () => {
+    const harness = boot()
+    harness.devLead.prompted = {
+      sessionId: 'session-1',
+      watched: true,
+      resumed: false,
+      interrupted: false,
+      delivery: {
+        primitive: 'steer',
+        boundary: 'next-step',
+        wakeRequested: true,
+        messageId: 'msg-answer',
+        questionId: 'report-q',
+        idempotencyKey: 'k1',
+      },
+    }
+    const value = await harness.call('devlead_prompt_session', {
+      session: 'session-1',
+      prompt: 'use staging',
+      intent: 'answer',
+      question_id: 'report-q',
+      idempotency_key: 'k1',
+    })
+    expect(value).toEqual({
+      sessionId: 'session-1',
+      watched: true,
+      resumed: false,
+      interrupted: false,
+      delivery: {
+        primitive: 'steer',
+        boundary: 'next-step',
+        wakeRequested: true,
+        messageId: 'msg-answer',
+        questionId: 'report-q',
+        idempotencyKey: 'k1',
+      },
+    })
+    expect(value).not.toHaveProperty('lane')
+    expect((value as { delivery: Record<string, unknown> }).delivery).not.toHaveProperty('lane')
+    expectValidOutput(harness, 'devlead_prompt_session', value)
+  })
+
+  it('projects a background delivery with wakeRequested false', async () => {
+    const harness = boot()
+    harness.devLead.prompted = {
+      sessionId: 'session-1',
+      watched: true,
+      resumed: false,
+      interrupted: false,
+      delivery: { primitive: 'inject', boundary: 'next-step', wakeRequested: false, messageId: 'msg-bg' },
+    }
+    const value = await harness.call('devlead_prompt_session', { session: 'session-1', prompt: 'fyi', intent: 'background' })
+    expect((value as { delivery: { primitive: string; wakeRequested: boolean } }).delivery)
+      .toMatchObject({ primitive: 'inject', wakeRequested: false })
+    expectValidOutput(harness, 'devlead_prompt_session', value)
+  })
+
+  it('translates the question error codes from the core', async () => {
+    const harness = boot()
+    harness.devLead.failures.set('promptSession', devLeadFailure('DEVLEAD_QUESTION_NOT_FOUND'))
+    const notFound = await failureOf(harness.call('devlead_prompt_session', { session: 'session-1', prompt: 'x', intent: 'answer', question_id: 'q' }))
+    expect(notFound.code).toBe('DEVLEAD_QUESTION_NOT_FOUND')
+    harness.devLead.failures.set('promptSession', devLeadFailure('DEVLEAD_QUESTION_ALREADY_ANSWERED'))
+    const answered = await failureOf(harness.call('devlead_prompt_session', { session: 'session-1', prompt: 'x', intent: 'answer', question_id: 'q' }))
+    expect(answered.code).toBe('DEVLEAD_QUESTION_ALREADY_ANSWERED')
+  })
+})
+
+describe('question/answer state exposure (Phase 1d)', () => {
+  /** One question report fixture for the digest. */
+  const questionReport = {
+    id: 'report-q',
+    kind: 'question' as const,
+    message: 'Which target?',
+    senderSessionId: 'session-1',
+    leadSessionId: 'lead-1',
+    turn: 1,
+    at: 1_700_000_000_000,
+  }
+
+  it('enriches question reports in devlead_notifications with questionStatus/answerStatus', async () => {
+    const harness = boot()
+    harness.devLead.reportDigest = [questionReport]
+    harness.devLead.questionAnswer = {
+      questionStatus: 'answered',
+      answerStatus: 'presented',
+      answerMessageId: 'msg-answer',
+      answeredAt: 1_700_000_000_001,
+      presentedAt: 1_700_000_000_002,
+    }
+    const value = await harness.call('devlead_notifications')
+    expect((value as { reports: unknown[] }).reports).toEqual([{
+      ...questionReport,
+      questionStatus: 'answered',
+      answerStatus: 'presented',
+      answerMessageId: 'msg-answer',
+      answeredAt: 1_700_000_000_001,
+      presentedAt: 1_700_000_000_002,
+    }])
+    expect(harness.devLead.callsOf('questionAnswerView')[0]).toEqual([harness.agent, 'report-q'])
+    expectValidOutput(harness, 'devlead_notifications', value)
+  })
+
+  it('reports an open question without answer fields', async () => {
+    const harness = boot()
+    harness.devLead.reportDigest = [questionReport]
+    harness.devLead.questionAnswer = { questionStatus: 'open' }
+    const value = await harness.call('devlead_notifications')
+    expect((value as { reports: Array<Record<string, unknown>> }).reports[0])
+      .toEqual({ ...questionReport, questionStatus: 'open' })
+    expectValidOutput(harness, 'devlead_notifications', value)
+  })
+
+  it('passes queuedInput intent/questionId/wakeRequested/deliveryState through devlead_get_session', async () => {
+    const harness = boot()
+    harness.devLead.queuedInputs = [{
+      id: 'msg-answer',
+      boundary: 'next-step',
+      sourceKind: 'devlead',
+      sourceForm: 'relay',
+      senderSessionId: 'lead-1',
+      intent: 'answer',
+      questionId: 'report-q',
+      wakeRequested: true,
+      deliveryState: 'admitted',
+    }]
+    const value = await harness.call('devlead_get_session', { session: 'session-1' })
+    expect((value as { queuedInputs: unknown[] }).queuedInputs).toEqual(harness.devLead.queuedInputs)
+    expectValidOutput(harness, 'devlead_get_session', value)
   })
 })

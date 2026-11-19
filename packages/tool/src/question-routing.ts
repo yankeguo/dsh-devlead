@@ -84,7 +84,8 @@ const NON_ACTIONABLE_SOURCE_FORMS = new Set([
 /** Denial after the question report was durably handed to the lead. */
 const FORWARDED_REASON = 'Direct user questions are disabled while this Session is watched by a DevLead. '
   + 'The question was forwarded to the DevLead as a question report; end your turn now and wait for the '
-  + 'DevLead to answer in a new turn. Do not call ask_user_question again or poll for the answer.'
+  + 'DevLead\'s answer, which arrives as a new turn or steers your next step while you are still running. '
+  + 'Do not call ask_user_question again or poll for the answer.'
 
 /**
  * Restatement hint appended when the forwarded receipt is memory-only
@@ -219,11 +220,14 @@ export function formatQuestionReport(args: unknown): QuestionReport | undefined 
  *
  * The event log records the source of every user message. Only a human source
  * (`user`, `user-question-reply`, `user-approval`) makes the turn human-directed;
- * a DevLead relay is lead-directed. Known context injections and any source
- * carrying a context form are skipped, so an injected timestamp/instructions
- * notice does not erase the human who opened the turn. An unknown source kind
- * stops the scan as lead-directed instead of guessing that a human is present.
- * If no actionable prompt is visible, the gate routes the question to the lead.
+ * a DevLead relay (instruction/answer/correction) or action-required notice is
+ * lead-directed, while a DevLead background context notice (no wake) is skipped
+ * so it does not mask the human who opened the turn. Known context injections
+ * and any source carrying a context form are skipped, so an injected
+ * timestamp/instructions notice does not erase the human who opened the turn. An
+ * unknown source kind stops the scan as lead-directed instead of guessing that a
+ * human is present. If no actionable prompt is visible, the gate routes the
+ * question to the lead.
  * @param agent - child Agent whose current turn is being inspected.
  * @returns whether the latest actionable user message came from a human.
  */
@@ -240,10 +244,24 @@ export function isHumanDirectedTurn(agent: Agent): boolean {
   for (let index = events.length - 1; index > turnStart; index -= 1) {
     const event = events[index]
     if (event?.type !== 'user/message') continue
-    const source = (event.data as { source?: { kind?: unknown; form?: unknown } } | undefined)?.source
+    const source = (event.data as {
+      source?: { kind?: unknown; form?: unknown; lane?: unknown; wakeRequested?: unknown }
+    } | undefined)?.source
     const kind = source?.kind
     if (typeof kind !== 'string') return false
-    if (kind === DEVLEAD_MESSAGE_KIND) return false
+    if (kind === DEVLEAD_MESSAGE_KIND) {
+      // A DevLead relay (instruction/answer/correction) or an action-required
+      // notice is lead-directed: the human is not the decision-maker here. A
+      // background context notice (no wake) is non-actionable injected context,
+      // so keep scanning past it for the human who opened the turn — otherwise
+      // a lead's background injection would mask the human and the gate would
+      // wrongly treat the turn as lead-directed.
+      const isBackground = source?.form === 'notice'
+        && source?.wakeRequested === false
+        && source?.lane === 'background'
+      if (isBackground) continue
+      return false
+    }
     if (NON_ACTIONABLE_SOURCE_KINDS.has(kind)
       || NON_ACTIONABLE_SOURCE_PREFIXES.some(prefix => kind.startsWith(prefix))) continue
     const form = source?.form

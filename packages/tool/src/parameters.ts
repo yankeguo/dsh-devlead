@@ -158,7 +158,35 @@ export const TOOL_PARAMETERS = {
     prompt: {
       type: 'string',
       required: true,
-      description: 'Follow-up instruction admitted as a user message attributed to this DevLead Session.',
+      description: 'The message admitted as a user message attributed to this DevLead Session: an instruction, '
+        + 'an answer to a question, a correction, or background context (see intent).',
+    },
+    intent: {
+      type: 'string',
+      enum: ['instruction', 'answer', 'correction', 'background'],
+      default: 'instruction',
+      description: 'Semantic intent; defaults to "instruction" (a new next-turn boundary queued behind the '
+        + 'Session\'s current turn). "answer" replies to a question report and requires question_id; it steers '
+        + 'the child\'s next step (opening a turn if idle). "correction" changes the current approach and also '
+        + 'steers the next step. "background" injects non-urgent context without requesting a wake (queued for '
+        + 'the next step; a cold Session rejects it). steer is next-step priority, not preemption: the current '
+        + 'model request/tool batch still finishes, and an idle answer may share a request with an older '
+        + 'next-turn input — it is not isolation. Use interrupt:true to replace the current work instead.',
+    },
+    question_id: {
+      type: 'string',
+      description: 'Required for intent "answer": the question report id from the [DEV LEAD QUESTION] wake or '
+        + 'devlead_notifications. Only valid with intent "answer". An open question accepts a new answer; an '
+        + 'already-answered question accepts only a same-text/same-idempotency_key retry (returns the original '
+        + 'receipt); a different answer fails with DEVLEAD_QUESTION_ALREADY_ANSWERED. An unknown/expired/cancelled '
+        + 'question fails with DEVLEAD_QUESTION_NOT_FOUND — continue with a normal instruction then.',
+    },
+    idempotency_key: {
+      type: 'string',
+      description: 'Optional key (max 200 code points) making a retry safe: resending the same key with the same '
+        + 'prompt text returns the original admission receipt without a second delivery; a different text under '
+        + 'the same key is rejected. For answers the question_id already deduplicates; this key is mainly for '
+        + 'instruction/correction/background retries.',
     },
     watch: {
       type: 'boolean',
@@ -170,7 +198,8 @@ export const TOOL_PARAMETERS = {
       default: false,
       description: 'Defaults to false. Set true only to replace the Session\'s current work: the Host stops its '
         + 'running turn and the work its stop providers report (running subagents, owned jobs, active schedules), '
-        + 'discards queued inbox input, then admits this prompt as a new turn. An idle or cold Session is a no-op '
+        + 'discards queued inbox input per interrupt_inbox, then admits this prompt as a new turn (overriding '
+        + 'answer/correction steering). Illegal with intent "background". An idle or cold Session is a no-op '
         + 'and receives the prompt normally. The interrupted turn still produces its normal watched-turn '
         + 'notification as cancelled.',
     },
@@ -180,10 +209,12 @@ export const TOOL_PARAMETERS = {
       default: 'clear-all',
       description: 'Inbox policy applied when interrupt stops a running turn; defaults to "clear-all" (the stop '
         + 'discards every pending input, the historical behavior). "keep" restores every pending message after '
-        + 'the stop; "clear-own" restores everything except the relay prompts this lead Session authored, so '
-        + 'human and other producers\' queued inputs survive. Restored messages keep their id and queue order '
-        + 'ahead of the replacement prompt. Ignored without interrupt:true and for an idle or cold target. The '
-        + 'result reports retainedInputs when a retention policy ran.',
+        + 'the stop; "clear-own" restores everything except the instruction/correction relay prompts and '
+        + 'background notices this lead Session authored, so human and other producers\' queued inputs survive. '
+        + 'Pending answer messages are always kept by "clear-own" (removing one would desynchronize the question '
+        + 'state); "clear-all" discards them and reopens their questions. Restored messages keep their id and '
+        + 'queue order ahead of the replacement prompt. Ignored without interrupt:true and for an idle or cold '
+        + 'target. The result reports retainedInputs when a retention policy ran.',
     },
   },
   devlead_retract_input: {

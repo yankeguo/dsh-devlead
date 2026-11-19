@@ -29,6 +29,7 @@ import type {
   DevLeadPromptedSession,
   DevLeadProjection,
   DevLeadQuestion,
+  DevLeadQuestionAnswerView,
   DevLeadQueuedInput,
   DevLeadRemovedWorkspace,
   DevLeadReport,
@@ -174,7 +175,16 @@ export class FakeDevLead {
   }
 
   /** Result returned by {@link promptSession}. */
-  prompted: DevLeadPromptedSession = { sessionId: 'session-1', watched: true, resumed: false, interrupted: false }
+  prompted: DevLeadPromptedSession = {
+    sessionId: 'session-1',
+    watched: true,
+    resumed: false,
+    interrupted: false,
+    delivery: { primitive: 'followup', boundary: 'next-turn', wakeRequested: true, messageId: 'msg-prompt-1' },
+  }
+
+  /** Derived question/answer state returned by {@link questionAnswerView}. */
+  questionAnswer: DevLeadQuestionAnswerView | undefined
 
   /** Queued inputs returned by {@link sessionQueuedInputs}; undefined models a cold target. */
   queuedInputs: DevLeadQueuedInput[] | undefined
@@ -355,10 +365,23 @@ export class FakeDevLead {
     agent: Agent,
     sessionId: string,
     prompt: string,
-    options?: { watch?: boolean; interrupt?: boolean; interruptInbox?: string; signal?: AbortSignal },
+    options?: {
+      watch?: boolean
+      interrupt?: boolean
+      interruptInbox?: string
+      intent?: string
+      questionId?: string
+      idempotencyKey?: string
+      signal?: AbortSignal
+    },
   ): Promise<DevLeadPromptedSession> {
     this.enter('promptSession', agent, sessionId, prompt, options)
     return this.prompted
+  }
+
+  questionAnswerView(agent: Agent, reportId: string): DevLeadQuestionAnswerView | undefined {
+    this.enter('questionAnswerView', agent, reportId)
+    return this.questionAnswer
   }
 
   async watchSession(

@@ -28,12 +28,17 @@ import type {} from '@deepseek-ai/dsh-workspace'
 import type { SessionActivity, Workspace, WorkspaceRegistry } from '@deepseek-ai/dsh-workspace'
 import {
   DEVLEAD_DEFAULT_MAX_WATCHED,
+  DEVLEAD_ERROR_EXCERPT_MAX,
+  DEVLEAD_IDEMPOTENCY_KEY_MAX,
+  DEVLEAD_MESSAGE_KIND,
+  DEVLEAD_PROMPT_INTENTS,
   DEVLEAD_QUESTIONS_MAX,
   DEVLEAD_QUESTION_FIELD_MAX,
   DEVLEAD_QUESTION_OPTIONS_MAX,
   DEVLEAD_REPORT_MAX_PER_TURN,
   DEVLEAD_REPORT_MESSAGE_MAX,
   DEVLEAD_REPORT_SUMMARY_MAX,
+  excerptLine,
   isDevLeadReportKind,
 } from '@yankeguo/dsh-devlead-protocol'
 import type {
@@ -50,12 +55,16 @@ import type {
   DevLeadNotification,
   DevLeadProjection,
   DevLeadProjectionState,
+  DevLeadPromptDelivery,
   DevLeadPromptedSession,
+  DevLeadPromptIntent,
   DevLeadPromptSessionOptions,
   DevLeadQueuedInput,
   DevLeadQuestion,
+  DevLeadQuestionAnswerView,
   DevLeadQuestionOption,
   DevLeadReport,
+  DevLeadReportAnswer,
   DevLeadRetractedInput,
   DevLeadReportKind,
   DevLeadRemovedWorkspace,
@@ -67,14 +76,30 @@ import type {
 } from '@yankeguo/dsh-devlead-protocol'
 import {
   DEVLEAD_MODE_RECORD_TYPE,
+  DEVLEAD_REPORT_ANSWER_RECORD_TYPE,
   DEVLEAD_RESET_RECORD_TYPE,
   DEVLEAD_WATCH_RECORD_TYPE,
+  answerTextHash,
+  createDevLeadBackgroundMessage,
   createDevLeadPromptMessage,
   devLeadReport,
   modeRecord,
+  reportAnswerRecord,
   resetRecord,
   watchRecord,
 } from './domain.ts'
+import { DevLeadAnswerTracker, discardedAnswerOf } from './answers.ts'
+import type { AnswerMemoryEntry } from './answers.ts'
+import {
+  planLeadToChild,
+} from './message-policy.ts'
+import type {
+  AnswerRetryPolicy,
+  DeliveryRejectionReason,
+  PlannedDelivery,
+  QuestionPolicyState,
+  TargetState,
+} from './message-policy.ts'
 import {
   agentTeamsCapabilityOf,
   devLeadModelCatalogOf,
@@ -85,7 +110,14 @@ import {
 } from './dispatch.ts'
 import type { AgentTeamsCapability, NormalizedModelSelection } from './dispatch.ts'
 import { DevLeadError, isDevLeadError, thrownMessage } from './error.ts'
-import { isOwnRelay, keptInputsOf, queuedInputsOf, restoreInputs } from './inbox.ts'
+import {
+  isAnswerMessage,
+  isOwnRetractable,
+  keptInputsOf,
+  pendingAnswersOf,
+  queuedInputsOf,
+  restoreInputs,
+} from './inbox.ts'
 import { DevLeadReportOutbox } from './outbox.ts'
 import {
   applyDevLeadProjection,
@@ -94,6 +126,8 @@ import {
   devLeadWatchProjectionDefinition,
   devLeadProjectionView,
   emptyDevLeadProjectionState,
+  latestAnswerOf,
+  questionAnswerViewOf,
 } from './fold.ts'
 import {
   alreadyActiveMessage,
@@ -234,7 +268,20 @@ interface PromptAdmission {
   readonly interrupted: boolean
   /** Inputs restored after the stop under a keep/clear-own policy; absent otherwise. */
   readonly retainedInputs?: number
+  /** Admission receipt: the actual primitive/boundary/wake and message identity. */
+  readonly delivery: DevLeadPromptDelivery
 }
+
+/** One remembered non-answer idempotency-key admission (Phase 1 memory window). */
+interface IdempotencyWindowEntry {
+  /** SHA-256 hex of the trimmed prompt text the key was first admitted with. */
+  readonly textHash: string
+  /** The original admission receipt a same-key same-text retry returns. */
+  readonly delivery: DevLeadPromptDelivery
+}
+
+/** Maximum remembered idempotency keys per Host process; FIFO eviction bounds it. */
+const MAX_IDEMPOTENCY_WINDOW = 512
 
 /**
  * Admission failure after the interrupt stop was already requested. The stop
@@ -608,6 +655,40 @@ export class DevLeadService extends Service {
     readonly messages: Map<string, DevLeadReportReceipt>
   }>()
 
+  /**
+   * In-memory answer inbox lifecycle observation (Phase 1d). The durable
+   * authority is the lead's `plugin:devlead/report-answer` audit; this tracker
+   * advances admitted answers through claimed/presented/discarded as the child's
+   * inbox and log events arrive, and reconciles rejected pre-steps at turn/end.
+   */
+  private readonly answers = new DevLeadAnswerTracker()
+
+  /**
+   * Per-target admission serialization. Two concurrent `promptSession` calls
+   * for one target must not interleave their resolve/watch/interrupt/admission
+   * stages and land in the child inbox out of call order, so each target owns a
+   * promise chain keyed by its exact Session id.
+   */
+  private readonly promptTails = new Map<string, Promise<unknown>>()
+
+  /**
+   * Phase 1 memory window of non-answer idempotency keys (lead + target + key).
+   * A same-key same-text retry returns the original receipt; a different text
+   * under the same key is an explicit conflict. Answer idempotency is durable
+   * (the answer record), not this window.
+   */
+  private readonly idempotencyWindow = new Map<string, IdempotencyWindowEntry>()
+
+  /**
+   * Targets whose inbox is being cleared by this service's own interrupt stop.
+   * The Host stop emits `agent/inbox/discarded` for every cleared message, but a
+   * `keep`/`clear-own` interrupt restores the kept answers afterwards, so the
+   * discard listener must not reopen their questions during this window. A
+   * `clear-all` interrupt records its answer discards explicitly from the
+   * pre-stop snapshot instead.
+   */
+  private readonly interrupting = new Set<string>()
+
   /** Durable report outbox; undefined when the Host composes no storage-domain. */
   private outbox: DevLeadReportOutbox | undefined
   /** In-flight outbox opening. */
@@ -699,6 +780,46 @@ export class DevLeadService extends Service {
       })
       yield dispose
     }.bind(this), 'devlead: single active')
+    // Answer inbox lifecycle observation (Phase 1d). Admission writes the
+    // durable `admitted` fact; these listeners advance the in-memory status
+    // through claimed/presented and record discards (which reopen the question).
+    // claimed/presented durable backfill is Phase 2; nothing here fabricates a
+    // presentation that the child log does not carry.
+    this.ctx.effect(function* (this: DevLeadService) {
+      const disposables = [
+        this.ctx.on('agent/inbox/claimed', ({ agent, message }): undefined => {
+          if (this.disposed) return undefined
+          this.answers.claimed(String(agent.id), String(message.id), Date.now())
+          return undefined
+        }),
+        this.ctx.on('agent/inbox/discarded', ({ agent, message }): undefined => {
+          if (this.disposed) return undefined
+          // During this service's own interrupt stop the Host discards every
+          // pending message, but keep/clear-own restores the kept answers; the
+          // explicit clear-all snapshot handles those discards instead.
+          if (this.interrupting.has(String(agent.id))) return undefined
+          const entry = this.answers.discarded(String(agent.id), String(message.id), Date.now())
+          if (entry !== undefined) this.writeAnswerDiscard(entry, entry.at)
+          return undefined
+        }),
+        this.ctx.on('session/event', (session, event): undefined => {
+          if (this.disposed) return undefined
+          this.observeAnswerEvent(session, event)
+          return undefined
+        }),
+        this.ctx.on('agent/created', ({ agent }): undefined => {
+          if (this.disposed) return undefined
+          this.seedAnswersForAgent(agent)
+          return undefined
+        }),
+      ]
+      yield () => {
+        for (const dispose of disposables) dispose()
+      }
+    }.bind(this), 'devlead: answer lifecycle')
+    // Seed the answer tracker for Agents already live at load (the
+    // `agent/created` listener only fires for later creations).
+    for (const agent of this.ctx.agents.list()) this.seedAnswersForAgent(agent)
     await this.openOutbox()
     if (this.outbox === undefined) {
       // The storage facility often mounts after the DevLead service in the
@@ -1502,18 +1623,24 @@ export class DevLeadService extends Service {
     this.assertLive(agent)
     signal?.throwIfAborted()
     const target = this.ctx.agents.get(toSessionId(sessionId))
-    return target === undefined ? undefined : queuedInputsOf(target)
+    if (target === undefined) return undefined
+    return queuedInputsOf(target, (messageId) => {
+      const entry = this.answers.entryOfMessage(sessionId, messageId)
+      if (entry === undefined) return undefined
+      return entry.status === 'claimed' ? 'claimed' : entry.status === 'admitted' ? 'admitted' : undefined
+    })
   }
 
   /**
    * Withdraw one queued inbox input this lead Session authored.
    *
-   * Only the lead's own relay prompts are retractable: a human's queued
-   * instruction is the human's intent, a scheduled wake belongs to the
-   * schedule plugin, and another lead's relay belongs to that lead. The call
-   * is idempotent — an input already consumed or withdrawn reports
-   * `retracted: false`. The target must be live (the inbox is driver-owned)
-   * and cannot be the lead itself.
+   * The lead's own instruction/correction relay prompts and background notices
+   * are retractable; an answer is refused (removing it would desynchronize the
+   * question state from the child inbox). A human's queued instruction is the
+   * human's intent, a scheduled wake belongs to the schedule plugin, and
+   * another lead's relay belongs to that lead. The call is idempotent — an
+   * input already consumed or withdrawn reports `retracted: false`. The target
+   * must be live (the inbox is driver-owned) and cannot be the lead itself.
    * @param agent - exact live lead Agent.
    * @param sessionId - target Session reference (id or unique prefix).
    * @param inputId - Host message identity reported by queuedInputs.
@@ -1551,10 +1678,18 @@ export class DevLeadService extends Service {
     const pending = [...target.inbox.nextTurn, ...target.inbox.nextStep]
       .find(message => String(message.id) === inputId)
     if (pending === undefined) return { sessionId: targetId, inputId, retracted: false }
-    if (!isOwnRelay(pending, String(agent.id))) {
+    if (isAnswerMessage(pending)) {
       throw new DevLeadError(
-        `queued input "${inputId}" was not authored by this DevLead Session; only your own relay prompts can be `
-        + 'retracted — human, scheduled, and other producers\' inputs are not yours to remove',
+        `queued input "${inputId}" is an answer to a question; retracting it would desynchronize the question `
+        + 'state from the child inbox, so answers cannot be retracted — to discard one and reopen its question, '
+        + 'use devlead_prompt_session with interrupt:true and interrupt_inbox:"clear-all"',
+        'DEVLEAD_INVALID_INPUT',
+      )
+    }
+    if (!isOwnRetractable(pending, String(agent.id))) {
+      throw new DevLeadError(
+        `queued input "${inputId}" was not authored by this DevLead Session; only your own relay prompts and `
+        + 'background notices can be retracted — human, scheduled, and other producers\' inputs are not yours to remove',
         'DEVLEAD_INVALID_INPUT',
       )
     }
@@ -1687,6 +1822,8 @@ export class DevLeadService extends Service {
           interrupt: false,
           interruptInbox: 'clear-all',
           signal,
+          plan: planLeadToChild({ targetState: 'idle', intent: 'instruction' }) as PlannedDelivery,
+          intent: 'instruction',
         })
       }
       const deps = this.viewDeps(agent, signal)
@@ -1707,21 +1844,35 @@ export class DevLeadService extends Service {
    * Admit one prompt into an existing Session, resuming a cold Session and
    * watching it by default.
    *
-   * `interrupt: true` explicitly replaces the Session's current work: when its
-   * Agent is running, the Host's `workspace/session-stop` providers are asked
-   * to stop the turn (and the subagent/job/schedule work they report) before
-   * the prompt is admitted. The stop is fire-and-forget; the replacement
-   * prompt is queued for the next turn and starts once the aborted turn
-   * converges, so it can never join the cancelling turn. An idle or cold
-   * Session skips the stop entirely.
+   * The semantic `intent` (default `instruction`) selects the delivery through
+   * the pure policy table, never a model-chosen transport: `answer` (with a
+   * `question_id`) and `correction` steer the next step, `background` injects
+   * context without requesting a wake, and `instruction` queues a follow-up
+   * turn. `interrupt: true` overrides the intent to cancel-and-replace: when
+   * the Agent is running, the Host's `workspace/session-stop` providers stop
+   * the turn (and the subagent/job/schedule work they report) before the
+   * replacement prompt is admitted as a next turn. The stop is fire-and-forget;
+   * an idle or cold Session skips it.
+   *
+   * An answer is validated against the lead's durable question report and the
+   * observed question/answer state: an open question accepts a new answer; an
+   * answered question accepts only a same-key/same-text idempotent retry (which
+   * returns the original receipt without a second delivery); a different answer
+   * conflicts. Admission writes a durable answer record and the result carries
+   * the actual primitive/boundary/wake and the stable message identity.
+   *
+   * Concurrent calls for one target are serialized so their watch/interrupt/
+   * admission stages cannot interleave out of call order in the child inbox.
    * @param agent - exact live lead Agent.
    * @param sessionId - Session id or unique prefix.
    * @param prompt - non-empty prompt text.
-   * @param options - watch policy, interrupt policy, and cancellation checked
-   *   between stages. Cancellation after an interrupt was requested does not
-   *   roll the stop back; the replacement prompt is admitted with it.
-   * @returns the admitted prompt receipt.
-   * @throws {@link DevLeadError} when the Session is missing, archived, or cannot be resumed.
+   * @param options - intent/question/idempotency, watch policy, interrupt
+   *   policy, and cancellation checked between stages. Cancellation after an
+   *   interrupt was requested does not roll the stop back.
+   * @returns the admitted prompt receipt with its delivery facts.
+   * @throws {@link DevLeadError} when the Session is missing, archived, or
+   *   cannot be resumed, the intent combination is illegal, or the question is
+   *   not found / already answered.
    */
   async promptSession(
     agent: Agent,
@@ -1734,66 +1885,195 @@ export class DevLeadService extends Service {
     signal?.throwIfAborted()
     const text = prompt.trim()
     if (text.length === 0) throw new DevLeadError('a non-empty prompt is required', 'DEVLEAD_INVALID_INPUT')
+    const intent: DevLeadPromptIntent = options.intent ?? 'instruction'
+    if (!DEVLEAD_PROMPT_INTENTS.includes(intent)) {
+      throw new DevLeadError(
+        `prompt intent ${JSON.stringify(intent)} is not recognized; use instruction, answer, correction, or background`,
+        'DEVLEAD_INVALID_INPUT',
+      )
+    }
+    const questionId = options.questionId === undefined ? undefined : options.questionId.trim()
+    if (questionId !== undefined && questionId.length === 0) {
+      throw new DevLeadError('question_id must not be empty when provided', 'DEVLEAD_INVALID_INPUT')
+    }
+    const idempotencyKey = options.idempotencyKey === undefined ? undefined : options.idempotencyKey.trim()
+    if (idempotencyKey !== undefined
+      && (idempotencyKey.length === 0 || Array.from(idempotencyKey).length > DEVLEAD_IDEMPOTENCY_KEY_MAX)) {
+      throw new DevLeadError(
+        `idempotency_key must be 1-${DEVLEAD_IDEMPOTENCY_KEY_MAX} code points when provided`,
+        'DEVLEAD_INVALID_INPUT',
+      )
+    }
     const deps = this.viewDeps(agent, signal)
     const resolved = await resolveSessionReference(deps, sessionId)
     signal?.throwIfAborted()
-    if (String(resolved.sessionId) === String(agent.id)) {
+    const targetId = String(resolved.sessionId)
+    if (targetId === String(agent.id)) {
       throw new DevLeadError(
         'a DevLead Session cannot prompt itself; end this turn and continue from a new human turn',
         'DEVLEAD_INVALID_INPUT',
       )
     }
-    this.assertNotArchived(resolved.sessionId)
-    // Validate the cold-resume capability before the watch mutation, so a Host
-    // that cannot resume the Session does not leave a half-applied watch.
-    if (!resolved.live && this.ctx.get('sessionController') === undefined) {
-      throw new DevLeadError(
-        `Session "${resolved.sessionId}" is not live and this Host composes no Session activator, so it cannot be prompted`,
-        'DEVLEAD_SESSION_UNAVAILABLE',
-      )
-    }
-    const watch = options.watch ?? true
-    // Watch before admission: a very fast child turn/end must not settle before
-    // the watch commits, or the first wake is lost. The trade-off is that a
-    // failed/cancelled admission can leave the watch behind, so this call
-    // compensates exactly the watch it added — a pre-existing explicit watch is
-    // the caller's state and is never undone.
-    const alreadyWatched = this.strictStateOf(agent.session).sessions.includes(String(resolved.sessionId))
-    const added = watch && !alreadyWatched
-    if (added) await this.setWatching(agent, resolved.sessionId, true, signal)
-    let admission: PromptAdmission
-    try {
-      admission = await this.admitPrompt(agent, resolved.sessionId, text, {
-        allowResume: true,
-        interrupt: options.interrupt ?? false,
-        interruptInbox: options.interruptInbox ?? 'clear-all',
-        signal,
-      })
-    } catch (error: unknown) {
-      // An interrupt whose stop was already committed keeps the watch: the
-      // lead must still observe the cancelled turn and retry the prompt.
-      if (added && !(error instanceof DevLeadInterruptedAdmissionError)) {
-        // No signal: the caller's cancellation already happened, and the
-        // compensating write must still run. A rollback failure is a warning:
-        // the original failure is what the caller must see.
-        try {
-          await this.setWatching(agent, resolved.sessionId, false)
-        } catch (compensateError: unknown) {
-          this.ctx.logger.warn(
-            `devlead: could not roll back the automatic watch for Session "${String(resolved.sessionId)}": `
-            + thrownMessage(compensateError),
-          )
+    return await this.withTargetAdmission(targetId, async () => {
+      signal?.throwIfAborted()
+      const leadId = String(agent.id)
+      const archived = this.ctx.get('workspaceRegistry')?.archivedSessionIds.includes(resolved.sessionId) ?? false
+      const liveTarget = this.ctx.agents.get(resolved.sessionId)
+      const targetState: TargetState = archived
+        ? 'archived'
+        : liveTarget === undefined ? 'cold' : liveTarget.status === 'running' ? 'running' : 'idle'
+      // Gather the question facts an answer needs. The policy table owns the
+      // combination guards and the question admission decision; a missing or
+      // foreign report simply leaves `question` undefined so the policy rejects.
+      let question: QuestionPolicyState | undefined
+      let answerRetry: AnswerRetryPolicy | undefined
+      if (intent === 'answer' && questionId !== undefined) {
+        const state = this.strictStateOf(agent.session)
+        const report = state.reports.find(existing => existing.id === questionId)
+        if (report !== undefined && report.kind === 'question'
+          && report.senderSessionId === targetId && report.leadSessionId === leadId) {
+          const view = this.questionAnswerView(agent, questionId)
+          const latest = this.latestAnswerFact(agent, questionId)
+          if (view !== undefined && view.questionStatus === 'answered') {
+            const answerStatus = view.answerStatus ?? 'admitted'
+            question = {
+              questionStatus: 'answered',
+              answerStatus: answerStatus === 'claimed' || answerStatus === 'presented' ? answerStatus : 'admitted',
+            }
+          } else {
+            const answerStatus = view?.answerStatus
+            question = {
+              questionStatus: 'open',
+              ...(answerStatus === 'discarded' || answerStatus === 'failed' ? { answerStatus } : {}),
+            }
+          }
+          answerRetry = {
+            sameIdempotencyKey: idempotencyKey !== undefined && latest?.idempotencyKey === idempotencyKey,
+            sameText: latest !== undefined && latest.textHash === answerTextHash(text),
+          }
         }
       }
-      throw error
-    }
-    return {
-      sessionId: String(resolved.sessionId),
-      watched: this.strictStateOf(agent.session).sessions.includes(String(resolved.sessionId)),
-      resumed: admission.resumed,
-      interrupted: admission.interrupted,
-      ...(admission.retainedInputs === undefined ? {} : { retainedInputs: admission.retainedInputs }),
-    }
+      const plan = planLeadToChild({
+        targetState,
+        intent,
+        interrupt: options.interrupt ?? false,
+        ...(questionId === undefined ? {} : { questionId }),
+        ...(question === undefined ? {} : { question }),
+        ...(answerRetry === undefined ? {} : { answerRetry }),
+      })
+      if (plan.status === 'rejected') {
+        throw this.deliveryRejectionError(plan.reason, targetId, questionId, agent)
+      }
+      const watchedNow = (): boolean => this.strictStateOf(agent.session).sessions.includes(targetId)
+      if (plan.status === 'idempotent-replay') {
+        // A recognized answer retry returns the original receipt without a
+        // second delivery or any watch mutation.
+        return {
+          sessionId: targetId,
+          watched: watchedNow(),
+          resumed: false,
+          interrupted: false,
+          delivery: this.answerReceiptOf(agent, questionId as string),
+        }
+      }
+      if (plan.status !== 'planned') {
+        // planLeadToChild only returns planned/rejected/idempotent-replay for a
+        // lead-to-child prompt; a digest-only plan is a child-to-lead outcome.
+        throw new DevLeadError(
+          `Session "${targetId}" cannot receive this prompt right now; read devlead_notifications and retry`,
+          'DEVLEAD_SESSION_UNAVAILABLE',
+        )
+      }
+      // Non-answer idempotency window: a same-key same-text retry returns the
+      // original receipt; a different text under the same key is a conflict.
+      const windowKey = intent !== 'answer' && idempotencyKey !== undefined
+        ? `${leadId}\u0000${targetId}\u0000${idempotencyKey}`
+        : undefined
+      if (windowKey !== undefined) {
+        const previous = this.idempotencyWindow.get(windowKey)
+        if (previous !== undefined) {
+          if (previous.textHash !== answerTextHash(text)) {
+            throw new DevLeadError(
+              `idempotency_key "${idempotencyKey}" was already used for a different prompt into Session "${targetId}"; `
+              + 'use a new key or resend the original prompt text',
+              'DEVLEAD_INVALID_INPUT',
+            )
+          }
+          return { sessionId: targetId, watched: watchedNow(), resumed: false, interrupted: false, delivery: previous.delivery }
+        }
+      }
+      // Validate the cold-resume capability before the watch mutation, so a Host
+      // that cannot resume the Session does not leave a half-applied watch.
+      if (!resolved.live && this.ctx.get('sessionController') === undefined) {
+        throw new DevLeadError(
+          `Session "${targetId}" is not live and this Host composes no Session activator, so it cannot be prompted`,
+          'DEVLEAD_SESSION_UNAVAILABLE',
+        )
+      }
+      const watch = options.watch ?? true
+      // Watch before admission: a very fast child turn/end must not settle before
+      // the watch commits, or the first wake is lost. The trade-off is that a
+      // failed/cancelled admission can leave the watch behind, so this call
+      // compensates exactly the watch it added — a pre-existing explicit watch is
+      // the caller's state and is never undone.
+      const added = watch && !watchedNow()
+      if (added) await this.setWatching(agent, resolved.sessionId, true, signal)
+      let admission: PromptAdmission
+      try {
+        admission = await this.admitPrompt(agent, resolved.sessionId, text, {
+          allowResume: true,
+          interrupt: options.interrupt ?? false,
+          interruptInbox: options.interruptInbox ?? 'clear-all',
+          signal,
+          plan,
+          intent,
+          ...(questionId === undefined ? {} : { questionId }),
+          ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
+        })
+      } catch (error: unknown) {
+        // An interrupt whose stop was already committed keeps the watch: the
+        // lead must still observe the cancelled turn and retry the prompt.
+        if (added && !(error instanceof DevLeadInterruptedAdmissionError)) {
+          // No signal: the caller's cancellation already happened, and the
+          // compensating write must still run. A rollback failure is a warning:
+          // the original failure is what the caller must see.
+          try {
+            await this.setWatching(agent, resolved.sessionId, false)
+          } catch (compensateError: unknown) {
+            this.ctx.logger.warn(
+              `devlead: could not roll back the automatic watch for Session "${targetId}": `
+              + thrownMessage(compensateError),
+            )
+          }
+        }
+        throw error
+      }
+      const delivery: DevLeadPromptDelivery = {
+        ...admission.delivery,
+        ...(questionId === undefined ? {} : { questionId }),
+        ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
+      }
+      if (intent === 'answer' && questionId !== undefined) {
+        this.recordAnswerAdmission(agent, targetId, questionId, text, idempotencyKey, admission.delivery)
+      }
+      if (windowKey !== undefined) {
+        this.idempotencyWindow.delete(windowKey)
+        this.idempotencyWindow.set(windowKey, { textHash: answerTextHash(text), delivery })
+        while (this.idempotencyWindow.size > MAX_IDEMPOTENCY_WINDOW) {
+          const oldest = this.idempotencyWindow.keys().next().value
+          if (oldest === undefined) break
+          this.idempotencyWindow.delete(oldest)
+        }
+      }
+      return {
+        sessionId: targetId,
+        watched: watchedNow(),
+        resumed: admission.resumed,
+        interrupted: admission.interrupted,
+        ...(admission.retainedInputs === undefined ? {} : { retainedInputs: admission.retainedInputs }),
+        delivery,
+      }
+    })
   }
 
   /**
@@ -3260,17 +3540,6 @@ export class DevLeadService extends Service {
     }
   }
 
-  /** Reject a Session the Workspace registry lists as archived. */
-  private assertNotArchived(sessionId: ReturnType<typeof toSessionId>): void {
-    const archived = this.ctx.get('workspaceRegistry')?.archivedSessionIds.includes(sessionId) ?? false
-    if (archived) {
-      throw new DevLeadError(
-        `Session "${sessionId}" is archived; restore it from the Workspace sidebar before continuing it`,
-        'DEVLEAD_SESSION_ARCHIVED',
-      )
-    }
-  }
-
   /** Map one Session-controller failure to the stable DevLead vocabulary. */
   private sessionUnavailable(message: string, error: unknown): DevLeadError {
     const code = remoteCodeOf(error)
@@ -3304,26 +3573,30 @@ export class DevLeadService extends Service {
   }
 
   /**
-   * Admit one lead-authored prompt into a Session, resuming a cold Session.
+   * Admit one lead-authored prompt into a Session, resuming a cold Session and
+   * dispatching the primitive the policy plan selected.
    *
    * `interrupt` is evaluated only against a live running Agent. The Host's
    * `workspace/session-stop` providers are the same fan-out archive
    * `stopActivity` uses; they cancel the turn and stop the Session's reported
-   * subagent/job/schedule work. The stop is fire-and-forget: `followup` is
-   * admitted immediately afterwards, and the Agent reclassifies a wake after
-   * an aborted phase to the next turn and latches it until the aborted
-   * activity converges, so the prompt cannot enter the cancelling turn. No
-   * settlement wait is needed. The inbox retention restore is best-effort: a
-   * failed restore is a warning, and the replacement prompt is admitted anyway
-   * because the stop cannot be rolled back.
+   * subagent/job/schedule work. The stop is fire-and-forget: the replacement
+   * prompt is admitted immediately afterwards, and the Agent reclassifies a
+   * wake after an aborted phase to the next turn and latches it until the
+   * aborted activity converges, so the prompt cannot enter the cancelling turn.
+   * The inbox retention restore is best-effort. A `clear-all` stop discards
+   * pending answers (recording them discarded so their questions reopen);
+   * `keep`/`clear-own` retain them. A new answer replaces any still-pending
+   * older answer of the same question.
+   *
+   * The result's `boundary` reflects where the message actually landed: DSH may
+   * reclassify a waking steer to next-turn on an aborted phase, so the inbox is
+   * inspected after admission rather than trusting the plan alone.
    * @param leadAgent - exact live lead Agent.
    * @param sessionId - target Session identity.
    * @param text - non-empty prompt text.
-   * @param options - resume policy, interrupt policy, and cancellation checked
-   *   before each stage. Once an interrupt is requested, cancellation does not
-   *   roll it back; the replacement prompt is admitted with the stop.
-   * @returns whether the Host resumed a cold Session and whether it was asked
-   *   to interrupt a running turn.
+   * @param options - resume/interrupt policy, the policy plan, the intent and
+   *   answer/idempotency metadata, and cancellation checked before each stage.
+   * @returns the admission outcome including the delivery receipt.
    */
   private async admitPrompt(
     leadAgent: Agent,
@@ -3334,6 +3607,10 @@ export class DevLeadService extends Service {
       interrupt: boolean
       interruptInbox: DevLeadInterruptInboxPolicy
       signal: AbortSignal | undefined
+      plan: PlannedDelivery
+      intent: DevLeadPromptIntent
+      questionId?: string
+      idempotencyKey?: string
     },
   ): Promise<PromptAdmission> {
     const signal = options.signal
@@ -3373,8 +3650,14 @@ export class DevLeadService extends Service {
       signal?.throwIfAborted()
     }
     signal?.throwIfAborted()
+    const leadId = String(leadAgent.id)
+    const targetId = String(sessionId)
     let interrupted = false
     let retainedInputs: number | undefined
+    const clearsAll = options.interrupt && options.interruptInbox === 'clear-all'
+    // Snapshot the pending answers a clear-all stop is about to discard, so
+    // their questions can be reopened with a durable discard record.
+    const answersBeforeClear = clearsAll && target.status === 'running' ? pendingAnswersOf(target) : []
     if (options.interrupt && target.status === 'running') {
       // This is the last cancellation point: once the stop providers are asked
       // to cancel the child, the replacement prompt is committed with the stop
@@ -3382,25 +3665,71 @@ export class DevLeadService extends Service {
       interrupted = true
       // The stop providers always clear the inbox, so a retention policy is a
       // snapshot before the stop and a restore of the same identified messages
-      // after it — never a veto of the stop itself.
-      const kept = keptInputsOf(target, String(leadAgent.id), options.interruptInbox)
-      await this.stopSessionActivity(sessionId)
-      if (options.interruptInbox !== 'clear-all') {
-        try {
-          retainedInputs = restoreInputs(target, kept)
-        } catch (error: unknown) {
-          // The stop is already committed, so a failed restore must not strand
-          // the replacement prompt (or trigger the caller's watch rollback).
-          // The cancelled work is lost, but the new instruction still runs.
-          this.ctx.logger.warn(
-            `devlead: could not restore queued input for Session "${sessionId}" after the interrupt: `
-            + thrownMessage(error),
-          )
+      // after it — never a veto of the stop itself. Suppress the discard
+      // listener for this target across the stop+restore window so a restored
+      // answer is not reopened by the Host's clear-time discard events.
+      const kept = keptInputsOf(target, leadId, options.interruptInbox)
+      this.interrupting.add(targetId)
+      try {
+        await this.stopSessionActivity(sessionId)
+        if (options.interruptInbox !== 'clear-all') {
+          try {
+            retainedInputs = restoreInputs(target, kept)
+          } catch (error: unknown) {
+            // The stop is already committed, so a failed restore must not strand
+            // the replacement prompt (or trigger the caller's watch rollback).
+            // The cancelled work is lost, but the new instruction still runs.
+            this.ctx.logger.warn(
+              `devlead: could not restore queued input for Session "${sessionId}" after the interrupt: `
+              + thrownMessage(error),
+            )
+          }
         }
+      } finally {
+        this.interrupting.delete(targetId)
       }
     }
+    if (interrupted && clearsAll) {
+      for (const pending of answersBeforeClear) {
+        if (pending.senderSessionId !== leadId) continue
+        this.discardPendingAnswer(targetId, pending.message.id, pending.questionId, leadId)
+      }
+    }
+    // A new answer replaces any still-pending older answer of the same question
+    // (for example one a keep/clear-own restore brought back after a reopen), so
+    // two answers never coexist and the newest record is authoritative.
+    if (options.intent === 'answer' && options.questionId !== undefined) {
+      for (const pending of pendingAnswersOf(target)) {
+        if (pending.questionId !== options.questionId || pending.senderSessionId !== leadId) continue
+        this.discardPendingAnswer(targetId, pending.message.id, pending.questionId, leadId)
+        target.inbox.remove(pending.message.id)
+      }
+    }
+    const message = options.intent === 'background'
+      ? createDevLeadBackgroundMessage(text, leadAgent)
+      : createDevLeadPromptMessage(
+        options.intent === 'answer' && options.questionId !== undefined
+          ? `[DEV LEAD ANSWER to question ${options.questionId}]\n${text}`
+          : text,
+        leadAgent,
+        {
+          intent: options.intent === 'answer' ? 'answer' : options.intent === 'correction' ? 'correction' : 'instruction',
+          ...(options.questionId === undefined ? {} : { questionId: options.questionId }),
+          ...(options.idempotencyKey === undefined ? {} : { idempotencyKey: options.idempotencyKey }),
+        },
+      )
     try {
-      target.followup(createDevLeadPromptMessage(text, leadAgent))
+      switch (options.plan.primitive) {
+        case 'steer':
+          target.steer(message)
+          break
+        case 'inject':
+          target.inject(message)
+          break
+        default:
+          target.followup(message)
+          break
+      }
     } catch (error: unknown) {
       const detail = `could not admit a prompt into Session "${sessionId}": ${thrownMessage(error)}`
       if (interrupted) {
@@ -3411,7 +3740,385 @@ export class DevLeadService extends Service {
       throw new DevLeadError(detail, 'DEVLEAD_SESSION_UNAVAILABLE')
     }
     await this.flushDurably(target.session, `prompt into Session "${sessionId}"`)
-    return { resumed, interrupted, ...(retainedInputs === undefined ? {} : { retainedInputs }) }
+    const messageId = String(message.id)
+    // Report the boundary the message actually occupies: a waking steer admitted
+    // on an aborted phase is reclassified to next-turn by DSH.
+    const boundary = target.inbox.nextStep.some(entry => String(entry.id) === messageId)
+      ? 'next-step'
+      : target.inbox.nextTurn.some(entry => String(entry.id) === messageId)
+        ? 'next-turn'
+        : options.plan.boundary
+    return {
+      resumed,
+      interrupted,
+      ...(retainedInputs === undefined ? {} : { retainedInputs }),
+      delivery: {
+        primitive: options.plan.primitive,
+        boundary,
+        wakeRequested: options.plan.wakeRequested,
+        messageId,
+      },
+    }
+  }
+
+  /**
+   * Serialize one target's prompt admission stages behind any in-flight call
+   * for the same target, so concurrent calls land in the child inbox in call
+   * order. The chain never rejects (a failed call must not strand the next).
+   * @param targetId - exact target Session identity.
+   * @param body - the admission stages to run exclusively for this target.
+   * @returns the body's result.
+   */
+  private async withTargetAdmission<T>(targetId: string, body: () => Promise<T>): Promise<T> {
+    const previous = this.promptTails.get(targetId) ?? Promise.resolve()
+    const run = previous.then(() => body())
+    const tail = run.then(() => undefined, () => undefined)
+    this.promptTails.set(targetId, tail)
+    try {
+      return await run
+    } finally {
+      if (this.promptTails.get(targetId) === tail) this.promptTails.delete(targetId)
+    }
+  }
+
+  /**
+   * Map one policy rejection to the stable DevLead error vocabulary.
+   * @param reason - the policy's rejection reason.
+   * @param targetId - target Session identity used in the message.
+   * @param questionId - question identity for the answer-specific rejections.
+   * @param agent - calling lead Agent, used to read the existing answer excerpt.
+   * @returns the domain failure to throw.
+   */
+  private deliveryRejectionError(
+    reason: DeliveryRejectionReason,
+    targetId: string,
+    questionId: string | undefined,
+    agent: Agent,
+  ): DevLeadError {
+    switch (reason) {
+      case 'answer-question-id-required':
+        return new DevLeadError(
+          'intent "answer" requires question_id; name the question report this prompt answers',
+          'DEVLEAD_INVALID_INPUT',
+        )
+      case 'question-id-not-allowed':
+        return new DevLeadError(
+          'question_id is only valid with intent "answer"; use intent "answer" to reply to a question',
+          'DEVLEAD_INVALID_INPUT',
+        )
+      case 'background-question-id':
+        return new DevLeadError(
+          'background context cannot answer a question; use intent "answer" with question_id',
+          'DEVLEAD_INVALID_INPUT',
+        )
+      case 'background-interrupt':
+        return new DevLeadError(
+          'background context cannot interrupt the Session\'s work; use instruction or correction to replace it',
+          'DEVLEAD_INVALID_INPUT',
+        )
+      case 'question-not-found':
+        return new DevLeadError(
+          `no question report "${questionId ?? ''}" addressed to this lead from Session "${targetId}" was found; `
+          + 'it may have been answered and aged out, expired, or cancelled — read devlead_notifications, '
+          + 'or continue the Session with a normal instruction',
+          'DEVLEAD_QUESTION_NOT_FOUND',
+        )
+      case 'question-not-open':
+        return new DevLeadError(
+          `question "${questionId ?? ''}" is expired or cancelled and no longer accepts an answer; `
+          + 'continue the Session with a normal instruction instead',
+          'DEVLEAD_QUESTION_NOT_FOUND',
+        )
+      case 'question-already-answered': {
+        const excerpt = this.latestAnswerFact(agent, questionId ?? '')?.textExcerpt
+        return new DevLeadError(
+          `question "${questionId ?? ''}" was already answered${excerpt === undefined ? '' : ` ("${excerpt}")`}; `
+          + 'a different answer is a conflict — resend the same answer text/idempotency_key for an idempotent retry, '
+          + 'or send a correction/instruction without question_id to change direction',
+          'DEVLEAD_QUESTION_ALREADY_ANSWERED',
+        )
+      }
+      case 'target-archived':
+        return new DevLeadError(
+          `Session "${targetId}" is archived; restore it from the Workspace sidebar before continuing it`,
+          'DEVLEAD_SESSION_ARCHIVED',
+        )
+      case 'background-cold-target':
+        return new DevLeadError(
+          `Session "${targetId}" is cold and background context does not resume a Session; `
+          + 'use intent "instruction" to resume and prompt it',
+          'DEVLEAD_INVALID_INPUT',
+        )
+    }
+  }
+
+  /**
+   * Read the derived question/answer state of one question report, overlaying
+   * the runtime's in-memory inbox observation on the durable fold.
+   * @param agent - exact live lead Agent.
+   * @param reportId - question report identity.
+   * @returns the question/answer view, or undefined when the report is not a retained question.
+   * @throws {@link DevLeadError} when the caller is not live or the projection is corrupt.
+   */
+  questionAnswerView(agent: Agent, reportId: string): DevLeadQuestionAnswerView | undefined {
+    this.assertLive(agent)
+    const state = this.strictStateOf(agent.session)
+    const foldView = questionAnswerViewOf(state, reportId)
+    if (foldView === undefined) return undefined
+    const entry = this.answers.entryOfQuestion(String(agent.id), reportId)
+    if (entry === undefined) return foldView
+    return {
+      questionStatus: entry.status === 'discarded' || entry.status === 'failed' ? 'open' : 'answered',
+      answerStatus: entry.status,
+      answerMessageId: entry.messageId,
+      answeredAt: entry.firstAdmittedAt,
+      ...(entry.presentedAt === undefined ? {} : { presentedAt: entry.presentedAt }),
+    }
+  }
+
+  /**
+   * Read the newest answer fact of one question (memory first, then the durable
+   * audit) for retry recognition and conflict messages.
+   * @param agent - exact live lead Agent.
+   * @param reportId - question report identity.
+   * @returns the newest answer's retry/excerpt facts, or undefined when unanswered.
+   */
+  private latestAnswerFact(
+    agent: Agent,
+    reportId: string,
+  ): { readonly textHash: string; readonly idempotencyKey?: string; readonly textExcerpt?: string } | undefined {
+    const entry = this.answers.entryOfQuestion(String(agent.id), reportId)
+    if (entry !== undefined) return entry
+    return latestAnswerOf(this.strictStateOf(agent.session).answers, reportId)
+  }
+
+  /**
+   * Rebuild the original admission receipt of an answered question for an
+   * idempotent replay.
+   * @param agent - exact live lead Agent.
+   * @param questionId - question report identity.
+   * @returns the original delivery receipt.
+   * @throws {@link DevLeadError} `DEVLEAD_QUESTION_NOT_FOUND` when no answer fact exists.
+   */
+  private answerReceiptOf(agent: Agent, questionId: string): DevLeadPromptDelivery {
+    const entry = this.answers.entryOfQuestion(String(agent.id), questionId)
+    const fact = entry ?? latestAnswerOf(this.strictStateOf(agent.session).answers, questionId)
+    if (fact === undefined) {
+      throw new DevLeadError(
+        `question "${questionId}" has no answer receipt to replay; read devlead_notifications`,
+        'DEVLEAD_QUESTION_NOT_FOUND',
+      )
+    }
+    return {
+      primitive: fact.primitive ?? 'steer',
+      boundary: fact.boundary ?? 'next-step',
+      wakeRequested: fact.wakeRequested ?? true,
+      messageId: fact.messageId,
+      questionId,
+      ...(fact.idempotencyKey === undefined ? {} : { idempotencyKey: fact.idempotencyKey }),
+    }
+  }
+
+  /**
+   * Record one successfully admitted answer: append the durable `admitted`
+   * fact to the lead's log (a write failure is a warning, not a failed answer)
+   * and register the in-memory lifecycle entry.
+   * @param agent - exact live lead Agent.
+   * @param targetId - child Session identity.
+   * @param questionId - question report identity.
+   * @param text - trimmed answer prompt (hashed without the runtime prefix).
+   * @param idempotencyKey - lead-supplied key, when provided.
+   * @param delivery - the admission receipt.
+   */
+  private recordAnswerAdmission(
+    agent: Agent,
+    targetId: string,
+    questionId: string,
+    text: string,
+    idempotencyKey: string | undefined,
+    delivery: DevLeadPromptDelivery,
+  ): void {
+    const at = Date.now()
+    const leadId = String(agent.id)
+    const textHash = answerTextHash(text)
+    const textExcerpt = excerptLine(text, DEVLEAD_ERROR_EXCERPT_MAX)
+    const priorEntry = this.answers.entryOfQuestion(leadId, questionId)
+    const priorRecord = latestAnswerOf(this.strictStateOf(agent.session).answers, questionId)
+    const firstAdmittedAt = priorEntry?.firstAdmittedAt ?? priorRecord?.answeredAt ?? at
+    const primitive = delivery.primitive === 'followup' ? 'followup' : 'steer'
+    const answer: DevLeadReportAnswer = {
+      reportId: questionId,
+      leadSessionId: leadId,
+      sessionId: targetId,
+      messageId: delivery.messageId,
+      at,
+      status: 'admitted',
+      textHash,
+      answeredAt: firstAdmittedAt,
+      ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
+      ...(textExcerpt === undefined ? {} : { textExcerpt }),
+      primitive,
+      boundary: delivery.boundary,
+      wakeRequested: delivery.wakeRequested,
+    }
+    try {
+      appendPluginRecord(agent.session, DEVLEAD_REPORT_ANSWER_RECORD_TYPE, reportAnswerRecord(answer))
+    } catch (error: unknown) {
+      this.ctx.logger.warn(
+        `devlead: could not record the answer to question "${questionId}" for lead "${leadId}": ${thrownMessage(error)}`,
+      )
+    }
+    void this.flushDurably(agent.session, `answer record for question "${questionId}"`)
+    this.answers.remember({
+      reportId: questionId,
+      leadSessionId: leadId,
+      sessionId: targetId,
+      messageId: delivery.messageId,
+      status: 'admitted',
+      at,
+      firstAdmittedAt,
+      ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
+      textHash,
+      ...(textExcerpt === undefined ? {} : { textExcerpt }),
+      primitive,
+      boundary: delivery.boundary,
+      wakeRequested: delivery.wakeRequested,
+    })
+  }
+
+  /**
+   * Append one durable discard fact for a tracked answer and flush best-effort.
+   * A cold/detached lead log cannot accept the record yet; the in-memory status
+   * still reopened the question, and a later live index reconciles the audit.
+   * @param entry - the discarded answer entry.
+   * @param at - discard instant.
+   */
+  private async writeAnswerDiscard(entry: AnswerMemoryEntry, at: number): Promise<void> {
+    const leadSession = this.ctx.sessions.get(toSessionId(entry.leadSessionId))
+    if (leadSession === undefined) return
+    try {
+      appendPluginRecord(leadSession, DEVLEAD_REPORT_ANSWER_RECORD_TYPE, reportAnswerRecord(discardedAnswerOf(entry, at)))
+    } catch (error: unknown) {
+      this.ctx.logger.warn(
+        `devlead: could not record the discard of answer "${entry.messageId}": ${thrownMessage(error)}`,
+      )
+      return
+    }
+    await this.flushDurably(leadSession, `answer discard for question "${entry.reportId}"`)
+  }
+
+  /**
+   * Discard one pending answer message (interrupt clear-all or replacement),
+   * advancing the memory entry and writing a durable discard so the question
+   * reopens. When no memory entry exists (after a restart), the durable admitted
+   * record supplies the facts needed for the discard.
+   * @param targetId - child Session identity.
+   * @param messageId - pending answer message identity.
+   * @param questionId - question report identity read from the message source.
+   * @param leadId - authoring lead Session identity.
+   */
+  private discardPendingAnswer(targetId: string, messageId: string, questionId: string, leadId: string): void {
+    const at = Date.now()
+    const advanced = this.answers.discarded(targetId, messageId, at)
+    if (advanced !== undefined) {
+      void this.writeAnswerDiscard(advanced, at)
+      return
+    }
+    const entry = this.answers.entryOfMessage(targetId, messageId)
+    if (entry !== undefined) return // already terminal (presented/discarded/failed)
+    // No live memory entry: derive the discard from the durable admitted record.
+    const leadSession = this.ctx.sessions.get(toSessionId(leadId))
+    if (leadSession === undefined) return
+    const state = this.projectionHandle.stateOf(leadSession)
+    if (state.failure !== null) return
+    const record = latestAnswerOf(state.answers, questionId)
+    if (record === undefined || record.messageId !== messageId) return
+    const discarded: DevLeadReportAnswer = {
+      reportId: record.reportId,
+      leadSessionId: record.leadSessionId,
+      sessionId: record.sessionId,
+      messageId: record.messageId,
+      at,
+      status: 'discarded',
+      textHash: record.textHash,
+      answeredAt: record.answeredAt ?? record.at,
+      ...(record.idempotencyKey === undefined ? {} : { idempotencyKey: record.idempotencyKey }),
+      ...(record.textExcerpt === undefined ? {} : { textExcerpt: record.textExcerpt }),
+      ...(record.primitive === undefined ? {} : { primitive: record.primitive }),
+      ...(record.boundary === undefined ? {} : { boundary: record.boundary }),
+      ...(record.wakeRequested === undefined ? {} : { wakeRequested: record.wakeRequested }),
+    }
+    try {
+      appendPluginRecord(leadSession, DEVLEAD_REPORT_ANSWER_RECORD_TYPE, reportAnswerRecord(discarded))
+    } catch (error: unknown) {
+      this.ctx.logger.warn(`devlead: could not record the discard of answer "${messageId}": ${thrownMessage(error)}`)
+      return
+    }
+    void this.flushDurably(leadSession, `answer discard for question "${questionId}"`)
+    this.answers.remember({
+      reportId: questionId,
+      leadSessionId: leadId,
+      sessionId: targetId,
+      messageId,
+      status: 'discarded',
+      at,
+      firstAdmittedAt: record.answeredAt ?? record.at,
+      ...(record.idempotencyKey === undefined ? {} : { idempotencyKey: record.idempotencyKey }),
+      textHash: record.textHash,
+      ...(record.textExcerpt === undefined ? {} : { textExcerpt: record.textExcerpt }),
+      primitive: record.primitive ?? 'steer',
+      boundary: record.boundary ?? 'next-step',
+      wakeRequested: record.wakeRequested ?? true,
+    })
+  }
+
+  /**
+   * Observe one child Session log event for answer presentation and turn-end
+   * reconciliation. A `user/message` carrying the answer's identity is the only
+   * proof of presentation; a `turn/end` discards any claimed answer that never
+   * became a `user/message` (a rejected pre-step).
+   * @param session - child Session whose log grew.
+   * @param event - the committed event.
+   */
+  private observeAnswerEvent(session: Session, event: SessionEvent): void {
+    const sessionId = String(session.id)
+    if (event.type === 'user/message') {
+      const message = event.data
+      const source = message.source as { kind?: unknown; questionId?: unknown } | undefined
+      if (source?.kind === DEVLEAD_MESSAGE_KIND && typeof source.questionId === 'string') {
+        this.answers.presented(sessionId, String(message.id), event.time)
+      }
+      return
+    }
+    if (event.type === 'turn/end') {
+      for (const entry of this.answers.reconcileTurnEnd(sessionId, event.time)) {
+        void this.writeAnswerDiscard(entry, entry.at)
+      }
+    }
+  }
+
+  /**
+   * Seed the answer tracker from durable state when a Session becomes live, so
+   * a restart resumes observing pending answers. Answers targeting this Session
+   * are seeded from its watching leads; a lead's own authored answers are seeded
+   * so their lifecycle can be observed and reconciled.
+   * @param agent - the newly live Agent.
+   */
+  private seedAnswersForAgent(agent: Agent): void {
+    const sessionId = String(agent.id)
+    for (const leadId of this.hub?.supervisorsOf(sessionId) ?? []) {
+      const leadSession = this.ctx.sessions.get(toSessionId(leadId))
+      if (leadSession === undefined) continue
+      const state = this.projectionHandle.stateOf(leadSession)
+      if (state.failure !== null) continue
+      for (const answer of state.answers) {
+        if (answer.sessionId === sessionId) this.answers.seed(answer)
+      }
+    }
+    const ownState = this.projectionHandle.stateOf(agent.session)
+    if (ownState.failure === null && ownState.enabled) {
+      for (const answer of ownState.answers) this.answers.seed(answer)
+    }
   }
 
   /**

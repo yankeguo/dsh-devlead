@@ -46,6 +46,7 @@ rc.5 的 `dsh-web` 在未配置 `web.searchProvider` 时按模型路由选择：
 | `devlead_prompt_session interrupt`（`workspace/session-stop` providers） | 支持 | 支持 | 支持 | 支持 | 支持 |
 | 排队 inbox 输入：`queuedInputs` 明细 / `devlead_retract_input` / `interrupt_inbox` 策略 | 支持 | 支持 | 支持 | 支持 | 支持 |
 | watched 子会话问题路由（`tools/pre-execute` + `question` report） | 支持 | 支持 | 支持 | 支持 | 支持 |
+| Phase 1d answer routing（`intent`/`question_id`/`idempotency_key` + answer/correction steer + answer record + `delivery`） | 支持 | 支持 | 支持 | 支持 | 支持 |
 | 可选 worktree 隔离 | 可选 bundle | 可选 bundle | 可选 bundle | 可选 bundle | 可选 bundle |
 | `agent_teams: true` | 不可用\* | 支持† | 支持† | 支持† | 支持† |
 
@@ -72,6 +73,15 @@ Agent registry 的 turn provider、jobs / subagent / schedule providers，以及
 watched 子会话问题路由依赖五个 tag 都存在的 `tools/pre-execute` waterfall 与稳定的
 `ask_user_question` 工具名；legacy / timed 两种 schema 共用该名字。该结论已在 rc.1–rc.5 的
 独立 worktree 中核对，未新增 DSH peer 范围要求。
+
+Phase 1d answer routing 依赖的 Host API 在五个 tag 都存在：`Agent.followup` / `steer` / `inject`
+（rc.1 `dsh-agent` `runtime-types.d.ts` 已声明；`steer` 对 idle 开 turn、对 running 在下一
+pre-step claim，`inject` 不请求 driver wake），`agent/inbox/claimed` / `agent/inbox/discarded`
+live 事件与 `user/message` / `turn/end` durable 事件（answer 的 claimed/presented/discarded
+内存观测与 turn-end 对账），以及 aborted phase 上把 waking steer 重归类为 `next-turn` 的 send
+逻辑（`delivery.boundary` 以实际 inbox 落点为准）。answer record 走既有 `appendPluginRecord` +
+`plugin:devlead/*` fold，不新增 DSH peer 范围要求。真实 rc.5 answer E2E（scripted child answer
+真实 step + 幂等 + clear-own/clear-all）在 installed/patch 双流通过。
 
 ## 真实 E2E
 
@@ -108,12 +118,16 @@ TMPDIR="$BASE/tmp" DSH_BIN="$DSH_BIN" node scripts/e2e-smoke.mjs \
 | `0.2.2-rc.5` | installed 完整（排队输入轮重跑） | **150/150**（phase 3 88，另含 4 条排队 inbox checks） |
 | `0.2.2-rc.5` | patch 完整（排队输入轮重跑） | **150/150**（同上） |
 | `0.2.2-rc.5` | installed `--no-worktree`（排队输入轮重跑） | **127/127**（phase 1 27 + 1b 12 + 3 88） |
+| `0.2.2-rc.5` | installed / patch 完整（Phase 1c 证据轮，pin 总数） | **174/174** 各（171 PASS + 3 SKIP；真实 scripted child turn） |
+| `0.2.2-rc.5` | installed / patch 完整（Phase 1d answer routing，pin 总数） | **188/188** 各（185 PASS + 3 SKIP；phase 3 126，含真实 answer steer + 幂等 + clear-own/clear-all） |
 
 rc.1–rc.4 的行是各自发布时的 harness 计数；0.3.0 的 prerelease 候选（0.3.0-rc.1 / rc.2，尚未 promote
 为稳定版）含 question 路由与排队 inbox 输入，当前 harness 的 phase 3 含这些 checks。0.2.6+ 审计轮（[AUDIT](AUDIT.md) §12）已按当前 harness 重跑 rc.5
 `--no-worktree`（123/123）与 installed/patch 完整（各 146/146，安装版 rc.5）；排队输入轮再增
-4 条 inbox checks 后重跑 rc.5 installed/patch 完整（各 **150/150**）与 `--no-worktree`（**127/127**）。发布前需按
-[PUBLISHING](PUBLISHING.md) 重跑完整组合。
+4 条 inbox checks 后重跑 rc.5 installed/patch 完整（各 **150/150**）与 `--no-worktree`（**127/127**）；
+Phase 1c 证据轮（真实 scripted child turn）pin 总数 **174/174**；Phase 1d answer routing 轮再增
+14 条 answer checks（真实 answer steer + 幂等 + clear-own/clear-all）后 installed/patch 双流各
+**188/188**（phase 3 126）。发布前需按 [PUBLISHING](PUBLISHING.md) 重跑完整组合。
 
 每条 flow 有 3 条正向模型选择检查因无 provider 凭据 SKIP（打印真实原因）；负向
 `DEVLEAD_MODEL_UNAVAILABLE`、`devlead_list_models`、preset roster 与 watched-child

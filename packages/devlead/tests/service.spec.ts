@@ -20,16 +20,18 @@ import {
   DEVLEAD_ERROR_EXCERPT_MAX,
   DEVLEAD_MODE_RECORD_TYPE,
   DEVLEAD_NOTIFICATION_RECORD_TYPE,
+  DEVLEAD_REPORT_ANSWER_RECORD_TYPE,
   DEVLEAD_REPORT_RECORD_TYPE,
   DEVLEAD_RESET_RECORD_TYPE,
   DEVLEAD_WATCH_RECORD_TYPE,
   notificationId,
 } from '@yankeguo/dsh-devlead-protocol'
-import type { DevLeadNotification, DevLeadSessionView, DevLeadTransition } from '@yankeguo/dsh-devlead-protocol'
+import type { DevLeadNotification, DevLeadReportAnswer, DevLeadSessionView, DevLeadTransition } from '@yankeguo/dsh-devlead-protocol'
 import {
   Config,
   DevLeadError,
   DevLeadService,
+  answerTextHash,
   createDevLeadNoticeMessage,
   devLeadNotification,
   devLeadReport,
@@ -254,6 +256,7 @@ describe('mode selection', () => {
       sessions: [],
       notifications: [],
       reports: [],
+      answers: [],
       failure: null,
       inheritedEventCount: 0,
     })
@@ -1742,6 +1745,7 @@ describe('projection failure handling', () => {
       sessions: [],
       notifications: [],
       reports: [],
+      answers: [],
       failure: null,
       inheritedEventCount: 0,
     })
@@ -2763,7 +2767,13 @@ describe('prompt admission', () => {
     const target = new FakeAgent(requireSession(harness, 'target'))
     harness.agents.add(target)
     const receipt = await harness.service.promptSession(harness.lead.agent, 'target', '  do the thing  ')
-    expect(receipt).toEqual({ sessionId: 'target', watched: true, resumed: false, interrupted: false })
+    expect(receipt).toEqual({
+      sessionId: 'target',
+      watched: true,
+      resumed: false,
+      interrupted: false,
+      delivery: { primitive: 'followup', boundary: 'next-turn', wakeRequested: true, messageId: expect.any(String) },
+    })
     expect(target.followups).toHaveLength(1)
     const message = target.followups[0]
     if (message === undefined) throw new Error('expected one admitted prompt')
@@ -2814,7 +2824,13 @@ describe('prompt admission', () => {
     // prompt waits behind the running turn.
     expect(stops).toEqual([])
     expect(target.followups).toHaveLength(1)
-    expect(receipt).toEqual({ sessionId: 'target', watched: true, resumed: false, interrupted: false })
+    expect(receipt).toEqual({
+      sessionId: 'target',
+      watched: true,
+      resumed: false,
+      interrupted: false,
+      delivery: { primitive: 'followup', boundary: 'next-turn', wakeRequested: true, messageId: expect.any(String) },
+    })
   })
 
   it('interrupts a running turn through the Host stop providers before admitting', async () => {
@@ -2832,7 +2848,13 @@ describe('prompt admission', () => {
     // replacement prompt is admitted after it returns.
     expect(stops).toEqual(['target'])
     expect(target.followups).toHaveLength(1)
-    expect(receipt).toEqual({ sessionId: 'target', watched: true, resumed: false, interrupted: true })
+    expect(receipt).toEqual({
+      sessionId: 'target',
+      watched: true,
+      resumed: false,
+      interrupted: true,
+      delivery: { primitive: 'followup', boundary: 'next-turn', wakeRequested: true, messageId: expect.any(String) },
+    })
   })
 
   it('treats interrupt as a no-op on an idle Session', async () => {
@@ -2845,7 +2867,13 @@ describe('prompt admission', () => {
 
     expect(stops).toEqual([])
     expect(target.followups).toHaveLength(1)
-    expect(receipt).toEqual({ sessionId: 'target', watched: true, resumed: false, interrupted: false })
+    expect(receipt).toEqual({
+      sessionId: 'target',
+      watched: true,
+      resumed: false,
+      interrupted: false,
+      delivery: { primitive: 'followup', boundary: 'next-turn', wakeRequested: true, messageId: expect.any(String) },
+    })
   })
 
   it('treats interrupt as a no-op after resuming a cold Session', async () => {
@@ -2860,7 +2888,13 @@ describe('prompt admission', () => {
 
     const receipt = await harness.service.promptSession(harness.lead.agent, 'target', 'start now', { interrupt: true })
 
-    expect(receipt).toEqual({ sessionId: 'target', watched: true, resumed: true, interrupted: false })
+    expect(receipt).toEqual({
+      sessionId: 'target',
+      watched: true,
+      resumed: true,
+      interrupted: false,
+      delivery: { primitive: 'followup', boundary: 'next-turn', wakeRequested: true, messageId: expect.any(String) },
+    })
     expect(stops).toEqual([])
     expect(target.followups).toHaveLength(1)
   })
@@ -4748,5 +4782,436 @@ describe('interrupt inbox policies', () => {
     // this call added is not rolled back.
     expect(target.followups.map(messageText).some(text => text.includes('replacement'))).toBe(true)
     expect(harness.service.view(harness.lead.agent).sessions).toEqual(['target'])
+  })
+})
+
+describe('answer routing (Phase 1d, cases 13–25)', () => {
+  /** Seed one durable question report into the lead log and return its id. */
+  function seedQuestion(harness: ServiceHarness, senderId: string, message = 'Which target?'): string {
+    const value = devLeadReport({
+      senderSessionId: senderId,
+      leadSessionId: String(harness.lead.id),
+      turn: 1,
+      kind: 'question',
+      message,
+      at: T0,
+    })
+    appendPluginRecord(harness.leadSession, DEVLEAD_REPORT_RECORD_TYPE, reportRecord(value))
+    return value.id
+  }
+
+  /** Durable answer lifecycle records of the lead Session, in log order. */
+  function answerRecords(harness: ServiceHarness): DevLeadReportAnswer[] {
+    return harness.leadSession.snapshotEvents().flatMap((event) => {
+      const record = pluginRecordOf(event)
+      return record?.type === DEVLEAD_REPORT_ANSWER_RECORD_TYPE
+        ? [(record.data as { answer: DevLeadReportAnswer }).answer]
+        : []
+    })
+  }
+
+  /**
+   * Register one fake stop provider that clears the inbox and idles the target.
+   * Uses `cancelInbox` so the clear emits the same `agent/inbox/discarded`
+   * events the real Host stop emits, exercising the interrupt-window suppression.
+   */
+  function recordStops(harness: ServiceHarness, target: FakeAgent): string[] {
+    const stops: string[] = []
+    harness.ctx.on('workspace/session-stop', ({ sessionId }) => {
+      stops.push(String(sessionId))
+      target.cancelInbox()
+      target.setRunning(false)
+    })
+    return stops
+  }
+
+  async function bootTarget(running = false): Promise<{ harness: ServiceHarness; target: FakeAgent }> {
+    const harness = await bootService({ enabled: true, sessionIds: ['target'], watched: ['target'] })
+    const target = new FakeAgent(requireSession(harness, 'target'))
+    target.setRunning(running)
+    harness.agents.add(target)
+    return { harness, target }
+  }
+
+  it('case 13: answers a running child via steer and observes admitted → claimed → presented', async () => {
+    const { harness, target } = await bootTarget(true)
+    const questionId = seedQuestion(harness, 'target')
+    const receipt = await harness.service.promptSession(harness.lead.agent, 'target', 'use staging', {
+      intent: 'answer',
+      questionId,
+    })
+    expect(receipt.delivery).toMatchObject({
+      primitive: 'steer',
+      boundary: 'next-step',
+      wakeRequested: true,
+      questionId,
+    })
+    expect(target.steers).toHaveLength(1)
+    expect(target.followups).toHaveLength(0)
+    const admitted = target.steers[0]!
+    expect(messageText(admitted)).toContain(`[DEV LEAD ANSWER to question ${questionId}]`)
+    expect(messageText(admitted)).toContain('use staging')
+    expect(admitted.source).toMatchObject({ kind: 'devlead', form: 'relay', intent: 'answer', questionId })
+    // Durable admitted record + derived answered state.
+    expect(answerRecords(harness)).toHaveLength(1)
+    expect(answerRecords(harness)[0]).toMatchObject({ reportId: questionId, status: 'admitted', messageId: receipt.delivery.messageId })
+    expect(harness.service.questionAnswerView(harness.lead.agent, questionId)).toMatchObject({
+      questionStatus: 'answered',
+      answerStatus: 'admitted',
+      answerMessageId: receipt.delivery.messageId,
+    })
+    // A real pre-step claim then presentation advances the in-memory lifecycle.
+    appendTurnStart(target.session, 1)
+    target.claimNextStep({ present: true, turn: 1 })
+    await flushMicrotasks()
+    expect(harness.service.questionAnswerView(harness.lead.agent, questionId)).toMatchObject({
+      questionStatus: 'answered',
+      answerStatus: 'presented',
+    })
+    expect(harness.service.questionAnswerView(harness.lead.agent, questionId)?.presentedAt).toBeTypeOf('number')
+  })
+
+  it('case 14: answers an idle child via steer without isolating an older next-turn input', async () => {
+    const { harness, target } = await bootTarget(false)
+    const questionId = seedQuestion(harness, 'target')
+    const older = queuedMessage('msg-older', { kind: 'user' }, 'older instruction')
+    target.inbox.nextTurn.push(older)
+    const receipt = await harness.service.promptSession(harness.lead.agent, 'target', 'use staging', {
+      intent: 'answer',
+      questionId,
+    })
+    expect(receipt.delivery).toMatchObject({ primitive: 'steer', boundary: 'next-step' })
+    // The older next-turn input is still queued: steer is priority, not isolation.
+    expect(target.inbox.nextTurn).toHaveLength(1)
+    expect(target.inbox.nextStep).toHaveLength(1)
+    // The first pre-step claims the answer (next-step) and the older next-turn together.
+    appendTurnStart(target.session, 1)
+    const claimed = target.claimNextTurnPreStep({ present: true, turn: 1 })
+    expect(claimed.map(message => String(message.id))).toContain(receipt.delivery.messageId)
+    expect(claimed.map(message => String(message.id))).toContain('msg-older')
+  })
+
+  it('case 15: answers a cold child via resume + steer', async () => {
+    const controller = new FakeSessionController()
+    const harness = await bootService({ enabled: true, sessionIds: ['target'], watched: ['target'], sessionController: controller })
+    const target = new FakeAgent(requireSession(harness, 'target'))
+    controller.resolveHandler = () => {
+      harness.agents.add(target)
+      return { agent: target.agent }
+    }
+    const questionId = seedQuestion(harness, 'target')
+    const receipt = await harness.service.promptSession(harness.lead.agent, 'target', 'use staging', {
+      intent: 'answer',
+      questionId,
+    })
+    expect(receipt.resumed).toBe(true)
+    expect(receipt.delivery).toMatchObject({ primitive: 'steer', boundary: 'next-step' })
+    expect(target.steers).toHaveLength(1)
+  })
+
+  it('case 16: rejects an answer to an archived child without writing an answer record', async () => {
+    const registry = new FakeWorkspaceRegistry()
+    registry.archived = ['target']
+    const harness = await bootService({ enabled: true, sessionIds: ['target'], watched: ['target'], workspaceRegistry: registry })
+    const questionId = seedQuestion(harness, 'target')
+    await expectCodeAsync(
+      () => harness.service.promptSession(harness.lead.agent, 'target', 'use staging', { intent: 'answer', questionId }),
+      'DEVLEAD_SESSION_ARCHIVED',
+    )
+    expect(answerRecords(harness)).toEqual([])
+    expect(harness.service.questionAnswerView(harness.lead.agent, questionId)?.questionStatus).toBe('open')
+  })
+
+  it('case 17: a rejected pre-step discards the answer, reopens the question, and accepts a re-answer', async () => {
+    const { harness, target } = await bootTarget(true)
+    const questionId = seedQuestion(harness, 'target')
+    const receipt = await harness.service.promptSession(harness.lead.agent, 'target', 'use staging', {
+      intent: 'answer',
+      questionId,
+    })
+    // Claimed but the proposed step is rejected: no user/message is appended.
+    appendTurnStart(target.session, 1)
+    target.claimNextStep({ present: false, turn: 1 })
+    appendTurnEnd(target.session, 1)
+    await flushMicrotasks()
+    expect(harness.service.questionAnswerView(harness.lead.agent, questionId)).toMatchObject({
+      questionStatus: 'open',
+      answerStatus: 'discarded',
+    })
+    // The discard is durable so the reopen survives a restart.
+    expect(answerRecords(harness).some(record => record.status === 'discarded' && record.messageId === receipt.delivery.messageId)).toBe(true)
+    // A fresh answer is accepted again.
+    const again = await harness.service.promptSession(harness.lead.agent, 'target', 'use prod', { intent: 'answer', questionId })
+    expect(again.delivery.messageId).not.toBe(receipt.delivery.messageId)
+    expect(harness.service.questionAnswerView(harness.lead.agent, questionId)?.questionStatus).toBe('answered')
+  })
+
+  it('case 18: a same-text/same-key answer retry returns the original receipt; a different answer conflicts', async () => {
+    const { harness, target } = await bootTarget(true)
+    const questionId = seedQuestion(harness, 'target')
+    const first = await harness.service.promptSession(harness.lead.agent, 'target', 'use staging', {
+      intent: 'answer',
+      questionId,
+      idempotencyKey: 'k1',
+    })
+    // Same text (no key) → same-text replay.
+    const byText = await harness.service.promptSession(harness.lead.agent, 'target', 'use staging', { intent: 'answer', questionId })
+    expect(byText.delivery.messageId).toBe(first.delivery.messageId)
+    // Same key + same text → same-key replay.
+    const byKey = await harness.service.promptSession(harness.lead.agent, 'target', 'use staging', {
+      intent: 'answer',
+      questionId,
+      idempotencyKey: 'k1',
+    })
+    expect(byKey.delivery.messageId).toBe(first.delivery.messageId)
+    // No second delivery happened.
+    expect(target.steers).toHaveLength(1)
+    expect(answerRecords(harness)).toHaveLength(1)
+    // A different answer is an explicit conflict.
+    const error = await expectCodeAsync(
+      () => harness.service.promptSession(harness.lead.agent, 'target', 'use prod', { intent: 'answer', questionId }),
+      'DEVLEAD_QUESTION_ALREADY_ANSWERED',
+    )
+    expect(error.message).toContain('use staging')
+    expect(target.steers).toHaveLength(1)
+  })
+
+  it('case 19: answer + interrupt cancels the running work and admits the answer as a followup', async () => {
+    const { harness, target } = await bootTarget(true)
+    const questionId = seedQuestion(harness, 'target')
+    const stops = recordStops(harness, target)
+    const receipt = await harness.service.promptSession(harness.lead.agent, 'target', 'use staging', {
+      intent: 'answer',
+      questionId,
+      interrupt: true,
+    })
+    expect(stops).toEqual(['target'])
+    expect(receipt.interrupted).toBe(true)
+    expect(receipt.delivery).toMatchObject({ primitive: 'followup', boundary: 'next-turn', wakeRequested: true })
+    expect(target.followups).toHaveLength(1)
+    expect(answerRecords(harness)[0]).toMatchObject({ status: 'admitted', primitive: 'followup', boundary: 'next-turn' })
+    expect(harness.service.questionAnswerView(harness.lead.agent, questionId)?.questionStatus).toBe('answered')
+  })
+
+  it('case 20: background injects without a wake (idle/running) and rejects a cold target', async () => {
+    const idle = await bootTarget(false)
+    const idleReceipt = await idle.harness.service.promptSession(idle.harness.lead.agent, 'target', 'fyi context', { intent: 'background' })
+    expect(idleReceipt.delivery).toMatchObject({ primitive: 'inject', boundary: 'next-step', wakeRequested: false })
+    expect(idle.target.injects).toHaveLength(1)
+    expect(idle.target.injects[0]!.source).toMatchObject({
+      kind: 'devlead',
+      form: 'notice',
+      intent: 'background',
+      wakeRequested: false,
+      lane: 'background',
+      senderSessionId: String(idle.harness.lead.id),
+    })
+    // A later followup presents the queued background context.
+    appendTurnStart(idle.target.session, 1)
+    const claimed = idle.target.claimNextTurnPreStep({ present: true, turn: 1 })
+    expect(claimed.map(message => String(message.id))).toContain(idleReceipt.delivery.messageId)
+
+    const running = await bootTarget(true)
+    const runningReceipt = await running.harness.service.promptSession(running.harness.lead.agent, 'target', 'fyi', { intent: 'background' })
+    expect(runningReceipt.delivery).toMatchObject({ primitive: 'inject', boundary: 'next-step', wakeRequested: false })
+
+    const cold = await bootService({ enabled: true, sessionIds: ['target'] })
+    await expectCodeAsync(
+      () => cold.service.promptSession(cold.lead.agent, 'target', 'fyi', { intent: 'background' }),
+      'DEVLEAD_INVALID_INPUT',
+    )
+  })
+
+  it('case 21: correction steers the next step for running and idle targets', async () => {
+    const running = await bootTarget(true)
+    const runningReceipt = await running.harness.service.promptSession(running.harness.lead.agent, 'target', 'stop doing X', { intent: 'correction' })
+    expect(runningReceipt.delivery).toMatchObject({ primitive: 'steer', boundary: 'next-step', wakeRequested: true })
+    expect(running.target.steers).toHaveLength(1)
+    expect(running.target.steers[0]!.source).toMatchObject({ intent: 'correction', form: 'relay' })
+
+    const idle = await bootTarget(false)
+    const idleReceipt = await idle.harness.service.promptSession(idle.harness.lead.agent, 'target', 'stop doing X', { intent: 'correction' })
+    expect(idleReceipt.delivery).toMatchObject({ primitive: 'steer', boundary: 'next-step' })
+    expect(idle.target.steers).toHaveLength(1)
+  })
+
+  it('case 22: clear-own keeps a pending answer; clear-all discards it and reopens the question', async () => {
+    // clear-own: the answer survives, the own instruction is dropped, human input stays.
+    const own = await bootTarget(true)
+    const ownQuestion = seedQuestion(own.harness, 'target')
+    await own.harness.service.promptSession(own.harness.lead.agent, 'target', 'use staging', { intent: 'answer', questionId: ownQuestion })
+    const ownInstruction = queuedMessage('msg-own', { kind: 'devlead', form: 'relay', senderSessionId: String(own.harness.lead.id), intent: 'instruction' }, 'stale')
+    const human = queuedMessage('msg-human', { kind: 'user' }, 'human')
+    own.target.inbox.nextTurn.push(ownInstruction, human)
+    recordStops(own.harness, own.target)
+    const ownReceipt = await own.harness.service.promptSession(own.harness.lead.agent, 'target', 'replacement', {
+      interrupt: true,
+      interruptInbox: 'clear-own',
+    })
+    expect(ownReceipt.retainedInputs).toBe(2) // answer + human
+    expect(own.target.inbox.nextStep.some(message => String(message.id) === ownReceipt.delivery.messageId)).toBe(false)
+    // The answer is still pending at next-step and the question stays answered.
+    expect(own.target.inbox.nextStep).toHaveLength(1)
+    expect(own.harness.service.questionAnswerView(own.harness.lead.agent, ownQuestion)?.questionStatus).toBe('answered')
+
+    // clear-all: the answer is discarded and the question reopens.
+    const all = await bootTarget(true)
+    const allQuestion = seedQuestion(all.harness, 'target')
+    const answerReceipt = await all.harness.service.promptSession(all.harness.lead.agent, 'target', 'use staging', { intent: 'answer', questionId: allQuestion })
+    recordStops(all.harness, all.target)
+    await all.harness.service.promptSession(all.harness.lead.agent, 'target', 'replacement', { interrupt: true, interruptInbox: 'clear-all' })
+    await flushMicrotasks()
+    expect(all.harness.service.questionAnswerView(all.harness.lead.agent, allQuestion)).toMatchObject({
+      questionStatus: 'open',
+      answerStatus: 'discarded',
+    })
+    expect(answerRecords(all.harness).some(record => record.status === 'discarded' && record.messageId === answerReceipt.delivery.messageId)).toBe(true)
+  })
+
+  it('case 23: retract withdraws own instruction/background but refuses an answer', async () => {
+    const { harness, target } = await bootTarget(false)
+    const questionId = seedQuestion(harness, 'target')
+    const answerReceipt = await harness.service.promptSession(harness.lead.agent, 'target', 'use staging', { intent: 'answer', questionId })
+    const background = await harness.service.promptSession(harness.lead.agent, 'target', 'fyi', { intent: 'background' })
+    const instruction = await harness.service.promptSession(harness.lead.agent, 'target', 'do X')
+    // The answer cannot be retracted.
+    const error = await expectCodeAsync(
+      () => harness.service.retractQueuedInput(harness.lead.agent, 'target', answerReceipt.delivery.messageId),
+      'DEVLEAD_INVALID_INPUT',
+    )
+    expect(error.message).toContain('answer')
+    // Background and instruction can be retracted.
+    expect(await harness.service.retractQueuedInput(harness.lead.agent, 'target', background.delivery.messageId))
+      .toMatchObject({ retracted: true })
+    expect(await harness.service.retractQueuedInput(harness.lead.agent, 'target', instruction.delivery.messageId))
+      .toMatchObject({ retracted: true })
+    // The answer is still pending.
+    expect(target.inbox.nextStep.some(message => String(message.id) === answerReceipt.delivery.messageId)).toBe(true)
+  })
+
+  it('case 24: next-step precedes next-turn, same-boundary FIFO, and concurrent prompts serialize', async () => {
+    const { harness, target } = await bootTarget(false)
+    const first = await harness.service.promptSession(harness.lead.agent, 'target', 'first correction', { intent: 'correction' })
+    const second = await harness.service.promptSession(harness.lead.agent, 'target', 'second correction', { intent: 'correction' })
+    const turnPrompt = await harness.service.promptSession(harness.lead.agent, 'target', 'a new turn')
+    // Two next-step steers (FIFO) then one next-turn followup.
+    expect(target.inbox.nextStep.map(message => String(message.id)))
+      .toEqual([first.delivery.messageId, second.delivery.messageId])
+    expect(target.inbox.nextTurn.map(message => String(message.id))).toEqual([turnPrompt.delivery.messageId])
+    appendTurnStart(target.session, 1)
+    const claimed = target.claimNextTurnPreStep({ present: true, turn: 1 })
+    expect(claimed.map(message => String(message.id)))
+      .toEqual([first.delivery.messageId, second.delivery.messageId, turnPrompt.delivery.messageId])
+
+    // Concurrent calls for one target land in call order (per-target serialization).
+    const concurrent = await bootTarget(false)
+    const [a, b] = await Promise.all([
+      concurrent.harness.service.promptSession(concurrent.harness.lead.agent, 'target', 'A'),
+      concurrent.harness.service.promptSession(concurrent.harness.lead.agent, 'target', 'B'),
+    ])
+    expect(concurrent.target.inbox.nextTurn.map(message => String(message.id)))
+      .toEqual([a.delivery.messageId, b.delivery.messageId])
+  })
+
+  it('case 25: a steer admitted near turn close stays pending (admitted, not lost)', async () => {
+    const { harness, target } = await bootTarget(true)
+    const questionId = seedQuestion(harness, 'target')
+    const receipt = await harness.service.promptSession(harness.lead.agent, 'target', 'use staging', { intent: 'answer', questionId })
+    // No claim yet: the message waits in next-step for the next pre-step/wake.
+    expect(receipt.delivery.boundary).toBe('next-step')
+    expect(target.inbox.nextStep.some(message => String(message.id) === receipt.delivery.messageId)).toBe(true)
+    expect(harness.service.questionAnswerView(harness.lead.agent, questionId)?.answerStatus).toBe('admitted')
+    // A later wake claims and presents it; nothing was lost.
+    appendTurnStart(target.session, 1)
+    target.claimNextStep({ present: true, turn: 1 })
+    await flushMicrotasks()
+    expect(harness.service.questionAnswerView(harness.lead.agent, questionId)?.answerStatus).toBe('presented')
+  })
+
+  it('validates question_id ownership, kind, and the intent combination guards', async () => {
+    const { harness } = await bootTarget(true)
+    const questionId = seedQuestion(harness, 'target')
+    // answer without question_id.
+    await expectCodeAsync(
+      () => harness.service.promptSession(harness.lead.agent, 'target', 'x', { intent: 'answer' }),
+      'DEVLEAD_INVALID_INPUT',
+    )
+    // unknown question id.
+    await expectCodeAsync(
+      () => harness.service.promptSession(harness.lead.agent, 'target', 'x', { intent: 'answer', questionId: 'nope' }),
+      'DEVLEAD_QUESTION_NOT_FOUND',
+    )
+    // question_id on a non-answer intent.
+    for (const intent of ['instruction', 'correction', 'background'] as const) {
+      await expectCodeAsync(
+        () => harness.service.promptSession(harness.lead.agent, 'target', 'x', { intent, questionId }),
+        'DEVLEAD_INVALID_INPUT',
+      )
+    }
+    // background + interrupt.
+    await expectCodeAsync(
+      () => harness.service.promptSession(harness.lead.agent, 'target', 'x', { intent: 'background', interrupt: true }),
+      'DEVLEAD_INVALID_INPUT',
+    )
+    // A question report from another sender does not match this target.
+    const foreign = seedQuestion(harness, 'another-child', 'Foreign?')
+    await expectCodeAsync(
+      () => harness.service.promptSession(harness.lead.agent, 'target', 'x', { intent: 'answer', questionId: foreign }),
+      'DEVLEAD_QUESTION_NOT_FOUND',
+    )
+    // A non-question report id is not a question.
+    const progress = devLeadReport({ senderSessionId: 'target', leadSessionId: String(harness.lead.id), turn: 1, kind: 'progress', message: 'p', at: T0 })
+    appendPluginRecord(harness.leadSession, DEVLEAD_REPORT_RECORD_TYPE, reportRecord(progress))
+    await expectCodeAsync(
+      () => harness.service.promptSession(harness.lead.agent, 'target', 'x', { intent: 'answer', questionId: progress.id }),
+      'DEVLEAD_QUESTION_NOT_FOUND',
+    )
+  })
+
+  it('deduplicates non-answer prompts through the idempotency_key memory window', async () => {
+    const { harness, target } = await bootTarget(false)
+    const first = await harness.service.promptSession(harness.lead.agent, 'target', 'do X', { idempotencyKey: 'k' })
+    const retry = await harness.service.promptSession(harness.lead.agent, 'target', 'do X', { idempotencyKey: 'k' })
+    expect(retry.delivery.messageId).toBe(first.delivery.messageId)
+    expect(target.followups).toHaveLength(1)
+    // A different text under the same key is a conflict.
+    await expectCodeAsync(
+      () => harness.service.promptSession(harness.lead.agent, 'target', 'do Y', { idempotencyKey: 'k' }),
+      'DEVLEAD_INVALID_INPUT',
+    )
+    expect(target.followups).toHaveLength(1)
+  })
+
+  it('stamps the runtime source on every intent and never lets the model forge it', async () => {
+    const { harness, target } = await bootTarget(false)
+    const questionId = seedQuestion(harness, 'target')
+    await harness.service.promptSession(harness.lead.agent, 'target', 'use staging', { intent: 'answer', questionId, idempotencyKey: 'k' })
+    await harness.service.promptSession(harness.lead.agent, 'target', 'correct', { intent: 'correction' })
+    await harness.service.promptSession(harness.lead.agent, 'target', 'background', { intent: 'background' })
+    await harness.service.promptSession(harness.lead.agent, 'target', 'instruction')
+    const leadId = String(harness.lead.id)
+    expect(target.steers[0]!.source).toMatchObject({ kind: 'devlead', form: 'relay', intent: 'answer', questionId, idempotencyKey: 'k', senderSessionId: leadId, wakeRequested: true })
+    expect(target.steers[1]!.source).toMatchObject({ kind: 'devlead', form: 'relay', intent: 'correction', senderSessionId: leadId })
+    expect(target.injects[0]!.source).toMatchObject({ kind: 'devlead', form: 'notice', intent: 'background', senderSessionId: leadId, wakeRequested: false })
+    expect(target.followups[0]!.source).toMatchObject({ kind: 'devlead', form: 'relay', intent: 'instruction', senderSessionId: leadId })
+    // The answer text hash covers the lead's prompt, not the runtime prefix.
+    expect(answerRecords(harness)[0]?.textHash).toBe(answerTextHash('use staging'))
+  })
+
+  it('exposes intent/questionId/wakeRequested/deliveryState on queuedInputs for a pending answer', async () => {
+    const { harness } = await bootTarget(false)
+    const questionId = seedQuestion(harness, 'target')
+    const receipt = await harness.service.promptSession(harness.lead.agent, 'target', 'use staging', { intent: 'answer', questionId })
+    const queued = harness.service.sessionQueuedInputs(harness.lead.agent, 'target')
+    expect(queued).toEqual([expect.objectContaining({
+      id: receipt.delivery.messageId,
+      boundary: 'next-step',
+      sourceKind: 'devlead',
+      sourceForm: 'relay',
+      intent: 'answer',
+      questionId,
+      wakeRequested: true,
+      deliveryState: 'admitted',
+    })])
   })
 })

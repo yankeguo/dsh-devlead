@@ -69,6 +69,24 @@
     proving the deny did not force the turn to end (case 33 with a real
     model continuation), plus the forwarded question and wake admission.
 
+  `devlead-e2e-answer-turn` (phase 3, Phase 1d)
+    Create a watched child and run one REAL prompted turn whose scripted model
+    requests a `[devlead_report(question), glob]` batch; during the glob dispatch
+    the lead answers the forwarded question through `promptSession(intent:'answer')`,
+    then probes the same-key/same-text idempotent retry and the different-answer
+    conflict. Returns the durable-log facts proving the answer steered next-step
+    and was presented in a later real step before the single turn/end, the
+    intercepted model requests, the lead's durable answer record, and the derived
+    question/answer view.
+
+  `devlead-e2e-answer-inbox` (phase 3, Phase 1d)
+    Idle child: answer delivery metadata, queuedInputs intent/questionId/
+    wakeRequested/deliveryState, retraction refusing the answer but accepting
+    background/instruction. Running scripted children: interrupt `clear-own`
+    keeps the pending answer (drops the own instruction, keeps human input) and
+    `clear-all` discards the answer and reopens the question, through the real
+    `workspace/session-stop` fan-out.
+
   `devlead-e2e-dispatch` (phase 3)
  *     Exercise creation-time dispatch settings: pick a model from the Host's
  *     own `modelCatalog()` (falling back to the deployment default route when
@@ -265,6 +283,10 @@ export const QUESTION_TURN_COMMAND_NAME = 'devlead-e2e-question-turn'
 export const QUESTION_CONTINUE_COMMAND_NAME = 'devlead-e2e-question-continue'
 /** Queued-inbox visibility / ownership / idempotent retraction through the real Host. */
 export const INBOX_COMMAND_NAME = 'devlead-e2e-inbox'
+/** Real scripted child turn: the lead answers a running child via steer (Phase 1d). */
+export const ANSWER_TURN_COMMAND_NAME = 'devlead-e2e-answer-turn'
+/** Idle-child answer inbox lifecycle: clear-own/clear-all/retract/background (Phase 1d). */
+export const ANSWER_INBOX_COMMAND_NAME = 'devlead-e2e-answer-inbox'
 /** Upper bound for one prompted child turn to settle inside the close command. */
 const CHILD_TURN_TIMEOUT_MS = 45_000
 /** Poll interval of the close command's child-turn wait. */
@@ -771,13 +793,18 @@ function requestSummary(options) {
  * assistant/message, and turn/end events in its durable log.
  * @param ctx - probe context.
  * @param lead - lead Agent creating and prompting the child.
- * @param options - `{ title, prompt, script, steerOnGlob }`; `script` is an
- *   array of chunk arrays consumed one per model request (the last entry
- *   repeats if the loop asks again); `steerOnGlob` is a UserMessage steered
- *   into next-step while the child's `glob` dispatch is still in flight.
+ * @param options - `{ title, prompt, script, steerOnGlob, answerOnGlob }`;
+ *   `script` is an array of chunk arrays consumed one per model request (the
+ *   last entry repeats if the loop asks again); `steerOnGlob` is a UserMessage
+ *   steered into next-step while the child's `glob` dispatch is still in flight;
+ *   `answerOnGlob` (`{ text, idempotencyKey }`) makes the lead answer the child's
+ *   forwarded question through `promptSession(intent:'answer')` during that same
+ *   glob dispatch, then probes the idempotent retry and the different-answer
+ *   conflict, capturing every receipt; `duringGlob` is a general async hook run
+ *   once during the glob dispatch whose returned facts are merged into the result.
  * @returns the child identity, captured requests/tool results, and log facts.
  */
-async function runScriptedChildTurn(ctx, lead, { title, prompt, script, steerOnGlob }) {
+async function runScriptedChildTurn(ctx, lead, { title, prompt, script, steerOnGlob, answerOnGlob, duringGlob }) {
   const created = await ctx.devLead.createSession(lead, { watch: true, title })
   const childId = String(created.session.sessionId)
   const child = ctx.agents.get(childId)
@@ -786,6 +813,10 @@ async function runScriptedChildTurn(ctx, lead, { title, prompt, script, steerOnG
   const toolResults = []
   let callIndex = 0
   let steerPending = steerOnGlob !== undefined
+  let answerPending = answerOnGlob !== undefined
+  let answerFacts = null
+  let duringGlobPending = duringGlob !== undefined
+  let duringGlobFacts = null
   const disposables = []
   disposables.push(ctx.on('llm/stream', async function* (options, next) {
     if (String(options.sessionId ?? '') !== childId || options.purpose !== undefined) {
@@ -805,6 +836,50 @@ async function runScriptedChildTurn(ctx, lead, { title, prompt, script, steerOnG
     if (steerPending && exec.agent === child && exec.name === 'glob') {
       steerPending = false
       child.steer(steerOnGlob)
+    }
+    // Answer the forwarded question through the real lead prompt path while the
+    // child is still running its glob dispatch: the answer must steer next-step
+    // and be presented in a later real step, not wait for the turn to end.
+    if (answerPending && exec.agent === child && exec.name === 'glob') {
+      answerPending = false
+      const question = ctx.devLead.reports(lead).find(row => row.kind === 'question' && row.senderSessionId === childId)
+      if (question === undefined) throw new Error('answer probe: no forwarded question report found at glob time')
+      const answerReceipt = await ctx.devLead.promptSession(lead, childId, answerOnGlob.text, {
+        intent: 'answer',
+        questionId: question.id,
+        idempotencyKey: answerOnGlob.idempotencyKey,
+      })
+      // Same key + same text: an idempotent replay returning the original receipt.
+      const retryReceipt = await ctx.devLead.promptSession(lead, childId, answerOnGlob.text, {
+        intent: 'answer',
+        questionId: question.id,
+        idempotencyKey: answerOnGlob.idempotencyKey,
+      })
+      // A different answer is an explicit conflict.
+      let conflictCode = null
+      try {
+        await ctx.devLead.promptSession(lead, childId, `${answerOnGlob.text} (changed)`, {
+          intent: 'answer',
+          questionId: question.id,
+        })
+      } catch (error) {
+        conflictCode = error?.code ?? null
+      }
+      answerFacts = {
+        questionId: question.id,
+        answerText: answerOnGlob.text,
+        answerReceipt,
+        retryReceipt,
+        conflictCode,
+        childStatusAtAnswer: child.status,
+      }
+    }
+    // A general probe hook run once during the child's glob dispatch (used by
+    // the answer-inbox probe to drive interrupt inbox policies on a real
+    // running child). Its facts are merged into the result.
+    if (duringGlobPending && exec.agent === child && exec.name === 'glob') {
+      duringGlobPending = false
+      duringGlobFacts = await duringGlob({ child, childId, lead })
     }
     return result
   }))
@@ -834,6 +909,7 @@ async function runScriptedChildTurn(ctx, lead, { title, prompt, script, steerOnG
       .map(block => block.text)
       .join('\n')
     const markerText = steerOnGlob === undefined ? null : textOf(steerOnGlob)
+    const answerText = answerOnGlob === undefined ? null : answerOnGlob.text
     const turnEndIndex = indexOf(event => event?.type === 'turn/end')
     const stepStarts = events
       .map((event, index) => ({ event, index }))
@@ -852,6 +928,12 @@ async function runScriptedChildTurn(ctx, lead, { title, prompt, script, steerOnG
       markerMessageIndex: markerText === null ? -1 : indexOf(event =>
         event?.type === 'user/message' && textOf(event.data).includes(markerText)),
       markerPendingAfter: markerText === null ? null : child.inbox.nextStep.some(message => textOf(message).includes(markerText)),
+      answerMessageIndex: answerText === null ? -1 : indexOf(event =>
+        event?.type === 'user/message' && textOf(event.data).includes(answerText)),
+      answerPendingAfter: answerText === null ? null : child.inbox.nextStep.some(message => textOf(message).includes(answerText)),
+      answerFacts,
+      questionAnswerView: answerFacts === null ? null : ctx.devLead.questionAnswerView(lead, answerFacts.questionId),
+      duringGlobFacts,
       questionResultIndex: indexOf(event => event?.type === 'tool/result'
         && String(event.data?.message?.toolCallId) === 'e2e-scripted-question'),
       askResultIndex: indexOf(event => event?.type === 'tool/result'
@@ -1198,6 +1280,217 @@ async function executeQuestionContinue(ctx, invocation) {
   }
 }
 
+/** Read the durable answer lifecycle records from one lead's Session log. */
+function answerRecordsOf(lead) {
+  return lead.session.snapshotEvents()
+    .filter(event => event?.type === 'plugin:devlead/report-answer')
+    .map(event => event.data?.answer)
+}
+
+/**
+ * Real prompted child turn for the Phase 1d answer path: the scripted model
+ * requests a `[devlead_report(question), glob]` batch; while the glob dispatch
+ * is in flight the lead answers the forwarded question through
+ * `promptSession(intent:'answer')`, then probes the idempotent retry and the
+ * different-answer conflict. The answer must steer next-step and be presented
+ * in a later real step (real `step/start` + `user/message`) before the single
+ * turn/end — not wait for the running turn to settle. Every fact is read from
+ * the child's durable log, the intercepted model requests, the lead's durable
+ * answer record, and the derived question/answer view.
+ * @param ctx - probe context.
+ * @param invocation - command invocation carrying the lead Agent.
+ * @returns success JSON with the answer-turn facts, or an error result.
+ */
+async function executeAnswerTurn(ctx, invocation) {
+  const lead = invocation.agent
+  try {
+    const answerText = 'e2e answer: use the staging channel'
+    const before = ctx.devLead.reports(lead).length
+    const facts = await runScriptedChildTurn(ctx, lead, {
+      title: 'e2e scripted answer turn',
+      prompt: 'e2e scripted turn: ask the lead which channel to use, then finish',
+      script: [
+        toolCallChunks([
+          {
+            id: 'e2e-scripted-question',
+            name: 'devlead_report',
+            arguments: {
+              message: 'e2e scripted question: which channel should I use?',
+              kind: 'question',
+              summary: 'e2e scripted channel',
+            },
+          },
+          { id: 'e2e-scripted-glob', name: 'glob', arguments: { pattern: '*' } },
+        ]),
+        textChunks('e2e scripted answer turn complete'),
+      ],
+      answerOnGlob: { text: answerText, idempotencyKey: 'e2e-answer-key' },
+    })
+    const questionReports = ctx.devLead.reports(lead).slice(before).filter(report => report.kind === 'question')
+    const wake = await awaitQuestionWake(ctx, lead, questionReports.map(report => report.id))
+    return {
+      kind: 'success',
+      text: JSON.stringify({ ...facts, answerText, questionReports, wake, answerRecords: answerRecordsOf(lead) }),
+    }
+  } catch (error) {
+    return { kind: 'error', text: `devlead-e2e-answer-turn: ${messageOf(error)}` }
+  }
+}
+
+/**
+ * Phase 1d answer inbox lifecycle against the real durable inbox.
+ *
+ * Running child (scripted turn): during the glob dispatch the answer steers
+ * next-step (delivery facts + derived view), the queued-input row carries
+ * intent/questionId/wakeRequested/deliveryState, retraction refuses the answer
+ * but accepts a background notice and an instruction, and background injects
+ * without a wake. (A steer to an idle child would open a turn and consume the
+ * answer, so the pending-inbox facts are captured while the child is running.)
+ *
+ * Running child (scripted turn): during the glob dispatch the lead admits an
+ * answer plus an own instruction and a human input, then interrupts with
+ * `clear-own` (answer + human restored, own instruction dropped) and, on a
+ * second child, `clear-all` (answer discarded, question reopened). The real
+ * `workspace/session-stop` fan-out clears the inbox; the service restores the
+ * kept messages, so the facts prove the answer exception end to end.
+ * @param ctx - probe context.
+ * @param invocation - command invocation carrying the lead Agent.
+ * @returns success JSON with every read-back fact, or an error result.
+ */
+async function executeAnswerInbox(ctx, invocation) {
+  const lead = invocation.agent
+  try {
+    // --- Running child: answer delivery metadata, retraction, background. ---
+    // A steer to an IDLE child opens a turn and consumes the answer immediately,
+    // so the pending-inbox facts are captured during a RUNNING child's glob
+    // dispatch, where next-step input waits for the next pre-step.
+    const metadata = await runScriptedChildTurn(ctx, lead, {
+      title: 'e2e answer metadata',
+      prompt: 'e2e turn: run a tool so the lead can inspect the answer inbox',
+      script: [
+        toolCallChunks([{ id: 'e2e-glob', name: 'glob', arguments: { pattern: '*' } }]),
+        textChunks('e2e answer metadata turn complete'),
+      ],
+      duringGlob: async ({ child: running, childId: runningId }) => {
+        const questionReceipt = await ctx.devLead.reportProgress(running, {
+          kind: 'question',
+          message: 'e2e inbox question: which target?',
+          summary: 'e2e inbox target',
+        })
+        const questionId = questionReceipt.report.id
+        const answer = await ctx.devLead.promptSession(lead, runningId, 'use staging', { intent: 'answer', questionId })
+        const viewAfterAnswer = ctx.devLead.questionAnswerView(lead, questionId)
+        const queued = ctx.devLead.sessionQueuedInputs(lead, runningId)
+        let answerRetract
+        try {
+          await ctx.devLead.retractQueuedInput(lead, runningId, answer.delivery.messageId)
+          answerRetract = { refused: false }
+        } catch (error) {
+          answerRetract = { refused: true, code: error?.code }
+        }
+        const background = await ctx.devLead.promptSession(lead, runningId, 'fyi context', { intent: 'background' })
+        const backgroundRetract = await ctx.devLead.retractQueuedInput(lead, runningId, background.delivery.messageId)
+        const instruction = await ctx.devLead.promptSession(lead, runningId, 'do X')
+        const instructionRetract = await ctx.devLead.retractQueuedInput(lead, runningId, instruction.delivery.messageId)
+        return {
+          childId: runningId,
+          questionId,
+          answerDelivery: answer.delivery,
+          viewAfterAnswer,
+          queued,
+          answerRetract,
+          backgroundDelivery: background.delivery,
+          backgroundRetract,
+          instructionRetract,
+          answerStillPending: running.inbox.nextStep.some(message => String(message.id) === answer.delivery.messageId),
+        }
+      },
+    })
+    const metadataFacts = metadata.duringGlobFacts
+
+    // --- Running child: clear-own keeps the answer, drops the own instruction. ---
+    const clearOwn = await runScriptedChildTurn(ctx, lead, {
+      title: 'e2e answer clear-own',
+      prompt: 'e2e turn: run a tool so the lead can interrupt the inbox',
+      script: [
+        toolCallChunks([{ id: 'e2e-glob', name: 'glob', arguments: { pattern: '*' } }]),
+        textChunks('e2e clear-own turn complete'),
+      ],
+      duringGlob: async ({ child: running, childId: runningId }) => {
+        const receipt = await ctx.devLead.reportProgress(running, {
+          kind: 'question',
+          message: 'e2e clear-own question: which target?',
+        })
+        const qid = receipt.report.id
+        const ans = await ctx.devLead.promptSession(lead, runningId, 'use staging', { intent: 'answer', questionId: qid })
+        const ownInstruction = {
+          id: `e2e-own-${randomUUID()}`,
+          role: 'user',
+          content: [{ type: 'text', text: 'stale own instruction' }],
+          source: { kind: 'devlead', form: 'relay', senderSessionId: String(lead.id), intent: 'instruction' },
+        }
+        const human = {
+          id: `e2e-human-${randomUUID()}`,
+          role: 'user',
+          content: [{ type: 'text', text: 'human instruction' }],
+          source: { kind: 'user' },
+        }
+        running.inbox.append('next-turn', ownInstruction)
+        running.inbox.append('next-turn', human)
+        const replacement = await ctx.devLead.promptSession(lead, runningId, 'replacement work', {
+          interrupt: true,
+          interruptInbox: 'clear-own',
+        })
+        return {
+          questionId: qid,
+          answerMessageId: ans.delivery.messageId,
+          ownInstructionId: ownInstruction.id,
+          humanId: human.id,
+          replacement,
+          viewAfter: ctx.devLead.questionAnswerView(lead, qid),
+          pendingIds: [...running.inbox.nextTurn, ...running.inbox.nextStep].map(message => String(message.id)),
+          answerPending: running.inbox.nextStep.some(message => String(message.id) === ans.delivery.messageId),
+          ownInstructionPending: [...running.inbox.nextTurn, ...running.inbox.nextStep].some(message => String(message.id) === ownInstruction.id),
+          humanPending: [...running.inbox.nextTurn, ...running.inbox.nextStep].some(message => String(message.id) === human.id),
+        }
+      },
+    })
+
+    // --- Running child: clear-all discards the answer and reopens the question. ---
+    const clearAll = await runScriptedChildTurn(ctx, lead, {
+      title: 'e2e answer clear-all',
+      prompt: 'e2e turn: run a tool so the lead can clear the inbox',
+      script: [
+        toolCallChunks([{ id: 'e2e-glob', name: 'glob', arguments: { pattern: '*' } }]),
+        textChunks('e2e clear-all turn complete'),
+      ],
+      duringGlob: async ({ child: running, childId: runningId }) => {
+        const receipt = await ctx.devLead.reportProgress(running, {
+          kind: 'question',
+          message: 'e2e clear-all question: which target?',
+        })
+        const qid = receipt.report.id
+        const ans = await ctx.devLead.promptSession(lead, runningId, 'use staging', { intent: 'answer', questionId: qid })
+        await ctx.devLead.promptSession(lead, runningId, 'replacement work', {
+          interrupt: true,
+          interruptInbox: 'clear-all',
+        })
+        return {
+          questionId: qid,
+          answerMessageId: ans.delivery.messageId,
+          viewAfter: ctx.devLead.questionAnswerView(lead, qid),
+          answerPending: [...running.inbox.nextTurn, ...running.inbox.nextStep].some(message => String(message.id) === ans.delivery.messageId),
+          answerRecords: answerRecordsOf(lead).filter(record => record.reportId === qid),
+        }
+      },
+    })
+
+    return { kind: 'success', text: JSON.stringify({ metadata: metadataFacts, clearOwn: clearOwn.duringGlobFacts, clearAll: clearAll.duringGlobFacts }) }
+  } catch (error) {
+    return { kind: 'error', text: `devlead-e2e-answer-inbox: ${messageOf(error)}` }
+  }
+}
+
 /**
  * Exercise queued-inbox visibility and retraction against the real durable
  * inbox: create one idle watched child, append a human-authored and a
@@ -1524,5 +1817,17 @@ export function apply(ctx) {
     name: INBOX_COMMAND_NAME,
     description: 'E2E probe: queued-inbox visibility, ownership refusal, and idempotent retraction.',
     handler: guarded(INBOX_COMMAND_NAME, invocation => executeInbox(ctx, invocation)),
+  })
+  ctx.commands.register({
+    definitionId: CommandDefinitionId(`${DEFINITION_ID}#answer-turn`),
+    name: ANSWER_TURN_COMMAND_NAME,
+    description: 'E2E probe: real scripted child turn where the lead answers a running child via steer (Phase 1d).',
+    handler: guarded(ANSWER_TURN_COMMAND_NAME, invocation => executeAnswerTurn(ctx, invocation)),
+  })
+  ctx.commands.register({
+    definitionId: CommandDefinitionId(`${DEFINITION_ID}#answer-inbox`),
+    name: ANSWER_INBOX_COMMAND_NAME,
+    description: 'E2E probe: answer inbox lifecycle — delivery metadata, retract refusal, clear-own/clear-all (Phase 1d).',
+    handler: guarded(ANSWER_INBOX_COMMAND_NAME, invocation => executeAnswerInbox(ctx, invocation)),
   })
 }

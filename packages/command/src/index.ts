@@ -346,6 +346,11 @@ function friendlyDevLeadError(error: DevLeadError): string {
         + 'Stop its running work first, then retry.'
     case 'DEVLEAD_SESSION_UNAVAILABLE':
       return `The Host could not complete the DevLead request right now: ${error.message}`
+    case 'DEVLEAD_QUESTION_NOT_FOUND':
+    case 'DEVLEAD_QUESTION_ALREADY_ANSWERED':
+      // Question-answer failures are raised by the model prompt tool, not a
+      // human command; surface the core's actionable message unchanged.
+      return error.message
     case 'DEVLEAD_WATCH_LIMIT':
       return 'The maximum number of watched Sessions has been reached. '
         + 'Stop watching one with /devlead unwatch <session> first.'

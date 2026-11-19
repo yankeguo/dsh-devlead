@@ -26,6 +26,7 @@ import type {
   DevLeadNotification,
   DevLeadProjection,
   DevLeadPromptedSession,
+  DevLeadQuestionAnswerView,
   DevLeadRemovedWorkspace,
   DevLeadReport,
   DevLeadSessionView,
@@ -183,6 +184,18 @@ export const QUEUED_INPUT_SCHEMA = {
     senderSessionId: { type: 'string', description: 'Authoring Session identity, when the source records one (a devlead relay names its lead).' },
     excerpt: { type: 'string', description: 'Bounded single-line excerpt of the text content, when the message carries text.' },
     enqueuedAt: { type: 'integer', description: 'Epoch milliseconds of the durable splice that enqueued the message, when the log records one.' },
+    intent: {
+      type: 'string',
+      enum: ['instruction', 'answer', 'correction', 'background'],
+      description: 'DevLead prompt intent stamped on the source, when the producer recorded one.',
+    },
+    questionId: { type: 'string', description: 'Question report identity an answer message addresses, when it is one.' },
+    wakeRequested: { type: 'boolean', description: 'Whether the admission requested a driver wake, when the source records it (false for background).' },
+    deliveryState: {
+      type: 'string',
+      enum: ['admitted', 'claimed'],
+      description: 'Observed inbox lifecycle of a tracked answer: admitted (waiting) or claimed (taken for a proposed step). Absent for untracked messages; only presented (not shown, because it left the inbox) is delivery completion.',
+    },
   },
 } as const
 
@@ -256,6 +269,19 @@ export const REPORT_SCHEMA = {
     leadSessionId: { type: 'string', required: true, description: 'Active DevLead Session receiving the report.' },
     turn: { type: 'integer', required: true, description: "Reporter's current turn (0 before its first turn)." },
     at: { type: 'integer', required: true, description: 'Epoch milliseconds recorded by the Host.' },
+    questionStatus: {
+      type: 'string',
+      enum: ['open', 'answered', 'expired', 'cancelled'],
+      description: 'Question lifecycle (question reports only): open accepts a new answer; answered has an active answer; expired/cancelled reject question_id. Filter open questions with questionStatus === "open".',
+    },
+    answerStatus: {
+      type: 'string',
+      enum: ['admitted', 'claimed', 'presented', 'discarded', 'failed'],
+      description: 'Inbox lifecycle of the newest answer (question reports only). Separate from questionStatus: answered does not imply presented; only presented is delivery completion. discarded/failed reopen the question.',
+    },
+    answerMessageId: { type: 'string', description: 'Host message identity of the newest answer, when one exists.' },
+    answeredAt: { type: 'integer', description: 'Epoch milliseconds of the first answer admission, when the question was ever answered (survives a reopen).' },
+    presentedAt: { type: 'integer', description: 'Epoch milliseconds the newest answer entered an entered step, when observed.' },
   },
 } as const
 
@@ -365,9 +391,12 @@ export function notificationValue(notification: DevLeadNotification): Notificati
 /**
  * Project one report onto its canonical value, dropping absent optional fields.
  * @param report - report from the core service.
+ * @param answerView - derived question/answer state for a question report, when
+ *   the caller read it; omitted for non-question reports and the reporter's own
+ *   receipt echo.
  * @returns the detached canonical value.
  */
-export function reportValue(report: DevLeadReport): ReportValue {
+export function reportValue(report: DevLeadReport, answerView?: DevLeadQuestionAnswerView): ReportValue {
   return {
     id: report.id,
     kind: report.kind,
@@ -376,6 +405,13 @@ export function reportValue(report: DevLeadReport): ReportValue {
     leadSessionId: report.leadSessionId,
     turn: report.turn,
     at: report.at,
+    ...answerView === undefined ? {} : {
+      questionStatus: answerView.questionStatus,
+      ...answerView.answerStatus === undefined ? {} : { answerStatus: answerView.answerStatus },
+      ...answerView.answerMessageId === undefined ? {} : { answerMessageId: answerView.answerMessageId },
+      ...answerView.answeredAt === undefined ? {} : { answeredAt: answerView.answeredAt },
+      ...answerView.presentedAt === undefined ? {} : { presentedAt: answerView.presentedAt },
+    },
     ...report.summary === undefined ? {} : { summary: report.summary },
     ...report.questions === undefined ? {} : {
       questions: report.questions.map(question => ({
@@ -470,6 +506,38 @@ export const GET_SESSION_OUTPUT = jsonOutput({
   },
 } as const)
 
+/** Enforced schema of one prompt admission receipt (no internal lane is exposed). */
+export const DELIVERY_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    primitive: {
+      type: 'string',
+      required: true,
+      enum: ['followup', 'steer', 'inject'],
+      description: 'DSH primitive the runtime actually used: followup (next-turn), steer (next-step), or inject (next-step, no wake).',
+    },
+    boundary: {
+      type: 'string',
+      required: true,
+      enum: ['next-turn', 'next-step'],
+      description: 'Inbox boundary that actually holds the admitted message (a waking steer on an aborted phase may be reclassified to next-turn).',
+    },
+    wakeRequested: {
+      type: 'boolean',
+      required: true,
+      description: 'Whether the admission requested a driver wake; false for background context (queued, not presented).',
+    },
+    messageId: {
+      type: 'string',
+      required: true,
+      description: 'Stable Host message identity of the admitted prompt, accepted by devlead_retract_input (answers excepted).',
+    },
+    questionId: { type: 'string', description: 'Question report identity echoed back for an answer, when one was given.' },
+    idempotencyKey: { type: 'string', description: 'Lead-supplied idempotency key echoed back, when one was given.' },
+  },
+} as const
+
 /** Canonical value of `devlead_prompt_session`. */
 export const PROMPT_SESSION_OUTPUT = jsonOutput({
   type: 'object',
@@ -487,6 +555,7 @@ export const PROMPT_SESSION_OUTPUT = jsonOutput({
       type: 'integer',
       description: 'Pending inputs restored after the stop under interrupt_inbox keep/clear-own; absent for clear-all and every no-op interrupt.',
     },
+    delivery: required(DELIVERY_SCHEMA),
   },
 } as const)
 
@@ -771,12 +840,21 @@ export function createdSessionValue(created: DevLeadCreatedSession): InferValue<
 
 /** Project one admitted-prompt result onto the canonical value. */
 export function promptedSessionValue(prompted: DevLeadPromptedSession): InferValue<typeof PROMPT_SESSION_OUTPUT.schema> {
+  const delivery = prompted.delivery
   return {
     sessionId: prompted.sessionId,
     watched: prompted.watched,
     resumed: prompted.resumed,
     interrupted: prompted.interrupted,
     ...prompted.retainedInputs === undefined ? {} : { retainedInputs: prompted.retainedInputs },
+    delivery: {
+      primitive: delivery.primitive,
+      boundary: delivery.boundary,
+      wakeRequested: delivery.wakeRequested,
+      messageId: delivery.messageId,
+      ...delivery.questionId === undefined ? {} : { questionId: delivery.questionId },
+      ...delivery.idempotencyKey === undefined ? {} : { idempotencyKey: delivery.idempotencyKey },
+    },
   }
 }
 

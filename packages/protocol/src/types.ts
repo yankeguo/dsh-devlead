@@ -28,6 +28,9 @@ export const DEVLEAD_NOTIFICATION_RECORD_TYPE = 'plugin:devlead/notification'
 /** Persistent `plugin:` record carrying one watched Session's report to its lead. */
 export const DEVLEAD_REPORT_RECORD_TYPE = 'plugin:devlead/report'
 
+/** Persistent `plugin:` record carrying one answer lifecycle fact for a question report. */
+export const DEVLEAD_REPORT_ANSWER_RECORD_TYPE = 'plugin:devlead/report-answer'
+
 /**
  * Persistent `plugin:` record that discards every earlier DevLead record of the
  * Session and resets the projections to their empty state.
@@ -99,6 +102,24 @@ export const DEVLEAD_REPORT_MAX_PER_TURN = 4
 
 /** Retained report count per lead, matching the notification digest retention. */
 export const DEVLEAD_REPORT_RETENTION = 64
+
+/**
+ * Most open question reports pinned beyond the base report retention. An
+ * unanswered question must stay addressable by `question_id`, so the fold pins
+ * it instead of evicting it with the ordinary digest; the pin itself is bounded
+ * so a lead that never answers cannot grow its projection without limit.
+ */
+export const DEVLEAD_OPEN_QUESTION_PIN_MAX = 64
+
+/**
+ * Retained answer lifecycle records per lead. At least covers the report
+ * retention (plus the open-question pin) so every retained question can still
+ * derive its `questionStatus`; the newest record per question is pinned first.
+ */
+export const DEVLEAD_ANSWER_RETENTION = 128
+
+/** Longest lead-supplied idempotency key, in Unicode code points. */
+export const DEVLEAD_IDEMPOTENCY_KEY_MAX = 200
 
 /**
  * Largest epoch-millisecond instant a JavaScript `Date` can represent. Persisted
@@ -223,6 +244,107 @@ export interface DevLeadReportRecord {
   readonly report: DevLeadReport
 }
 
+/**
+ * Model-facing semantic intent of one lead-to-child prompt. The runtime maps
+ * the intent and the observed target state onto a DSH delivery primitive; the
+ * model never selects the transport itself. An omitted intent is `instruction`.
+ */
+export type DevLeadPromptIntent = 'instruction' | 'answer' | 'correction' | 'background'
+
+/** Every accepted prompt intent, in declaration order. */
+export const DEVLEAD_PROMPT_INTENTS: readonly DevLeadPromptIntent[] = [
+  'instruction',
+  'answer',
+  'correction',
+  'background',
+]
+
+/** DSH primitive the runtime actually used to admit one prompt. */
+export type DevLeadDeliveryPrimitive = 'followup' | 'steer' | 'inject'
+
+/** Inbox boundary at which one admitted prompt was queued. */
+export type DevLeadDeliveryBoundary = 'next-turn' | 'next-step'
+
+/**
+ * Independent lifecycle of the question itself: whether it already has an
+ * active answer. `answered` only means an answer was assigned, not that the
+ * child saw it; `expired`/`cancelled` are terminal rejections of `question_id`.
+ */
+export type DevLeadQuestionStatus = 'open' | 'answered' | 'expired' | 'cancelled'
+
+/**
+ * Inbox lifecycle of one answer message. Only `presented` is delivery
+ * completion; `admitted`/`claimed` are not, and `discarded`/`failed` reopen
+ * the question.
+ */
+export type DevLeadAnswerStatus = 'admitted' | 'claimed' | 'presented' | 'discarded' | 'failed'
+
+/**
+ * One durable answer lifecycle fact appended to the lead's Session log. The
+ * newest record per question report derives `questionStatus`; older records
+ * stay as audit. `textHash`/`idempotencyKey` recognize an idempotent retry,
+ * and the delivery fields let a retry return the original admission receipt.
+ */
+export interface DevLeadReportAnswer {
+  /** Question report identity this answer addresses. */
+  readonly reportId: string
+  /** Lead Session that authored the answer. */
+  readonly leadSessionId: string
+  /** Child Session whose inbox received the answer message. */
+  readonly sessionId: string
+  /** Stable Host message identity of the answer in the child inbox. */
+  readonly messageId: string
+  /** Epoch milliseconds of this lifecycle fact (admission or discard). */
+  readonly at: number
+  /** Lifecycle status recorded by this fact. */
+  readonly status: DevLeadAnswerStatus
+  /** SHA-256 hex of the trimmed answer prompt, for same-text retry recognition. */
+  readonly textHash: string
+  /** First admission instant of the question; carried forward across reopens. */
+  readonly answeredAt?: number
+  /** Instant the answer entered an entered step; present only when presented. */
+  readonly presentedAt?: number
+  /** Lead-supplied idempotency key, when one was provided. */
+  readonly idempotencyKey?: string
+  /** Bounded single-line excerpt of the answer prompt, for conflict messages. */
+  readonly textExcerpt?: string
+  /** Primitive that admitted the answer message. */
+  readonly primitive?: 'followup' | 'steer'
+  /** Boundary that admitted the answer message. */
+  readonly boundary?: DevLeadDeliveryBoundary
+  /** Whether the admission requested a driver wake. */
+  readonly wakeRequested?: boolean
+}
+
+/** Durable record payload appending one answer lifecycle fact to a lead's log. */
+export interface DevLeadReportAnswerRecord {
+  /** Record discriminator. */
+  readonly kind: 'devlead/report-answer'
+  /** Durable payload version; the fold rejects any other value. */
+  readonly version: typeof DEVLEAD_RECORD_VERSION
+  /** Answer lifecycle fact appended to the lead's retained answer audit. */
+  readonly answer: DevLeadReportAnswer
+}
+
+/**
+ * Question/answer state of one question report, derived from the durable
+ * report + answer records and the runtime's in-memory inbox observation. The
+ * two statuses are separate: `questionStatus:'answered'` does not imply the
+ * answer was `presented`.
+ */
+export interface DevLeadQuestionAnswerView {
+  /** Whether the question still accepts a new answer. */
+  readonly questionStatus: DevLeadQuestionStatus
+  /** Inbox lifecycle of the newest answer, when one exists. */
+  readonly answerStatus?: DevLeadAnswerStatus
+  /** Host message identity of the newest answer, when one exists. */
+  readonly answerMessageId?: string
+  /** First admission instant of the question, when it was ever answered. */
+  readonly answeredAt?: number
+  /** Instant the newest answer was presented, when observed. */
+  readonly presentedAt?: number
+}
+
 /** Durable record payload selecting DevLead mode for one Session. */
 export interface DevLeadModeRecord {
   /** Record discriminator. */
@@ -280,6 +402,7 @@ export type DevLeadRecord =
   | DevLeadWatchRecord
   | DevLeadNotificationRecord
   | DevLeadReportRecord
+  | DevLeadReportAnswerRecord
   | DevLeadResetRecord
 
 /** Strict Host fold state of one Session's DevLead records. */
@@ -292,6 +415,12 @@ export interface DevLeadProjectionState {
   readonly notifications: readonly DevLeadNotification[]
   /** Retained mid-turn reports, oldest first. */
   readonly reports: readonly DevLeadReport[]
+  /**
+   * Retained answer lifecycle records, oldest first. Host-only: the newest
+   * record per question derives `questionStatus`, but the browser wire view
+   * does not carry the audit (the read tools project the derived state).
+   */
+  readonly answers: readonly DevLeadReportAnswer[]
   /** First rejected persisted record, or null while the state is valid. */
   readonly failure: string | null
   /**
@@ -629,6 +758,19 @@ export interface DevLeadQueuedInput {
   readonly excerpt?: string
   /** Epoch milliseconds of the durable splice that enqueued the message, when the log records one. */
   readonly enqueuedAt?: number
+  /** DevLead prompt intent recorded on the source, when the producer stamped one. */
+  readonly intent?: DevLeadPromptIntent
+  /** Question report identity an answer message addresses, when it is one. */
+  readonly questionId?: string
+  /** Whether the admission requested a driver wake, when the source records it. */
+  readonly wakeRequested?: boolean
+  /**
+   * Observed inbox lifecycle of a tracked answer message: `admitted` while it
+   * waits in the inbox, `claimed` once a proposed pre-step took it. Absent for
+   * messages the runtime does not track; only `presented` (not shown here,
+   * because a presented message left the inbox) is delivery completion.
+   */
+  readonly deliveryState?: 'admitted' | 'claimed'
 }
 
 /**
@@ -652,9 +794,12 @@ export interface DevLeadRetractedInput {
  *
  * `clear-all` (the default) keeps the historical behavior: the Host stop
  * discards every pending input. `keep` restores every pending message after
- * the stop; `clear-own` restores everything except the relay prompts this
- * lead Session authored. Restored messages keep their identity and queue
- * order ahead of the replacement prompt.
+ * the stop; `clear-own` restores everything except the instruction/correction
+ * relay prompts and background notices this lead Session authored — pending
+ * answer messages are always kept, because removing one would desynchronize
+ * the question state from the child inbox. Restored messages keep their
+ * identity and queue order ahead of the replacement prompt. An answer
+ * discarded by `clear-all` is recorded `discarded` and its question reopens.
  */
 export type DevLeadInterruptInboxPolicy = 'clear-all' | 'keep' | 'clear-own'
 
@@ -737,16 +882,58 @@ export interface DevLeadUnarchivedSession {
 export interface DevLeadPromptSessionOptions {
   /** Watch the Session after prompting. Defaults to true. */
   readonly watch?: boolean
+  /**
+   * Semantic intent of the prompt; defaults to `instruction`. The runtime
+   * selects the delivery primitive from the intent and the observed target
+   * state: `answer`/`correction` steer the next step, `background` injects
+   * without requesting a wake, `instruction` queues a follow-up turn.
+   */
+  readonly intent?: DevLeadPromptIntent
+  /**
+   * Question report identity the prompt answers; required for `intent:'answer'`
+   * and rejected for every other intent.
+   */
+  readonly questionId?: string
+  /**
+   * Optional lead-supplied idempotency key. A repeat of the same key with the
+   * same prompt text returns the original admission receipt without a second
+   * delivery; a different text under the same key is an explicit conflict.
+   */
+  readonly idempotencyKey?: string
   /** Stop the Session's running work before admitting the prompt. Defaults to false. */
   readonly interrupt?: boolean
   /**
    * Inbox policy applied when the interrupt stops a running turn. Defaults to
    * `clear-all` (the historical behavior). Ignored without `interrupt` and for
-   * an idle or cold target, where no stop runs.
+   * an idle or cold target, where no stop runs. `clear-own` keeps pending
+   * answer messages (removing one would desynchronize the question state from
+   * the child inbox); `clear-all` discards them and reopens their questions.
    */
   readonly interruptInbox?: DevLeadInterruptInboxPolicy
   /** Cancellation checked before each stage. */
   readonly signal?: AbortSignal
+}
+
+/**
+ * Admission receipt of one admitted prompt: which DSH primitive the runtime
+ * actually used, at which boundary the message was queued, and whether a
+ * driver wake was requested. This is an admission receipt, not a `presented`
+ * confirmation and not a durability confirmation; the internal delivery lane
+ * is deliberately not exposed.
+ */
+export interface DevLeadPromptDelivery {
+  /** DSH primitive that admitted the message. */
+  readonly primitive: DevLeadDeliveryPrimitive
+  /** Inbox boundary that actually holds the admitted message. */
+  readonly boundary: DevLeadDeliveryBoundary
+  /** Whether the admission requested a driver wake (`false` for background). */
+  readonly wakeRequested: boolean
+  /** Stable Host message identity, accepted by `devlead_retract_input`. */
+  readonly messageId: string
+  /** Question report identity echoed back for an answer, when one was given. */
+  readonly questionId?: string
+  /** Lead-supplied idempotency key echoed back, when one was given. */
+  readonly idempotencyKey?: string
 }
 
 /** One admitted prompt into an existing Session. */
@@ -770,6 +957,12 @@ export interface DevLeadPromptedSession {
    * turn; absent for the default `clear-all` and for every no-op interrupt.
    */
   readonly retainedInputs?: number
+  /**
+   * Admission receipt of the prompt: the actual primitive/boundary/wake and
+   * the stable message identity. An idempotent replay returns the original
+   * receipt without a second delivery.
+   */
+  readonly delivery: DevLeadPromptDelivery
 }
 
 declare module '@deepseek-ai/dsh-session-projection/types' {
