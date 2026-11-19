@@ -18,6 +18,7 @@ import type {
   DevLeadIsolationMode,
   DevLeadModelSelection,
 } from '@yankeguo/dsh-devlead-protocol'
+import { TOOL_PARAMETERS } from './parameters.ts'
 
 /**
  * Model input rejected before the core service is called.
@@ -41,37 +42,20 @@ export class DevLeadToolInputError extends Error {
 /**
  * Exact declared parameter names of every tool, in schema order.
  *
- * Kept beside the argument validators so a new parameter and its undeclared-key
- * guard cannot drift apart.
+ * Derived from the same {@link TOOL_PARAMETERS} objects that `defineTool`
+ * receives, so adding or renaming a parameter cannot leave the undeclared-key
+ * guard behind. The mapping keeps each tool's literal key names for callers
+ * that index it by a known tool name.
  */
-export const TOOL_ARGUMENT_KEYS = {
-  devlead_list_workspaces: [],
-  devlead_list_models: [],
-  devlead_list_agent_presets: [],
-  devlead_use_workspace: ['path', 'title', 'create'],
-  devlead_list_sessions: ['workspace', 'watched_only', 'limit'],
-  devlead_create_session: [
-    'workspace',
-    'prompt',
-    'title',
-    'watch',
-    'preset',
-    'isolation',
-    'provider',
-    'model',
-    'reasoning_effort',
-    'agent_teams',
-  ],
-  devlead_get_session: ['session'],
-  devlead_prompt_session: ['session', 'prompt', 'watch', 'interrupt', 'interrupt_inbox'],
-  devlead_retract_input: ['session', 'input_id'],
-  devlead_watch_session: ['session', 'watching'],
-  devlead_notifications: ['limit'],
-  devlead_report: ['message', 'kind', 'summary'],
-  devlead_remove_workspace: ['workspace'],
-  devlead_archive_session: ['session', 'stop_running'],
-  devlead_unarchive_session: ['session'],
-} as const
+type ToolArgumentKeys = {
+  readonly [K in keyof typeof TOOL_PARAMETERS]: readonly (keyof (typeof TOOL_PARAMETERS)[K] & string)[]
+}
+
+// `Object.keys` forgets the literal property names; the mapped type restores
+// them so a misspelled `TOOL_ARGUMENT_KEYS.devlead_*` access still fails `tsc`.
+export const TOOL_ARGUMENT_KEYS = Object.fromEntries(
+  Object.entries(TOOL_PARAMETERS).map(([name, parameters]) => [name, Object.keys(parameters)]),
+) as unknown as ToolArgumentKeys
 
 /**
  * Reject argument keys the tool schema does not declare.

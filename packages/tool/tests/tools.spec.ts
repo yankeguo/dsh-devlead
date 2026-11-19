@@ -31,6 +31,11 @@ import type {
 } from '@yankeguo/dsh-devlead-protocol'
 import { DEVLEAD_REPORT_KINDS } from '@yankeguo/dsh-devlead-protocol'
 import { TOOL_ARGUMENT_KEYS, createSessionRequest, DevLeadToolInputError } from '../src/arguments.ts'
+import {
+  SESSION_ARGUMENT_DESCRIPTION,
+  TOOL_PARAMETERS,
+  WORKSPACE_ARGUMENT_DESCRIPTION,
+} from '../src/parameters.ts'
 import { DEVLEAD_POLICY_BASE } from '../src/policy.ts'
 import {
   ASK_USER_QUESTION_TOOL,
@@ -208,14 +213,17 @@ describe('registration', () => {
     }
   })
 
-  it('keeps every registered parameter declared in TOOL_ARGUMENT_KEYS', () => {
+  it('derives TOOL_ARGUMENT_KEYS from the parameter schemas defineTool receives', () => {
     const harness = boot()
-    expect([...harness.tools.keys()].sort()).toEqual(Object.keys(TOOL_ARGUMENT_KEYS).sort())
-    for (const [name, tool] of harness.tools) {
-      const parameters = tool.definition.parameters as { properties: Record<string, unknown> }
-      const registered = Object.keys(parameters.properties).sort()
-      const allowed = [...TOOL_ARGUMENT_KEYS[name as keyof typeof TOOL_ARGUMENT_KEYS]].sort()
-      expect(registered, name).toEqual(allowed)
+    const names = Object.keys(TOOL_PARAMETERS)
+    expect([...harness.tools.keys()].sort()).toEqual(names.sort())
+    expect(Object.keys(TOOL_ARGUMENT_KEYS).sort()).toEqual(names)
+    for (const name of names) {
+      const key = name as keyof typeof TOOL_PARAMETERS
+      const parameters = harness.tool(name).definition.parameters as { properties: Record<string, unknown> }
+      const registered = Object.keys(parameters.properties)
+      expect(registered, name).toEqual(Object.keys(TOOL_PARAMETERS[key]))
+      expect([...TOOL_ARGUMENT_KEYS[key]], name).toEqual(registered)
     }
   })
 
@@ -236,6 +244,45 @@ describe('registration', () => {
       }
       expect(parameters.properties.session.description).toContain(expected)
     }
+  })
+
+  it('converges every session and workspace argument on the shared descriptions', () => {
+    const harness = boot()
+    const expectShared = (
+      toolNames: readonly string[],
+      parameter: string,
+      shared: string,
+      exact: boolean,
+    ): void => {
+      for (const name of toolNames) {
+        const parameters = harness.tool(name).definition.parameters as {
+          properties: Record<string, { description: string }>
+        }
+        const description = parameters.properties[parameter]?.description
+        expect(description, `${name}.${parameter}`).toBeDefined()
+        if (exact) expect(description, `${name}.${parameter}`).toBe(shared)
+        else expect(description, `${name}.${parameter}`).toContain(shared)
+      }
+    }
+    expectShared(
+      [
+        'devlead_get_session',
+        'devlead_prompt_session',
+        'devlead_retract_input',
+        'devlead_watch_session',
+        'devlead_archive_session',
+        'devlead_unarchive_session',
+      ],
+      'session',
+      SESSION_ARGUMENT_DESCRIPTION,
+      true,
+    )
+    expectShared(
+      ['devlead_list_sessions', 'devlead_create_session', 'devlead_remove_workspace'],
+      'workspace',
+      WORKSPACE_ARGUMENT_DESCRIPTION,
+      false,
+    )
   })
 
   it('gates lead tools on DevLead mode and the report tool on the watch relationship', async () => {
@@ -602,12 +649,21 @@ describe('caller invariant', () => {
 })
 
 describe('undeclared arguments', () => {
-  it('rejects an undeclared key on every tool before any core call', async () => {
+  it('guards every tool with the same keys its registered schema declares', async () => {
     for (const name of TOOL_NAMES) {
       const harness = boot()
+      const parameters = harness.tool(name).definition.parameters as { properties: Record<string, unknown> }
+      const registered = Object.keys(parameters.properties)
       const error = await failureOf(harness.call(name, { ...MINIMAL_ARGS[name], typo_probe: true }))
       expect(error.code, name).toBe('DEVLEAD_INVALID_INPUT')
       expect(error.message, name).toContain('unknown argument "typo_probe"')
+      // The guard's accepted list is the registered schema itself, in schema
+      // order, so a parameter cannot be visible to the model but unknown to the
+      // guard (or vice versa).
+      expect(error.message, name).toBe(
+        `unknown argument "typo_probe"; accepted arguments: `
+        + `${registered.length === 0 ? '(none)' : registered.join(', ')}`,
+      )
       expect(harness.devLead.calls, name).toHaveLength(0)
     }
   })
@@ -1856,9 +1912,13 @@ describe('devlead_report', () => {
     expect(reportSchema.properties.warning.description).toContain('no durable receipt was written')
     // The brief-writing guidance on create/prompt matches the narrowed scope.
     expect(harness.tool('devlead_create_session').definition.description)
-      .toContain('mention it only in a long-running brief whose mid-turn milestones matter')
+      .toContain('invite it only in a long-running brief')
+    expect(harness.tool('devlead_create_session').definition.description)
+      .toContain('devlead_report for mid-turn milestones')
     expect(harness.tool('devlead_prompt_session').definition.description)
-      .toContain('in a long-running continuation whose mid-turn milestones matter')
+      .toContain('mention it only in a long-running continuation')
+    expect(harness.tool('devlead_prompt_session').definition.description)
+      .toContain('devlead_report for mid-turn milestones')
   })
 
   it('translates a not-watched refusal', async () => {
