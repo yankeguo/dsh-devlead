@@ -590,6 +590,56 @@ describe('caller invariant', () => {
   })
 })
 
+describe('undeclared arguments', () => {
+  it('rejects an undeclared key on every tool before any core call', async () => {
+    for (const name of TOOL_NAMES) {
+      const harness = boot()
+      const error = await failureOf(harness.call(name, { ...MINIMAL_ARGS[name], typo_probe: true }))
+      expect(error.code, name).toBe('DEVLEAD_INVALID_INPUT')
+      expect(error.message, name).toContain('unknown argument "typo_probe"')
+      expect(harness.devLead.calls, name).toHaveLength(0)
+    }
+  })
+
+  it('rejects misspelled create/archive/prompt arguments with the accepted list', async () => {
+    const harness = boot()
+    const cases: readonly (readonly [string, Record<string, unknown>, string])[] = [
+      ['devlead_create_session', { workspace: 'ws-1', promt: 'do the thing' }, 'promt'],
+      ['devlead_archive_session', { session: 'session-1', stopRunning: true }, 'stopRunning'],
+      ['devlead_prompt_session', {
+        session: 'session-1',
+        prompt: 'go',
+        interrupt: true,
+        interruptInbox: 'keep',
+      }, 'interruptInbox'],
+    ]
+    for (const [tool, args, key] of cases) {
+      const error = await failureOf(harness.call(tool, args))
+      expect(error.code, tool).toBe('DEVLEAD_INVALID_INPUT')
+      expect(error.message, tool).toContain(`unknown argument "${key}"`)
+      expect(error.message, tool).toContain('accepted arguments:')
+    }
+    expect(harness.devLead.calls).toHaveLength(0)
+  })
+
+  it('still forwards every declared argument unchanged', async () => {
+    const harness = boot()
+    await harness.call('devlead_create_session', {
+      workspace: 'ws-1',
+      prompt: 'do the thing',
+      watch: false,
+      isolation: 'worktree',
+    })
+    const [, request] = harness.devLead.callsOf('createSession')[0] ?? []
+    expect(request).toEqual({
+      workspace: 'ws-1',
+      prompt: 'do the thing',
+      watch: false,
+      isolation: 'worktree',
+    })
+  })
+})
+
 describe('isolation vocabulary', () => {
   it('keeps the declared mode and status arrays exhaustive against the protocol unions', () => {
     const modes: Record<DevLeadIsolationMode, true> = { none: true, worktree: true }
@@ -1420,8 +1470,14 @@ describe('devlead_get_session', () => {
 
   it('advertises queued-input visibility for stale-instruction triage', () => {
     const harness = boot()
-    expect(harness.tool('devlead_get_session').definition.description)
+    const definition = harness.tool('devlead_get_session').definition
+    expect(definition.description).toContain('While a live Agent owns the target')
+    expect(definition.description)
       .toContain('lists its queued inbox inputs (id, boundary, source, text excerpt, enqueue time)')
+    const schema = definition.output.schema as {
+      properties: { queuedInputs: { description: string } }
+    }
+    expect(schema.properties.queuedInputs.description).toContain('present only while a live Agent owns it')
   })
 
   it('rejects a blank session reference', async () => {
@@ -1515,6 +1571,9 @@ describe('devlead_prompt_session', () => {
     const harness = boot()
     const definition = harness.tool('devlead_prompt_session').definition
     expect(definition.description).toContain('the inbox retention options on interrupt_inbox')
+    expect(definition.description).toContain('With watch=false this call only skips adding a watch')
+    expect(definition.description).toContain('an already-watched Session stays watched')
+    expect(definition.description).toContain('devlead_watch_session with watching:false')
     const parameters = definition.parameters as {
       properties: { interrupt_inbox: { type: string; description: string } }
     }
@@ -1542,6 +1601,10 @@ describe('devlead_prompt_session', () => {
     expect(parameters.properties.interrupt.description).toContain('discards queued inbox input')
     expect(parameters.properties.interrupt.description).toContain('An idle or cold Session is a no-op')
     expect(parameters.properties.interrupt.description).toContain('watched-turn notification as cancelled')
+    const schema = definition.output.schema as {
+      properties: { resumed: { description: string } }
+    }
+    expect(schema.properties.resumed.description).toContain('because no live Agent owned the target')
   })
 
   it('rejects a blank session or prompt before calling the core', async () => {
@@ -1773,6 +1836,13 @@ describe('devlead_report', () => {
     expect(description).toContain('a fork that needs the lead\'s decision')
     expect(description).toContain('change scheduling correctness if it waited')
     expect(description).toContain('a short or linear task should not call it')
+    expect(description).toContain('durable` false means no durable receipt was written on this attempt')
+    expect(description).toContain('the outbox write failed')
+    const reportSchema = harness.tool('devlead_report').definition.output.schema as {
+      properties: { durable: { description: string }; warning: { description: string } }
+    }
+    expect(reportSchema.properties.durable.description).toContain('storage absent or the outbox write failed')
+    expect(reportSchema.properties.warning.description).toContain('no durable receipt was written')
     // The brief-writing guidance on create/prompt matches the narrowed scope.
     expect(harness.tool('devlead_create_session').definition.description)
       .toContain('mention it only in a long-running brief whose mid-turn milestones matter')
@@ -1795,10 +1865,18 @@ describe('devlead_report', () => {
 })
 
 describe('watched Session question routing', () => {
+  /** One logged user-message source fixture: a bare kind or a kind plus context form. */
+  type SourceFixture = string | { readonly kind: string; readonly form?: string }
+
   /** Build one Agent whose current turn has the given user-message sources. */
-  function childAgent(id: string, sources: readonly string[]): ReturnType<typeof makeAgent> {
+  function childAgent(id: string, sources: readonly SourceFixture[]): ReturnType<typeof makeAgent> {
     const events: unknown[] = [{ type: 'turn/start', data: { turn: 1 } }]
-    for (const kind of sources) events.push({ type: 'user/message', data: { source: { kind } } })
+    for (const source of sources) {
+      events.push({
+        type: 'user/message',
+        data: { source: typeof source === 'string' ? { kind: source } : source },
+      })
+    }
     return {
       id,
       session: { header: { cwd: '/tmp' }, snapshotEvents: () => events },
@@ -1832,6 +1910,34 @@ describe('watched Session question routing', () => {
     expect(isHumanDirectedTurn(childAgent('child-human', ['user']))).toBe(true)
     expect(isHumanDirectedTurn(childAgent('child-lead', ['devlead']))).toBe(false)
     expect(isHumanDirectedTurn(childAgent('child-steered', ['user', 'runtime-context']))).toBe(true)
+    // A context injection after the human prompt must not erase the human.
+    for (const context of [
+      'time-context',
+      'agent-instructions',
+      'working-directory',
+      'tool-registry',
+      'ptc-mode',
+      'plan-mode',
+      'session-reference',
+      'action-cards',
+      'webhook',
+      'hooks-claude-code',
+    ]) {
+      expect(isHumanDirectedTurn(childAgent(`child-${context}`, ['user', context])), context).toBe(true)
+    }
+    // Human-origin replies are still the human, even though their kinds are not `user`.
+    expect(isHumanDirectedTurn(childAgent('child-question-reply', ['user', 'user-question-reply']))).toBe(true)
+    expect(isHumanDirectedTurn(childAgent('child-approval', ['user', 'user-approval']))).toBe(true)
+    // An unknown producer kind fails closed instead of guessing a human is present.
+    expect(isHumanDirectedTurn(childAgent('child-unknown', ['user', 'some-future-source']))).toBe(false)
+    expect(isHumanDirectedTurn(childAgent('child-unknown-only', ['some-future-source']))).toBe(false)
+    // An unknown kind carrying a context form is still recognizable as injected.
+    expect(isHumanDirectedTurn(childAgent('child-form', ['user', { kind: 'future-context', form: 'snapshot' }])))
+      .toBe(true)
+    // A lead relay remains actionable, even when a human message precedes it.
+    expect(isHumanDirectedTurn(childAgent('child-lead-steered', ['user', 'devlead']))).toBe(false)
+    // A human steering after the lead relay is present in the child.
+    expect(isHumanDirectedTurn(childAgent('child-human-steered', ['devlead', 'user']))).toBe(true)
   })
 
   it('forwards a watched child question and denies the direct UI call', async () => {

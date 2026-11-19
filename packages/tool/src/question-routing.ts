@@ -28,6 +28,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { PreToolDecision } from '@deepseek-ai/dsh-tools'
 import type { DevLeadService } from '@yankeguo/dsh-devlead'
 import {
+  DEVLEAD_MESSAGE_KIND,
   DEVLEAD_REPORT_MESSAGE_MAX,
   DEVLEAD_REPORT_SUMMARY_MAX,
 } from '@yankeguo/dsh-devlead-protocol'
@@ -35,8 +36,45 @@ import {
 /** Exact tool name the Host's user-question surface registers. */
 export const ASK_USER_QUESTION_TOOL = 'ask_user_question'
 
+/**
+ * Source kinds that record a human action in the child's current turn.
+ * `user-question-reply` follows the human answering an earlier question and
+ * `user-approval` follows a human approval/policy decision; both mean the
+ * human is present and may answer the next question in place.
+ */
+const HUMAN_SOURCE_KINDS = new Set(['user', 'user-question-reply', 'user-approval'])
+
 /** Source kinds that are injected context rather than an actionable prompt. */
-const NON_ACTIONABLE_SOURCE_KINDS = new Set(['runtime-context', 'tool-registry'])
+const NON_ACTIONABLE_SOURCE_KINDS = new Set([
+  'runtime-context',
+  'tool-registry',
+  'time-context',
+  'tmux-context',
+  'agent-instructions',
+  'working-directory',
+  'ptc-mode',
+  'plan-mode',
+  'session-reference',
+  'action-cards',
+  'webhook',
+])
+
+/** Prefixes of plugin-injected context sources (`hooks-claude-code`, `hooks-codex`, …). */
+const NON_ACTIONABLE_SOURCE_PREFIXES = ['hooks-']
+
+/**
+ * Context forms that identify an injected message even when its producer kind
+ * is new to this build: instructions, catalogs, runtime snapshots, notices,
+ * recalled references, and relayed context are not prompts from a human.
+ */
+const NON_ACTIONABLE_SOURCE_FORMS = new Set([
+  'instructions',
+  'catalog',
+  'snapshot',
+  'notice',
+  'recall',
+  'relay',
+])
 
 /** Denial after the question report was durably handed to the lead. */
 const FORWARDED_REASON = 'Direct user questions are disabled while this Session is watched by a DevLead. '
@@ -136,12 +174,13 @@ export function formatQuestionReport(args: unknown): QuestionReport | undefined 
 /**
  * Whether the Agent's current turn was opened or steered directly by a human.
  *
- * The event log records the source of every user message. A DevLead relay is
- * `source.kind === 'devlead'`; a browser/desktop prompt is `'user'` (including
- * the `user-rpc` variant). Runtime context and tool-registry notices also
- * arrive as user messages but are not actionable prompts, so they are skipped.
- * If no actionable prompt is visible, the gate treats the turn as lead-directed
- * and routes the question rather than guessing a human is present.
+ * The event log records the source of every user message. Only a human source
+ * (`user`, `user-question-reply`, `user-approval`) makes the turn human-directed;
+ * a DevLead relay is lead-directed. Known context injections and any source
+ * carrying a context form are skipped, so an injected timestamp/instructions
+ * notice does not erase the human who opened the turn. An unknown source kind
+ * stops the scan as lead-directed instead of guessing that a human is present.
+ * If no actionable prompt is visible, the gate routes the question to the lead.
  * @param agent - child Agent whose current turn is being inspected.
  * @returns whether the latest actionable user message came from a human.
  */
@@ -158,9 +197,16 @@ export function isHumanDirectedTurn(agent: Agent): boolean {
   for (let index = events.length - 1; index > turnStart; index -= 1) {
     const event = events[index]
     if (event?.type !== 'user/message') continue
-    const kind = (event.data as { source?: { kind?: unknown } }).source?.kind
-    if (typeof kind !== 'string' || NON_ACTIONABLE_SOURCE_KINDS.has(kind)) continue
-    return kind === 'user'
+    const source = (event.data as { source?: { kind?: unknown; form?: unknown } } | undefined)?.source
+    const kind = source?.kind
+    if (typeof kind !== 'string') return false
+    if (kind === DEVLEAD_MESSAGE_KIND) return false
+    if (NON_ACTIONABLE_SOURCE_KINDS.has(kind)
+      || NON_ACTIONABLE_SOURCE_PREFIXES.some(prefix => kind.startsWith(prefix))) continue
+    const form = source?.form
+    if (typeof form === 'string' && NON_ACTIONABLE_SOURCE_FORMS.has(form)) continue
+    if (HUMAN_SOURCE_KINDS.has(kind)) return true
+    return false
   }
   return false
 }

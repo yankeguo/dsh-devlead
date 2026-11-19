@@ -423,7 +423,7 @@ export const GET_SESSION_OUTPUT = jsonOutput({
     queuedInputs: {
       type: 'array',
       items: QUEUED_INPUT_SCHEMA,
-      description: 'Pending inbox inputs of the target Session, present only while it is live; queue order (next-turn rows, then next-step).',
+      description: 'Pending inbox inputs of the target Session, present only while a live Agent owns it; queue order (next-turn rows, then next-step).',
     },
   },
 } as const)
@@ -435,7 +435,7 @@ export const PROMPT_SESSION_OUTPUT = jsonOutput({
   properties: {
     sessionId: { type: 'string', required: true, description: 'Addressed Session identity.' },
     watched: { type: 'boolean', required: true, description: 'Whether the Session is watched after this call.' },
-    resumed: { type: 'boolean', required: true, description: 'Whether a cold Session had to be resumed to admit the prompt.' },
+    resumed: { type: 'boolean', required: true, description: 'Whether the target had to be resumed because no live Agent owned the target when the prompt was admitted.' },
     interrupted: {
       type: 'boolean',
       required: true,
@@ -499,7 +499,7 @@ export const REPORT_OUTPUT = jsonOutput({
     durable: {
       type: 'boolean',
       required: true,
-      description: 'Whether the receipt is safely recoverable from durable storage across a Host restart.',
+      description: 'Whether this attempt wrote the receipt to durable storage; false means no durable receipt exists (storage absent or the outbox write failed), so the warning is a possible-loss receipt.',
     },
     queued: {
       type: 'boolean',
@@ -508,7 +508,7 @@ export const REPORT_OUTPUT = jsonOutput({
     },
     warning: {
       type: 'string',
-      description: 'Human warning shown when durable storage is unavailable and the receipt is memory-only.',
+      description: 'Human warning shown when no durable receipt was written on this attempt (storage unavailable or the outbox write failed) and the receipt is memory-only.',
     },
   },
 } as const)

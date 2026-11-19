@@ -20,6 +20,8 @@ import {
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type {} from '@yankeguo/dsh-devlead'
 import {
+  TOOL_ARGUMENT_KEYS,
+  assertKnownArguments,
   createSessionRequest,
   defaultedLimit,
   optionalInterruptInbox,
@@ -168,8 +170,8 @@ const CREATE_SESSION_DESCRIPTION =
 
 const GET_SESSION_DESCRIPTION =
   'Read one Session in detail: whether it is live and running, whether it is archived, and, when the Host can read '
-  + 'the Session log, the latest turn number and outcome plus the latest error and assistant excerpts. While the '
-  + 'target is live, the output also lists its queued inbox inputs (id, boundary, source, text excerpt, enqueue '
+  + 'the Session log, the latest turn number and outcome plus the latest error and assistant excerpts. While a live '
+  + 'Agent owns the target, the output also lists its queued inbox inputs (id, boundary, source, text excerpt, enqueue '
   + 'time), so stale or duplicate queued instructions can be identified before they run. Use it to '
   + 'inspect state after a wake-up or when the human explicitly asks, not to poll while waiting for a dispatched Session. '
   + `When the target is this lead Session itself, the output also carries its ${SELF_REPORTS_LIMIT} newest retained mid-turn reports.`
@@ -179,8 +181,9 @@ const PROMPT_SESSION_DESCRIPTION =
   + 'DevLead Session. Archived Sessions are rejected. The Session is watched by default, so after this call end the '
   + 'turn instead of waiting: its settled turn starts a new turn of this lead session with the wake-up message. A '
   + 'watched Session gains devlead_report; in a long-running continuation whose mid-turn milestones matter, tell it '
-  + 'to report blockers, decision forks, or scheduling-critical progress. With watch=false the tool is unavailable. '
-  + 'Default delivery queues the prompt behind the '
+  + 'to report blockers, decision forks, or scheduling-critical progress. With watch=false this call only skips '
+  + 'adding a watch: an already-watched Session stays watched and keeps devlead_report, so use devlead_watch_session '
+  + 'with watching:false to remove it. Default delivery queues the prompt behind the '
   + 'Session\'s current turn; set interrupt true only to replace that work, with the exact stop-and-replace semantics '
   + 'described on the interrupt parameter and the inbox retention options on interrupt_inbox.'
 
@@ -216,8 +219,9 @@ const REPORT_DESCRIPTION =
   + 'concise and actionable; at most four distinct non-question reports are accepted per turn, question reports are '
   + 'exempt from that budget, the same kind and message in one turn is deduplicated, and no target Session can be '
   + 'chosen. The result '
-  + 'carries `durable` and `queued`; when `durable` is false the Host has no durable storage and the warning must be '
-  + 'treated as a possible-loss receipt.'
+  + 'carries `durable` and `queued`; `durable` false means no durable receipt was written on this attempt (durable '
+  + 'storage is absent, or the outbox write failed), so treat the warning as a possible-loss receipt and retry when '
+  + 'the lead is reachable.'
 
 const REMOVE_WORKSPACE_DESCRIPTION =
   'Close (remove) a DSH Workspace registration: the DSH remove action, not a deletion. The directory, its files, and '
@@ -290,10 +294,13 @@ export function apply(ctx: Context): void {
     output: LIST_WORKSPACES_OUTPUT,
     presentCall: presentListWorkspacesCall,
     isConcurrencySafe: READ_ONLY_CONCURRENCY_SAFE,
-    execute(_args, exec) {
-      return runTool(async () => ({
-        workspaces: (await ctx.devLead.listWorkspaces(exec.signal)).map(workspaceValue),
-      }))
+    execute(args, exec) {
+      return runTool(async () => {
+        assertKnownArguments(args, TOOL_ARGUMENT_KEYS.devlead_list_workspaces)
+        return {
+          workspaces: (await ctx.devLead.listWorkspaces(exec.signal)).map(workspaceValue),
+        }
+      })
     },
   }), { when: ({ agent }) => ctx.devLead.isEnabled(agent) })
 
@@ -304,8 +311,9 @@ export function apply(ctx: Context): void {
     output: LIST_MODELS_OUTPUT,
     presentCall: presentListModelsCall,
     isConcurrencySafe: READ_ONLY_CONCURRENCY_SAFE,
-    execute(_args, exec) {
+    execute(args, exec) {
       return runTool(async () => {
+        assertKnownArguments(args, TOOL_ARGUMENT_KEYS.devlead_list_models)
         const agent = requireAgent(exec.agent, 'devlead_list_models')
         return modelCatalogValue(await ctx.devLead.listModels(agent, exec.signal))
       })
@@ -319,8 +327,9 @@ export function apply(ctx: Context): void {
     output: LIST_AGENT_PRESETS_OUTPUT,
     presentCall: presentListAgentPresetsCall,
     isConcurrencySafe: READ_ONLY_CONCURRENCY_SAFE,
-    execute(_args, exec) {
+    execute(args, exec) {
       return runTool(async () => {
+        assertKnownArguments(args, TOOL_ARGUMENT_KEYS.devlead_list_agent_presets)
         const agent = requireAgent(exec.agent, 'devlead_list_agent_presets')
         return agentPresetCatalogValue(await ctx.devLead.listAgentPresets(agent, exec.signal))
       })
@@ -351,6 +360,7 @@ export function apply(ctx: Context): void {
     presentCall: presentUseWorkspaceCall,
     execute(args, exec) {
       return runTool(async () => {
+        assertKnownArguments(args, TOOL_ARGUMENT_KEYS.devlead_use_workspace)
         const agent = requireAgent(exec.agent, 'devlead_use_workspace')
         const path = requireAbsolutePath(args.path)
         const title = optionalText(args.title)
@@ -390,6 +400,7 @@ export function apply(ctx: Context): void {
     isConcurrencySafe: READ_ONLY_CONCURRENCY_SAFE,
     execute(args, exec) {
       return runTool(async () => {
+        assertKnownArguments(args, TOOL_ARGUMENT_KEYS.devlead_list_sessions)
         const agent = requireAgent(exec.agent, 'devlead_list_sessions')
         const workspace = optionalWorkspaceRef(args.workspace)
         const limit = optionalPositiveInteger(args.limit, 'limit')
@@ -479,6 +490,7 @@ export function apply(ctx: Context): void {
     presentCall: presentCreateSessionCall,
     execute(args, exec) {
       return runTool(async () => {
+        assertKnownArguments(args, TOOL_ARGUMENT_KEYS.devlead_create_session)
         const agent = requireAgent(exec.agent, 'devlead_create_session')
         const created = await ctx.devLead.createSession(agent, createSessionRequest(args), exec.signal)
         return createdSessionValue(created)
@@ -501,6 +513,7 @@ export function apply(ctx: Context): void {
     isConcurrencySafe: READ_ONLY_CONCURRENCY_SAFE,
     execute(args, exec) {
       return runTool(async () => {
+        assertKnownArguments(args, TOOL_ARGUMENT_KEYS.devlead_get_session)
         const agent = requireAgent(exec.agent, 'devlead_get_session')
         const session = await ctx.devLead.getSession(agent, requireSessionRef(args.session), exec.signal)
         const reports = String(session.sessionId) === String(agent.id)
@@ -560,6 +573,7 @@ export function apply(ctx: Context): void {
     presentCall: presentPromptSessionCall,
     execute(args, exec) {
       return runTool(async () => {
+        assertKnownArguments(args, TOOL_ARGUMENT_KEYS.devlead_prompt_session)
         const agent = requireAgent(exec.agent, 'devlead_prompt_session')
         const interruptInbox = optionalInterruptInbox(args.interrupt_inbox)
         const prompted = await ctx.devLead.promptSession(
@@ -597,6 +611,7 @@ export function apply(ctx: Context): void {
     presentCall: presentRetractInputCall,
     execute(args, exec) {
       return runTool(async () => {
+        assertKnownArguments(args, TOOL_ARGUMENT_KEYS.devlead_retract_input)
         const agent = requireAgent(exec.agent, 'devlead_retract_input')
         return await ctx.devLead.retractQueuedInput(
           agent,
@@ -627,6 +642,7 @@ export function apply(ctx: Context): void {
     presentCall: presentWatchSessionCall,
     execute(args, exec) {
       return runTool(async () => {
+        assertKnownArguments(args, TOOL_ARGUMENT_KEYS.devlead_watch_session)
         const agent = requireAgent(exec.agent, 'devlead_watch_session')
         const mutation = await ctx.devLead.watchSession(
           agent,
@@ -655,6 +671,7 @@ export function apply(ctx: Context): void {
     isConcurrencySafe: READ_ONLY_CONCURRENCY_SAFE,
     execute(args, exec) {
       return runTool(async () => {
+        assertKnownArguments(args, TOOL_ARGUMENT_KEYS.devlead_notifications)
         const agent = requireAgent(exec.agent, 'devlead_notifications')
         const limit = defaultedLimit(args.limit, 'limit', DEFAULT_NOTIFICATIONS_LIMIT)
         return {
@@ -692,6 +709,7 @@ export function apply(ctx: Context): void {
     presentCall: presentReportCall,
     execute(args, exec) {
       return runTool(async () => {
+        assertKnownArguments(args, TOOL_ARGUMENT_KEYS.devlead_report)
         const agent = requireAgent(exec.agent, 'devlead_report')
         const receipt = await ctx.devLead.reportProgress(agent, {
           message: args.message,
@@ -722,6 +740,7 @@ export function apply(ctx: Context): void {
     presentCall: presentRemoveWorkspaceCall,
     execute(args, exec) {
       return runTool(async () => {
+        assertKnownArguments(args, TOOL_ARGUMENT_KEYS.devlead_remove_workspace)
         const agent = requireAgent(exec.agent, 'devlead_remove_workspace')
         const removed = await ctx.devLead.removeWorkspace(
           agent,
@@ -754,6 +773,7 @@ export function apply(ctx: Context): void {
     presentCall: presentArchiveSessionCall,
     execute(args, exec) {
       return runTool(async () => {
+        assertKnownArguments(args, TOOL_ARGUMENT_KEYS.devlead_archive_session)
         const agent = requireAgent(exec.agent, 'devlead_archive_session')
         const archived = await ctx.devLead.archiveSession(
           agent,
@@ -779,6 +799,7 @@ export function apply(ctx: Context): void {
     presentCall: presentUnarchiveSessionCall,
     execute(args, exec) {
       return runTool(async () => {
+        assertKnownArguments(args, TOOL_ARGUMENT_KEYS.devlead_unarchive_session)
         const agent = requireAgent(exec.agent, 'devlead_unarchive_session')
         const unarchived = await ctx.devLead.unarchiveSession(
           agent,

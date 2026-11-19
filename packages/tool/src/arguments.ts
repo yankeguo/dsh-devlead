@@ -38,6 +38,65 @@ export class DevLeadToolInputError extends Error {
   }
 }
 
+/**
+ * Exact declared parameter names of every tool, in schema order.
+ *
+ * Kept beside the argument validators so a new parameter and its undeclared-key
+ * guard cannot drift apart.
+ */
+export const TOOL_ARGUMENT_KEYS = {
+  devlead_list_workspaces: [],
+  devlead_list_models: [],
+  devlead_list_agent_presets: [],
+  devlead_use_workspace: ['path', 'title', 'create'],
+  devlead_list_sessions: ['workspace', 'watched_only', 'limit'],
+  devlead_create_session: [
+    'workspace',
+    'prompt',
+    'title',
+    'watch',
+    'preset',
+    'isolation',
+    'provider',
+    'model',
+    'reasoning_effort',
+    'agent_teams',
+  ],
+  devlead_get_session: ['session'],
+  devlead_prompt_session: ['session', 'prompt', 'watch', 'interrupt', 'interrupt_inbox'],
+  devlead_retract_input: ['session', 'input_id'],
+  devlead_watch_session: ['session', 'watching'],
+  devlead_notifications: ['limit'],
+  devlead_report: ['message', 'kind', 'summary'],
+  devlead_remove_workspace: ['workspace'],
+  devlead_archive_session: ['session', 'stop_running'],
+  devlead_unarchive_session: ['session'],
+} as const
+
+/**
+ * Reject argument keys the tool schema does not declare.
+ *
+ * The parameter DSL compiles to `{ type, properties, required }` without
+ * `additionalProperties: false`, so model arguments may silently carry a
+ * misspelled or camelCase key that the handler then ignores. Rejecting those
+ * keys before the core call keeps a typo from becoming a real side effect (a
+ * blank Session, an archive without its stop request, a cleared inbox) while
+ * leaving every declared argument unchanged.
+ * @param args - parsed model arguments.
+ * @param allowedKeys - exact parameter names the tool declares, in schema order.
+ * @throws {@link DevLeadToolInputError} when one or more keys are undeclared.
+ */
+export function assertKnownArguments(args: object, allowedKeys: readonly string[]): void {
+  const allowed = new Set(allowedKeys)
+  const unknown = Object.keys(args).filter(key => !allowed.has(key))
+  if (unknown.length === 0) return
+  const names = unknown.map(key => `"${key}"`).join(', ')
+  throw new DevLeadToolInputError(
+    `unknown argument${unknown.length === 1 ? '' : 's'} ${names}; accepted arguments: `
+    + `${allowedKeys.length === 0 ? '(none)' : allowedKeys.join(', ')}`,
+  )
+}
+
 /** Arguments of `devlead_use_workspace`. */
 export interface UseWorkspaceArgs {
   readonly path: string
