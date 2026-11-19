@@ -416,9 +416,12 @@ remove_workspace 883→822、archive_session 1149→1062、unarchive_session 304
 （新增"描述不再重复参数规则"的反向断言）。policy 两侧补 question 拦截的"人类直聊 turn 豁免"与
 kind+message 幂等口径；policy 预算基线 JSDoc 修正为 0.2.7 / 10839。
 
-### 12.3 待决策项（破坏性，已报 lead，建议不做）
+### 12.3 破坏性变更决策（lead 已确认：全部不做）
 
-以下均**未实施**，已用 `devlead_report` 给出方案与兼容策略，建议维持现状（lead 未改判）：
+以下均**未实施**，已用 `devlead_report` 给出方案与兼容策略。**lead 于 2026-11-19 明确确认
+四项工具面评估全部「不做」**（archive/unarchive 不合并——stop_running 危险语义独立触发更精准；
+use_workspace 不改名；watch_session 输出字段不改名、只补 description；list_* 不合并），
+理由成立，按此执行。错误码/哈希两项仍为暂缓建议：
 
 | 候选 | 评估 | 建议 |
 | --- | --- | --- |
