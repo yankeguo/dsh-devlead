@@ -261,6 +261,9 @@ requires Node ≥ 24.9):
 | `0.2.2-rc.5` | `node scripts/e2e-smoke.mjs --flow installed` (Phase 1d cold-discard review round 3, pinned totals) | **188/188** (185 PASS + 3 SKIP; canceled+restore-safe discard reconstruction) |
 | `0.2.2-rc.5` | same, `--flow patch` | **188/188** (same round) |
 | `0.2.2-rc.5` | same, `--no-worktree --flow patch` | **165/165** (same round, phase 2 skipped) |
+| `0.2.2-rc.5` | `node scripts/e2e-smoke.mjs --flow installed` (Phase 1d cold-discard review round 4, pinned totals) | **188/188** (185 PASS + 3 SKIP; claimed survival + durable discard repair) |
+| `0.2.2-rc.5` | same, `--flow patch` | **188/188** (same round) |
+| `0.2.2-rc.5` | same, `--no-worktree --flow patch` | **165/165** (same round, phase 2 skipped) |
 
 The 0.3.0 prerelease candidates (0.3.0-rc.1 / 0.3.0-rc.2, not yet promoted as stable) include question routing
 and queued inbox inputs. The Phase 1c harness rounds add the question-gate and `devlead_report` question
@@ -640,10 +643,13 @@ lead, failed append or flush) is queued in the storage-domain outbox and drained
 becomes live, before the next prompt, and on a retry timer; after a Host restart the queue is
 rehydrated, and the child's durable inbox log independently reconstructs discards (canceled
 splices, claimed-but-never-presented answers) even while the lead stays cold. A canceled splice
-that a `keep`/`clear-own` restore re-inserts is never discarded — the restore (or a real
-presentation) revokes the cancellation, and every drain/rehydrate checks the answer still left
-the inbox before writing. Each answer carries a per-question admission sequence, so a delayed
-discard of an older answer never outranks a newer re-answer. `questionStatus` (`open`/`answered`) and `answerStatus` are separate: answered does not
+that a `keep`/`clear-own` restore re-inserts is never discarded — the restore, a claim by an
+unsettled pre-step, or a real presentation revokes the cancellation, and every drain/rehydrate
+checks the answer still left the inbox before writing. A false discard that an earlier Host
+incarnation already wrote into the lead's log is repaired with a durable repair fact once the
+child's log proves the answer survived, so the question stays answered across restarts. Each
+answer carries a per-question admission sequence, so a delayed discard of an older answer never
+outranks a newer re-answer. `questionStatus` (`open`/`answered`) and `answerStatus` are separate: answered does not
 mean presented. The result's `delivery` receipt reports the actual primitive/boundary/wake and the
 stable `messageId`; it is an admission receipt, not a presented confirmation, and exposes no
 internal lane. steer is next-step priority, not preemption or isolation: the current model

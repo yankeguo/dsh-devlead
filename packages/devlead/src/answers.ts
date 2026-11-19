@@ -128,10 +128,13 @@ export class DevLeadAnswerTracker {
     if (existing !== undefined) {
       if (existing.messageId === answer.messageId) {
         // Same answer: a durable terminal discard/failed is authoritative over
-        // admitted/claimed, but an observed presentation is delivery completion
-        // and is never rewound by a (possibly stale) discard fact.
-        if ((answer.status === 'discarded' || answer.status === 'failed')
-          && existing.status !== 'presented') {
+        // a stale admission, but an observed presentation is delivery completion
+        // and is never rewound. A claimed answer is only overwritten by a
+        // terminal fact observed AFTER the claim (a genuine pre-step reject);
+        // a stale discard queued before the claim must not reopen the question.
+        if (answer.status === 'discarded' || answer.status === 'failed') {
+          if (existing.status === 'presented') return
+          if (existing.status === 'claimed' && answer.at <= existing.at) return
           existing.status = answer.status
           existing.at = answer.at
         }
@@ -251,18 +254,19 @@ export class DevLeadAnswerTracker {
   /**
    * Repair one entry whose terminal discard/failed fact was disproven by the
    * child's durable log: the message is still pending in the inbox (a
-   * keep/clear-own restore re-inserted it after a canceled splice) or it really
-   * entered an entered step (`user/message`). Only a discarded/failed entry is
-   * repaired — an observed presentation is never rewound, and a live admission
-   * needs no repair. This is the stale-queue-row correction path, not a normal
+   * keep/clear-own restore re-inserted it after a canceled splice), claimed by
+   * an unsettled pre-step, or it really entered an entered step (`user/message`).
+   * Only a discarded/failed entry is repaired — an observed presentation is
+   * never rewound, and a live admission/claim needs no repair. This is the
+   * stale-queue-row / stale-durable-discard correction path, not a normal
    * lifecycle transition.
    * @param sessionId - child Session identity.
    * @param messageId - answer message identity.
-   * @param status - the proven reality: pending again (`admitted`) or presented.
+   * @param status - the proven reality: pending (`admitted`), claimed, or presented.
    * @param at - instant of the proving fact.
    * @returns whether the entry was repaired.
    */
-  repairLifecycle(sessionId: string, messageId: string, status: 'admitted' | 'presented', at: number): boolean {
+  repairLifecycle(sessionId: string, messageId: string, status: 'admitted' | 'claimed' | 'presented', at: number): boolean {
     const entry = this.byMessage.get(messageKey(sessionId, messageId))
     if (entry === undefined) return false
     if (entry.status !== 'discarded' && entry.status !== 'failed') return false
@@ -408,7 +412,7 @@ function answerMetaOf(message: unknown): { questionId: string; leadId: string } 
 export class DevLeadChildAnswerObserver {
   private nextTurn: PendingItem[] = []
   private nextStep: PendingItem[] = []
-  private readonly claimed = new Map<string, { readonly questionId: string; readonly leadId: string }>()
+  private readonly claimed = new Map<string, { readonly questionId: string; readonly leadId: string; readonly at: number }>()
   private readonly cancelCandidates = new Map<string, { readonly questionId: string; readonly leadId: string; readonly at: number }>()
   private readonly presented = new Map<string, number>()
 
@@ -416,6 +420,26 @@ export class DevLeadChildAnswerObserver {
    * @param onWarning - optional sink for bounded-observation eviction warnings.
    */
   constructor(private readonly onWarning?: (message: string) => void) {}
+
+  /**
+   * Whether the message is currently claimed by a proposed pre-step that has
+   * not presented or settled yet. A claimed answer is still alive: a stale
+   * discard queued BEFORE the claim must not reopen its question.
+   * @param messageId - answer message identity.
+   * @returns whether the message is claimed and unsettled.
+   */
+  isClaimed(messageId: string): boolean {
+    return this.claimed.has(messageId)
+  }
+
+  /**
+   * The instant the claim splice removed the message, when currently claimed.
+   * @param messageId - answer message identity.
+   * @returns the claim instant, or undefined when not claimed.
+   */
+  claimedAtOf(messageId: string): number | undefined {
+    return this.claimed.get(messageId)?.at
+  }
 
   /**
    * Whether this child's log proved the message presented (entered an entered
@@ -514,7 +538,7 @@ export class DevLeadChildAnswerObserver {
             this.evictBounded(this.cancelCandidates, MAX_CANCEL_CANDIDATES, 'cancellation candidates')
           }
         } else {
-          this.claimed.set(item.id, item.answer)
+          this.claimed.set(item.id, { ...item.answer, at: event.time })
           this.evictBounded(this.claimed, MAX_CLAIMED_OBSERVATIONS, 'claimed observations')
         }
       }

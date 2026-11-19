@@ -62,6 +62,26 @@ describe('DevLeadAnswerTracker seed (restart semantics)', () => {
     expect(tracker.repairLifecycle(CHILD, 'm-unknown', 'admitted', 60)).toBe(false)
   })
 
+  it('repairs a disproven discard to claimed with the claim instant', () => {
+    const tracker = new DevLeadAnswerTracker()
+    tracker.remember(entryOfRecord(answer({ reportId: REPORT, leadSessionId: LEAD, sessionId: CHILD, messageId: 'm1', status: 'discarded', at: 10 })))
+    expect(tracker.repairLifecycle(CHILD, 'm1', 'claimed', 20)).toBe(true)
+    expect(tracker.entryOfQuestion(LEAD, REPORT)?.status).toBe('claimed')
+    expect(tracker.entryOfQuestion(LEAD, REPORT)?.at).toBe(20)
+  })
+
+  it('a claimed entry is only overwritten by a terminal fact observed after the claim', () => {
+    const tracker = new DevLeadAnswerTracker()
+    tracker.remember(entryOfRecord(answer({ reportId: REPORT, leadSessionId: LEAD, sessionId: CHILD, messageId: 'm1', status: 'admitted', at: 10, answerSeq: 1 })))
+    tracker.claimed(CHILD, 'm1', 20)
+    // A stale discard queued BEFORE the claim must not reopen the question.
+    tracker.seed(answer({ reportId: REPORT, leadSessionId: LEAD, sessionId: CHILD, messageId: 'm1', status: 'discarded', at: 15, answeredAt: 10, answerSeq: 1 }))
+    expect(tracker.entryOfQuestion(LEAD, REPORT)?.status).toBe('claimed')
+    // A genuine pre-step reject observed AFTER the claim does discard it.
+    tracker.seed(answer({ reportId: REPORT, leadSessionId: LEAD, sessionId: CHILD, messageId: 'm1', status: 'discarded', at: 30, answeredAt: 10, answerSeq: 1 }))
+    expect(tracker.entryOfQuestion(LEAD, REPORT)?.status).toBe('discarded')
+  })
+
   it('replaces an older entry with a newer different-message answer, but not an older one', () => {
     const tracker = new DevLeadAnswerTracker()
     tracker.seed(answer({ reportId: REPORT, leadSessionId: LEAD, sessionId: CHILD, messageId: 'm1', status: 'admitted', at: 10 }))
@@ -172,6 +192,19 @@ describe('DevLeadAnswerTracker admission sequence (delayed lifecycle facts)', ()
     // A legacy discard tied on the first admission instant never replaces it.
     tracker.seed(answer({ reportId: REPORT, leadSessionId: LEAD, sessionId: CHILD, messageId: 'm1', status: 'discarded', at: 999, answeredAt: 10 }))
     expect(tracker.entryOfQuestion(LEAD, REPORT)?.messageId).toBe('m2')
+  })
+
+  it('a legacy late discard never outranks a claimed re-answer (log position authority)', () => {
+    const tracker = new DevLeadAnswerTracker()
+    // Legacy re-answer m2 (no sequence), claimed by a pre-step.
+    tracker.seed(answer({ reportId: REPORT, leadSessionId: LEAD, sessionId: CHILD, messageId: 'm1', status: 'admitted', at: 10 }))
+    tracker.seed(answer({ reportId: REPORT, leadSessionId: LEAD, sessionId: CHILD, messageId: 'm2', status: 'admitted', at: 20, answeredAt: 10 }))
+    tracker.claimed(CHILD, 'm2', 25)
+    // The old answer's legacy discard drains late: its answeredAt is the
+    // question's first admission, so the claimed re-answer keeps its position.
+    tracker.seed(answer({ reportId: REPORT, leadSessionId: LEAD, sessionId: CHILD, messageId: 'm1', status: 'discarded', at: 999, answeredAt: 10 }))
+    expect(tracker.entryOfQuestion(LEAD, REPORT)?.messageId).toBe('m2')
+    expect(tracker.entryOfQuestion(LEAD, REPORT)?.status).toBe('claimed')
   })
 })
 
@@ -339,6 +372,40 @@ describe('DevLeadChildAnswerObserver (durable child-log reconstruction)', () => 
     observer.observe(sessionEvent(5, 'user/message', { ...answerMessage('m1') as object, turn: 1, step: 1 }, 50))
     expect(observer.observe(sessionEvent(6, 'turn/end', { turn: 1, reason: { kind: 'completed' } }, 60))).toEqual([])
     expect(observer.wasPresented('m1')).toBe(true)
+  })
+
+  it('exposes the claimed state and instant until presentation or turn/end settles it', () => {
+    const observer = new DevLeadChildAnswerObserver()
+    observer.observe(sessionEvent(1, 'agent/inbox/spliced', { target: 'next-step', start: 0, inserted: [answerMessage('m1')] }, 10))
+    expect(observer.isClaimed('m1')).toBe(false)
+    observer.observe(sessionEvent(2, 'agent/inbox/spliced', { target: 'next-step', start: 0, removedCount: 1, inserted: [] }, 20))
+    expect(observer.isClaimed('m1')).toBe(true)
+    expect(observer.claimedAtOf('m1')).toBe(20)
+    // Presentation settles the claim.
+    observer.observe(sessionEvent(3, 'user/message', { ...answerMessage('m1') as object, turn: 1, step: 1 }, 30))
+    expect(observer.isClaimed('m1')).toBe(false)
+    expect(observer.claimedAtOf('m1')).toBeUndefined()
+    // A second claim settled by turn/end (rejected pre-step) also clears.
+    observer.observe(sessionEvent(4, 'agent/inbox/spliced', { target: 'next-step', start: 0, inserted: [answerMessage('m2')] }, 40))
+    observer.observe(sessionEvent(5, 'agent/inbox/spliced', { target: 'next-step', start: 0, removedCount: 1, inserted: [] }, 50))
+    expect(observer.claimedAtOf('m2')).toBe(50)
+    observer.observe(sessionEvent(6, 'turn/end', { turn: 1, reason: { kind: 'completed' } }, 60))
+    expect(observer.isClaimed('m2')).toBe(false)
+  })
+
+  it('a first event that is a canceled splice derives nothing and does not crash', () => {
+    const observer = new DevLeadChildAnswerObserver()
+    // Live: nothing pending to cancel.
+    expect(observer.observe(sessionEvent(1, 'agent/inbox/spliced', { target: 'next-step', start: 0, removedCount: 1, inserted: [], outcome: 'canceled' }, 10))).toEqual([])
+    // Replay: a log whose first event is a canceled splice.
+    const other = new DevLeadChildAnswerObserver()
+    expect(other.replay([sessionEvent(1, 'agent/inbox/spliced', { target: 'next-step', start: 0, removedCount: 1, inserted: [], outcome: 'canceled' }, 10)])).toEqual([])
+    // A replayed insert+canceled still derives at the end of the log.
+    const third = new DevLeadChildAnswerObserver()
+    expect(third.replay([
+      sessionEvent(1, 'agent/inbox/spliced', { target: 'next-step', start: 0, inserted: [answerMessage('m1')] }, 10),
+      sessionEvent(2, 'agent/inbox/spliced', { target: 'next-step', start: 0, removedCount: 1, inserted: [], outcome: 'canceled' }, 20),
+    ])).toEqual([{ messageId: 'm1', questionId: REPORT, leadId: LEAD, at: 20 }])
   })
 
   it('warns when bounded observations evict their oldest entries', () => {
