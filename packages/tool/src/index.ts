@@ -22,11 +22,13 @@ import type {} from '@yankeguo/dsh-devlead'
 import {
   createSessionRequest,
   defaultedLimit,
+  optionalInterruptInbox,
   optionalPositiveInteger,
   optionalText,
   optionalWorkspaceRef,
   requireAbsolutePath,
   requireAgent,
+  requireInputId,
   requirePrompt,
   requireSessionRef,
   requireWorkspaceRef,
@@ -46,6 +48,7 @@ import {
   presentPromptSessionCall,
   presentReportCall,
   presentRemoveWorkspaceCall,
+  presentRetractInputCall,
   presentUnarchiveSessionCall,
   presentUseWorkspaceCall,
   presentWatchSessionCall,
@@ -62,6 +65,7 @@ import {
   PROMPT_SESSION_OUTPUT,
   REPORT_OUTPUT,
   REMOVE_WORKSPACE_OUTPUT,
+  RETRACT_INPUT_OUTPUT,
   UNARCHIVE_SESSION_OUTPUT,
   USE_WORKSPACE_OUTPUT,
   WATCH_SESSION_OUTPUT,
@@ -164,7 +168,9 @@ const CREATE_SESSION_DESCRIPTION =
 
 const GET_SESSION_DESCRIPTION =
   'Read one Session in detail: whether it is live and running, whether it is archived, and, when the Host can read '
-  + 'the Session log, the latest turn number and outcome plus the latest error and assistant excerpts. Use it to '
+  + 'the Session log, the latest turn number and outcome plus the latest error and assistant excerpts. While the '
+  + 'target is live, the output also lists its queued inbox inputs (id, boundary, source, text excerpt, enqueue '
+  + 'time), so stale or duplicate queued instructions can be identified before they run. Use it to '
   + 'inspect state after a wake-up or when the human explicitly asks, not to poll while waiting for a dispatched Session. '
   + `When the target is this lead Session itself, the output also carries its ${SELF_REPORTS_LIMIT} newest retained mid-turn reports.`
 
@@ -176,7 +182,15 @@ const PROMPT_SESSION_DESCRIPTION =
   + 'to report blockers, decision forks, or scheduling-critical progress. With watch=false the tool is unavailable. '
   + 'Default delivery queues the prompt behind the '
   + 'Session\'s current turn; set interrupt true only to replace that work, with the exact stop-and-replace semantics '
-  + 'described on the interrupt parameter.'
+  + 'described on the interrupt parameter and the inbox retention options on interrupt_inbox.'
+
+const RETRACT_INPUT_DESCRIPTION =
+  'Withdraw one queued inbox input from a Session before it runs, addressed by the id devlead_get_session reports '
+  + 'in queuedInputs. Only relay prompts this lead Session authored can be withdrawn; human, scheduled, and other '
+  + 'producers\' queued inputs are refused with an explanation — they are not yours to remove. Idempotent: an input '
+  + 'already consumed or withdrawn reports retracted false. The target must be live (a cold Session has no folded '
+  + 'inbox) and cannot be this lead Session itself. Use it to clean up a stale or misdelivered instruction you '
+  + 'queued, instead of layering another prompt on top of it.'
 
 const WATCH_SESSION_DESCRIPTION =
   'Add one Session to, or remove it from, this DevLead Session\'s watch set. A watch is a one-way follow '
@@ -235,7 +249,7 @@ const UNARCHIVE_SESSION_DESCRIPTION =
   + 'wrapping up, or when the human asks to restore a Session; report the restored Session.'
 
 /**
- * Register the thirteen lead tools, the watched-Session report tool, and
+ * Register the fourteen lead tools, the watched-Session report tool, and
  * their shared policy sections.
  *
  * The tools and the policy text follow the same condition: DevLead mode is
@@ -492,9 +506,11 @@ export function apply(ctx: Context): void {
         const reports = String(session.sessionId) === String(agent.id)
           ? ctx.devLead.reports(agent, { limit: SELF_REPORTS_LIMIT }).map(reportValue)
           : undefined
+        const queuedInputs = ctx.devLead.sessionQueuedInputs(agent, session.sessionId, exec.signal)
         return {
           session: sessionValue(session),
           ...(reports === undefined ? {} : { reports }),
+          ...(queuedInputs === undefined ? {} : { queuedInputs }),
         }
       })
     },
@@ -528,19 +544,66 @@ export function apply(ctx: Context): void {
           + 'and receives the prompt normally. The interrupted turn still produces its normal watched-turn '
           + 'notification as cancelled.',
       },
+      interrupt_inbox: {
+        type: 'string',
+        enum: ['clear-all', 'keep', 'clear-own'],
+        default: 'clear-all',
+        description: 'Inbox policy applied when interrupt stops a running turn; defaults to "clear-all" (the stop '
+          + 'discards every pending input, the historical behavior). "keep" restores every pending message after '
+          + 'the stop; "clear-own" restores everything except the relay prompts this lead Session authored, so '
+          + 'human and other producers\' queued inputs survive. Restored messages keep their id and queue order '
+          + 'ahead of the replacement prompt. Ignored without interrupt:true and for an idle or cold target. The '
+          + 'result reports retainedInputs when a retention policy ran.',
+      },
     },
     output: PROMPT_SESSION_OUTPUT,
     presentCall: presentPromptSessionCall,
     execute(args, exec) {
       return runTool(async () => {
         const agent = requireAgent(exec.agent, 'devlead_prompt_session')
+        const interruptInbox = optionalInterruptInbox(args.interrupt_inbox)
         const prompted = await ctx.devLead.promptSession(
           agent,
           requireSessionRef(args.session),
           requirePrompt(args.prompt),
-          { watch: args.watch ?? true, interrupt: args.interrupt ?? false, signal: exec.signal },
+          {
+            watch: args.watch ?? true,
+            interrupt: args.interrupt ?? false,
+            ...interruptInbox === undefined ? {} : { interruptInbox },
+            signal: exec.signal,
+          },
         )
         return promptedSessionValue(prompted)
+      })
+    },
+  }), { when: ({ agent }) => ctx.devLead.isEnabled(agent) })
+
+  ctx.tools.register(defineTool({
+    name: 'devlead_retract_input',
+    description: RETRACT_INPUT_DESCRIPTION,
+    parameters: {
+      session: {
+        type: 'string',
+        required: true,
+        description: SESSION_ARGUMENT_DESCRIPTION,
+      },
+      input_id: {
+        type: 'string',
+        required: true,
+        description: 'Stable message id of the queued input, as reported by devlead_get_session queuedInputs.',
+      },
+    },
+    output: RETRACT_INPUT_OUTPUT,
+    presentCall: presentRetractInputCall,
+    execute(args, exec) {
+      return runTool(async () => {
+        const agent = requireAgent(exec.agent, 'devlead_retract_input')
+        return await ctx.devLead.retractQueuedInput(
+          agent,
+          requireSessionRef(args.session),
+          requireInputId(args.input_id),
+          exec.signal,
+        )
       })
     },
   }), { when: ({ agent }) => ctx.devLead.isEnabled(agent) })

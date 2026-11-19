@@ -1,5 +1,5 @@
 /**
- * Behavior of the fourteen `devlead_*` tools: registration and gating, per-tool
+ * Behavior of the fifteen `devlead_*` tools: registration and gating, per-tool
  * forwarding into `ctx.devLead`, input validation, canonical value projection,
  * error translation, and pure presentation.
  */
@@ -16,11 +16,14 @@ import type {
   DevLeadIsolation,
   DevLeadIsolationMode,
   DevLeadIsolationStatus,
+  DevLeadInterruptInboxPolicy,
   DevLeadModelCatalog,
   DevLeadNotification,
   DevLeadPromptedSession,
+  DevLeadQueuedInput,
   DevLeadRemovedWorkspace,
   DevLeadReportKind,
+  DevLeadRetractedInput,
   DevLeadSessionView,
   DevLeadUnarchivedSession,
   DevLeadWatchMutation,
@@ -42,13 +45,16 @@ import {
   LIST_AGENT_PRESETS_OUTPUT,
   LIST_MODELS_OUTPUT,
   PROMPT_SESSION_OUTPUT,
+  QUEUED_INPUT_SCHEMA,
   REMOVE_WORKSPACE_OUTPUT,
   REPORT_SCHEMA,
+  RETRACT_INPUT_OUTPUT,
   UNARCHIVE_SESSION_OUTPUT,
   WATCH_SESSION_OUTPUT,
   type IsolationValue,
   type ModelCatalogValue,
   type NotificationValue,
+  type QueuedInputValue,
   type SessionValue,
   type WorkspaceValue,
 } from '../src/value.ts'
@@ -82,6 +88,10 @@ type SchemaCreatedConforms = Assert<
 type SchemaPromptedConforms = Assert<
   InferValue<typeof PROMPT_SESSION_OUTPUT.schema> extends DevLeadPromptedSession ? true : false
 >
+type SchemaQueuedInputConforms = Assert<QueuedInputValue extends DevLeadQueuedInput ? true : false>
+type SchemaRetractedConforms = Assert<
+  InferValue<typeof RETRACT_INPUT_OUTPUT.schema> extends DevLeadRetractedInput ? true : false
+>
 type SchemaWatchedConforms = Assert<
   InferValue<typeof WATCH_SESSION_OUTPUT.schema> extends DevLeadWatchMutation ? true : false
 >
@@ -112,6 +122,7 @@ const TOOL_NAMES = [
   'devlead_create_session',
   'devlead_get_session',
   'devlead_prompt_session',
+  'devlead_retract_input',
   'devlead_watch_session',
   'devlead_notifications',
   'devlead_report',
@@ -130,6 +141,7 @@ const MINIMAL_ARGS: Record<(typeof TOOL_NAMES)[number], Record<string, unknown>>
   devlead_create_session: {},
   devlead_get_session: { session: 'session-1' },
   devlead_prompt_session: { session: 'session-1', prompt: 'continue' },
+  devlead_retract_input: { session: 'session-1', input_id: 'msg-1' },
   devlead_watch_session: { session: 'session-1', watching: true },
   devlead_notifications: {},
   devlead_report: { message: 'progress update' },
@@ -147,6 +159,7 @@ const CALLER_TOOLS = [
   'devlead_create_session',
   'devlead_get_session',
   'devlead_prompt_session',
+  'devlead_retract_input',
   'devlead_watch_session',
   'devlead_notifications',
   'devlead_report',
@@ -187,7 +200,7 @@ function expectValidOutput(harness: Harness, toolName: string, value: unknown): 
 }
 
 describe('registration', () => {
-  it('registers exactly the fourteen documented tools', () => {
+  it('registers exactly the fifteen documented tools', () => {
     const harness = boot()
     expect([...harness.tools.keys()].sort()).toEqual([...TOOL_NAMES].sort())
     for (const name of TOOL_NAMES) {
@@ -202,6 +215,7 @@ describe('registration', () => {
     for (const name of [
       'devlead_get_session',
       'devlead_prompt_session',
+      'devlead_retract_input',
       'devlead_watch_session',
       'devlead_archive_session',
       'devlead_unarchive_session',
@@ -609,6 +623,23 @@ describe('report kind vocabulary', () => {
   })
 })
 
+describe('interrupt inbox vocabulary', () => {
+  it('keeps the policy enum exhaustive against the protocol union', () => {
+    const policies: Record<DevLeadInterruptInboxPolicy, true> = {
+      'clear-all': true,
+      keep: true,
+      'clear-own': true,
+    }
+    const harness = boot()
+    const parameters = harness.tool('devlead_prompt_session').definition.parameters as {
+      properties: { interrupt_inbox: { enum: readonly string[]; default?: unknown } }
+    }
+    expect([...parameters.properties.interrupt_inbox.enum].sort()).toEqual(Object.keys(policies).sort())
+    expect(parameters.properties.interrupt_inbox.default).toBe('clear-all')
+    expect(QUEUED_INPUT_SCHEMA.properties.boundary.enum).toEqual(['next-turn', 'next-step'])
+  })
+})
+
 describe('schema semantics', () => {
   it('annotates every documented parameter default in the schema itself', () => {
     const harness = boot()
@@ -618,6 +649,7 @@ describe('schema semantics', () => {
       ['devlead_create_session', 'isolation', 'none'],
       ['devlead_prompt_session', 'watch', true],
       ['devlead_prompt_session', 'interrupt', false],
+      ['devlead_prompt_session', 'interrupt_inbox', 'clear-all'],
       ['devlead_notifications', 'limit', 20],
       ['devlead_report', 'kind', 'progress'],
       ['devlead_archive_session', 'stop_running', false],
@@ -663,13 +695,15 @@ describe('canonical values', () => {
       SchemaIsolationConforms,
       SchemaCreatedConforms,
       SchemaPromptedConforms,
+      SchemaQueuedInputConforms,
+      SchemaRetractedConforms,
       SchemaWatchedConforms,
       SchemaRemovedConforms,
       SchemaArchivedConforms,
       SchemaUnarchivedConforms,
       SchemaModelCatalogConforms,
       SchemaAgentPresetCatalogConforms,
-    ] = [true, true, true, true, true, true, true, true, true, true, true, true]
+    ] = [true, true, true, true, true, true, true, true, true, true, true, true, true, true]
     expect(conformance.every(value => value)).toBe(true)
   })
 
@@ -1355,6 +1389,41 @@ describe('devlead_get_session', () => {
     expect(sessionId).toBe('session-1')
   })
 
+  it('projects the queued inbox inputs of a live target and omits them for a cold one', async () => {
+    const harness = boot()
+    const queued = [{
+      id: 'msg-1',
+      boundary: 'next-turn' as const,
+      sourceKind: 'devlead',
+      sourceForm: 'relay',
+      senderSessionId: 'agent-lead',
+      excerpt: 'stale instruction',
+      enqueuedAt: 1_700_000_000_000,
+    }, {
+      id: 'msg-2',
+      boundary: 'next-step' as const,
+      sourceKind: 'user',
+    }]
+    harness.devLead.queuedInputs = queued
+    const value = await harness.call('devlead_get_session', { session: 'session-1' })
+    expect(value).toEqual({ session: SESSION, queuedInputs: queued })
+    expectValidOutput(harness, 'devlead_get_session', value)
+    const [agent, sessionId, signal] = harness.devLead.callsOf('sessionQueuedInputs')[0] ?? []
+    expect(agent).toBe(harness.agent)
+    expect(sessionId).toBe('session-1')
+    expect(signal).toBe(harness.exec.signal)
+    // A cold target reports undefined: the field is omitted, not an empty list.
+    harness.devLead.queuedInputs = undefined
+    const cold = await harness.call('devlead_get_session', { session: 'session-1' })
+    expect(cold).toEqual({ session: SESSION })
+  })
+
+  it('advertises queued-input visibility for stale-instruction triage', () => {
+    const harness = boot()
+    expect(harness.tool('devlead_get_session').definition.description)
+      .toContain('lists its queued inbox inputs (id, boundary, source, text excerpt, enqueue time)')
+  })
+
   it('rejects a blank session reference', async () => {
     const harness = boot()
     const error = await failureOf(harness.call('devlead_get_session', { session: ' ' }))
@@ -1401,6 +1470,63 @@ describe('devlead_prompt_session', () => {
     expect(value).toEqual({ sessionId: 'session-1', watched: true, resumed: false, interrupted: true })
   })
 
+  it('forwards an explicit interrupt inbox policy and reports retained inputs', async () => {
+    const harness = boot()
+    harness.devLead.prompted = {
+      sessionId: 'session-1',
+      watched: true,
+      resumed: false,
+      interrupted: true,
+      retainedInputs: 2,
+    }
+    const value = await harness.call('devlead_prompt_session', {
+      session: 'session-1',
+      prompt: 'replace',
+      interrupt: true,
+      interrupt_inbox: 'clear-own',
+    })
+    const [, , , options] = harness.devLead.callsOf('promptSession')[0] ?? []
+    expect(options).toEqual({ watch: true, interrupt: true, interruptInbox: 'clear-own', signal: harness.exec.signal })
+    expect(value).toEqual({
+      sessionId: 'session-1',
+      watched: true,
+      resumed: false,
+      interrupted: true,
+      retainedInputs: 2,
+    })
+    expectValidOutput(harness, 'devlead_prompt_session', value)
+  })
+
+  it('omits the inbox policy when the model does not set it and rejects an unknown one', async () => {
+    const harness = boot()
+    await harness.call('devlead_prompt_session', { session: 'session-1', prompt: 'go', interrupt: true })
+    const [, , , options] = harness.devLead.callsOf('promptSession')[0] ?? []
+    expect(options).toEqual({ watch: true, interrupt: true, signal: harness.exec.signal })
+    const error = await failureOf(harness.call('devlead_prompt_session', {
+      session: 'session-1',
+      prompt: 'go',
+      interrupt_inbox: 'keep-mine',
+    }))
+    expect(error.code).toBe('INVALID_ARGS')
+    expect(harness.devLead.callsOf('promptSession')).toHaveLength(1)
+  })
+
+  it('advertises the inbox policy on the parameter, default-off and interrupt-scoped', () => {
+    const harness = boot()
+    const definition = harness.tool('devlead_prompt_session').definition
+    expect(definition.description).toContain('the inbox retention options on interrupt_inbox')
+    const parameters = definition.parameters as {
+      properties: { interrupt_inbox: { type: string; description: string } }
+    }
+    expect(parameters.properties.interrupt_inbox.type).toBe('string')
+    expect(parameters.properties.interrupt_inbox.description).toContain('defaults to "clear-all"')
+    expect(parameters.properties.interrupt_inbox.description).toContain('the historical behavior')
+    expect(parameters.properties.interrupt_inbox.description).toContain('except the relay prompts this lead Session authored')
+    expect(parameters.properties.interrupt_inbox.description).toContain('keep their id and queue order ahead of the replacement prompt')
+    expect(parameters.properties.interrupt_inbox.description).toContain('Ignored without interrupt:true')
+    expect(parameters.properties.interrupt_inbox.description).toContain('retainedInputs')
+  })
+
   it('advertises interrupt as explicit, scoped, and default-off', () => {
     const harness = boot()
     const definition = harness.tool('devlead_prompt_session').definition
@@ -1432,6 +1558,61 @@ describe('devlead_prompt_session', () => {
     harness.devLead.failures.set('promptSession', devLeadFailure('DEVLEAD_SESSION_ARCHIVED'))
     const error = await failureOf(harness.call('devlead_prompt_session', { session: 'session-1', prompt: 'go' }))
     expect(error.code).toBe('DEVLEAD_SESSION_ARCHIVED')
+  })
+})
+
+describe('devlead_retract_input', () => {
+  it('forwards the caller, trimmed reference and id, and signal, and returns the outcome', async () => {
+    const harness = boot()
+    const value = await harness.call('devlead_retract_input', { session: ' session-1 ', input_id: ' msg-1 ' })
+    const [agent, sessionId, inputId, signal] = harness.devLead.callsOf('retractQueuedInput')[0] ?? []
+    expect(agent).toBe(harness.agent)
+    expect(sessionId).toBe('session-1')
+    expect(inputId).toBe('msg-1')
+    expect(signal).toBe(harness.exec.signal)
+    expect(value).toEqual({ sessionId: 'session-1', inputId: 'msg-1', retracted: true })
+    expectValidOutput(harness, 'devlead_retract_input', value)
+  })
+
+  it('projects the idempotent not-pending outcome', async () => {
+    const harness = boot()
+    harness.devLead.retracted = { sessionId: 'session-1', inputId: 'msg-gone', retracted: false }
+    const value = await harness.call('devlead_retract_input', { session: 'session-1', input_id: 'msg-gone' })
+    expect(value).toEqual({ sessionId: 'session-1', inputId: 'msg-gone', retracted: false })
+    expectValidOutput(harness, 'devlead_retract_input', value)
+  })
+
+  it('rejects a blank or omitted reference and id before calling the core', async () => {
+    const harness = boot()
+    const blank = await failureOf(harness.call('devlead_retract_input', { session: ' ', input_id: 'msg-1' }))
+    expect(blank.code).toBe('DEVLEAD_INVALID_INPUT')
+    const blankId = await failureOf(harness.call('devlead_retract_input', { session: 'session-1', input_id: ' ' }))
+    expect(blankId.code).toBe('DEVLEAD_INVALID_INPUT')
+    expect(blankId.message).toContain('input_id')
+    const missing = await failureOf(harness.call('devlead_retract_input', { session: 'session-1' }))
+    expect(missing.code).toBe('INVALID_ARGS')
+    expect(harness.devLead.callsOf('retractQueuedInput')).toHaveLength(0)
+  })
+
+  it('translates the not-own refusal and the cold-target failure', async () => {
+    const harness = boot()
+    harness.devLead.failures.set('retractQueuedInput', devLeadFailure('DEVLEAD_INVALID_INPUT'))
+    const notOwn = await failureOf(harness.call('devlead_retract_input', { session: 'session-1', input_id: 'msg-human' }))
+    expect(notOwn.code).toBe('DEVLEAD_INVALID_INPUT')
+    harness.devLead.failures.set('retractQueuedInput', devLeadFailure('DEVLEAD_SESSION_UNAVAILABLE'))
+    const cold = await failureOf(harness.call('devlead_retract_input', { session: 'session-1', input_id: 'msg-1' }))
+    expect(cold.code).toBe('DEVLEAD_SESSION_UNAVAILABLE')
+  })
+
+  it('advertises own-only, idempotent retraction of queued inputs', () => {
+    const harness = boot()
+    const definition = harness.tool('devlead_retract_input').definition
+    expect(definition.description).toContain('the id devlead_get_session reports in queuedInputs')
+    expect(definition.description).toContain('Only relay prompts this lead Session authored can be withdrawn')
+    expect(definition.description).toContain('human, scheduled, and other producers')
+    expect(definition.description).toContain('already consumed or withdrawn reports retracted false')
+    expect(definition.description).toContain('cannot be this lead Session itself')
+    expect(definition.description).toContain('instead of layering another prompt on top of it')
   })
 })
 

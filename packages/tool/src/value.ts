@@ -162,6 +162,30 @@ export const ISOLATION_SCHEMA = {
   },
 } as const
 
+/** Enforced schema of one pending inbox input. */
+export const QUEUED_INPUT_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    id: { type: 'string', required: true, description: 'Stable Host message identity of the queued input.' },
+    boundary: {
+      type: 'string',
+      required: true,
+      enum: ['next-turn', 'next-step'],
+      description: 'Inbox boundary holding the message: its own turn, or the next step of a running turn.',
+    },
+    sourceKind: {
+      type: 'string',
+      required: true,
+      description: 'Producer kind of the message source (user, devlead, schedule, …); an open Host vocabulary, not a closed enum.',
+    },
+    sourceForm: { type: 'string', description: 'Producer-declared context form (relay, notice, …), when the source carries one.' },
+    senderSessionId: { type: 'string', description: 'Authoring Session identity, when the source records one (a devlead relay names its lead).' },
+    excerpt: { type: 'string', description: 'Bounded single-line excerpt of the text content, when the message carries text.' },
+    enqueuedAt: { type: 'integer', description: 'Epoch milliseconds of the durable splice that enqueued the message, when the log records one.' },
+  },
+} as const
+
 /** Enforced schema of one notification. */
 export const NOTIFICATION_SCHEMA = {
   type: 'object',
@@ -224,6 +248,9 @@ export type IsolationValue = InferValue<typeof ISOLATION_SCHEMA>
 
 /** Canonical value of one notification. */
 export type NotificationValue = InferValue<typeof NOTIFICATION_SCHEMA>
+
+/** Canonical value of one pending inbox input. */
+export type QueuedInputValue = InferValue<typeof QUEUED_INPUT_SCHEMA>
 
 /** Canonical value of one mid-turn report. */
 export type ReportValue = InferValue<typeof REPORT_SCHEMA>
@@ -393,6 +420,11 @@ export const GET_SESSION_OUTPUT = jsonOutput({
       items: REPORT_SCHEMA,
       description: 'When reading this lead Session itself, its newest retained mid-turn reports (up to five, oldest first).',
     },
+    queuedInputs: {
+      type: 'array',
+      items: QUEUED_INPUT_SCHEMA,
+      description: 'Pending inbox inputs of the target Session, present only while it is live; queue order (next-turn rows, then next-step).',
+    },
   },
 } as const)
 
@@ -408,6 +440,25 @@ export const PROMPT_SESSION_OUTPUT = jsonOutput({
       type: 'boolean',
       required: true,
       description: 'Whether the Host was asked to stop running work before admitting the prompt; false for an idle or cold Session.',
+    },
+    retainedInputs: {
+      type: 'integer',
+      description: 'Pending inputs restored after the stop under interrupt_inbox keep/clear-own; absent for clear-all and every no-op interrupt.',
+    },
+  },
+} as const)
+
+/** Canonical value of `devlead_retract_input`. */
+export const RETRACT_INPUT_OUTPUT = jsonOutput({
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    sessionId: { type: 'string', required: true, description: 'Addressed Session identity.' },
+    inputId: { type: 'string', required: true, description: 'Host message identity the call addressed.' },
+    retracted: {
+      type: 'boolean',
+      required: true,
+      description: 'Whether this call removed the input; false when it was already consumed or withdrawn.',
     },
   },
 } as const)
@@ -671,6 +722,7 @@ export function promptedSessionValue(prompted: DevLeadPromptedSession): InferVal
     watched: prompted.watched,
     resumed: prompted.resumed,
     interrupted: prompted.interrupted,
+    ...prompted.retainedInputs === undefined ? {} : { retainedInputs: prompted.retainedInputs },
   }
 }
 

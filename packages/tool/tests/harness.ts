@@ -28,8 +28,10 @@ import type {
   DevLeadNotification,
   DevLeadPromptedSession,
   DevLeadProjection,
+  DevLeadQueuedInput,
   DevLeadRemovedWorkspace,
   DevLeadReport,
+  DevLeadRetractedInput,
   DevLeadSessionView,
   DevLeadUnarchivedSession,
   DevLeadUseWorkspaceRequest,
@@ -172,6 +174,12 @@ export class FakeDevLead {
 
   /** Result returned by {@link promptSession}. */
   prompted: DevLeadPromptedSession = { sessionId: 'session-1', watched: true, resumed: false, interrupted: false }
+
+  /** Queued inputs returned by {@link sessionQueuedInputs}; undefined models a cold target. */
+  queuedInputs: DevLeadQueuedInput[] | undefined
+
+  /** Result returned by {@link retractQueuedInput}. */
+  retracted: DevLeadRetractedInput = { sessionId: 'session-1', inputId: 'msg-1', retracted: true }
 
   /** Result returned by {@link watchSession}. */
   mutation: DevLeadWatchMutation = { sessionId: 'session-1', watched: true, sessions: ['session-1'] }
@@ -318,6 +326,21 @@ export class FakeDevLead {
     return this.session
   }
 
+  sessionQueuedInputs(agent: Agent, sessionId: string, signal?: AbortSignal): DevLeadQueuedInput[] | undefined {
+    this.enter('sessionQueuedInputs', agent, sessionId, signal)
+    return this.queuedInputs
+  }
+
+  async retractQueuedInput(
+    agent: Agent,
+    sessionId: string,
+    inputId: string,
+    signal?: AbortSignal,
+  ): Promise<DevLeadRetractedInput> {
+    this.enter('retractQueuedInput', agent, sessionId, inputId, signal)
+    return this.retracted
+  }
+
   async createSession(
     agent: Agent,
     request: unknown,
@@ -331,7 +354,7 @@ export class FakeDevLead {
     agent: Agent,
     sessionId: string,
     prompt: string,
-    options?: { watch?: boolean; interrupt?: boolean; signal?: AbortSignal },
+    options?: { watch?: boolean; interrupt?: boolean; interruptInbox?: string; signal?: AbortSignal },
   ): Promise<DevLeadPromptedSession> {
     this.enter('promptSession', agent, sessionId, prompt, options)
     return this.prompted

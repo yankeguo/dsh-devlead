@@ -19,6 +19,7 @@ import type {
   PromptSessionArgs,
   RemoveWorkspaceArgs,
   ReportArgs,
+  RetractInputArgs,
   UnarchiveSessionArgs,
   UseWorkspaceArgs,
   WatchSessionArgs,
@@ -96,6 +97,11 @@ export function presentGetSessionCall(args: GetSessionArgs): GenericCallView {
 export function presentPromptSessionCall(args: PromptSessionArgs): GenericCallView {
   const title = args.interrupt === true ? 'Interrupt DevLead session' : 'Prompt DevLead session'
   return present(title, 'other', firstText(args.session))
+}
+
+/** Pending card of `devlead_retract_input`. */
+export function presentRetractInputCall(args: RetractInputArgs): GenericCallView {
+  return present('Retract DevLead queued input', 'other', firstText(args.input_id, args.session))
 }
 
 /** Pending card of `devlead_watch_session`. */

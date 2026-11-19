@@ -14,6 +14,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import { HarnessError } from '@deepseek-ai/dsh-llm'
 import type {
   DevLeadCreateSessionRequest,
+  DevLeadInterruptInboxPolicy,
   DevLeadIsolationMode,
   DevLeadModelSelection,
 } from '@yankeguo/dsh-devlead-protocol'
@@ -85,6 +86,12 @@ export interface PromptSessionArgs {
   readonly prompt: string
   readonly watch?: boolean
   readonly interrupt?: boolean
+  /**
+   * Requested interrupt inbox policy. Kept as a raw string here: the tool
+   * schema's enum is the model-facing contract, and
+   * {@link optionalInterruptInbox} hand-checks the same vocabulary.
+   */
+  readonly interrupt_inbox?: string
 }
 
 /** Arguments of `devlead_report`. */
@@ -98,6 +105,12 @@ export interface ReportArgs {
 export interface WatchSessionArgs {
   readonly session: string
   readonly watching: boolean
+}
+
+/** Arguments of `devlead_retract_input`. */
+export interface RetractInputArgs {
+  readonly session: string
+  readonly input_id: string
 }
 
 /** Arguments of `devlead_notifications`. */
@@ -150,6 +163,19 @@ export function requireAgent(agent: Agent | undefined, tool: string): Agent {
 export function requireSessionRef(value: string): string {
   const trimmed = value.trim()
   if (trimmed.length === 0) throw new DevLeadToolInputError('session must not be empty')
+  return trimmed
+}
+
+/**
+ * Validate one queued-input identity. The core matches it against the Host
+ * message ids of the pending inbox; the tool only rejects a blank value early.
+ * @param value - model-supplied message id.
+ * @returns the trimmed identity.
+ * @throws {@link DevLeadToolInputError} when the identity is blank.
+ */
+export function requireInputId(value: string): string {
+  const trimmed = value.trim()
+  if (trimmed.length === 0) throw new DevLeadToolInputError('input_id must not be empty')
   return trimmed
 }
 
@@ -219,6 +245,22 @@ export function optionalIsolationMode(value: string | undefined): DevLeadIsolati
   if (value === undefined) return undefined
   if (value === 'none' || value === 'worktree') return value
   throw new DevLeadToolInputError(`isolation must be "none" or "worktree", received "${value}"`)
+}
+
+/**
+ * Validate an optional interrupt inbox policy.
+ *
+ * The tool schema already restricts the model-facing enum; this hand-check
+ * keeps direct callers on the same vocabulary and gives them the core's stable
+ * invalid-input code instead of a loosely typed request.
+ * @param value - optional policy supplied by the caller.
+ * @returns the validated policy, or undefined when omitted.
+ * @throws {@link DevLeadToolInputError} when the value is not a known policy.
+ */
+export function optionalInterruptInbox(value: string | undefined): DevLeadInterruptInboxPolicy | undefined {
+  if (value === undefined) return undefined
+  if (value === 'clear-all' || value === 'keep' || value === 'clear-own') return value
+  throw new DevLeadToolInputError(`interrupt_inbox must be "clear-all", "keep", or "clear-own", received "${value}"`)
 }
 
 /**
