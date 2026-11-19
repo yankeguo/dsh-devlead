@@ -47,6 +47,7 @@ rc.5 的 `dsh-web` 在未配置 `web.searchProvider` 时按模型路由选择：
 | 排队 inbox 输入：`queuedInputs` 明细 / `devlead_retract_input` / `interrupt_inbox` 策略 | 支持 | 支持 | 支持 | 支持 | 支持 |
 | watched 子会话问题路由（`tools/pre-execute` + `question` report） | 支持 | 支持 | 支持 | 支持 | 支持 |
 | Phase 1d answer routing（`intent`/`question_id`/`idempotency_key` + answer/correction steer + answer record + `delivery`） | 支持 | 支持 | 支持 | 支持 | 支持 |
+| Phase 1e message lanes（T2 review steer / P3/P4 action steer / P1/P2 background inject 不唤醒 + notifications/get_session 全量输出 + 指标） | 支持 | 支持 | 支持 | 支持 | 支持 |
 | 可选 worktree 隔离 | 可选 bundle | 可选 bundle | 可选 bundle | 可选 bundle | 可选 bundle |
 | `agent_teams: true` | 不可用\* | 支持† | 支持† | 支持† | 支持† |
 
@@ -82,6 +83,15 @@ live 事件与 `user/message` / `turn/end` durable 事件（answer 的 claimed/p
 逻辑（`delivery.boundary` 以实际 inbox 落点为准）。answer record 走既有 `appendPluginRecord` +
 `plugin:devlead/*` fold，不新增 DSH peer 范围要求。真实 rc.5 answer E2E（scripted child answer
 真实 step + 幂等 + clear-own/clear-all）在 installed/patch 双流通过。
+
+Phase 1e message lanes 复用同一组 Host API，不新增任何 DSH 依赖：T1 仍走 `followup`（400ms
+合并），T2/P3/P4/Q1 走 `steer`（next-step、不抢占），P1/P2 走 `inject`（next-step、不请求
+driver wake；rc.1 起声明，idle 只 queued 不开 turn）。lane 识别只读消息 source 的
+`lane`/`wakeRequested` 字段（runtime 自写，旧消息无 lane 按 legacy turn notice 处理）；
+`agent/inbox/spliced` durable 事件用于 e2e 断言实际 admission。notifications/get_session 的
+新增输出字段（wakeSuppressedByReportId/wakeSuppressionReason、report lane/deliveryState）与
+wire projection 的 questionStatus/answerStatus 都是可选 additive 字段，旧 bundle/旧记录兼容。
+指标是进程内低基数 counters，不依赖 Host API。
 
 ## 真实 E2E
 
@@ -120,6 +130,7 @@ TMPDIR="$BASE/tmp" DSH_BIN="$DSH_BIN" node scripts/e2e-smoke.mjs \
 | `0.2.2-rc.5` | installed `--no-worktree`（排队输入轮重跑） | **127/127**（phase 1 27 + 1b 12 + 3 88） |
 | `0.2.2-rc.5` | installed / patch 完整（Phase 1c 证据轮，pin 总数） | **174/174** 各（171 PASS + 3 SKIP；真实 scripted child turn） |
 | `0.2.2-rc.5` | installed / patch 完整（Phase 1d answer routing，pin 总数） | **188/188** 各（185 PASS + 3 SKIP；phase 3 126，含真实 answer steer + 幂等 + clear-own/clear-all） |
+| `0.2.2-rc.5` | installed / patch 完整（Phase 1e message lanes，pin 总数） | **221/221** 各（218 PASS + 3 SKIP；phase 3 128 + phase 1e 31：background 不唤醒、action/review steer、T1/T2 分流、合并抑制、显式 16-pending action 上限、低基数指标） |
 
 rc.1–rc.4 的行是各自发布时的 harness 计数；0.3.0 的 prerelease 候选（0.3.0-rc.1 / rc.2，尚未 promote
 为稳定版）含 question 路由与排队 inbox 输入，当前 harness 的 phase 3 含这些 checks。0.2.6+ 审计轮（[AUDIT](AUDIT.md) §12）已按当前 harness 重跑 rc.5
@@ -127,7 +138,11 @@ rc.1–rc.4 的行是各自发布时的 harness 计数；0.3.0 的 prerelease �
 4 条 inbox checks 后重跑 rc.5 installed/patch 完整（各 **150/150**）与 `--no-worktree`（**127/127**）；
 Phase 1c 证据轮（真实 scripted child turn）pin 总数 **174/174**；Phase 1d answer routing 轮再增
 14 条 answer checks（真实 answer steer + 幂等 + clear-own/clear-all）后 installed/patch 双流各
-**188/188**（phase 3 126）。发布前需按 [PUBLISHING](PUBLISHING.md) 重跑完整组合。
+**188/188**（phase 3 126）；Phase 1e message-lane 轮把 progress check 改写为 2 条 background
+lane pins（phase 3 128）并新增独立 phase 1e 实例（31 条：background 不唤醒 + 读工具
+lane/deliveryState、blocked/decision action steer、真实 T1 followup / T2 review steer、合并抑制
+字段、17 接受/第 18 条显式 `DEVLEAD_DELIVERY_RATE_LIMITED`、指标低基数），installed/patch 双流各
+**221/221**（`--no-worktree` **198/198**）。发布前需按 [PUBLISHING](PUBLISHING.md) 重跑完整组合。
 
 每条 flow 有 3 条正向模型选择检查因无 provider 凭据 SKIP（打印真实原因）；负向
 `DEVLEAD_MODEL_UNAVAILABLE`、`devlead_list_models`、preset roster 与 watched-child

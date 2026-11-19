@@ -57,7 +57,7 @@ Documentation: [Design notes (中文)](docs/DESIGN.md) · [Publishing guide (中
 | Optional worktree isolation | When the Host composes DSH's experimental Git worktree service (`ctx.worktrees`), `devlead_create_session` can request `isolation: "worktree"` so a writing Session gets its own branch and checkout instead of sharing the Workspace checkout; detection is optional and a missing capability degrades to the shared checkout with a reported status, never an error (see [Optional worktree isolation](#optional-worktree-isolation)) |
 | 14 lead tools + 1 report tool | Register/list/remove Workspaces, list Host models and Agent presets, create (model/Agent Teams inherited or pinned)/read/continue/archive/restore/watch Sessions, inspect/retract queued inbox inputs, read the notification/report digest; watched non-lead Sessions can send a one-way `devlead_report` update (see [Model tools](#model-tools)) |
 | Human commands | `/devlead` (status), `/devlead on\|off`, `/devlead reset` (damaged-state recovery), `/devlead watch\|unwatch <session>`; sessions are addressable by full id or unique prefix |
-| Notification loop | A watched session's `turn/end` writes a durable notification and wakes an indexed DevLead through a coalescing window (configurable window; cold leads are resumed by default); the watch index is rebuilt from durable records after a Host restart, and a disposed lead keeps observing (see [Notification loop](#notification-loop)) |
+| Notification loop | A watched session's `turn/end` writes a durable notification and delivers it by lane: completed/forked turns wake an indexed DevLead through a coalescing window, failed/interrupted turns steer an immediate review wake, blocked/decision/question reports steer action-required wakes, and progress/fyi reports inject background context without a wake (cold leads are resumed by default except for background); the watch index is rebuilt from durable records after a Host restart, and a disposed lead keeps observing (see [Notification loop](#notification-loop)) |
 | Event sourcing | Mode / watch set / notifications / reports / reset are ignorable `plugin:devlead/*` records with strict replay validation; survive restart / resume (a fork copies the log but inherited records are ignored, so a forked subagent never inherits the mode) |
 | Damaged-state recovery | A corrupt `plugin:devlead/*` record freezes the fold, but the human-only `/devlead reset` (or `/devlead off` on a frozen fold) appends a `plugin:devlead/reset` record that restarts all three projections from the default disabled state (see [Notification loop](#notification-loop)) |
 | Session projection | The `devLead` projection (`{ enabled, sessions, notifications, reports }`) syncs state to the browser without a custom Remote API; summary-sized companions `devLeadMode` (`{ enabled }`) and `devLeadWatch` (`{ sessions }`) ride every Session-list summary so sidebar rows can render the active lead and watched marks |
@@ -79,8 +79,12 @@ attention-grabbing permanent bar on every conversation:
   advertise an action the Host rejects.
 - **On:** the status-only DevLeadBar (`conversation.input.dock`) appears above the composer:
   the brand, the number of watched sessions, the number running, and the latest notification —
-  or a help hint when there is none. The bar owns no switch, so turning the mode off can never
-  hide the control that did it. There is no status strip while the mode is off.
+  or a help hint when there is none. The latest-report chip carries the Phase 1e lane semantics:
+  question/blocked/decision chips wear the warning color (a question chip also shows its
+  `questionStatus`/`answerStatus` lifecycle, e.g. "answered · presented"), progress/fyi chips are
+  weakened background context, and a turn-end whose wake was merged into an action-required wake
+  keeps its transition with a muted suppressed-wake marker. The bar owns no switch, so turning
+  the mode off can never hide the control that did it. There is no status strip while the mode is off.
 - **Sidebar marks:** the active DevLead row gets a business-accent ring matching the enabled
   toolbar toggle; watched, non-lead Session rows get a quieter target glyph in the trailing seat
   (`sidebar.session.row.trailing`). Both read summary projections (`devLeadMode`, `devLeadWatch`),
@@ -255,6 +259,8 @@ requires Node ≥ 24.9):
 | `0.2.2-rc.5` | same, `--flow patch` | **174/174** (same round) |
 | `0.2.2-rc.5` | `node scripts/e2e-smoke.mjs --flow installed` (Phase 1d answer routing, pinned totals) | **188/188** (185 PASS + 3 SKIP; real scripted answer steer + idempotency + clear-own/clear-all) |
 | `0.2.2-rc.5` | same, `--flow patch` | **188/188** (same round) |
+| `0.2.2-rc.5` | `node scripts/e2e-smoke.mjs --flow installed` (Phase 1e message lanes, pinned totals) | **221/221** (218 PASS + 3 SKIP; background no-wake, action/review steers, merge suppression, explicit action cap, metrics) |
+| `0.2.2-rc.5` | same, `--flow patch` | **221/221** (same round) |
 
 The 0.3.0 prerelease candidates (0.3.0-rc.1 / 0.3.0-rc.2, not yet promoted as stable) include question routing
 and queued inbox inputs. The Phase 1c harness rounds add the question-gate and `devlead_report` question
@@ -270,10 +276,17 @@ same-key/same-text retry returns the original receipt, a different answer confli
 record + derived view report answered/presented), plus the answer inbox lifecycle (queuedInputs
 intent/questionId/wakeRequested/deliveryState, retraction refusing the answer but accepting
 background/instruction, and running-child interrupt `clear-own` keeping the pending answer while `clear-all`
-discards it and reopens the question through the real `workspace/session-stop` fan-out). Per-phase check
-totals are pinned (27 / 12 / 23 / 126, baseline DSH 0.2.2-rc.5; a deleted check fails the phase), PASS and
-SKIP are reported separately, and the installed/patch full flows report **188/188** each (185 PASS + 3
-credential-less SKIP; `--no-worktree`: **165/165**). A pre-release rerun of the full combination is still
+discards it and reopens the question through the real `workspace/session-stop` fan-out). The Phase 1e
+round adds a dedicated lane instance: progress/fyi background injects that leave an idle lead idle
+(no wake, no new turn) with read-tool `lane`/`deliveryState` output, blocked/decision
+`[DEV LEAD ACTION REQUIRED]` steers carrying the full message, a real completed turn riding the
+`[DEV LEAD NOTIFICATION]` followup vs a real adapter-failure turn riding the
+`[DEV LEAD REVIEW REQUIRED]` steer, the question+turn-end merge suppression fields, the shared
+16-pending action cap with an explicit `DEVLEAD_DELIVERY_RATE_LIMITED` overflow, and the
+low-cardinality metrics snapshot. Per-phase check
+totals are pinned (27 / 12 / 23 / 128 / 31, baseline DSH 0.2.2-rc.5; a deleted check fails the phase), PASS and
+SKIP are reported separately, and the installed/patch full flows report **221/221** each (218 PASS + 3
+credential-less SKIP; `--no-worktree`: **198/198**). A pre-release rerun of the full combination is still
 required by the publishing guide.
 
 Three positive model-selection checks per flow are reported as SKIP on this credential-less
@@ -542,12 +555,12 @@ rather than implying the directory is unregistered.
 | `devlead_use_workspace` | `path` (required, absolute), `title?`, `create?` (default false: a missing directory is an error; `true` creates it with `mkdir -p` after the human asked) | `{ workspace }` |
 | `devlead_list_sessions` | `workspace?` (id, registered path, or exact title), `watched_only?`, `limit?` | `{ sessions, watched }` |
 | `devlead_create_session` | `workspace?` (id, registered path, or exact title), `prompt?`, `title?`, `watch?` (default true), `preset?` (Host-defined id; blank/omitted falls back to the plugin default then the Host default), `isolation?` (default `none`; `worktree` = best-effort isolated checkout), `provider?`+`model?` (paired; optional `reasoning_effort?`), `agent_teams?` | creation result (including the `isolation` outcome, and the applied `model`/`agentTeams` when requested) |
-| `devlead_get_session` | `session` (required) | `{ session, reports?, queuedInputs? }` — when reading this lead itself, `reports` carries its 5 newest retained reports (question reports include `questionStatus`/`answerStatus`); while the target is live, `queuedInputs` lists its pending inbox inputs (id, boundary, source kind/form/sender, text excerpt, enqueue time, and for DevLead messages `intent`/`questionId`/`wakeRequested`, plus a tracked answer's `deliveryState`) so stale or duplicate queued instructions can be identified before they run |
+| `devlead_get_session` | `session` (required) | `{ session, reports?, queuedInputs? }` — when reading this lead itself, `reports` carries its 5 newest retained reports (question reports include `questionStatus`/`answerStatus`; every report carries its diagnostic `lane` and in-memory `deliveryState`); while the target is live, `queuedInputs` lists its pending inbox inputs (id, boundary, source kind/form/sender, text excerpt, enqueue time, and for DevLead messages `intent`/`questionId`/`wakeRequested`, plus a tracked answer's `deliveryState`) so stale or duplicate queued instructions can be identified before they run |
 | `devlead_prompt_session` | `session`, `prompt` (required), `intent?` (default `instruction`; `answer` requires `question_id` and steers the next step, `correction` steers, `background` injects without a wake), `question_id?` (only with `answer`), `idempotency_key?` (max 200 code points; same key + same text returns the original receipt), `watch?` (default true), `interrupt?` (default false: queue behind the running turn; `true` = stop the running turn and Host-reported subagent/job/schedule work, discard queued input per `interrupt_inbox`, then admit a new turn; idle/cold = no-op; illegal with `background`), `interrupt_inbox?` (default `clear-all`; `keep` restores every pending input after the stop, `clear-own` restores everything except this lead's own instruction/correction relays and background notices but **keeps pending answers**; `clear-all` discards answers and reopens their questions; restored inputs keep their id and queue order ahead of the replacement prompt; ignored without `interrupt` and for idle/cold targets) | prompt result including `interrupted`, `retainedInputs` when a retention policy ran, and a `delivery` receipt `{ primitive, boundary, wakeRequested, messageId, questionId?, idempotencyKey? }` (admission receipt, not a presented confirmation; no internal lane) |
 | `devlead_retract_input` | `session`, `input_id` (required; the id `queuedInputs` reports) | `{ sessionId, inputId, retracted }` — withdraw one queued inbox input before it runs; this lead's own instruction/correction relays and background notices are retractable, an **answer is refused** (removing it would desynchronize the question state; use `interrupt:true` + `interrupt_inbox:"clear-all"` to discard one and reopen its question); human/scheduled/other producers' inputs are refused; idempotent (`retracted: false` when already consumed or withdrawn); target must be live and not the lead itself |
 | `devlead_watch_session` | `session`, `watching` (required bool) | watch mutation result |
-| `devlead_notifications` | `limit?` (default 20, applied to each digest separately) | `{ notifications, reports, watched }` — question reports carry `questionStatus` (`open`/`answered`/`expired`/`cancelled`) and, when answered, `answerStatus` (`admitted`/`claimed`/`presented`/`discarded`/`failed`) plus `answerMessageId`/`answeredAt`/`presentedAt`; filter open questions with `questionStatus === "open"` (answered ≠ presented; only presented is delivery completion) |
-| `devlead_report` | `message` (required, plain text, max 4000 code points), `kind?` (`progress` default / `blocked` / `decision` / `question` / `fyi`), `summary?` (max 200) | `{ report, durable, queued, warning?, turnEndRequested?, questionId?, guidance? }` — visible only in a watched non-lead Session; one-way, never waits for a reply; only for a long-running task's mid-turn milestones (the settled turn already notifies the lead, so no routine progress / final summary; short or linear tasks should not call it); a durably forwarded `question` sets `turnEndRequested:true` (a turn-end request, not an immediate close) and is answered in a new turn via `devlead_prompt_session` or by steering the child's next step; a memory-only question requests no turn end and its warning asks for a restatement in the final assistant message |
+| `devlead_notifications` | `limit?` (default 20, applied to each digest separately) | `{ notifications, reports, watched }` — notification rows carry `wakeSuppressedByReportId`/`wakeSuppressionReason` when their wake was merged into an action-required wake (the transition is still retained); report rows carry their diagnostic `lane` (`background` for progress/fyi, `action-required` for blocked/decision/question) and in-memory `deliveryState` (`pending`/`delivered`/`digest-only`; absent after a restart — not a presented confirmation); question reports carry `questionStatus` (`open`/`answered`/`expired`/`cancelled`) and, when answered, `answerStatus` (`admitted`/`claimed`/`presented`/`discarded`/`failed`) plus `answerMessageId`/`answeredAt`/`presentedAt`; filter open questions with `questionStatus === "open"` (answered ≠ presented; only presented is delivery completion) |
+| `devlead_report` | `message` (required, plain text, max 4000 code points), `kind?` (`progress` default / `blocked` / `decision` / `question` / `fyi`), `summary?` (max 200) | `{ report, durable, queued, warning?, turnEndRequested?, questionId?, guidance? }` — visible only in a watched non-lead Session; one-way, never waits for a reply; only for a long-running task's mid-turn milestones (the settled turn already notifies the lead, so no routine progress / final summary; short or linear tasks should not call it). The kind selects the lane: `progress`/`fyi` are non-urgent background context injected without waking the lead (cold lead or full budget → digest-only); `blocked`/`decision` steer the lead's next step under `[DEV LEAD ACTION REQUIRED]` and share the bounded action-required pending queue (overflow → `DEVLEAD_DELIVERY_RATE_LIMITED`); a durably forwarded `question` sets `turnEndRequested:true` (a turn-end request, not an immediate close) and is answered in a new turn via `devlead_prompt_session` or by steering the child's next step; a memory-only question requests no turn end and its warning asks for a restatement in the final assistant message |
 | `devlead_remove_workspace` | `workspace` (required: id, registered path, or exact title) | `{ workspace, removed }` (pre-removal snapshot) |
 | `devlead_archive_session` | `session` (required), `stop_running?` (default false) | `{ sessionId, archived: true, stopped }` |
 | `devlead_unarchive_session` | `session` (required) | `{ sessionId, archived: false }` |
@@ -562,18 +575,26 @@ when a Host composes no storage is explicit: the receipt has `durable: false` an
 the child can retry after the lead is available. Outbox rows are pruned after 7 days if their lead
 never returns; `/devlead reset` drops that lead's pending rows. The receipt appears in the
 `devLead` projection, the status strip, `/devlead` status, `devlead_notifications`, and
-`devlead_get_session` when reading the lead itself. Ordinary reports keep the coalesced followup
-path. A question report instead gets an independent action-required `steer` at the next step,
-skipping the ordinary batch window and queued-turn-notice avoidance. A settled turn already notifies the lead, so `devlead_report` is only for a
+`devlead_get_session` when reading the lead itself. Report delivery is lane-based (Phase 1e):
+`progress`/`fyi` ride the **background** lane — an immediate `inject` at the lead's next step that
+requests **no driver wake** (an idle lead stays idle); a cold or archived lead, or a full background
+budget, keeps them digest-only (the durable receipt is retained, only the injection is skipped).
+The budget is per lead/child pair: at most 8 background injects per lead turn and at most 16
+unclaimed background notices parked in the lead inbox; overflow degrades to digest-only with a
+warning, never an error. `blocked`/`decision` ride the **action-required** lane: an independent
+immediate `steer` under a `[DEV LEAD ACTION REQUIRED]` wake carrying the full message, skipping the
+ordinary batch window and queued-turn-notice avoidance. A question report gets the same
+action-required lane under `[DEV LEAD QUESTION]`. A settled turn already notifies the lead, so `devlead_report` is only for a
 long-running task's mid-turn milestones the lead must know before the turn ends: a real blocker, a
-fork that needs the lead's decision, progress that would change scheduling correctness if it
-waited, or a question. Routine progress and final summaries are not reported, and short or linear
+fork that needs the lead's decision, or a question; non-urgent background that can wait for the
+next wake uses `progress`/`fyi`. Routine progress and final summaries are not reported, and short or linear
 tasks should not call it. The lead may optionally introduce the tool in the brief for such a
 long-running watched Session; this is on-demand, omitted when `watch` is false
 (the tool is absent), and never replaces the final turn notification. At most four distinct
-non-question reports are accepted per child turn; `question` reports are exempt from that budget but
-limited to 16 distinct pending Q1 reports per lead/child pair, with overflow failing
-`DEVLEAD_DELIVERY_RATE_LIMITED` before any outbox write; when two concurrent questions race the cap
+non-question reports are accepted per child turn; `question`, `blocked`, and `decision` reports are
+exempt from that budget but share a cap of 16 distinct pending action-required reports per
+lead/child pair, with overflow failing
+`DEVLEAD_DELIVERY_RATE_LIMITED` before any outbox write; when two concurrent action reports race the cap
 and the loser's receipt write fails after its outbox row landed, that row is removed and the same
 explicit error still reaches the child (no orphan row, no swallowed rejection). Identical
 kind+message pairs with identical structured questions are idempotent (the same text under a
@@ -765,19 +786,30 @@ composed — the plugin never depends on it.
   the moment the lead becomes live.
 - **Retention:** the projection keeps the latest 64 entries by constant; older records remain in
   the Session log, and `/devlead` / the strip show the most recent few.
-- **Coalescing window:** notifications are queued and merged for `notificationBatchMs` (default
-  400 ms); when the window ends and the DevLead agent is still alive, it is woken with a message
-  sourced `devlead` (`form: 'notice'`). If the agent is running, the followup queues for the next
-  turn; an `agent/status` transition to idle also flushes the queue once.
-- **Question action-required path:** question reports use a separate immediate `steer` queue rather
-  than this 400 ms/followup path, and ordinary queued notices do not block them. A running lead holds
-  a new batch behind an unclaimed action wake in either inbox boundary (including abort reclassification);
-  an idle lead instead admits the steer so the first pre-step wakes both parked and new input. A turn-end is
-  suppressed only when it is merged into a still-pending question wake (`merged-into-pending-wake`)
-  or was explicitly included in a sent question wake (`included-in-sent-wake`); a later T1/T2 that
-  was not included still gets its ordinary wake. Cold leads resume before the question steer when
-  `wakeColdSession` is true; archived leads and cold leads with wake disabled retain digest-only
-  fallback. Other report kinds keep their existing delivery behavior.
+- **Coalescing window (turn-notice lane):** settled-turn notifications for **completed/forked**
+  turns (T1) are queued and merged for `notificationBatchMs` (default 400 ms); when the window
+  ends and the DevLead agent is still alive, it is woken with a `followup` message sourced
+  `devlead` (`form: 'notice'`, `lane: 'turn-notice'`). If the agent is running, the followup queues
+  for the next turn; an `agent/status` transition to idle also flushes the queue once.
+- **Action-required lane (T2 / blocked / decision / question):** failed, aborted, blocked,
+  max-tokens, and interrupted turns (T2) are delivered as an immediate `steer` under
+  `[DEV LEAD REVIEW REQUIRED]`; `blocked`/`decision` reports steer under
+  `[DEV LEAD ACTION REQUIRED]` with the full message; question reports steer under
+  `[DEV LEAD QUESTION]` with the full payload. This lane uses its own immediate scheduling
+  (`actionRequiredBatchMs`, default 0 = microtask) rather than the 400 ms/followup path, and
+  ordinary queued notices do not block it. A running lead holds a new batch behind an unclaimed
+  action wake in either inbox boundary (including abort reclassification); an idle lead instead
+  admits the steer so the first pre-step wakes both parked and new input. A turn-end is suppressed
+  only when it is merged into a still-pending action-required wake of the same child+turn
+  (`merged-into-pending-wake`) or was explicitly included in a sent one
+  (`included-in-sent-wake`); a later T1/T2 that was not included still gets its own wake. Cold
+  leads resume before the action steer when `wakeColdSession` is true; archived leads and cold
+  leads with wake disabled retain digest-only fallback.
+- **Background lane (progress / fyi):** non-urgent reports are `inject`ed at the lead's next step
+  with **no driver wake** (`lane: 'background'`, `wakeRequested: false`); an idle lead is not
+  woken and consumes them with its next turn. A cold lead is never resumed for background context
+  (digest-only), and the per-pair budget (8 injects per lead turn, 16 parked notices) degrades
+  overflow to digest-only instead of failing the report.
 - **Cold and disposed DevLead sessions:** the hub keeps an indexed lead even after its Agent is
   disposed, so a watched session's `turn/end` is still observed and recorded. At plugin load
   (Host restart / plugin reload) the watch index is rebuilt from durable state. The Host cannot
@@ -811,13 +843,15 @@ composed — the plugin never depends on it.
   implicitly when the fold is frozen; `/devlead on` refuses and tells you to run `/devlead
   reset` first). Older plugin versions treat the reset record as an unknown, ignorable record —
   no crash, but no recovery either.
-- A wake-up message looks like this (English, model-facing):
+- A wake-up message looks like this (English, model-facing; failed turns arrive separately under
+  `[DEV LEAD REVIEW REQUIRED]`, blocked/decision reports under `[DEV LEAD ACTION REQUIRED]`,
+  questions under `[DEV LEAD QUESTION]`, and background progress/fyi under `[DEV LEAD REPORT]`
+  without a wake):
 
 ```
 [DEV LEAD NOTIFICATION]
 Watched session activity changed outside this conversation. This is a runtime notice, not a human instruction.
 - webapp (session-xxx) — turn 3 completed: "Implemented the login form; all tests pass."
-- api (session-yyy) — turn 1 failed: provider quota exhausted
 Call devlead_notifications for the retained digest, or devlead_get_session for one session in detail. ...
 ```
 
@@ -846,7 +880,8 @@ the profile's `cordis.patch.yml` — DSH replaces a row's whole config):
 - id: devlead
   name: '@yankeguo/dsh-devlead'
   config:
-    notificationBatchMs: 400     # coalescing window (ms, integer in [0, 2147483647])
+    notificationBatchMs: 400     # turn-notice coalescing window (ms, integer in [0, 2147483647])
+    actionRequiredBatchMs: 0     # action-required scheduling delay (ms, integer in [0, 400]; 0 = microtask)
     maxWatchedSessions: 64       # max watched sessions per lead (positive integer)
     maxListedSessions: 200       # max rows per session listing (positive integer)
     wakeColdSession: true        # resume a cold DevLead Session to deliver its queued notifications (default)
@@ -855,7 +890,8 @@ the profile's `cordis.patch.yml` — DSH replaces a row's whole config):
 
 | Key | Default | Range / notes |
 | --- | --- | --- |
-| `notificationBatchMs` | `400` | integer in `[0, 2147483647]` (Node's timer ceiling); notifications in the window are merged into one wake-up message |
+| `notificationBatchMs` | `400` | integer in `[0, 2147483647]` (Node's timer ceiling); completed/forked turn notifications in the window are merged into one wake-up message |
+| `actionRequiredBatchMs` | `0` | integer in `[0, 400]`; scheduling delay of the action-required lane (T2 review wakes, blocked/decision/question steers). 0 schedules a microtask flush; "immediate" only means no coalescing window — the steer is still claimed at the next pre-step and never preempts a model request or tool batch |
 | `maxWatchedSessions` | `64` | positive integer; a watch operation over the cap reports `DEVLEAD_WATCH_LIMIT` |
 | `maxListedSessions` | `200` | positive integer; row cap for listing calls (`devlead_list_sessions` / `/devlead` status). Identity resolution is not limited by it, and a watched-only listing never truncates below the watch set |
 | `wakeColdSession` | `true` | when `true`, a cold lead Session with queued notifications is resumed (`sessionController.resolveAgent`) to deliver them; set `false` to keep the queues in memory and wait for a human to open the lead Session. Observation is not affected by this flag |
@@ -1058,11 +1094,17 @@ answers a running child via `intent:"answer"` steer (presented in a later real s
 completed `turn/end`, same-key/same-text retry returns the original receipt, a different answer
 conflicts, durable answer record + answered/presented view), plus the answer inbox lifecycle
 (queuedInputs metadata, retract refusing the answer, clear-own keeping the pending answer, clear-all
-discarding it and reopening the question).
+discarding it and reopening the question). The Phase 1e round adds a dedicated lane instance:
+progress/fyi background injects that leave an idle lead idle (no wake, no new turn) with read-tool
+lane/deliveryState output, blocked/decision `[DEV LEAD ACTION REQUIRED]` steers carrying the full
+message, a real completed turn on the `[DEV LEAD NOTIFICATION]` followup vs a real adapter-failure
+turn on the `[DEV LEAD REVIEW REQUIRED]` steer, the question+turn-end merge suppression fields, the
+shared 16-pending action cap with an explicit `DEVLEAD_DELIVERY_RATE_LIMITED` overflow, and the
+low-cardinality metrics snapshot.
 Per-phase totals are pinned (a deleted check fails the phase) and PASS/SKIP print separately:
-**188/188 per flow** (phase 1 = 27, phase 1b = 12, phase 2 = 23, phase 3 = 126; 185 PASS + 3
+**221/221 per flow** (phase 1 = 27, phase 1b = 12, phase 2 = 23, phase 3 = 128, phase 1e = 31; 218 PASS + 3
 credential-less SKIP), baseline DSH 0.2.2-rc.5; `--no-worktree` skips only the experimental phase,
-reporting **165/165** (phases 1 + 1b + 3) for debugging. The compatibility runs above used each
+reporting **198/198** (phases 1 + 1b + 3 + 1e) for debugging. The compatibility runs above used each
 release's harness: npm-installed `0.2.2-rc.1` through `0.2.2-rc.5` CLIs (`DSH_BIN`, `--no-worktree`)
 reported **120/120** each — on rc.1 the Team success checks become expected-unavailable assertions
 (`DEVLEAD_TEAM_UNAVAILABLE`, no Session created), while rc.2–rc.5 run the Team success path — and
@@ -1070,7 +1112,8 @@ the rc.4 / rc.5 installed and patch flows passed **143/143** with the worktree p
 audit round reran rc.5 on the then-current harness (`--no-worktree` 123/123, full flows 146/146);
 the queued-input round reran rc.5 on its harness: `--no-worktree` **127/127** and the
 installed/patch full flows **150/150** each; the Phase 1c evidence round pinned **174/174** and the
-Phase 1d answer-routing round pinned **188/188** (installed/patch full flows each). The probe is a private
+Phase 1d answer-routing round pinned **188/188**, and the Phase 1e message-lane round pinned
+**221/221** (installed/patch full flows each). The probe is a private
 test-only package under `scripts/e2e-probe/`, not a published or workspace package. The profile
 mutations happen only in the throwaway profile under `os.tmpdir()`; no pnpm install, network, or
 lockfile change is involved.

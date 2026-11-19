@@ -241,6 +241,15 @@ export function childTurnCategory(transition: ChildTurnTransition): 'T1' | 'T2' 
   return transition === 'completed' || transition === 'forked' ? 'T1' : 'T2'
 }
 
+/**
+ * Internal delivery lane of one report kind, derived purely from the policy
+ * table. This is a diagnostic projection (read-tool output), never a
+ * model-selectable transport option.
+ */
+export function childReportLane(kind: ChildReportKind = 'progress'): DeliveryLane {
+  return CHILD_POLICIES[childReportCategory(kind)].lane
+}
+
 /** Classify a report kind, including the no-kind safe default. */
 export function childReportCategory(kind: ChildReportKind = 'progress'): ChildToLeadCategory {
   switch (kind) {

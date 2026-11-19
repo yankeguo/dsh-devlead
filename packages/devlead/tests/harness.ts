@@ -32,6 +32,7 @@ import { decodeNotificationRecord, modeRecord, watchRecord } from '../src/domain
 import { applyDevLeadProjection, emptyDevLeadProjectionState } from '../src/fold.ts'
 import DevLeadService from '../src/index.ts'
 import type { WorktreeCheckout } from '../src/isolation.ts'
+import { DevLeadMetrics } from '../src/metrics.ts'
 import { DevLeadNotificationHub } from '../src/notification.ts'
 import type { SessionProjectionCacheLike } from '../src/projection-cache.ts'
 
@@ -1590,8 +1591,12 @@ export interface HubLeadSeed {
 export interface BootHubOptions {
   /** Coalescing window in milliseconds. */
   readonly batchMs?: number
+  /** Action-required scheduling delay in milliseconds (defaults to 0: a microtask). */
+  readonly actionBatchMs?: number
   /** Whether a cold lead Session is resumed for its digest. */
   readonly wakeColdSession?: boolean
+  /** Shared counter registry; a fresh one is minted when omitted. */
+  readonly metrics?: DevLeadMetrics
   /** Scripted leads; defaults to one enabled lead watching the Session. */
   readonly leads?: readonly HubLeadSeed[]
   /** Fake Session controller to provide. */
@@ -1623,6 +1628,8 @@ export interface HubHarness {
   readonly leads: readonly HubLead[]
   readonly sessionTitle: FakeSessionTitle
   readonly sessionController: FakeSessionController | undefined
+  /** Counter registry shared with the hub (delivery/suppression/guard series). */
+  readonly metrics: DevLeadMetrics
   /** Session ids whose `session/flush` checkpoint ran, in call order. */
   readonly flushCalls: string[]
   /** Dispose this harness's context and stop tracking it. */
@@ -1669,6 +1676,7 @@ export async function bootHub(options: BootHubOptions = {}): Promise<HubHarness>
   ctx.provide('sessionTitle', sessionTitle.asService())
   if (options.sessionController !== undefined) ctx.provide('sessionController', options.sessionController.asService())
   if (options.workspaceRegistry !== undefined) ctx.provide('workspaceRegistry', options.workspaceRegistry.asRegistry())
+  const metrics = options.metrics ?? new DevLeadMetrics()
   let hub: DevLeadNotificationHub | undefined
   await ctx.plugin({
     name: 'devlead-hub-test-wrapper',
@@ -1677,7 +1685,8 @@ export async function bootHub(options: BootHubOptions = {}): Promise<HubHarness>
       hub = new DevLeadNotificationHub(inner, projectionStateOf, {
         batchMs: options.batchMs ?? 400,
         wakeColdSession: options.wakeColdSession ?? true,
-      })
+        actionBatchMs: options.actionBatchMs ?? 0,
+      }, metrics)
       if (options.start !== false) hub.start()
     },
   })
@@ -1691,6 +1700,7 @@ export async function bootHub(options: BootHubOptions = {}): Promise<HubHarness>
     leads,
     sessionTitle,
     sessionController: options.sessionController,
+    metrics,
     flushCalls,
     dispose: () => disposeContext(ctx),
   }

@@ -217,6 +217,15 @@ export const NOTIFICATION_SCHEMA = {
     at: { type: 'integer', required: true, description: 'Epoch milliseconds when the Host observed the transition.' },
     error: { type: 'string', description: 'Compact single-line failure excerpt when the settled turn failed.' },
     summary: { type: 'string', description: 'Compact excerpt of the latest assistant message before the turn settled.' },
+    wakeSuppressedByReportId: {
+      type: 'string',
+      description: 'Action-required report whose wake carried this turn-end instead of a separate wake. The transition still happened and is retained; only the duplicate wake was merged.',
+    },
+    wakeSuppressionReason: {
+      type: 'string',
+      enum: ['merged-into-pending-wake', 'included-in-sent-wake'],
+      description: 'Whether the turn-end was merged into a not-yet-sent action-required wake or explicitly included in an already-sent one. Present exactly when wakeSuppressedByReportId is.',
+    },
   },
 } as const
 
@@ -282,6 +291,16 @@ export const REPORT_SCHEMA = {
     answerMessageId: { type: 'string', description: 'Host message identity of the newest answer, when one exists.' },
     answeredAt: { type: 'integer', description: 'Epoch milliseconds of the first answer admission, when the question was ever answered (survives a reopen).' },
     presentedAt: { type: 'integer', description: 'Epoch milliseconds the newest answer entered an entered step, when observed.' },
+    lane: {
+      type: 'string',
+      enum: ['turn-notice', 'action-required', 'background'],
+      description: 'Diagnostic delivery lane derived from the report kind: progress/fyi ride background (inject, no wake), blocked/decision/question ride action-required (steer). Read-only fact, not a selectable transport.',
+    },
+    deliveryState: {
+      type: 'string',
+      enum: ['pending', 'delivered', 'digest-only'],
+      description: 'In-memory delivery observation of this report: pending (queued for its lane), delivered (wake/inject admitted), digest-only (cold/archived lead or background budget; retained in the digest only). Absent for old records or after a Host restart; not a durable delivery record and not a presented confirmation.',
+    },
   },
 } as const
 
@@ -385,7 +404,17 @@ export function notificationValue(notification: DevLeadNotification): Notificati
     ...notification.sessionTitle === undefined ? {} : { sessionTitle: notification.sessionTitle },
     ...notification.error === undefined ? {} : { error: notification.error },
     ...notification.summary === undefined ? {} : { summary: notification.summary },
+    ...notification.wakeSuppressedByReportId === undefined ? {} : { wakeSuppressedByReportId: notification.wakeSuppressedByReportId },
+    ...notification.wakeSuppressionReason === undefined ? {} : { wakeSuppressionReason: notification.wakeSuppressionReason },
   }
+}
+
+/** Diagnostic delivery facts of one report, assembled by the read tools. */
+export interface ReportDeliveryFacts {
+  /** Internal lane derived purely from the report kind. */
+  readonly lane: 'turn-notice' | 'action-required' | 'background'
+  /** In-memory delivery observation, when the hub still remembers one. */
+  readonly deliveryState?: 'pending' | 'delivered' | 'digest-only'
 }
 
 /**
@@ -394,9 +423,15 @@ export function notificationValue(notification: DevLeadNotification): Notificati
  * @param answerView - derived question/answer state for a question report, when
  *   the caller read it; omitted for non-question reports and the reporter's own
  *   receipt echo.
+ * @param delivery - diagnostic lane/deliveryState facts, when the caller read
+ *   them; omitted for the reporter's own receipt echo.
  * @returns the detached canonical value.
  */
-export function reportValue(report: DevLeadReport, answerView?: DevLeadQuestionAnswerView): ReportValue {
+export function reportValue(
+  report: DevLeadReport,
+  answerView?: DevLeadQuestionAnswerView,
+  delivery?: ReportDeliveryFacts,
+): ReportValue {
   return {
     id: report.id,
     kind: report.kind,
@@ -405,6 +440,10 @@ export function reportValue(report: DevLeadReport, answerView?: DevLeadQuestionA
     leadSessionId: report.leadSessionId,
     turn: report.turn,
     at: report.at,
+    ...delivery === undefined ? {} : {
+      lane: delivery.lane,
+      ...delivery.deliveryState === undefined ? {} : { deliveryState: delivery.deliveryState },
+    },
     ...answerView === undefined ? {} : {
       questionStatus: answerView.questionStatus,
       ...answerView.answerStatus === undefined ? {} : { answerStatus: answerView.answerStatus },

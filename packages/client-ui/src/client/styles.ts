@@ -253,17 +253,28 @@ export const styles = `
   background: var(--dsw-alias-state-warn-primary, #a15c00);
 }
 
-.devlead-notification-dot[data-report-kind="progress"] {
-  background: var(--dsw-alias-state-success-primary, #2e7d32);
-}
-
-.devlead-notification-dot[data-report-kind="blocked"] {
-  background: var(--dsw-alias-state-error-primary, #c0392b);
-}
-
+/* Report dots follow the delivery lane: the action-required kinds (blocked/
+   decision/question) share the warning ink — a blocked report is a scheduling
+   fact, not a Host failure, so it must not wear the error red. Background
+   kinds (progress/fyi) keep the default tertiary dot: a non-urgent update
+   reads quieter than a settled outcome. */
+.devlead-notification-dot[data-report-kind="blocked"],
 .devlead-notification-dot[data-report-kind="decision"],
 .devlead-notification-dot[data-report-kind="question"] {
   background: var(--dsw-alias-state-warn-primary, #a15c00);
+}
+
+/* Action-required chips wear the warning ink on the kind label so the strip
+   reads "the lead must act" at a glance; colour only, never layout. */
+.devlead-notification[data-lane="action-required"] .devlead-notification-label {
+  color: var(--dsw-alias-state-warn-primary, #a15c00);
+}
+
+/* Background chips are non-urgent: one uniform opacity step weakens the whole
+   chip (dot, who, label, detail) without touching any box, mirroring the
+   watched-row mark's quieter-ink idiom. */
+.devlead-notification[data-lane="background"] {
+  opacity: 0.72;
 }
 
 .devlead-notification-who {
@@ -277,6 +288,23 @@ export const styles = `
 .devlead-notification-turn,
 .devlead-notification-label {
   flex: none;
+}
+
+/* Fold-derived question/answer lifecycle suffix ("answered · presented"):
+   compact neutral copy — the kind dot and label carry the urgency, the suffix
+   only states the lifecycle fact. */
+.devlead-notification-status {
+  flex: none;
+  color: var(--dsw-alias-label-secondary, GrayText);
+}
+
+/* A suppressed turn-end wake keeps its transition row; only this marker is
+   weakened. Tertiary ink at the detail size reads as an annotation, and the
+   marker's title carries the localized explanation of which merge rule hit. */
+.devlead-notification-wake {
+  flex: none;
+  color: var(--dsw-alias-label-tertiary, GrayText);
+  font-size: 12px;
 }
 
 /* A turn failure excerpt keeps the error ink; a report's summary/message

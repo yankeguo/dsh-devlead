@@ -19,6 +19,7 @@ import type {
   ToolRunContext,
 } from '@deepseek-ai/dsh-tools'
 import { DevLeadError } from '@yankeguo/dsh-devlead'
+import type { DevLeadReportDeliveryState } from '@yankeguo/dsh-devlead'
 import type {
   DevLeadAgentPresetCatalog,
   DevLeadArchivedSession,
@@ -185,6 +186,13 @@ export class FakeDevLead {
 
   /** Derived question/answer state returned by {@link questionAnswerView}. */
   questionAnswer: DevLeadQuestionAnswerView | undefined
+
+  /**
+   * In-memory delivery observations returned by {@link reportDeliveryState},
+   * keyed by report id. An absent key models an old record or a Host restart:
+   * the hub no longer remembers a delivery state for that report.
+   */
+  readonly deliveryStates = new Map<string, DevLeadReportDeliveryState>()
 
   /** Queued inputs returned by {@link sessionQueuedInputs}; undefined models a cold target. */
   queuedInputs: DevLeadQueuedInput[] | undefined
@@ -382,6 +390,11 @@ export class FakeDevLead {
   questionAnswerView(agent: Agent, reportId: string): DevLeadQuestionAnswerView | undefined {
     this.enter('questionAnswerView', agent, reportId)
     return this.questionAnswer
+  }
+
+  reportDeliveryState(agent: Agent, reportId: string): DevLeadReportDeliveryState | undefined {
+    this.enter('reportDeliveryState', agent, reportId)
+    return this.deliveryStates.get(reportId)
   }
 
   async watchSession(

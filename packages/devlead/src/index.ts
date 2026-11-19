@@ -90,6 +90,8 @@ import {
 } from './domain.ts'
 import { DevLeadAnswerTracker, discardedAnswerOf, recordOfEntry } from './answers.ts'
 import type { AnswerMemoryEntry } from './answers.ts'
+import { countDelivery, DevLeadMetrics } from './metrics.ts'
+import type { DevLeadCounterSample } from './metrics.ts'
 import {
   planLeadToChild,
 } from './message-policy.ts'
@@ -137,7 +139,7 @@ import {
 } from './active.ts'
 import { worktreeCapabilityOf, worktreeCheckoutOf } from './isolation.ts'
 import { DevLeadNotificationHub } from './notification.ts'
-import type { DevLeadPersistedLead } from './notification.ts'
+import type { DevLeadPersistedLead, DevLeadReportDeliveryState } from './notification.ts'
 import { persistedSessionsOf } from './persistence.ts'
 import type { PersistedSessionsProbe } from './persistence.ts'
 import { agentPresetRosterCapabilityOf, devLeadAgentPresetsOf } from './presets.ts'
@@ -184,7 +186,10 @@ export {
 } from './fold.ts'
 export type { DevLeadModeProjectionState, DevLeadWatchProjectionState } from './fold.ts'
 export { renderDevLeadNotice } from './notification.ts'
-export type { DevLeadNotificationConfig, DevLeadPersistedLead } from './notification.ts'
+export type { DevLeadNotificationConfig, DevLeadPersistedLead, DevLeadReportDeliveryState } from './notification.ts'
+export { childReportLane } from './message-policy.ts'
+export { DevLeadMetrics } from './metrics.ts'
+export type { DevLeadCounterSample, DevLeadDeliveryOutcome } from './metrics.ts'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -196,6 +201,12 @@ declare module '@deepseek-ai/cordis' {
 export interface Config {
   /** Coalescing window before one notification digest wakes the lead, in milliseconds. */
   notificationBatchMs?: number
+  /**
+   * Action-required scheduling delay in milliseconds (0–400, default 0: a
+   * microtask). It only controls when the flush is scheduled; the steer is
+   * still claimed at the next pre-step and never preempts a tool batch.
+   */
+  actionRequiredBatchMs?: number
   /** Maximum watched Sessions one lead may keep. */
   maxWatchedSessions?: number
   /** Maximum Session rows one listing may yield. */
@@ -306,6 +317,7 @@ class DevLeadInterruptedAdmissionError extends DevLeadError {
 /** Loader schema for the DevLead core service. */
 export const Config: z<Config> = z.object({
   notificationBatchMs: z.number().step(1).min(0).max(MAX_TIMER_DELAY_MS).default(400),
+  actionRequiredBatchMs: z.number().step(1).min(0).max(400).default(0),
   maxWatchedSessions: z.number().step(1).min(1).default(DEVLEAD_DEFAULT_MAX_WATCHED),
   maxListedSessions: z.number().step(1).min(1).default(200),
   wakeColdSession: z.boolean().default(true),
@@ -316,6 +328,8 @@ export const Config: z<Config> = z.object({
 export interface DevLeadSettings {
   /** Coalescing window before one notification digest wakes the lead, in milliseconds. */
   readonly notificationBatchMs: number
+  /** Action-required scheduling delay in milliseconds (0 means a microtask). */
+  readonly actionRequiredBatchMs: number
   /** Maximum watched Sessions one lead may keep. */
   readonly maxWatchedSessions: number
   /** Maximum Session rows one listing may yield; a caller `limit` is capped by it. */
@@ -342,6 +356,10 @@ function resolveConfig(config: Config): DevLeadSettings {
     || notificationBatchMs > MAX_TIMER_DELAY_MS) {
     throw new TypeError(`notificationBatchMs must be an integer between 0 and ${MAX_TIMER_DELAY_MS}`)
   }
+  const actionRequiredBatchMs = config.actionRequiredBatchMs ?? 0
+  if (!Number.isSafeInteger(actionRequiredBatchMs) || actionRequiredBatchMs < 0 || actionRequiredBatchMs > 400) {
+    throw new TypeError('actionRequiredBatchMs must be an integer between 0 and 400')
+  }
   const maxWatchedSessions = config.maxWatchedSessions ?? DEVLEAD_DEFAULT_MAX_WATCHED
   if (!Number.isSafeInteger(maxWatchedSessions) || maxWatchedSessions < 1) {
     throw new TypeError('maxWatchedSessions must be a positive safe integer')
@@ -356,6 +374,7 @@ function resolveConfig(config: Config): DevLeadSettings {
   if (typeof defaultAgentPreset !== 'string') throw new TypeError('defaultAgentPreset must be a string')
   return {
     notificationBatchMs,
+    actionRequiredBatchMs,
     maxWatchedSessions,
     maxListedSessions,
     wakeColdSession,
@@ -659,12 +678,18 @@ export class DevLeadService extends Service {
   }>()
 
   /**
+   * Shared low-cardinality delivery/suppression/lane counters (Phase 1e).
+   * Process-local observations only; the durable digest stays the authority.
+   */
+  private readonly metrics = new DevLeadMetrics()
+
+  /**
    * In-memory answer inbox lifecycle observation (Phase 1d). The durable
    * authority is the lead's `plugin:devlead/report-answer` audit; this tracker
    * advances admitted answers through claimed/presented/discarded as the child's
    * inbox and log events arrive, and reconciles rejected pre-steps at turn/end.
    */
-  private readonly answers = new DevLeadAnswerTracker()
+  private readonly answers = new DevLeadAnswerTracker(this.metrics)
 
   /**
    * Per-target admission serialization. Two concurrent `promptSession` calls
@@ -745,7 +770,12 @@ export class DevLeadService extends Service {
     this.hub = new DevLeadNotificationHub(
       this.ctx,
       session => this.projectionHandle.stateOf(session),
-      { batchMs: this.resolved.notificationBatchMs, wakeColdSession: this.resolved.wakeColdSession },
+      {
+        batchMs: this.resolved.notificationBatchMs,
+        wakeColdSession: this.resolved.wakeColdSession,
+        actionBatchMs: this.resolved.actionRequiredBatchMs,
+      },
+      this.metrics,
     )
     this.hub.start()
     // The readiness retry machinery outlives init; make sure a plugin unload
@@ -2602,6 +2632,30 @@ export class DevLeadService extends Service {
     return state.reports.slice(-effective)
   }
 
+  /**
+   * Read the in-memory delivery observation of one retained report, for the
+   * diagnostic `deliveryState` field of the read tools. This is a runtime
+   * observation, not a durable delivery record: after a Host restart it is
+   * absent and the durable digest stays the recovery authority.
+   * @param agent - exact live lead Agent.
+   * @param reportId - report identity.
+   * @returns the observed state, or undefined when unobserved.
+   */
+  reportDeliveryState(agent: Agent, reportId: string): DevLeadReportDeliveryState | undefined {
+    this.assertLive(agent)
+    return this.hub?.deliveryStateOf(String(agent.id), reportId)
+  }
+
+  /**
+   * Detached snapshot of the process-local delivery/suppression/lane counters
+   * (DESIGN §4.4.11). Labels are low-cardinality enums only; no message text,
+   * Session id, or report id ever appears as a label.
+   * @returns counter samples in first-increment order.
+   */
+  metricsSnapshot(): DevLeadCounterSample[] {
+    return this.metrics.snapshot()
+  }
+
   // ---------------------------------------------------------------------------
   // Internals
   // ---------------------------------------------------------------------------
@@ -3769,6 +3823,13 @@ export class DevLeadService extends Service {
     }
     await this.flushDurably(target.session, `prompt into Session "${sessionId}"`)
     const messageId = String(message.id)
+    countDelivery(this.metrics, {
+      direction: 'lead-to-child',
+      lane: options.plan.lane,
+      primitive: options.plan.primitive,
+      kind: options.intent ?? 'instruction',
+      outcome: 'delivered',
+    })
     // Report the boundary the message actually occupies: a waking steer admitted
     // on an aborted phase is reclassified to next-turn by DSH.
     const boundary = target.inbox.nextStep.some(entry => String(entry.id) === messageId)

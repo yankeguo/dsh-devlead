@@ -359,6 +359,54 @@ describe('styles', () => {
     expect(error).toContain('var(--dsw-alias-label-error')
   })
 
+  it('colors every action-required report kind with the warning ink, not error red', () => {
+    // blocked/decision/question share the warning dot: a blocked report is a
+    // scheduling fact, not a Host failure (error red stays with transitions).
+    const warnDot = /\.devlead-notification-dot\[data-report-kind="blocked"\],\s*\.devlead-notification-dot\[data-report-kind="decision"\],\s*\.devlead-notification-dot\[data-report-kind="question"\] \{([^}]*)\}/u.exec(styles)?.[1] ?? ''
+    expect(warnDot).toContain('var(--dsw-alias-state-warn-primary')
+    expect(styles).not.toMatch(/\[data-report-kind="blocked"\][^{]*\{[^}]*--dsw-alias-state-error-primary/u)
+    // The kind label of an action-required chip wears the same warning ink.
+    const label = /\.devlead-notification\[data-lane="action-required"\] \.devlead-notification-label \{([^}]*)\}/u.exec(styles)?.[1] ?? ''
+    expect(label).toContain('color: var(--dsw-alias-state-warn-primary')
+    expect(label).not.toMatch(/(?:^|;)\s*(?:width|height|padding|border|margin|font-size)\s*:/u)
+  })
+
+  it('weakens background report chips with opacity only, never layout', () => {
+    const background = /\.devlead-notification\[data-lane="background"\] \{([^}]*)\}/u.exec(styles)?.[1] ?? ''
+    expect(background).toContain('opacity:')
+    expect(background).not.toMatch(/(?:^|;)\s*(?:width|height|padding|border|margin|font-size|display)\s*:/u)
+    // progress/fyi keep the default tertiary dot: no per-kind color rule may
+    // promote a non-urgent background update above a settled outcome.
+    expect(styles).not.toContain('[data-report-kind="progress"]')
+    expect(styles).not.toContain('[data-report-kind="fyi"]')
+  })
+
+  it('styles the lifecycle suffix and suppressed-wake marker as compact neutral copy', () => {
+    const status = /\.devlead-notification-status \{([^}]*)\}/u.exec(styles)?.[1] ?? ''
+    expect(status).toContain('flex: none;')
+    expect(status).toContain('color: var(--dsw-alias-label-secondary')
+    const wake = /\.devlead-notification-wake \{([^}]*)\}/u.exec(styles)?.[1] ?? ''
+    expect(wake).toContain('color: var(--dsw-alias-label-tertiary')
+    expect(wake).toContain('font-size: 12px;')
+    // Both are inline annotations: no box changes, and neither may wear the
+    // error or warning ink (the transition/kind labels carry the outcome).
+    for (const rule of [status, wake]) {
+      expect(rule).not.toMatch(/(?:^|;)\s*(?:width|height|padding|border|margin)\s*:/u)
+      expect(rule).not.toContain('--dsw-alias-label-error')
+      expect(rule).not.toContain('--dsw-alias-state-warn-primary')
+    }
+  })
+
+  it('keeps the Phase-1e chip attributes away from Session-row layout', () => {
+    // The new lane/status/wake selectors must only scope strip chips; the
+    // Session-row ring stays the sole row decoration, unchanged.
+    const rowRules = [...styles.matchAll(/\[data-row-key[^\{]*\{/gu)]
+    expect(rowRules).toHaveLength(2)
+    for (const attribute of ['data-lane', 'data-wake-suppressed', 'data-question-status', 'data-answer-status']) {
+      expect(styles).not.toMatch(new RegExp(`\\[data-row-key[^{]*\\[${attribute}`, 'u'))
+    }
+  })
+
   it('marks the enabled toggle with the business accent border, not extra layout', () => {
     const enabled = /\.devlead-toggle\[data-devlead-enabled="true"\] \{([^}]*)\}/u.exec(styles)?.[1] ?? ''
     expect(enabled).toContain('border-color: var(--dsw-alias-state-business-primary')

@@ -8,7 +8,7 @@
  * the launch token over the same HTTP API the browser uses, and asserts the
  * product behaviors that only appear in a real Host.
  *
- * Every flow runs three phases against the same scratch root and the same
+ * Every flow runs five phases against the same scratch root and the same
  * throwaway profile (phase 1 and phase 1b also share the same durable DSH_HOME
  * state):
  *
@@ -162,18 +162,45 @@
  *                 Agent Teams is version-adaptive: rc.2+ (default composition)
  *                 must apply it, while an rc.1 Host must reject the explicit
  *                 request with DEVLEAD_TEAM_UNAVAILABLE and create nothing.
- *             126 checks.
+ *             128 checks (the two extra over the Phase 1d baseline pin the
+ *             Phase 1e background-lane rewrite of the progress-report check:
+ *             a progress report injects without a wake and leaves the idle
+ *             lead idle).
+ *
+ *   phase 1e — message-lane delivery (DESIGN §4.4.4/§4.4.7/§4.4.11/§4.4.12).
+ *             The same profile restarts with the probe overlay and a fresh
+ *             lead; each lane probe drains the lead first so it starts quiet:
+ *               - P1/P2 progress/fyi reports inject at next-step on the
+ *                 background lane (wakeRequested:false) and start NO new lead
+ *                 turn; devlead_notifications and devlead_get_session self-read
+ *                 carry lane 'background' + deliveryState 'delivered';
+ *               - P3/P4 blocked/decision reports steer [DEV LEAD ACTION
+ *                 REQUIRED] wakes carrying the full message, report id, and
+ *                 observed child state; digest rows carry lane 'action-required';
+ *               - a REAL scripted completed child turn rides the turn-notice
+ *                 [DEV LEAD NOTIFICATION] followup, while a REAL scripted turn
+ *                 whose adapter throws settles turn/end error and rides the
+ *                 [DEV LEAD REVIEW REQUIRED] action-required steer;
+ *               - the question + turn-end double-wake merge writes
+ *                 wakeSuppressedByReportId/wakeSuppressionReason onto the
+ *                 notification row and includes the turn-end in the question wake;
+ *               - filling the shared 16-pending-per-pair action cap accepts 17
+ *                 distinct reports (1 parked + 16 pending) and refuses the 18th
+ *                 with DEVLEAD_DELIVERY_RATE_LIMITED (no silent drop);
+ *               - metricsSnapshot exposes delivery totals per lane/outcome plus
+ *                 suppression/guard counters with low-cardinality enum labels only.
+ *             31 checks.
  *
  * `--no-worktree` skips phase 2 only (debugging escape hatch when the
- * experimental composition cannot boot on this machine); phases 1, 1b, and 3
+ * experimental composition cannot boot on this machine); phases 1, 1b, 3, and 1e
  * still run.
  *
  * Check counts are PINNED per phase (EXPECTED_CHECKS, baseline DSH
- * 0.2.2-rc.5): phase 1 = 27, phase 1b = 12, phase 2 = 23, phase 3 = 126, so
- * every flow reports 188/188 checks (185 PASS + 3 credential-less SKIP) when
- * all four phases pass (`--no-worktree` skips phase 2: 165/165). A deleted or
- * added check fails the phase through the count pin. Run both flows before a
- * release:
+ * 0.2.2-rc.5): phase 1 = 27, phase 1b = 12, phase 2 = 23, phase 3 = 128,
+ * phase 1e = 31, so every flow reports 221/221 checks (218 PASS + 3
+ * credential-less SKIP) when all five phases pass (`--no-worktree` skips
+ * phase 2: 198/198). A deleted or added check fails the phase through the count
+ * pin. Run both flows before a release:
  *
  *   node scripts/e2e-smoke.mjs --flow patch
  *   node scripts/e2e-smoke.mjs --flow installed
@@ -266,12 +293,24 @@ const PROBE_QUESTION_CONTINUE_COMMAND = 'devlead-e2e-question-continue'
 const PROBE_ANSWER_TURN_COMMAND = 'devlead-e2e-answer-turn'
 /** Answer inbox lifecycle: delivery metadata, retract refusal, clear-own/clear-all (Phase 1d). */
 const PROBE_ANSWER_INBOX_COMMAND = 'devlead-e2e-answer-inbox'
+/** Phase 1e: P1/P2 background inject (no wake) + read-tool lane/deliveryState output. */
+const PROBE_LANES_BACKGROUND_COMMAND = 'devlead-e2e-lanes-background'
+/** Phase 1e: P3/P4 blocked/decision action-required steer wakes with the full message. */
+const PROBE_LANES_ACTION_COMMAND = 'devlead-e2e-lanes-action'
+/** Phase 1e: T1 completed followup vs T2 failed/interrupted review steer wakes. */
+const PROBE_LANES_TURN_COMMAND = 'devlead-e2e-lanes-turn'
+/** Phase 1e: question + turn-end double-wake merge suppression fields. */
+const PROBE_LANES_MERGE_COMMAND = 'devlead-e2e-lanes-merge'
+/** Phase 1e: 16-pair action cap overflow returns DEVLEAD_DELIVERY_RATE_LIMITED. */
+const PROBE_LANES_RATE_COMMAND = 'devlead-e2e-lanes-rate'
+/** Phase 1e: low-cardinality delivery/suppression/guard metrics snapshot. */
+const PROBE_LANES_METRICS_COMMAND = 'devlead-e2e-lanes-metrics'
 /**
  * Pinned per-phase check totals of the current harness (baseline: DSH
  * 0.2.2-rc.5). `Checks.summarize` fails when a phase reports a different
  * count, so deleting or silently skipping a check cannot pass unnoticed.
  */
-const EXPECTED_CHECKS = { phase1: 27, phase1b: 12, phase2: 23, phase3: 126 }
+const EXPECTED_CHECKS = { phase1: 27, phase1b: 12, phase2: 23, phase3: 128, phase1e: 31 }
 /** DSH version the pinned totals and scripted-turn contracts are verified against. */
 const BASELINE_DSH_VERSION = '0.2.2-rc.5'
 /** Probe command: queued-inbox visibility / ownership / idempotent retraction. */
@@ -326,7 +365,7 @@ Options:
   --flow <patch|installed>  loading flow to exercise (default: patch)
   --no-build                reuse the current packages/*/lib artifacts
   --no-worktree             skip phase 2 (the experimental worktree composition);
-                            phases 1, 1b, and 3 still run (debugging escape hatch,
+                            phases 1, 1b, 3, and 1e still run (debugging escape hatch,
                             the default runs all four phases)
   --root <dir>              scratch directory under ${tmpdir()} (default: a unique one);
                             an existing root is reused only when it carries ${SCRATCH_MARKER}
@@ -1563,6 +1602,34 @@ async function runCloseChecks(client, paths, dshVersion) {
     leadReports.some(row => row?.id === reportId && row?.senderSessionId === watchedChildId),
     JSON.stringify(leadReports),
   )
+  // Phase 1e rewrite: a progress report no longer wakes the lead via a coalesced
+  // followup digest. It rides the BACKGROUND lane — a next-step inject with
+  // wakeRequested:false — and an idle lead stays idle (no new turn).
+  const progressBackground = reportProbe.report?.background ?? {}
+  checks.expect(
+    'phase 3 progress report injects on the background lane without requesting a wake',
+    progressBackground.found === true
+      && progressBackground.lane === 'background'
+      && progressBackground.boundary === 'next-step'
+      && progressBackground.wakeRequested === false
+      && progressBackground.reportId === reportId
+      && progressBackground.senderSessionId === watchedChildId
+      && String(progressBackground.excerpt ?? '').includes('[DEV LEAD REPORT]')
+      && String(progressBackground.text ?? '').includes('no action required and no wake was requested'),
+    JSON.stringify({ ...progressBackground, text: undefined }),
+  )
+  checks.expect(
+    'phase 3 progress report leaves the idle lead idle (no wake, no new turn) and is observed delivered',
+    reportProbe.report?.leadStatusBefore === 'idle'
+      && reportProbe.report?.leadStatusAfter === 'idle'
+      && reportProbe.report?.leadTurnBefore === reportProbe.report?.leadTurnAfter
+      && reportProbe.report?.deliveryState === 'delivered',
+    JSON.stringify({
+      before: `${String(reportProbe.report?.leadStatusBefore)}/${String(reportProbe.report?.leadTurnBefore)}`,
+      after: `${String(reportProbe.report?.leadStatusAfter)}/${String(reportProbe.report?.leadTurnAfter)}`,
+      deliveryState: reportProbe.report?.deliveryState,
+    }),
+  )
 
   // Watched-Session question gate: a real structured multi-question
   // ask_user_question call plus a sibling read-only call are executed through
@@ -2419,6 +2486,262 @@ async function runCloseChecks(client, paths, dshVersion) {
 }
 
 /**
+ * Run the Phase 1e message-lane checks against a fresh probe-loaded Host.
+ *
+ * A new lead is enabled on the same scratch home; each lane probe drains the
+ * lead first so its assertions start from a quiet idle state. The probes drive
+ * real reports/turns through `ctx.devLead` and the Host tools pipeline and read
+ * every fact back from the durable Session log, the real read-tool output, and
+ * the process-local metrics snapshot. Covers DESIGN §4.4.4/§4.4.7/§4.4.11/§4.4.12:
+ * background no-wake inject (P1/P2), action-required steer wakes (P3/P4), the
+ * T1 followup vs T2 review split, the question/turn-end double-wake merge, the
+ * explicit 16-pair action cap overflow, and low-cardinality delivery metrics.
+ * @param client - authenticated client of the phase-1e instance.
+ * @param paths - scratch paths.
+ * @returns the number of checks performed.
+ */
+async function runLaneChecks(client, paths) {
+  const checks = new Checks()
+  await client.login()
+
+  const lead = await client.createSession(paths)
+  const leadId = lead.sessionId
+  checks.expect('phase 1e session/create returns a lead Session', typeof leadId === 'string' && leadId.length > 0, leadId)
+  const on = await client.command(leadId, '/devlead on')
+  checks.expect('phase 1e /devlead on settles success', on?.result?.kind === 'success', on?.result?.text?.split('\n')[0])
+  const commands = await client.rpc('commands/list', { agentId: leadId })
+  const laneCommandNames = [
+    PROBE_LANES_BACKGROUND_COMMAND, PROBE_LANES_ACTION_COMMAND, PROBE_LANES_TURN_COMMAND,
+    PROBE_LANES_MERGE_COMMAND, PROBE_LANES_RATE_COMMAND, PROBE_LANES_METRICS_COMMAND,
+  ]
+  checks.expect(
+    'phase 1e lane probe commands are registered',
+    laneCommandNames.every(name => commands.some(command => command.name === name)),
+    JSON.stringify(laneCommandNames.filter(name => !commands.some(command => command.name === name))),
+  )
+
+  // --- P1/P2 background lane: inject, no wake, idle lead stays idle. ---
+  const background = await runProbeCommand(client, leadId, PROBE_LANES_BACKGROUND_COMMAND, DISPATCH_PROBE_TIMEOUT_MS)
+  checks.expect('phase 1e background probe settles success', background.execution?.result?.kind === 'success', background.text.slice(0, 500))
+  const bg = background.report ?? {}
+  const bgProgress = bg.progress ?? {}
+  const bgFyi = bg.fyi ?? {}
+  checks.expect(
+    'phase 1e progress injects on the background lane at next-step without a wake',
+    bgProgress.notice?.found === true
+      && bgProgress.notice?.lane === 'background'
+      && bgProgress.notice?.boundary === 'next-step'
+      && bgProgress.notice?.wakeRequested === false
+      && bgProgress.notice?.reportId === bgProgress.receipt?.report?.id
+      && bgProgress.notice?.senderSessionId === bg.childId
+      && String(bgProgress.notice?.text ?? '').includes('no action required and no wake was requested'),
+    JSON.stringify({ ...bgProgress.notice, text: undefined }),
+  )
+  checks.expect(
+    'phase 1e fyi injects on the background lane at next-step without a wake',
+    bgFyi.notice?.found === true
+      && bgFyi.notice?.lane === 'background'
+      && bgFyi.notice?.boundary === 'next-step'
+      && bgFyi.notice?.wakeRequested === false
+      && bgFyi.notice?.reportId === bgFyi.receipt?.report?.id,
+    JSON.stringify({ ...bgFyi.notice, text: undefined }),
+  )
+  checks.expect(
+    'phase 1e idle lead stays idle: progress+fyi start no new lead turn',
+    bg.leadStatusBefore === 'idle' && bg.leadStatusAfter === 'idle'
+      && typeof bg.leadTurnBefore === 'number' && bg.leadTurnBefore === bg.leadTurnAfter,
+    JSON.stringify({ before: `${String(bg.leadStatusBefore)}/${String(bg.leadTurnBefore)}`, after: `${String(bg.leadStatusAfter)}/${String(bg.leadTurnAfter)}` }),
+  )
+  checks.expect(
+    'phase 1e background reports are observed delivered and durably receipted',
+    bgProgress.deliveryState === 'delivered' && bgFyi.deliveryState === 'delivered'
+      && bgProgress.receipt?.durable === true && bgFyi.receipt?.durable === true,
+    JSON.stringify({ progress: bgProgress.deliveryState, fyi: bgFyi.deliveryState }),
+  )
+  const bgToolReports = Array.isArray(bg.notificationsTool?.value?.reports) ? bg.notificationsTool.value.reports : []
+  checks.expect(
+    'phase 1e devlead_notifications report rows carry lane background + deliveryState delivered',
+    bg.notificationsTool?.isError === false
+      && [bgProgress.receipt?.report?.id, bgFyi.receipt?.report?.id].every(id =>
+        bgToolReports.some(row => row?.id === id && row?.lane === 'background' && row?.deliveryState === 'delivered')),
+    JSON.stringify(bgToolReports.filter(row => row?.lane === 'background')),
+  )
+  const bgSelfReports = Array.isArray(bg.selfViewTool?.value?.reports) ? bg.selfViewTool.value.reports : []
+  checks.expect(
+    'phase 1e devlead_get_session self-read reports carry lane background + deliveryState',
+    bg.selfViewTool?.isError === false
+      && [bgProgress.receipt?.report?.id, bgFyi.receipt?.report?.id].every(id =>
+        bgSelfReports.some(row => row?.id === id && row?.lane === 'background' && row?.deliveryState === 'delivered')),
+    JSON.stringify(bgSelfReports.map(row => ({ id: row?.id, lane: row?.lane, deliveryState: row?.deliveryState }))),
+  )
+
+  // --- P3/P4 action-required lane: steer wakes carrying the full message. ---
+  const action = await runProbeCommand(client, leadId, PROBE_LANES_ACTION_COMMAND, DISPATCH_PROBE_TIMEOUT_MS)
+  checks.expect('phase 1e action probe settles success', action.execution?.result?.kind === 'success', action.text.slice(0, 500))
+  const act = action.report ?? {}
+  const actBlocked = act.blocked ?? {}
+  const actDecision = act.decision ?? {}
+  checks.expect(
+    'phase 1e blocked report steers an action-required wake carrying the full message',
+    actBlocked.wake?.found === true
+      && actBlocked.wake?.lane === 'action-required'
+      && actBlocked.wake?.boundary === 'next-step'
+      && actBlocked.wake?.wakeRequested === true
+      && actBlocked.wake?.reportId === actBlocked.receipt?.report?.id
+      && String(actBlocked.wake?.excerpt ?? '').includes('[DEV LEAD ACTION REQUIRED]')
+      && String(act.blockedMessage ?? '').split('\n').every(line => String(actBlocked.wake?.text ?? '').includes(`  ${line}`)),
+    JSON.stringify({ ...actBlocked.wake, text: undefined }),
+  )
+  checks.expect(
+    'phase 1e decision report steers an action-required wake carrying the full message',
+    actDecision.wake?.found === true
+      && actDecision.wake?.lane === 'action-required'
+      && actDecision.wake?.wakeRequested === true
+      && actDecision.wake?.reportId === actDecision.receipt?.report?.id
+      && String(actDecision.wake?.text ?? '').includes(String(act.decisionMessage ?? '')),
+    JSON.stringify({ ...actDecision.wake, text: undefined }),
+  )
+  checks.expect(
+    'phase 1e action wake carries the report id and the observed child state',
+    String(actBlocked.wake?.text ?? '').includes(`- report: ${String(actBlocked.receipt?.report?.id)}`)
+      && String(actBlocked.wake?.text ?? '').includes('- observed child state at wake time:'),
+    JSON.stringify({ text: String(actBlocked.wake?.text ?? '').slice(0, 600) }),
+  )
+  const actToolReports = Array.isArray(act.notificationsTool?.value?.reports) ? act.notificationsTool.value.reports : []
+  checks.expect(
+    'phase 1e notifications report rows carry lane action-required for blocked/decision',
+    act.notificationsTool?.isError === false
+      && [actBlocked.receipt?.report?.id, actDecision.receipt?.report?.id].every(id =>
+        actToolReports.some(row => row?.id === id && row?.lane === 'action-required')),
+    JSON.stringify(actToolReports.filter(row => row?.lane === 'action-required').map(row => ({ id: row?.id, kind: row?.kind }))),
+  )
+
+  // --- T1 completed followup vs T2 failed review steer. ---
+  const turn = await runProbeCommand(client, leadId, PROBE_LANES_TURN_COMMAND, DISPATCH_PROBE_TIMEOUT_MS)
+  checks.expect('phase 1e turn probe settles success', turn.execution?.result?.kind === 'success', turn.text.slice(0, 500))
+  const turnReport = turn.report ?? {}
+  const completed = turnReport.completed ?? {}
+  const failed = turnReport.failed ?? {}
+  checks.expect(
+    'phase 1e completed turn settles completed and rides the turn-notice followup lane',
+    completed.facts?.turnEndReason === 'completed' && completed.facts?.turnEnds === 1
+      && completed.wake?.found === true
+      && completed.wake?.lane === 'turn-notice'
+      && completed.wake?.boundary === 'next-turn'
+      && completed.wake?.wakeRequested === true
+      && String(completed.wake?.excerpt ?? '').includes('[DEV LEAD NOTIFICATION]')
+      && String(completed.wake?.text ?? '').includes(String(completed.facts?.childId)),
+    JSON.stringify({ reason: completed.facts?.turnEndReason, wake: { ...completed.wake, text: undefined } }),
+  )
+  checks.expect(
+    'phase 1e failed turn settles error and rides the action-required review steer lane',
+    failed.facts?.turnEndReason === 'error' && failed.facts?.turnEnds === 1
+      && failed.wake?.found === true
+      && failed.wake?.lane === 'action-required'
+      && failed.wake?.boundary === 'next-step'
+      && failed.wake?.wakeRequested === true
+      && String(failed.wake?.excerpt ?? '').includes('[DEV LEAD REVIEW REQUIRED]'),
+    JSON.stringify({ reason: failed.facts?.turnEndReason, wake: { ...failed.wake, text: undefined } }),
+  )
+  checks.expect(
+    'phase 1e review wake names the failed child and the failure/interruption',
+    String(failed.wake?.text ?? '').includes(String(failed.facts?.childId))
+      && String(failed.wake?.text ?? '').includes('failure or interruption'),
+    JSON.stringify({ text: String(failed.wake?.text ?? '').slice(0, 600) }),
+  )
+
+  // --- Question + turn-end double-wake merge suppression fields. ---
+  const merge = await runProbeCommand(client, leadId, PROBE_LANES_MERGE_COMMAND, DISPATCH_PROBE_TIMEOUT_MS)
+  checks.expect('phase 1e merge probe settles success', merge.execution?.result?.kind === 'success', merge.text.slice(0, 500))
+  const mergeReport = merge.report ?? {}
+  const mergeFacts = mergeReport.merge ?? {}
+  const mergedRow = mergeFacts.mergedRow ?? {}
+  checks.expect(
+    'phase 1e merged turn-end row carries wakeSuppressedByReportId + merged-into-pending-wake',
+    mergeFacts.q1Id != null
+      && mergedRow.wakeSuppressedByReportId === mergeFacts.q1Id
+      && mergedRow.wakeSuppressionReason === 'merged-into-pending-wake'
+      && mergedRow.id === `${String(mergeFacts.scriptedChildId)}:1:completed`,
+    JSON.stringify({ q1Id: mergeFacts.q1Id, mergedRow }),
+  )
+  checks.expect(
+    'phase 1e delivered question wake explicitly includes the merged turn-end line',
+    mergeReport.q1Wake?.found === true
+      && String(mergeReport.q1Wake?.text ?? '').includes('- included turn-end:')
+      && String(mergeReport.q1Wake?.text ?? '').includes(String(mergeFacts.q1Id)),
+    JSON.stringify({ ...mergeReport.q1Wake, text: String(mergeReport.q1Wake?.text ?? '').slice(0, 600) }),
+  )
+  const mergeToolNotifications = Array.isArray(mergeReport.notificationsTool?.value?.notifications)
+    ? mergeReport.notificationsTool.value.notifications
+    : []
+  checks.expect(
+    'phase 1e devlead_notifications output carries the suppression pair on the merged row',
+    mergeReport.notificationsTool?.isError === false
+      && mergeToolNotifications.some(row => row?.id === `${String(mergeFacts.scriptedChildId)}:1:completed`
+        && row?.wakeSuppressedByReportId === mergeFacts.q1Id
+        && row?.wakeSuppressionReason === 'merged-into-pending-wake'),
+    JSON.stringify(mergeToolNotifications.filter(row => row?.wakeSuppressedByReportId !== undefined)),
+  )
+
+  // --- 16-pair action cap overflow is explicit (no silent drop). ---
+  const rate = await runProbeCommand(client, leadId, PROBE_LANES_RATE_COMMAND, DISPATCH_PROBE_TIMEOUT_MS)
+  checks.expect('phase 1e rate probe settles success', rate.execution?.result?.kind === 'success', rate.text.slice(0, 500))
+  const rateFacts = rate.report?.rate ?? {}
+  checks.expect(
+    'phase 1e 17 distinct action reports are accepted and every receipt stays durable',
+    rateFacts.acceptedCount === 17 && rateFacts.acceptedAllDurable === true,
+    JSON.stringify({ acceptedCount: rateFacts.acceptedCount, acceptedAllDurable: rateFacts.acceptedAllDurable }),
+  )
+  checks.expect(
+    'phase 1e the 18th distinct report is refused with DEVLEAD_DELIVERY_RATE_LIMITED (no silent drop)',
+    rateFacts.refusedCount === 1
+      && JSON.stringify(rateFacts.refusedCodes) === JSON.stringify(['DEVLEAD_DELIVERY_RATE_LIMITED']),
+    JSON.stringify({ refusedCount: rateFacts.refusedCount, refusedCodes: rateFacts.refusedCodes }),
+  )
+
+  // --- Low-cardinality delivery/suppression/guard metrics. ---
+  const metrics = await runProbeCommand(client, leadId, PROBE_LANES_METRICS_COMMAND, DISPATCH_PROBE_TIMEOUT_MS)
+  checks.expect('phase 1e metrics probe settles success', metrics.execution?.result?.kind === 'success', metrics.text.slice(0, 500))
+  const snapshot = Array.isArray(metrics.report?.snapshot) ? metrics.report.snapshot : []
+  const hasSeries = (name, labels) => snapshot.some(sample => sample?.name === name
+    && Object.entries(labels).every(([key, value]) => sample?.labels?.[key] === value))
+  checks.expect(
+    'phase 1e delivery totals exist per lane/outcome (background/action/turn-notice delivered + rate-limited)',
+    hasSeries('devlead_delivery_total', { lane: 'background', outcome: 'delivered' })
+      && hasSeries('devlead_delivery_total', { lane: 'action-required', outcome: 'delivered' })
+      && hasSeries('devlead_delivery_total', { lane: 'turn-notice', outcome: 'delivered' })
+      && hasSeries('devlead_delivery_total', { lane: 'action-required', outcome: 'rate-limited' }),
+    JSON.stringify(snapshot.filter(sample => sample?.name === 'devlead_delivery_total').map(sample => sample.labels)),
+  )
+  checks.expect(
+    'phase 1e suppression and guard counters exist (merged wake + queued-action guard)',
+    hasSeries('devlead_wake_suppression_total', { reason: 'merged-into-pending-wake' })
+      && hasSeries('devlead_guard_hit_total', { guard: 'queued-action-required' }),
+    JSON.stringify(snapshot.filter(sample => sample?.name !== 'devlead_delivery_total')),
+  )
+  const allowedLabelKeys = new Set(['direction', 'lane', 'primitive', 'kind', 'outcome', 'reason', 'guard', 'status', 'overflow'])
+  checks.expect(
+    'phase 1e metrics labels are low-cardinality enums only (no ids or message text)',
+    snapshot.length > 0 && snapshot.every((sample) => {
+      const labels = sample?.labels ?? {}
+      return Object.keys(labels).every(key => allowedLabelKeys.has(key))
+        && Object.values(labels).every(value => typeof value === 'string' && !value.includes(':') && value.length <= 40)
+    }),
+    JSON.stringify(snapshot.flatMap(sample => Object.entries(sample?.labels ?? {})).filter(([, value]) => String(value).includes(':') || String(value).length > 40)),
+  )
+
+  const off = await client.command(leadId, '/devlead off')
+  checks.expect(
+    'phase 1e /devlead off releases the global slot',
+    off?.result?.kind === 'success' && /DevLead mode disabled\./u.test(off?.result?.text ?? ''),
+    off?.result?.text?.split('\n')[0],
+  )
+
+  checks.summarize(EXPECTED_CHECKS.phase1e)
+  return checks.results.length
+}
+
+/**
  * Report one failed phase with the runtime log tail and keep the scratch root
  * for inspection.
  * @param flow - loading flow label ("patch"/"installed").
@@ -2551,9 +2874,34 @@ async function runFlow(options) {
       await stopInstance(phaseThree.child)
     }
     if (process.exitCode === 1) return
-    const total = phaseOneState.count + phaseOneBCount + (phaseTwoCount ?? 0) + phaseThreeCount
+
+    // ------------------------------------------------------------------------
+    // Phase 1e: message-lane delivery (background/action/turn-notice), the
+    // double-wake merge, the explicit action cap, and metrics. Same scratch
+    // root/profile with the probe overlay; a fresh lead isolates lane state.
+    // ------------------------------------------------------------------------
+    console.log('\n=== phase 1e: message lanes, merge, action cap, and metrics ===')
+    const lanePatches = devleadOverlay === undefined ? [probePatch] : [devleadOverlay, probePatch]
+    let phaseOneE
+    try {
+      phaseOneE = await startWeb(paths, dshBinary, options, { label: 'lanes', patches: lanePatches })
+    } catch (error) {
+      reportPhaseFailure(options.flow, 'phase 1e boot', error, undefined, paths)
+      return
+    }
+    console.log(`e2e-smoke: phase 1e web ${redactUrl(phaseOneE.url)}`)
+    let phaseOneECount = 0
+    try {
+      phaseOneECount = await runLaneChecks(new WebClient(phaseOneE.url), paths)
+    } catch (error) {
+      reportPhaseFailure(options.flow, 'phase 1e', error, phaseOneE.logPath, paths)
+    } finally {
+      await stopInstance(phaseOneE.child)
+    }
+    if (process.exitCode === 1) return
+    const total = phaseOneState.count + phaseOneBCount + (phaseTwoCount ?? 0) + phaseThreeCount + phaseOneECount
     const expectedTotal = EXPECTED_CHECKS.phase1 + EXPECTED_CHECKS.phase1b
-      + (options.worktree ? EXPECTED_CHECKS.phase2 : 0) + EXPECTED_CHECKS.phase3
+      + (options.worktree ? EXPECTED_CHECKS.phase2 : 0) + EXPECTED_CHECKS.phase3 + EXPECTED_CHECKS.phase1e
     console.log(`\nE2E SMOKE PASS (${options.flow}, DeepSeek Harness ${dshVersion})`)
     if (dshVersion !== BASELINE_DSH_VERSION) {
       console.log(`  note: pinned check totals are verified against ${BASELINE_DSH_VERSION}; this run used ${dshVersion}`)
@@ -2564,6 +2912,7 @@ async function runFlow(options) {
       console.log(`  phase 2 (experimental worktree composition): ${String(phaseTwoCount)}/${String(EXPECTED_CHECKS.phase2)} checks`)
     }
     console.log(`  phase 3 (close tools, dispatch routing, and triage policy): ${String(phaseThreeCount)}/${String(EXPECTED_CHECKS.phase3)} checks`)
+    console.log(`  phase 1e (message lanes, merge, action cap, metrics): ${String(phaseOneECount)}/${String(EXPECTED_CHECKS.phase1e)} checks`)
     console.log(`  total: ${String(total)}/${String(expectedTotal)} checks (PASS + SKIP; see per-phase lines)${options.worktree ? '' : '; phase 2 skipped (--no-worktree)'}; logs: ${paths.logs}`)
   } catch (error) {
     console.error(`\nE2E SMOKE FAIL (${options.flow}): ${messageOf(error)}`)

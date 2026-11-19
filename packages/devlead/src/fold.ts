@@ -45,6 +45,7 @@ import type {
   DevLeadModeProjection,
   DevLeadNotification,
   DevLeadProjection,
+  DevLeadProjectionReport,
   DevLeadProjectionState,
   DevLeadQuestion,
   DevLeadQuestionAnswerView,
@@ -145,8 +146,8 @@ const questionSchema: ZodType<DevLeadQuestion> = zod.object({
   multi_select: zod.boolean().optional(),
 }).strict() as ZodType<DevLeadQuestion>
 
-/** Wire schema validating one retained report before it leaves the Host. */
-const reportSchema: ZodType<DevLeadReport> = zod.object({
+/** Shared field shape of one retained report (persisted state and client wire). */
+const reportShape = {
   id: zod.string().min(1),
   kind: zod.enum([...DEVLEAD_REPORT_KINDS] as [DevLeadReportKind, ...DevLeadReportKind[]]),
   message: reportMessageSchema,
@@ -162,13 +163,40 @@ const reportSchema: ZodType<DevLeadReport> = zod.object({
   leadSessionId: zod.string().min(1),
   turn: zod.number().int().nonnegative(),
   at: zod.number().int().nonnegative().max(DEVLEAD_MAX_INSTANT),
-}).strict().refine(
+}
+
+/** Wire schema validating one retained report before it leaves the Host. */
+const reportSchema: ZodType<DevLeadReport> = zod.object(reportShape).strict().refine(
   report => report.questions === undefined || report.kind === 'question',
   { message: 'report questions are only valid when kind is "question"' },
 ).refine(
   report => report.id === devLeadReportId(report.senderSessionId, report.turn, report.kind, report.message),
   { message: 'report id must match senderSessionId, turn, kind, and message' },
 ) as ZodType<DevLeadReport>
+
+/**
+ * Client wire schema of one report row: the retained report plus the additive
+ * fold-derived question/answer pair (Phase 1e). The pair appears only on
+ * question reports; older bundles ignore it.
+ */
+const projectionReportSchema: ZodType<DevLeadProjectionReport> = zod.object({
+  ...reportShape,
+  questionStatus: zod.enum(['open', 'answered', 'expired', 'cancelled']).optional(),
+  answerStatus: zod.enum(['admitted', 'claimed', 'presented', 'discarded', 'failed']).optional(),
+}).strict().refine(
+  report => report.questions === undefined || report.kind === 'question',
+  { message: 'report questions are only valid when kind is "question"' },
+).refine(
+  report => report.id === devLeadReportId(report.senderSessionId, report.turn, report.kind, report.message),
+  { message: 'report id must match senderSessionId, turn, kind, and message' },
+).refine(
+  report => (report.questionStatus === undefined && report.answerStatus === undefined)
+    || report.kind === 'question',
+  { message: 'derived question/answer status is only valid on question reports' },
+).refine(
+  report => report.answerStatus === undefined || report.questionStatus !== undefined,
+  { message: 'answerStatus requires questionStatus' },
+) as ZodType<DevLeadProjectionReport>
 
 /** Wire schema validating one retained answer lifecycle record. */
 const answerSchema: ZodType<DevLeadReportAnswer> = zod.object({
@@ -444,8 +472,8 @@ export const devLeadProjectionSchema: ZodType<DevLeadProjection> = zod.object({
       notifications => new Set(notifications.map(notification => notification.id)).size === notifications.length,
       { message: 'notification ids must be unique' },
     ),
-  reports: zod.array(reportSchema)
-    .max(DEVLEAD_REPORT_RETENTION)
+  reports: zod.array(projectionReportSchema)
+    .max(DEVLEAD_REPORT_RETENTION + DEVLEAD_OPEN_QUESTION_PIN_MAX)
     .refine(
       reports => new Set(reports.map(report => report.id)).size === reports.length,
       { message: 'report ids must be unique' },
@@ -465,17 +493,35 @@ const wireViews = new WeakMap<DevLeadProjectionState, DevLeadProjection>()
  * Project one wire view from fold state. The result is memoized per state
  * object and reuses the retained state arrays, so the projection registry's
  * identity comparison suppresses unchanged pushes.
+ *
+ * Question report rows carry the additive fold-derived `questionStatus` /
+ * `answerStatus` pair (Phase 1e) so the browser chip can show the question
+ * lifecycle without a second fact source. The derivation reads the durable
+ * audit only; when no question report is retained the state array is reused
+ * unchanged.
  * @param state - current fold state.
  * @returns the client view value.
  */
 export function devLeadProjectionView(state: DevLeadProjectionState): DevLeadProjection {
   const cached = wireViews.get(state)
   if (cached !== undefined) return cached
+  let reports: readonly DevLeadProjectionReport[] = state.reports
+  if (state.reports.some(report => report.kind === 'question')) {
+    reports = state.reports.map((report): DevLeadProjectionReport => {
+      if (report.kind !== 'question') return report
+      const latest = latestAnswerOf(state.answers, report.id)
+      return {
+        ...report,
+        questionStatus: questionStatusOf(state.answers, report.id),
+        ...(latest === undefined ? {} : { answerStatus: latest.status }),
+      }
+    })
+  }
   const view: DevLeadProjection = {
     enabled: state.enabled,
     sessions: state.sessions,
     notifications: state.notifications,
-    reports: state.reports,
+    reports,
   }
   wireViews.set(state, view)
   return view

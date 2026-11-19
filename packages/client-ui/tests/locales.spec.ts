@@ -10,8 +10,14 @@
 
 import { describe, expect, it } from 'vitest'
 import { DEVLEAD_REPORT_KINDS, DEVLEAD_TRANSITIONS } from '@yankeguo/dsh-devlead-protocol/client'
+import type { DevLeadAnswerStatus, DevLeadQuestionStatus } from '@yankeguo/dsh-devlead-protocol/client'
 import { en, zh } from '../src/client/locales.ts'
-import { reportLabelKey, transitionLabelKey } from '../src/client/format.ts'
+import {
+  answerStatusLabelKey,
+  questionStatusLabelKey,
+  reportLabelKey,
+  transitionLabelKey,
+} from '../src/client/format.ts'
 import enMeta from '../locale/en.json'
 import zhMeta from '../locale/zh.json'
 
@@ -49,10 +55,11 @@ describe('dictionaries', () => {
     expect(en['row.hover.watched']).toContain('Watched')
   })
 
-  it('explains the mid-turn report/question wake channel in both watch hints', () => {
-    // Reports (including routed questions) wake the lead through the same
-    // coalesced notice path as turn ends; a hint that only names turn ends
-    // misdescribes the mode.
+  it('explains the mid-turn report/question channel in both watch hints', () => {
+    // Both hints must still name turn ends and mid-turn reports (questions
+    // included); a hint that only names turn ends misdescribes the mode. The
+    // Phase-1e split between waking kinds and non-waking background is pinned
+    // separately below.
     expect(zh['hint.enabled']).toContain('轮次结束')
     expect(zh['hint.enabled']).toContain('中途汇报')
     expect(zh['hint.enabled']).toContain('提问')
@@ -63,6 +70,27 @@ describe('dictionaries', () => {
     expect(en['hint.enabled']).toContain('questions')
     expect(en['row.hover.watched']).toContain('mid-turn reports')
     expect(en['row.hover.watched']).toContain('questions')
+  })
+
+  it('separates waking kinds from non-waking background in both watch hints', () => {
+    // Phase-1e lane semantics: turn ends and blocked/decision/question reports
+    // request a wake; progress/fyi are background context that never wakes.
+    // A hint claiming every mid-turn report wakes the lead misdescribes the
+    // mode, in either language.
+    for (const message of [zh['hint.enabled'], zh['row.hover.watched']]) {
+      expect(message).toContain('阻塞/待决策/提问')
+      expect(message).toContain('请求唤醒')
+      expect(message).toContain('进度/告知')
+      expect(message).toContain('不唤醒')
+      expect(message).not.toContain('会通知并唤醒')
+    }
+    for (const message of [en['hint.enabled'], en['row.hover.watched']]) {
+      expect(message).toContain('blocked/decision reports and questions')
+      expect(message).toContain('request a wake')
+      expect(message).toContain('progress/fyi')
+      expect(message).toContain('do not wake')
+      expect(message).not.toContain('notify and wake')
+    }
   })
 
   it('labels the toolbar toggle with the brand name in both locales', () => {
@@ -99,6 +127,54 @@ describe('dictionaries', () => {
     }
     expect(zh['report.kind.unknown'].length).toBeGreaterThan(0)
     expect(en['report.kind.unknown'].length).toBeGreaterThan(0)
+  })
+
+  it('localizes every question lifecycle status in both dictionaries', () => {
+    // Runtime twin of the exhaustive status table: a status added to the
+    // protocol without a localized label must fail here, not render a raw key.
+    const statuses: readonly DevLeadQuestionStatus[] = ['open', 'answered', 'expired', 'cancelled']
+    for (const status of statuses) {
+      const key = questionStatusLabelKey(status)
+      expect(zh[key].length).toBeGreaterThan(0)
+      expect(en[key].length).toBeGreaterThan(0)
+    }
+    expect(zh['report.question.unknown'].length).toBeGreaterThan(0)
+    expect(en['report.question.unknown'].length).toBeGreaterThan(0)
+    // en renders the literal wire status for the four known literals.
+    for (const status of statuses) expect(en[questionStatusLabelKey(status)]).toBe(status)
+  })
+
+  it('localizes every answer lifecycle status in both dictionaries', () => {
+    const statuses: readonly DevLeadAnswerStatus[] = ['admitted', 'claimed', 'presented', 'discarded', 'failed']
+    for (const status of statuses) {
+      const key = answerStatusLabelKey(status)
+      expect(zh[key].length).toBeGreaterThan(0)
+      expect(en[key].length).toBeGreaterThan(0)
+      expect(en[key]).toBe(status)
+    }
+    expect(zh['report.answer.unknown'].length).toBeGreaterThan(0)
+    expect(en['report.answer.unknown'].length).toBeGreaterThan(0)
+  })
+
+  it('explains the suppressed turn-end wake in both locales', () => {
+    // The compact marker plus one explanation per merge rule (and the neutral
+    // drift fallback); the copy must name the action-required wake, not blame
+    // the transition itself.
+    for (const key of [
+      'notification.wake.suppressed',
+      'notification.wake.merged',
+      'notification.wake.included',
+      'notification.wake.unknown',
+    ] as const) {
+      expect(zh[key].length).toBeGreaterThan(0)
+      expect(en[key].length).toBeGreaterThan(0)
+      expect(zh[key]).toContain('唤醒')
+      expect(en[key]).toContain('wake')
+    }
+    expect(zh['notification.wake.merged']).toContain('需处理')
+    expect(zh['notification.wake.included']).toContain('需处理')
+    expect(en['notification.wake.merged']).toContain('action-required')
+    expect(en['notification.wake.included']).toContain('action-required')
   })
 
   it('retires the archived single-active refusal copy', () => {

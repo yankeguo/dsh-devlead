@@ -2,21 +2,35 @@
 
 import { describe, expect, it } from 'vitest'
 import {
+  DEVLEAD_REPORT_KINDS,
   DEVLEAD_TRANSITIONS,
   notificationLine,
   reportLine,
 } from '@yankeguo/dsh-devlead-protocol/client'
-import type { DevLeadNotification, DevLeadReport } from '@yankeguo/dsh-devlead-protocol/client'
+import type {
+  DevLeadAnswerStatus,
+  DevLeadNotification,
+  DevLeadProjectionReport,
+  DevLeadQuestionStatus,
+  DevLeadReport,
+} from '@yankeguo/dsh-devlead-protocol/client'
 import {
+  answerStatusLabelKey,
   epochMillis,
   latestNotification,
   latestReport,
   notificationSummary,
+  questionStatusLabelKey,
   reportLabelKey,
+  reportLane,
   reportSummary,
   summarizeWatched,
   transitionLabelKey,
+  wakeSuppressionReasonKey,
+  type DevLeadAnswerStatusKey,
+  type DevLeadQuestionStatusKey,
   type DevLeadReportKey,
+  type DevLeadReportLane,
   type DevLeadTransitionKey,
 } from '../src/client/format.ts'
 
@@ -265,8 +279,13 @@ describe('reportSummary', () => {
       who: 'Fix the parser',
       kind: 'progress',
       labelKey: 'report.kind.progress',
+      lane: 'background',
       detail: 'parser progress',
       at: BASE_REPORT.at,
+      questionStatus: undefined,
+      questionStatusKey: undefined,
+      answerStatus: undefined,
+      answerStatusKey: undefined,
     })
   })
 
@@ -322,5 +341,224 @@ describe('epochMillis', () => {
     for (const value of [Number.NaN, Number.POSITIVE_INFINITY, undefined, null, '123', {}]) {
       expect(epochMillis(value)).toBe(0)
     }
+  })
+})
+
+describe('reportLane', () => {
+  it('maps action-required kinds to the warning lane and background kinds to the muted lane', () => {
+    expect(reportLane('question')).toBe('action-required')
+    expect(reportLane('blocked')).toBe('action-required')
+    expect(reportLane('decision')).toBe('action-required')
+    expect(reportLane('progress')).toBe('background')
+    expect(reportLane('fyi')).toBe('background')
+  })
+
+  it('covers exactly the protocol report vocabulary', () => {
+    // Runtime twin of the exhaustive lane table: a kind added to the protocol
+    // without a lane fails to compile; this pins the mapping to the vocabulary.
+    const lanes: DevLeadReportLane[] = DEVLEAD_REPORT_KINDS.map(reportLane)
+    expect(lanes).toEqual(['background', 'action-required', 'action-required', 'action-required', 'background'])
+  })
+
+  it('keeps a drifted kind neutral instead of guessing urgency', () => {
+    expect(reportLane('urgent')).toBe('unknown')
+    expect(reportLane('')).toBe('unknown')
+  })
+})
+
+describe('questionStatusLabelKey', () => {
+  it('maps every known question status to its dictionary key', () => {
+    const statuses: readonly DevLeadQuestionStatus[] = ['open', 'answered', 'expired', 'cancelled']
+    const keys: DevLeadQuestionStatusKey[] = statuses.map(questionStatusLabelKey)
+    expect(keys).toEqual([
+      'report.question.open',
+      'report.question.answered',
+      'report.question.expired',
+      'report.question.cancelled',
+    ])
+  })
+
+  it('falls back to the neutral label for a status a newer Host reports', () => {
+    expect(questionStatusLabelKey('paused')).toBe('report.question.unknown')
+    expect(questionStatusLabelKey('')).toBe('report.question.unknown')
+  })
+})
+
+describe('answerStatusLabelKey', () => {
+  it('maps every known answer status to its dictionary key', () => {
+    const statuses: readonly DevLeadAnswerStatus[] = ['admitted', 'claimed', 'presented', 'discarded', 'failed']
+    const keys: DevLeadAnswerStatusKey[] = statuses.map(answerStatusLabelKey)
+    expect(keys).toEqual([
+      'report.answer.admitted',
+      'report.answer.claimed',
+      'report.answer.presented',
+      'report.answer.discarded',
+      'report.answer.failed',
+    ])
+  })
+
+  it('falls back to the neutral label for a status a newer Host reports', () => {
+    expect(answerStatusLabelKey('queued')).toBe('report.answer.unknown')
+    expect(answerStatusLabelKey('')).toBe('report.answer.unknown')
+  })
+})
+
+/** One question-report fixture carrying the fold-derived lifecycle pair. */
+const QUESTION_REPORT: DevLeadProjectionReport = {
+  ...BASE_REPORT,
+  id: 'session-1:3:report:question:abc',
+  kind: 'question',
+  message: 'which branch should I target?',
+  summary: 'branch question',
+  questionStatus: 'open',
+}
+
+describe('reportSummary lifecycle', () => {
+  it('renders the fold-derived question/answer pair of a question report', () => {
+    const summary = reportSummary({ ...QUESTION_REPORT, questionStatus: 'answered', answerStatus: 'presented' })
+    expect(summary).toMatchObject({
+      kind: 'question',
+      lane: 'action-required',
+      questionStatus: 'answered',
+      questionStatusKey: 'report.question.answered',
+      answerStatus: 'presented',
+      answerStatusKey: 'report.answer.presented',
+    })
+    // The technical tooltip keeps the canonical Host line and appends the raw
+    // lifecycle literals so the pair stays inspectable on hover.
+    expect(summary.tooltip).toBe(`${reportLine(QUESTION_REPORT)} (answered · presented)`)
+  })
+
+  it('keeps the two statuses independent: a discarded answer reopens the question', () => {
+    const summary = reportSummary({ ...QUESTION_REPORT, questionStatus: 'open', answerStatus: 'discarded' })
+    expect(summary.questionStatusKey).toBe('report.question.open')
+    expect(summary.answerStatusKey).toBe('report.answer.discarded')
+    expect(summary.tooltip).toBe(`${reportLine(QUESTION_REPORT)} (open · discarded)`)
+  })
+
+  it('renders an answer status even when the question status is absent', () => {
+    const { questionStatus: _questionStatus, ...withoutQuestion } = QUESTION_REPORT
+    const summary = reportSummary({ ...withoutQuestion, answerStatus: 'admitted' })
+    expect(summary.questionStatus).toBeUndefined()
+    expect(summary.questionStatusKey).toBeUndefined()
+    expect(summary.answerStatusKey).toBe('report.answer.admitted')
+    expect(summary.tooltip).toBe(`${reportLine(QUESTION_REPORT)} (admitted)`)
+  })
+
+  it('degrades unknown lifecycle literals to neutral labels without throwing', () => {
+    const drifted = {
+      ...QUESTION_REPORT,
+      questionStatus: 'paused',
+      answerStatus: 'queued',
+    } as unknown as DevLeadProjectionReport
+    const summary = reportSummary(drifted)
+    expect(summary.questionStatus).toBe('paused')
+    expect(summary.questionStatusKey).toBe('report.question.unknown')
+    expect(summary.answerStatus).toBe('queued')
+    expect(summary.answerStatusKey).toBe('report.answer.unknown')
+    expect(summary.tooltip).toBe(`${reportLine(QUESTION_REPORT)} (paused · queued)`)
+  })
+
+  it('ignores unusable lifecycle values instead of rendering an empty suffix', () => {
+    for (const questionStatus of [42, null, '   ', '']) {
+      const drifted = { ...QUESTION_REPORT, questionStatus } as unknown as DevLeadProjectionReport
+      const summary = reportSummary(drifted)
+      expect(summary.questionStatus).toBeUndefined()
+      expect(summary.questionStatusKey).toBeUndefined()
+      expect(summary.tooltip).toBe(reportLine(QUESTION_REPORT))
+    }
+  })
+
+  it('ignores stray lifecycle fields on non-question rows', () => {
+    // The fold derives the pair for question reports only; a stray status on
+    // another kind is wire drift, not a question fact.
+    const stray = { ...BASE_REPORT, questionStatus: 'open', answerStatus: 'presented' } as DevLeadProjectionReport
+    const summary = reportSummary(stray)
+    expect(summary.questionStatus).toBeUndefined()
+    expect(summary.answerStatus).toBeUndefined()
+    expect(summary.tooltip).toBe(reportLine(BASE_REPORT))
+  })
+
+  it('keeps pre-Phase-1e question rows unchanged (backward compat)', () => {
+    const { questionStatus: _questionStatus, ...oldRow } = QUESTION_REPORT
+    const summary = reportSummary(oldRow)
+    expect(summary.questionStatus).toBeUndefined()
+    expect(summary.questionStatusKey).toBeUndefined()
+    expect(summary.answerStatus).toBeUndefined()
+    expect(summary.answerStatusKey).toBeUndefined()
+    expect(summary.tooltip).toBe(reportLine(oldRow))
+    expect(summary.lane).toBe('action-required')
+  })
+})
+
+describe('wakeSuppressionReasonKey', () => {
+  it('maps both known suppression reasons and degrades everything else', () => {
+    expect(wakeSuppressionReasonKey('merged-into-pending-wake')).toBe('notification.wake.merged')
+    expect(wakeSuppressionReasonKey('included-in-sent-wake')).toBe('notification.wake.included')
+    for (const reason of ['future-rule', '', undefined, null, 42]) {
+      expect(wakeSuppressionReasonKey(reason)).toBe('notification.wake.unknown')
+    }
+  })
+})
+
+describe('notificationSummary wake suppression', () => {
+  it('marks a suppressed wake without swallowing the transition', () => {
+    const suppressed: DevLeadNotification = {
+      ...BASE_NOTIFICATION,
+      wakeSuppressedByReportId: 'session-1:3:report:question:abc',
+      wakeSuppressionReason: 'merged-into-pending-wake',
+    }
+    const summary = notificationSummary(suppressed)
+    expect(summary).toMatchObject({
+      transition: 'completed',
+      labelKey: 'transition.completed',
+      turn: 3,
+      wakeSuppressedBy: 'session-1:3:report:question:abc',
+      wakeSuppressionKey: 'notification.wake.merged',
+    })
+    expect(summary.tooltip).toBe(
+      `${notificationLine(BASE_NOTIFICATION)} (wake suppressed by session-1:3:report:question:abc)`,
+    )
+  })
+
+  it('explains the included-in-sent-wake rule with its own key', () => {
+    const summary = notificationSummary({
+      ...BASE_NOTIFICATION,
+      wakeSuppressedByReportId: 'r1',
+      wakeSuppressionReason: 'included-in-sent-wake',
+    })
+    expect(summary.wakeSuppressionKey).toBe('notification.wake.included')
+  })
+
+  it('degrades a missing or future reason to the neutral explanation', () => {
+    const missing = notificationSummary({ ...BASE_NOTIFICATION, wakeSuppressedByReportId: 'r1' })
+    expect(missing.wakeSuppressionKey).toBe('notification.wake.unknown')
+    const drifted = {
+      ...BASE_NOTIFICATION,
+      wakeSuppressedByReportId: 'r1',
+      wakeSuppressionReason: 'future-rule',
+    } as unknown as DevLeadNotification
+    expect(notificationSummary(drifted).wakeSuppressionKey).toBe('notification.wake.unknown')
+  })
+
+  it('ignores a blank or non-string suppression id instead of rendering an empty marker', () => {
+    for (const wakeSuppressedByReportId of ['', '   ', 42, null]) {
+      const drifted = {
+        ...BASE_NOTIFICATION,
+        wakeSuppressedByReportId,
+        wakeSuppressionReason: 'merged-into-pending-wake',
+      } as unknown as DevLeadNotification
+      const summary = notificationSummary(drifted)
+      expect(summary.wakeSuppressedBy).toBeUndefined()
+      expect(summary.wakeSuppressionKey).toBeUndefined()
+      expect(summary.tooltip).toBe(notificationLine(BASE_NOTIFICATION))
+    }
+  })
+
+  it('keeps pre-Phase-1e notification rows unchanged (backward compat)', () => {
+    const summary = notificationSummary(BASE_NOTIFICATION)
+    expect(summary.wakeSuppressedBy).toBeUndefined()
+    expect(summary.wakeSuppressionKey).toBeUndefined()
+    expect(summary.tooltip).toBe(notificationLine(BASE_NOTIFICATION))
   })
 })

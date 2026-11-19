@@ -12,8 +12,10 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
+import type { Agent } from '@deepseek-ai/dsh-agent'
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import type {} from '@yankeguo/dsh-devlead'
+import { childReportLane } from '@yankeguo/dsh-devlead'
+import type { DevLeadReport } from '@yankeguo/dsh-devlead-protocol'
 import {
   TOOL_ARGUMENT_KEYS,
   assertKnownArguments,
@@ -93,6 +95,24 @@ export const inject = ['devLead', 'tools', 'systemPrompt']
 const SELF_REPORTS_LIMIT = 5
 
 /**
+ * Assemble the diagnostic lane/deliveryState facts of one retained report for
+ * the read tools. The lane is a pure kind derivation; the deliveryState is the
+ * hub's in-memory observation and stays absent for old records or after a
+ * restart (the durable digest is the recovery authority).
+ */
+function reportFacts(
+  ctx: Context,
+  agent: Agent,
+  report: DevLeadReport,
+): { lane: 'turn-notice' | 'action-required' | 'background'; deliveryState?: 'pending' | 'delivered' | 'digest-only' } {
+  const deliveryState = ctx.devLead.reportDeliveryState(agent, report.id)
+  return {
+    lane: childReportLane(report.kind),
+    ...deliveryState === undefined ? {} : { deliveryState },
+  }
+}
+
+/**
  * Concurrency classifier of the read-only tools: they only project Host state,
  * so a batch of sibling reads may overlap instead of running exclusively.
  * Mutations keep the default exclusive classification.
@@ -149,7 +169,8 @@ const GET_SESSION_DESCRIPTION =
   + 'stale or duplicate queued instructions can be identified before they run and answers distinguished from '
   + 'instructions. Use it to '
   + 'inspect state after a wake-up or when the human explicitly asks, not to poll while waiting for a dispatched Session. '
-  + `When the target is this lead Session itself, the output also carries its ${SELF_REPORTS_LIMIT} newest retained mid-turn reports.`
+  + `When the target is this lead Session itself, the output also carries its ${SELF_REPORTS_LIMIT} newest retained mid-turn reports `
+  + '(question reports with questionStatus/answerStatus, every report with its diagnostic lane and in-memory deliveryState).'
 
 const PROMPT_SESSION_DESCRIPTION =
   'Admit a prompt into an existing Session, resuming a cold Session first. The prompt is attributed to this '
@@ -184,30 +205,37 @@ const WATCH_SESSION_DESCRIPTION =
 
 const NOTIFICATIONS_DESCRIPTION =
   'Read the retained notification digest of this DevLead Session together with the current watch set. Each notification '
-  + 'names a watched Session whose turn settled and how it ended; the reports array carries mid-turn reports from '
-  + 'watched Sessions. Both digests are newest last. A question report carries questionStatus (open/answered/expired/'
-  + 'cancelled) and, when answered, answerStatus (admitted/claimed/presented/discarded/failed): filter open questions '
-  + 'with questionStatus === "open", and note that answered does not mean presented (only presented is delivery '
-  + 'completion). Answer an open question yourself or ask the human, then relay with devlead_prompt_session intent '
-  + '"answer" and the report id as question_id. The [DEV LEAD QUESTION] wake already carries the full question, so the '
-  + 'normal path needs no digest read; use this for history or a lost wake. Read it after a wake-up or when the human '
-  + 'explicitly asks, not as a polling loop while waiting for a dispatched Session.'
+  + 'names a watched Session whose turn settled and how it ended; a wakeSuppressedByReportId/wakeSuppressionReason pair '
+  + 'means that turn-end was carried by an action-required wake instead of a separate one (the transition is still '
+  + 'retained, not lost). The reports array carries mid-turn reports from watched Sessions, each with its diagnostic '
+  + 'lane (background for progress/fyi, action-required for blocked/decision/question) and an in-memory deliveryState '
+  + '(pending/delivered/digest-only; absent after a restart — not a presented confirmation). Both digests are newest '
+  + 'last. A question report carries questionStatus (open/answered/expired/cancelled) and, when answered, answerStatus '
+  + '(admitted/claimed/presented/discarded/failed): filter open questions with questionStatus === "open", and note that '
+  + 'answered does not mean presented (only presented is delivery completion). Answer an open question yourself or ask '
+  + 'the human, then relay with devlead_prompt_session intent "answer" and the report id as question_id. The '
+  + '[DEV LEAD QUESTION] wake already carries the full question, so the normal path needs no digest read; use this for '
+  + 'history or a lost wake. Read it after a wake-up or when the human explicitly asks, not as a polling loop while '
+  + 'waiting for a dispatched Session.'
 
 const REPORT_DESCRIPTION =
   'Send a one-way mid-turn report to the active DevLead Session that watches this Session; the lead cannot reply '
   + 'through the report itself. The lead is already notified when your turn settles, so do not report routine '
   + 'progress or a final summary here. Use it only mid-turn, on a long-running task, for a milestone the lead must '
-  + 'know before the turn ends: a real blocker, a fork that needs the lead\'s decision, or progress that would '
-  + 'change scheduling correctness if it waited; a short or linear task should not call it. Use kind question when '
-  + 'you are blocked on missing information or a decision, then end your turn; the lead answers in a new turn (or '
-  + 'steers your next step while you are still running). When a question report is durably forwarded the result '
-  + 'sets `turnEndRequested:true`: the tool requests the end of your turn, but the current tool batch still '
-  + 'completes and already-queued next-step work still runs before the turn closes; do not poll or resend. When '
-  + 'the question receipt is not durable, no turn end is requested: restate the question in your final assistant '
-  + 'message and end the turn naturally. At most four non-question reports per turn; question reports are exempt. '
-  + 'The result carries `durable` and `queued`; `durable` false means no durable receipt was written on this '
-  + 'attempt (storage absent or the outbox write failed), so treat the warning as a possible-loss receipt and '
-  + 'retry when the lead is reachable.'
+  + 'know before the turn ends; a short or linear task should not call it. The kind selects the lane: progress/fyi '
+  + 'are non-urgent background context injected without waking the lead (a cold lead or a full background budget '
+  + 'keeps them digest-only) — use them only for updates that can wait for the next wake or settled-turn notice; '
+  + 'blocked (a real blocker) and decision (a fork needing the lead before your turn ends) steer the lead\'s next '
+  + 'step under [DEV LEAD ACTION REQUIRED] and share a bounded pending queue per pair, so an overflow returns '
+  + 'DEVLEAD_DELIVERY_RATE_LIMITED — merge instead of resending. Use kind question when you are blocked on missing '
+  + 'information or a decision, then end your turn; the lead answers in a new turn (or steers your next step while '
+  + 'you are still running). When a question report is durably forwarded the result sets `turnEndRequested:true`: '
+  + 'the tool requests the end of your turn, but the current tool batch still completes and already-queued '
+  + 'next-step work still runs before the turn closes; do not poll or resend. When the question receipt is not '
+  + 'durable, no turn end is requested: restate the question in your final assistant message and end the turn '
+  + 'naturally. At most four non-question reports per turn; question reports are exempt. The result carries '
+  + '`durable` and `queued`; `durable` false means no durable receipt was written on this attempt (storage absent '
+  + 'or the outbox write failed), so treat the warning as a possible-loss receipt and retry when the lead is reachable.'
 
 /** Result guidance of a durably forwarded question report (Phase 1c turn-end request). */
 const QUESTION_FORWARDED_GUIDANCE =
@@ -416,6 +444,7 @@ export function apply(ctx: Context): void {
           ? ctx.devLead.reports(agent, { limit: SELF_REPORTS_LIMIT }).map(report => reportValue(
             report,
             report.kind === 'question' ? ctx.devLead.questionAnswerView(agent, report.id) : undefined,
+            reportFacts(ctx, agent, report),
           ))
           : undefined
         const queuedInputs = ctx.devLead.sessionQueuedInputs(agent, session.sessionId, exec.signal)
@@ -519,6 +548,7 @@ export function apply(ctx: Context): void {
           reports: ctx.devLead.reports(agent, { limit }).map(report => reportValue(
             report,
             report.kind === 'question' ? ctx.devLead.questionAnswerView(agent, report.id) : undefined,
+            reportFacts(ctx, agent, report),
           )),
           watched: watchedIds(ctx.devLead.view(agent)),
         }

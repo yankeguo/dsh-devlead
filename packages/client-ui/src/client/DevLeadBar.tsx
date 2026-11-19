@@ -115,7 +115,10 @@ export function DevLeadBar({
           title={tooltip}
         >
           {reportNotice !== null ? (
-            <span className="devlead-notification" data-report="true">
+            // The lane attribute carries the delivery semantics to CSS:
+            // action-required kinds wear the warning ink, background kinds
+            // read one step quieter, and a drifted kind stays neutral.
+            <span className="devlead-notification" data-report="true" data-lane={reportNotice.lane}>
               <span
                 className="devlead-notification-dot"
                 data-report-kind={reportNotice.kind}
@@ -123,6 +126,22 @@ export function DevLeadBar({
               />
               <span className="devlead-notification-who">{reportNotice.who}</span>
               <span className="devlead-notification-label">{t(reportNotice.labelKey)}</span>
+              {(reportNotice.questionStatusKey !== undefined || reportNotice.answerStatusKey !== undefined) && (
+                // Fold-derived question lifecycle (question reports only): a
+                // compact "answered · presented" suffix. The raw literals ride
+                // data attributes so a drifted status stays inspectable while
+                // its label degrades to the neutral dictionary copy.
+                <span
+                  className="devlead-notification-status"
+                  data-question-status={reportNotice.questionStatus}
+                  data-answer-status={reportNotice.answerStatus}
+                >
+                  {[
+                    reportNotice.questionStatusKey === undefined ? undefined : t(reportNotice.questionStatusKey),
+                    reportNotice.answerStatusKey === undefined ? undefined : t(reportNotice.answerStatusKey),
+                  ].filter(part => part !== undefined).join(' · ')}
+                </span>
+              )}
               {reportNotice.detail !== undefined && (
                 <span className="devlead-notification-detail">{reportNotice.detail}</span>
               )}
@@ -132,7 +151,14 @@ export function DevLeadBar({
             // hint visible instead of leaving the row visually empty.
             <span className="devlead-hint">{t('hint.enabled')}</span>
           ) : (
-            <span className="devlead-notification">
+            <span
+              className="devlead-notification"
+              // Suppression is observability, not a swallowed transition: the
+              // row keeps rendering the outcome; only the wake marker below is
+              // weakened. Undefined attributes stay absent on pre-Phase-1e rows.
+              data-wake-suppressed={notice.wakeSuppressedBy === undefined ? undefined : 'true'}
+              data-wake-suppressed-by={notice.wakeSuppressedBy}
+            >
               <span
                 className="devlead-notification-dot"
                 data-transition={notice.transition}
@@ -145,6 +171,13 @@ export function DevLeadBar({
                 </span>
               )}
               <span className="devlead-notification-label">{t(notice.labelKey)}</span>
+              {notice.wakeSuppressionKey !== undefined && (
+                // The separate turn-end wake was merged into an action-required
+                // report wake; the muted marker's title explains which rule hit.
+                <span className="devlead-notification-wake" title={t(notice.wakeSuppressionKey)}>
+                  {t('notification.wake.suppressed')}
+                </span>
+              )}
               {notice.error !== undefined ? (
                 // Only a real Host failure excerpt wears the error ink.
                 <span className="devlead-notification-error">{notice.error}</span>

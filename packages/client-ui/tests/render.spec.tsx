@@ -30,7 +30,12 @@ import {
   notificationLine,
   reportLine,
 } from '@yankeguo/dsh-devlead-protocol/client'
-import type { DevLeadNotification, DevLeadProjection, DevLeadReport } from '@yankeguo/dsh-devlead-protocol/client'
+import type {
+  DevLeadNotification,
+  DevLeadProjection,
+  DevLeadProjectionReport,
+  DevLeadReport,
+} from '@yankeguo/dsh-devlead-protocol/client'
 import { DevLeadBar, type DevLeadBarProps } from '../src/client/DevLeadBar.tsx'
 import {
   DevLeadIconToggle,
@@ -613,6 +618,197 @@ describe('DevLeadBar', () => {
     )
   })
 
+  /** One report fixture the lane/lifecycle tests override per case. */
+  const REPORT: DevLeadProjectionReport = {
+    id: 'session-b:2:report:question:abc',
+    kind: 'question',
+    message: 'which branch should I target?',
+    summary: 'branch question',
+    senderSessionId: 'session-b',
+    senderSessionTitle: 'Ship the parser',
+    leadSessionId: 'lead-1',
+    turn: 2,
+    at: NOTIFICATION.at + 1,
+  }
+
+  /** Projection retaining exactly one report and no notification. */
+  function reportProjection(report: DevLeadProjectionReport): DevLeadProjection {
+    return { enabled: true, sessions: ['session-b'], notifications: [], reports: [report] }
+  }
+
+  it.each([
+    ['progress', 'background'],
+    ['fyi', 'background'],
+    ['blocked', 'action-required'],
+    ['decision', 'action-required'],
+    ['question', 'action-required'],
+  ] as const)('marks a %s report chip with the %s lane', async (kind, lane) => {
+    const renderer = await mount(
+      <DevLeadBar {...barProps({ projection: reportProjection({ ...REPORT, kind }) })} />,
+    )
+    const chip = renderer.root.findByProps({ 'data-report': 'true' })
+    expect(chip.props['data-lane']).toBe(lane)
+    // The per-kind dot keeps its raw kind attribute; the lane is additive.
+    expect(renderer.root.findByProps({ 'data-report-kind': kind })).toBeDefined()
+    // Lane semantics ride data attributes + CSS only: no inline styles.
+    expect(chip.props['style']).toBeUndefined()
+  })
+
+  it('keeps a drifted report kind on the neutral lane', async () => {
+    const drifted = { ...REPORT, kind: 'urgent' } as unknown as DevLeadProjectionReport
+    const renderer = await mount(<DevLeadBar {...barProps({ projection: reportProjection(drifted) })} />)
+    expect(renderer.root.findByProps({ 'data-report': 'true' }).props['data-lane']).toBe('unknown')
+  })
+
+  it('renders the question lifecycle suffix with the raw literals on data attributes', async () => {
+    const report: DevLeadProjectionReport = { ...REPORT, questionStatus: 'answered', answerStatus: 'presented' }
+    const renderer = await mount(<DevLeadBar {...barProps({ projection: reportProjection(report) })} />)
+    const status = renderer.root.findByProps({ className: 'devlead-notification-status' })
+    expect(textOf(status)).toBe(`${zh['report.question.answered']} · ${zh['report.answer.presented']}`)
+    expect(status.props['data-question-status']).toBe('answered')
+    expect(status.props['data-answer-status']).toBe('presented')
+    const notice = renderer.root.findByProps({ className: 'devlead-notice' })
+    expect(notice.props['title']).toBe(`${reportLine(report)} (answered · presented)`)
+  })
+
+  it('renders an open question without an answer suffix', async () => {
+    const report: DevLeadProjectionReport = { ...REPORT, questionStatus: 'open' }
+    const renderer = await mount(<DevLeadBar {...barProps({ projection: reportProjection(report) })} />)
+    const status = renderer.root.findByProps({ className: 'devlead-notification-status' })
+    expect(textOf(status)).toBe(zh['report.question.open'])
+    expect(status.props['data-question-status']).toBe('open')
+    expect(status.props['data-answer-status']).toBeUndefined()
+  })
+
+  it.each(['expired', 'cancelled'] as const)('renders the literal %s question status', async (questionStatus) => {
+    const report: DevLeadProjectionReport = { ...REPORT, questionStatus }
+    const renderer = await mount(<DevLeadBar {...barProps({ projection: reportProjection(report) })} />)
+    const status = renderer.root.findByProps({ className: 'devlead-notification-status' })
+    expect(textOf(status)).toBe(zh[`report.question.${questionStatus}`])
+    expect(status.props['data-question-status']).toBe(questionStatus)
+  })
+
+  it('degrades unknown lifecycle literals to neutral labels without crashing', async () => {
+    const drifted = {
+      ...REPORT,
+      questionStatus: 'paused',
+      answerStatus: 'queued',
+    } as unknown as DevLeadProjectionReport
+    const renderer = await mount(<DevLeadBar {...barProps({ projection: reportProjection(drifted) })} />)
+    const status = renderer.root.findByProps({ className: 'devlead-notification-status' })
+    expect(textOf(status)).toBe(`${zh['report.question.unknown']} · ${zh['report.answer.unknown']}`)
+    // The raw literals stay inspectable even though the labels are neutral.
+    expect(status.props['data-question-status']).toBe('paused')
+    expect(status.props['data-answer-status']).toBe('queued')
+  })
+
+  it('renders no lifecycle suffix on old rows or non-question reports', async () => {
+    // Pre-Phase-1e question row: no derived pair at all.
+    const old = await mount(<DevLeadBar {...barProps({ projection: reportProjection(REPORT) })} />)
+    expect(old.root.findAllByProps({ className: 'devlead-notification-status' })).toHaveLength(0)
+    // A stray lifecycle pair on a progress row is drift, not a question fact.
+    const stray = {
+      ...REPORT,
+      kind: 'progress',
+      questionStatus: 'open',
+      answerStatus: 'presented',
+    } as DevLeadProjectionReport
+    const progress = await mount(<DevLeadBar {...barProps({ projection: reportProjection(stray) })} />)
+    expect(progress.root.findAllByProps({ className: 'devlead-notification-status' })).toHaveLength(0)
+  })
+
+  it('renders the English lifecycle copy through the injected t seat', async () => {
+    const report: DevLeadProjectionReport = { ...REPORT, questionStatus: 'answered', answerStatus: 'presented' }
+    const renderer = await mount(
+      <DevLeadBar {...barProps({ projection: reportProjection(report), t: translate(en) })} />,
+    )
+    expect(textOf(renderer.root.findByProps({ className: 'devlead-notification-status' })))
+      .toBe('answered · presented')
+  })
+
+  it('keeps a suppressed turn-end notification visible with a weakened wake marker', async () => {
+    const suppressed: DevLeadNotification = {
+      ...NOTIFICATION,
+      wakeSuppressedByReportId: 'session-b:2:report:question:abc',
+      wakeSuppressionReason: 'merged-into-pending-wake',
+    }
+    const projection: DevLeadProjection = {
+      enabled: true,
+      sessions: ['session-b'],
+      notifications: [suppressed],
+      reports: [],
+    }
+    const renderer = await mount(<DevLeadBar {...barProps({ projection })} />)
+    const chip = renderer.root.findByProps({ className: 'devlead-notification' })
+    expect(chip.props['data-wake-suppressed']).toBe('true')
+    expect(chip.props['data-wake-suppressed-by']).toBe('session-b:2:report:question:abc')
+    // The transition was NOT swallowed: who, turn, and outcome still render.
+    const text = textOf(chip)
+    expect(text).toContain('Ship the parser')
+    expect(text).toContain(t('notification.turn', { turn: 2 }))
+    expect(text).toContain(zh['transition.completed'])
+    // Only the wake marker is weakened; its title explains the merge rule.
+    const marker = renderer.root.findByProps({ className: 'devlead-notification-wake' })
+    expect(textOf(marker)).toBe(zh['notification.wake.suppressed'])
+    expect(marker.props['title']).toBe(zh['notification.wake.merged'])
+    expect(marker.props['style']).toBeUndefined()
+    expect(renderer.root.findByProps({ className: 'devlead-notice' }).props['title']).toBe(
+      `${notificationLine(NOTIFICATION)} (wake suppressed by session-b:2:report:question:abc)`,
+    )
+  })
+
+  it('explains the included-in-sent-wake rule in the marker title', async () => {
+    const suppressed: DevLeadNotification = {
+      ...NOTIFICATION,
+      wakeSuppressedByReportId: 'r1',
+      wakeSuppressionReason: 'included-in-sent-wake',
+    }
+    const projection: DevLeadProjection = {
+      enabled: true,
+      sessions: ['session-b'],
+      notifications: [suppressed],
+      reports: [],
+    }
+    const renderer = await mount(<DevLeadBar {...barProps({ projection })} />)
+    expect(renderer.root.findByProps({ className: 'devlead-notification-wake' }).props['title'])
+      .toBe(zh['notification.wake.included'])
+  })
+
+  it('degrades an unknown suppression reason to the neutral explanation', async () => {
+    const drifted = {
+      ...NOTIFICATION,
+      wakeSuppressedByReportId: 'r1',
+      wakeSuppressionReason: 'future-rule',
+    } as unknown as DevLeadNotification
+    const projection: DevLeadProjection = {
+      enabled: true,
+      sessions: ['session-b'],
+      notifications: [drifted],
+      reports: [],
+    }
+    const renderer = await mount(<DevLeadBar {...barProps({ projection })} />)
+    expect(renderer.root.findByProps({ className: 'devlead-notification' }).props['data-wake-suppressed'])
+      .toBe('true')
+    expect(renderer.root.findByProps({ className: 'devlead-notification-wake' }).props['title'])
+      .toBe(zh['notification.wake.unknown'])
+  })
+
+  it('renders old notification rows without suppression attributes or a wake marker', async () => {
+    const projection: DevLeadProjection = {
+      enabled: true,
+      sessions: ['session-b'],
+      notifications: [NOTIFICATION],
+      reports: [],
+    }
+    const renderer = await mount(<DevLeadBar {...barProps({ projection })} />)
+    const chip = renderer.root.findByProps({ className: 'devlead-notification' })
+    expect(chip.props['data-wake-suppressed']).toBeUndefined()
+    expect(chip.props['data-wake-suppressed-by']).toBeUndefined()
+    expect(renderer.root.findAllByProps({ className: 'devlead-notification-wake' })).toHaveLength(0)
+    expect(renderer.root.findByProps({ className: 'devlead-notice' }).props['title'])
+      .toBe(notificationLine(NOTIFICATION))
+  })
+
 })
 
 describe('DevLeadIconToggle', () => {
@@ -833,6 +1029,40 @@ describe('DevLeadSessionMark', () => {
   it('renders nothing while the row carries no DevLead summary', async () => {
     const renderer = await mount(<DevLeadSessionMark {...markProps({ rows: {} })} />)
     expect(renderer.toJSON()).toBeNull()
+  })
+
+  it('adds no layout props to the Session row (no inline border/padding/height)', async () => {
+    // The shell row owns the only layout contract; the marks may paint color
+    // and overlay rings through CSS but must never carry layout props inline.
+    const active = await mount(<DevLeadSessionMark {...markProps({
+      rows: { 'session-1': { projectionValues: { [DEVLEAD_MODE_PROJECTION_KEY]: { enabled: true } } } },
+    })} />)
+    const watched = await mount(<DevLeadSessionMark {...markProps({
+      rows: {
+        'lead-1': {
+          projectionValues: {
+            [DEVLEAD_MODE_PROJECTION_KEY]: { enabled: true },
+            [DEVLEAD_WATCH_PROJECTION_KEY]: { sessions: ['session-1'] },
+          },
+        },
+        'session-1': { projectionValues: { [DEVLEAD_MODE_PROJECTION_KEY]: { enabled: false } } },
+      },
+    })} />)
+    for (const renderer of [active, watched]) {
+      const json = renderer.toJSON()
+      const nodes = Array.isArray(json) ? json : [json]
+      const pending = [...nodes]
+      while (pending.length > 0) {
+        const node = pending.pop()
+        if (node === null || node === undefined || typeof node === 'string') continue
+        for (const prop of ['style', 'width', 'height', 'border', 'padding', 'margin']) {
+          expect(node.props[prop], prop).toBeUndefined()
+        }
+        for (const child of node.children ?? []) {
+          if (typeof child !== 'string') pending.push(child)
+        }
+      }
+    }
   })
 })
 

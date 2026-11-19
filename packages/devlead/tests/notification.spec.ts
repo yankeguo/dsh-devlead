@@ -252,15 +252,19 @@ describe('DevLeadNotificationHub observation', () => {
     expect(notificationRecords(lead.session)).toEqual([])
   })
 
-  it('carries the folded title and bounded failure excerpt into the digest', async () => {
+  it('carries the folded title and bounded failure excerpt into the review wake', async () => {
     installFakeTimers()
     const harness = await bootHub({ batchMs: 400 })
     const lead = onlyLead(harness)
     harness.sessionTitle.set(String(harness.watched.id), 'api')
     appendTurnEnd(harness.watched, 1, errorReason('provider quota exhausted'))
-    await vi.advanceTimersByTimeAsync(400)
-    expect(lead.agent.followups).toHaveLength(1)
-    expect(followupText(lead, 0)).toContain(
+    // Phase 1e: a failed turn is T2 and rides the immediate action-required
+    // review lane, never the coalesced T1 turn-notice window.
+    await flushMicrotasks()
+    expect(lead.agent.followups).toHaveLength(0)
+    expect(lead.agent.steers).toHaveLength(1)
+    expect(steerText(lead, 0)).toContain('[DEV LEAD REVIEW REQUIRED]')
+    expect(steerText(lead, 0)).toContain(
       `- api (${String(harness.watched.id)}) — turn 1 failed: provider quota exhausted`,
     )
     expect(notificationRecords(lead.session)[0]).toMatchObject({
@@ -268,6 +272,8 @@ describe('DevLeadNotificationHub observation', () => {
       error: 'provider quota exhausted',
       sessionTitle: 'api',
     })
+    await vi.advanceTimersByTimeAsync(400)
+    expect(lead.agent.followups).toHaveLength(0)
   })
 
   it('carries the latest assistant excerpt of the watched Session into the digest', async () => {
@@ -305,10 +311,13 @@ describe('DevLeadNotificationHub observation', () => {
     const harness = await bootHub({ batchMs: 400 })
     const lead = onlyLead(harness)
     // A plugin-extended reason kind outside the mirrored transition union
-    // degrades to `interrupted` instead of being dropped.
+    // degrades to `interrupted` instead of being dropped. `interrupted` is T2,
+    // so the wake rides the immediate review lane.
     harness.watched.append('turn/end', { turn: 1, reason: { kind: 'custom-future-kind' } as never })
-    await vi.advanceTimersByTimeAsync(400)
-    expect(lead.agent.followups).toHaveLength(1)
+    await flushMicrotasks()
+    expect(lead.agent.steers).toHaveLength(1)
+    expect(lead.agent.followups).toHaveLength(0)
+    expect(steerText(lead, 0)).toContain('[DEV LEAD REVIEW REQUIRED]')
     expect(notificationRecords(lead.session)[0]?.transition).toBe('interrupted')
   })
 })
@@ -835,7 +844,7 @@ describe('Phase 1b question action-required delivery', () => {
     expect(lead.agent.followups).toHaveLength(1)
   })
 
-  it('keeps every non-question report on the existing delayed followup path', async () => {
+  it('routes every non-question report kind to its Phase 1e lane', async () => {
     installFakeTimers()
     const harness = await bootHub({ batchMs: 400 })
     const lead = onlyLead(harness)
@@ -845,18 +854,35 @@ describe('Phase 1b question action-required delivery', () => {
         leadSessionId: String(lead.agent.id),
         turn: 1,
         kind,
-        message: `${kind} remains ordinary`,
+        message: `${kind} rides its lane`,
         at: T0,
       }))).toBe(true)
     }
+    // P1/P2 inject synchronously through the background lane (no queue/timer).
+    expect(lead.agent.injects).toHaveLength(2)
+    for (const [index, kind] of (['progress', 'fyi'] as const).entries()) {
+      const message = lead.agent.injects[index]!
+      expect(message.source).toMatchObject({
+        kind: 'devlead', form: 'notice', lane: 'background', wakeRequested: false,
+      })
+      expect(messageText(message)).toContain('[DEV LEAD REPORT]')
+      expect(messageText(message)).toContain('no action required and no wake was requested')
+      expect(messageText(message)).toContain(`${kind} rides its lane`)
+    }
+    // P3/P4 steer on the immediate action-required microtask, one wake per
+    // header family, never behind the turn-notice coalescing window.
     await flushMicrotasks()
-    expect(lead.agent.steers).toHaveLength(0)
+    expect(lead.agent.steers).toHaveLength(1)
     expect(lead.agent.followups).toHaveLength(0)
+    expect(lead.agent.steers[0]?.source).toMatchObject({
+      kind: 'devlead', form: 'notice', lane: 'action-required', wakeRequested: true,
+    })
+    expect(steerText(lead, 0)).toContain('[DEV LEAD ACTION REQUIRED]')
+    expect(steerText(lead, 0)).toContain('blocked rides its lane')
+    expect(steerText(lead, 0)).toContain('decision rides its lane')
     await vi.advanceTimersByTimeAsync(400)
-    expect(lead.agent.steers).toHaveLength(0)
-    expect(lead.agent.followups).toHaveLength(1)
-    expect(followupText(lead, 0)).toContain('[DEV LEAD REPORT]')
-    expect(followupText(lead, 0)).toContain('blocked remains ordinary')
+    expect(lead.agent.followups).toHaveLength(0)
+    expect(lead.agent.steers).toHaveLength(1)
   })
 
   it('rejects the seventeenth pending question explicitly instead of evicting one silently', async () => {
@@ -870,35 +896,32 @@ describe('Phase 1b question action-required delivery', () => {
     // An existing identity is a retry, not a seventeenth distinct question.
     expect(harness.hub.report(reports[0]!)).toBe(true)
     const runtime = (harness.hub as unknown as {
-      leads: Map<string, { pendingQuestions: readonly unknown[] }>
+      leads: Map<string, { pendingActionReports: readonly unknown[] }>
     }).leads.get(String(lead.agent.id))
-    expect(runtime?.pendingQuestions).toHaveLength(DEVLEAD_ACTION_REQUIRED_PENDING_MAX)
+    expect(runtime?.pendingActionReports).toHaveLength(DEVLEAD_ACTION_REQUIRED_PENDING_MAX)
     expect(() => harness.hub.report(questionReport(harness, 'One question too many?'))).toThrowError(
       expect.objectContaining({ code: 'DEVLEAD_DELIVERY_RATE_LIMITED' }),
     )
-    expect(runtime?.pendingQuestions).toHaveLength(DEVLEAD_ACTION_REQUIRED_PENDING_MAX)
+    expect(runtime?.pendingActionReports).toHaveLength(DEVLEAD_ACTION_REQUIRED_PENDING_MAX)
     expect(projectionStateOf(lead.session).reports).toHaveLength(DEVLEAD_ACTION_REQUIRED_PENDING_MAX)
     await flushMicrotasks()
     expect(lead.agent.steers).toHaveLength(1)
-    expect(runtime?.pendingQuestions).toHaveLength(0)
+    expect(runtime?.pendingActionReports).toHaveLength(0)
   })
 
   it('admits action-required before an ordinary zero-delay flush scheduled first', async () => {
     installFakeTimers()
     const harness = await bootHub({ batchMs: 0 })
     const lead = onlyLead(harness)
-    harness.hub.report(devLeadReport({
-      senderSessionId: String(harness.watched.id),
-      leadSessionId: String(lead.agent.id),
-      turn: 1,
-      kind: 'progress',
-      message: 'ordinary scheduled first',
-      at: T0,
-    }))
+    // The T1 turn-end schedules the ordinary zero-delay microtask flush first
+    // (a different turn than the question, so no merge applies). The queued
+    // flush must still admit the same-microtask action report's steer before
+    // its own followup.
+    appendTurnEnd(harness.watched, 2)
     harness.hub.report(questionReport(harness))
     await flushMicrotasks()
     expect(lead.agent.admissions).toEqual(['steer', 'followup'])
-    expect(followupText(lead, 0)).toContain('ordinary scheduled first')
+    expect(followupText(lead, 0)).toContain('— turn 2 completed')
   })
 
   it('merges a turn-end into a pending question wake without a second wake', async () => {
@@ -986,10 +1009,17 @@ describe('Phase 1b question action-required delivery', () => {
     harness.hub.report(questionReport(harness))
     await flushMicrotasks()
     appendTurnEnd(harness.watched, 1, errorReason('provider failed'))
-    await vi.advanceTimersByTimeAsync(400)
-    expect(lead.agent.followups).toHaveLength(1)
-    expect(followupText(lead, 0)).toContain('turn 1 failed: provider failed')
+    // Phase 1e: T2 itself rides the action-required review lane. The lead is
+    // idle, so the parked question wake does not deadlock the review admission
+    // (the first pre-step claims both next-step rows).
+    await flushMicrotasks()
+    expect(lead.agent.steers).toHaveLength(2)
+    expect(steerText(lead, 1)).toContain('[DEV LEAD REVIEW REQUIRED]')
+    expect(steerText(lead, 1)).toContain('turn 1 failed: provider failed')
+    expect(lead.agent.followups).toHaveLength(0)
     expect(notificationRecords(lead.session)[0]).not.toHaveProperty('wakeSuppressionReason')
+    await vi.advanceTimersByTimeAsync(400)
+    expect(lead.agent.followups).toHaveLength(0)
   })
 
   it('does not suppress an ambiguous turn-end shared by multiple pending questions', async () => {

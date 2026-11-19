@@ -187,6 +187,8 @@ describe('configuration', () => {
     // 0.2.0: a cold lead is resumed to deliver by default.
     expect(harness.service.settings.wakeColdSession).toBe(true)
     expect(harness.service.settings.defaultAgentPreset).toBeUndefined()
+    // Phase 1e: the action-required lane flushes on a microtask by default.
+    expect(harness.service.settings.actionRequiredBatchMs).toBe(0)
   })
 
   it('resolves explicit configuration and trims the preset', async () => {
@@ -201,6 +203,7 @@ describe('configuration', () => {
     })
     expect(harness.service.settings).toEqual({
       notificationBatchMs: 0,
+      actionRequiredBatchMs: 0,
       maxWatchedSessions: 2,
       maxListedSessions: 5,
       wakeColdSession: true,
@@ -239,6 +242,25 @@ describe('configuration', () => {
     for (const config of cases) {
       expect(() => new DevLeadService(new Context(), config as DevLeadConfig), JSON.stringify(config)).toThrow(TypeError)
     }
+  })
+
+  it('validates actionRequiredBatchMs at the loader and direct-construction boundaries', () => {
+    // Phase 1e: the action-required scheduling delay is bounded to 0–400ms.
+    expect(Config({}).actionRequiredBatchMs).toBe(0)
+    expect(Config({ actionRequiredBatchMs: 0 }).actionRequiredBatchMs).toBe(0)
+    expect(Config({ actionRequiredBatchMs: 400 }).actionRequiredBatchMs).toBe(400)
+    for (const invalid of [-1, 401, 1.5]) {
+      expect(() => Config({ actionRequiredBatchMs: invalid }), String(invalid)).toThrow()
+      expect(
+        () => new DevLeadService(new Context(), { actionRequiredBatchMs: invalid } as DevLeadConfig),
+        String(invalid),
+      ).toThrow(TypeError)
+    }
+  })
+
+  it('resolves an explicit actionRequiredBatchMs into the materialized settings', async () => {
+    const harness = await bootService({ config: { actionRequiredBatchMs: 200 } })
+    expect(harness.service.settings.actionRequiredBatchMs).toBe(200)
   })
 })
 
@@ -891,7 +913,7 @@ describe('mid-turn reports', () => {
     expect(harness.service.isSupervised(unwatched.agent)).toBe(false)
   })
 
-  it('persists a report, exposes it on the projection and digest, and wakes the lead', async () => {
+  it('persists a report, exposes it on the projection and digest, and injects it without a wake', async () => {
     const { harness, child } = await bootReporting()
     const receipt = await harness.service.reportProgress(child.agent, {
       message: '  halfway through the parser  ',
@@ -915,10 +937,27 @@ describe('mid-turn reports', () => {
     })
     expect(records).toHaveLength(1)
     await flushMicrotasks()
-    expect(harness.lead.followups).toHaveLength(1)
-    const text = messageText(harness.lead.followups[0]!)
+    // Phase 1e: P1 progress rides the background lane — an immediate inject at
+    // next-step that requests no driver wake, never a followup digest wake.
+    expect(harness.lead.followups).toHaveLength(0)
+    expect(harness.lead.steers).toHaveLength(0)
+    expect(harness.lead.injects).toHaveLength(1)
+    const injected = harness.lead.injects[0]!
+    expect(injected.source).toMatchObject({
+      kind: 'devlead',
+      form: 'notice',
+      lane: 'background',
+      wakeRequested: false,
+      reportId: report.id,
+      senderSessionId: String(child.id),
+    })
+    const text = messageText(injected)
     expect(text).toContain('[DEV LEAD REPORT]')
+    expect(text).toContain('no action required and no wake was requested')
     expect(text).toContain('parser progress')
+    expect(text).toContain('halfway through the parser')
+    expect(harness.lead.inbox.nextStep).toHaveLength(1)
+    expect(harness.lead.inbox.nextTurn).toHaveLength(0)
   })
 
   it('persists a detached structured question payload on question reports only', async () => {
@@ -939,7 +978,10 @@ describe('mid-turn reports', () => {
     expect(receipt.report.questions).toEqual(questions)
     expect(receipt.report.questions).not.toBe(questions)
     expect(receipt.report.questions?.[0]?.options).not.toBe(questions[0]!.options)
-    expect(harness.service.view(harness.lead.agent).reports).toEqual([receipt.report])
+    // Phase 1e: the wire projection adds the fold-derived question lifecycle.
+    expect(harness.service.view(harness.lead.agent).reports).toEqual([
+      { ...receipt.report, questionStatus: 'open' },
+    ])
     const records = harness.leadSession.snapshotEvents().flatMap((event) => {
       const record = pluginRecordOf(event)
       return record?.type === DEVLEAD_REPORT_RECORD_TYPE ? [record.data] : []
@@ -1000,24 +1042,30 @@ describe('mid-turn reports', () => {
     expect(harness.service.view(harness.lead.agent).reports).toEqual([report])
   })
 
-  it('keeps a report queued behind an undelivered notice and delivers it when the inbox clears', async () => {
+  it('keeps an action report queued behind an unclaimed action wake and delivers it when the inbox clears', async () => {
     const { harness, child } = await bootReporting()
-    harness.lead.followup(createDevLeadNoticeMessage('existing queued notice'))
-    expect(harness.lead.followups).toHaveLength(1)
+    // Phase 1e: the guard semantics live on the action-required lane. A blocked
+    // report (P3) waits behind an unclaimed action wake while the lead runs.
+    harness.lead.setRunning(true)
+    harness.lead.steer(createDevLeadNoticeMessage('parked action wake', {
+      lane: 'action-required', wakeRequested: true, summary: 'Parked question',
+    }))
+    expect(harness.lead.steers).toHaveLength(1)
     await harness.service.reportProgress(child.agent, {
-      message: 'queued behind a notice',
+      kind: 'blocked',
+      message: 'queued behind an action wake',
       summary: 'queued report',
     })
     await flushMicrotasks()
-    // The existing notice must not be duplicated or dropped; the report batch
-    // waits for the bounded retry instead of producing a second notice.
-    expect(harness.lead.followups).toHaveLength(1)
+    // The parked wake must not be duplicated or dropped; the blocked report
+    // waits for the bounded action retry instead of producing a second steer.
+    expect(harness.lead.steers).toHaveLength(1)
     harness.lead.drainInbox()
     await new Promise(resolve => setTimeout(resolve, 1_100))
     await flushMicrotasks()
-    expect(harness.lead.followups).toHaveLength(2)
-    expect(messageText(harness.lead.followups[1]!)).toContain('[DEV LEAD REPORT]')
-    expect(messageText(harness.lead.followups[1]!)).toContain('queued report')
+    expect(harness.lead.steers).toHaveLength(2)
+    expect(messageText(harness.lead.steers[1]!)).toContain('[DEV LEAD ACTION REQUIRED]')
+    expect(messageText(harness.lead.steers[1]!)).toContain('queued behind an action wake')
   })
 
   it('writes the report to durable storage before returning and clears it after delivery', async () => {
@@ -4044,18 +4092,21 @@ describe('notification delivery through the real service', () => {
 
   it('coalesces transitions of both watched Sessions into one wake', async () => {
     const harness = await bootWatching()
+    // Phase 1e: only T1 (completed/forked) turns coalesce into the turn-notice
+    // digest; a failed turn would steer separately through the review lane.
     appendTurnEnd(requireSession(harness, 'child-alpha'), 1)
-    appendTurnEnd(requireSession(harness, 'child-beta'), 2, { kind: 'error', error: { message: 'boom', code: 'X' } })
+    appendTurnEnd(requireSession(harness, 'child-beta'), 2)
     await flushMicrotasks()
     expect(harness.lead.followups).toHaveLength(1)
+    expect(harness.lead.steers).toHaveLength(0)
     const notice = harness.lead.followups[0]
     if (notice === undefined) throw new Error('expected one notice')
     const text = messageText(notice)
     expect(text).toContain('- child-alpha — turn 1 completed')
-    expect(text).toContain('- child-beta — turn 2 failed: boom')
+    expect(text).toContain('- child-beta — turn 2 completed')
     expect(harness.service.notifications(harness.lead.agent).map(item => item.id)).toEqual([
       'child-alpha:1:completed',
-      'child-beta:2:error',
+      'child-beta:2:completed',
     ])
   })
 

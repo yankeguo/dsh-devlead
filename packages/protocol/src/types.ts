@@ -432,6 +432,21 @@ export interface DevLeadProjectionState {
   readonly inheritedEventCount: number
 }
 
+/**
+ * One report row on the client wire: the retained report plus, for question
+ * reports, the fold-derived question/answer lifecycle. The derived pair is
+ * additive (Phase 1e): an older bundle ignores it, and an older record without
+ * answers folds as `questionStatus:'open'`. It reflects the durable audit only;
+ * the runtime's finer in-memory claim/presentation observation stays on the
+ * read-tool surface (`devlead_notifications`).
+ */
+export interface DevLeadProjectionReport extends DevLeadReport {
+  /** Question lifecycle derived from the durable answer audit (question reports only). */
+  readonly questionStatus?: DevLeadQuestionStatus
+  /** Newest durable answer lifecycle status (question reports only). */
+  readonly answerStatus?: DevLeadAnswerStatus
+}
+
 /** Client view published through the `devLead` Session projection. */
 export interface DevLeadProjection {
   /** Whether DevLead mode is selected for this Session. */
@@ -441,7 +456,7 @@ export interface DevLeadProjection {
   /** Retained notifications, oldest first. */
   readonly notifications: readonly DevLeadNotification[]
   /** Retained mid-turn reports, oldest first. */
-  readonly reports: readonly DevLeadReport[]
+  readonly reports: readonly DevLeadProjectionReport[]
 }
 
 /**

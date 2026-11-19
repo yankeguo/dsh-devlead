@@ -287,6 +287,18 @@ export const INBOX_COMMAND_NAME = 'devlead-e2e-inbox'
 export const ANSWER_TURN_COMMAND_NAME = 'devlead-e2e-answer-turn'
 /** Idle-child answer inbox lifecycle: clear-own/clear-all/retract/background (Phase 1d). */
 export const ANSWER_INBOX_COMMAND_NAME = 'devlead-e2e-answer-inbox'
+/** Phase 1e: P1/P2 background inject (no wake) + read-tool lane/deliveryState output. */
+export const LANES_BACKGROUND_COMMAND_NAME = 'devlead-e2e-lanes-background'
+/** Phase 1e: P3/P4 blocked/decision action-required steer wakes with the full message. */
+export const LANES_ACTION_COMMAND_NAME = 'devlead-e2e-lanes-action'
+/** Phase 1e: T1 completed followup vs T2 failed/interrupted review steer wakes. */
+export const LANES_TURN_COMMAND_NAME = 'devlead-e2e-lanes-turn'
+/** Phase 1e: question + turn-end double-wake merge suppression fields. */
+export const LANES_MERGE_COMMAND_NAME = 'devlead-e2e-lanes-merge'
+/** Phase 1e: 16-pair action cap overflow returns DEVLEAD_DELIVERY_RATE_LIMITED. */
+export const LANES_RATE_COMMAND_NAME = 'devlead-e2e-lanes-rate'
+/** Phase 1e: low-cardinality delivery/suppression/guard metrics snapshot. */
+export const LANES_METRICS_COMMAND_NAME = 'devlead-e2e-lanes-metrics'
 /** Upper bound for one prompted child turn to settle inside the close command. */
 const CHILD_TURN_TIMEOUT_MS = 45_000
 /** Poll interval of the close command's child-turn wait. */
@@ -667,16 +679,38 @@ async function executeReport(ctx, invocation) {
     }
     const outboxAvailable = ctx.devLead.reportOutboxAvailable === true
     const outboxLastError = ctx.devLead.reportOutboxLastError ?? null
+    const leadAgent = ctx.agents.get(leadId)
+    // Phase 1e: a progress report rides the BACKGROUND lane (inject, no wake).
+    // Capture the lead's turn boundary and status before/after so the harness
+    // can assert the idle lead was NOT woken, plus the durable inject splice.
+    const leadTurnBefore = leadAgent === undefined ? null : ctx.agents.turnBoundaryOf(leadAgent.session).lastTurn
+    const leadStatusBefore = leadAgent?.status ?? null
     const report = await ctx.devLead.reportProgress(agent, {
       message: 'e2e report: the parser is halfway through',
       kind: 'progress',
       summary: 'e2e parser progress',
     })
-    const leadAgent = ctx.agents.get(leadId)
     const leadReports = leadAgent === undefined ? [] : ctx.devLead.reports(leadAgent)
+    const background = leadAgent === undefined
+      ? { found: false }
+      : await awaitLeadNotice(ctx, leadAgent, {
+        lane: 'background',
+        header: '[DEV LEAD REPORT]',
+        reportIds: [report.report.id],
+      })
+    // Give any (incorrect) wake a chance to open a turn before re-reading. The
+    // wait exceeds the 400ms T1 coalescing window so a regressed followup wake
+    // cannot slip past the no-wake assertion.
+    await sleep(700)
+    const leadTurnAfter = leadAgent === undefined ? null : ctx.agents.turnBoundaryOf(leadAgent.session).lastTurn
+    const leadStatusAfter = leadAgent?.status ?? null
+    const deliveryState = leadAgent === undefined ? null : ctx.devLead.reportDeliveryState(leadAgent, report.report.id) ?? null
     return {
       kind: 'success',
-      text: JSON.stringify({ supervised, leadId, outboxAvailable, outboxLastError, report, leadReports }),
+      text: JSON.stringify({
+        supervised, leadId, outboxAvailable, outboxLastError, report, leadReports,
+        background, leadTurnBefore, leadTurnAfter, leadStatusBefore, leadStatusAfter, deliveryState,
+      }),
     }
   } catch (error) {
     return { kind: 'error', text: `devlead-e2e-report: ${messageOf(error)}` }
@@ -684,18 +718,20 @@ async function executeReport(ctx, invocation) {
 }
 
 /**
- * Poll the lead Session log for the durable admission of one question wake:
- * an `agent/inbox/spliced` event inserting a DevLead notice with
- * `lane: 'action-required'` at the next-step boundary, naming one of the given
- * report ids. The splice is the durable admission fact; a later claim by the
- * lead loop does not erase it.
+ * Poll one lead Session log for the durable admission of a DevLead notice on a
+ * specific lane: an `agent/inbox/spliced` event inserting a notice whose source
+ * matches `lane` (and optional header / report id / substring). Every inbox
+ * primitive (`followup`, `steer`, `inject`) records such a splice, so this one
+ * scanner covers the turn-notice, action-required, and background lanes alike.
+ * The splice is the durable admission fact; a later claim by the lead loop does
+ * not erase it.
  * @param ctx - probe context.
  * @param lead - lead Agent whose Session log carries the splice.
- * @param reportIds - forwarded question report identities to match.
- * @returns the wake facts, or `{ found: false }` after the bounded wait.
+ * @param criteria - `{ lane?, header?, reportIds?, contains?, timeoutMs? }`.
+ * @returns the notice facts, or `{ found: false }` after the bounded wait.
  */
-async function awaitQuestionWake(ctx, lead, reportIds) {
-  const deadline = Date.now() + 10_000
+async function awaitLeadNotice(ctx, lead, { lane, header, reportIds, contains, timeoutMs = 10_000 } = {}) {
+  const deadline = Date.now() + timeoutMs
   for (;;) {
     const events = lead.session.snapshotEvents()
     for (let index = events.length - 1; index >= 0; index -= 1) {
@@ -705,29 +741,173 @@ async function awaitQuestionWake(ctx, lead, reportIds) {
       const inserted = Array.isArray(data.inserted) ? data.inserted : []
       for (const message of inserted) {
         const source = message?.source
-        if (source?.kind !== 'devlead' || source?.form !== 'notice' || source?.lane !== 'action-required') continue
+        if (source?.kind !== 'devlead' || source?.form !== 'notice') continue
+        if (lane !== undefined && source?.lane !== lane) continue
         const text = (message.content ?? [])
           .filter(block => block?.type === 'text')
           .map(block => block.text)
           .join('\n')
-        if (!text.includes('[DEV LEAD QUESTION]')) continue
-        const reportId = reportIds.find(id => text.includes(id))
-        if (reportId === undefined) continue
+        if (header !== undefined && !text.includes(header)) continue
+        if (contains !== undefined && !text.includes(contains)) continue
+        let reportId = typeof source.reportId === 'string' ? source.reportId : null
+        if (reportIds !== undefined) {
+          const matched = reportIds.find(id => source.reportId === id || text.includes(id))
+          if (matched === undefined) continue
+          reportId = matched
+        }
         return {
           found: true,
           boundary: data.target ?? null,
-          lane: source.lane,
+          lane: source.lane ?? null,
           wakeRequested: source.wakeRequested === true,
           reportId,
+          senderSessionId: typeof source.senderSessionId === 'string' ? source.senderSessionId : null,
+          messageId: String(message.id),
           excerpt: text.slice(0, 400),
-          // Full wake text (the renderer bounds it at 8000 code points) so the
-          // harness can deep-compare the rendered question payload.
+          // Full notice text (the renderer bounds wakes at 8000 code points) so
+          // the harness can deep-compare the rendered payload.
           text,
         }
       }
     }
     if (Date.now() >= deadline) return { found: false }
     await sleep(100)
+  }
+}
+
+/**
+ * Poll the lead Session log for the durable admission of one question wake
+ * (the action-required lane, `[DEV LEAD QUESTION]` header, naming a given report
+ * id). Thin wrapper over {@link awaitLeadNotice} kept for the Phase 1c/1d probes.
+ * @param ctx - probe context.
+ * @param lead - lead Agent whose Session log carries the splice.
+ * @param reportIds - forwarded question report identities to match.
+ * @returns the wake facts, or `{ found: false }` after the bounded wait.
+ */
+async function awaitQuestionWake(ctx, lead, reportIds) {
+  return await awaitLeadNotice(ctx, lead, {
+    lane: 'action-required',
+    header: '[DEV LEAD QUESTION]',
+    reportIds,
+  })
+}
+
+/**
+ * Wait until one lead is idle with no undelivered WAKING DevLead notice parked
+ * in its inbox. Background notices (`wakeRequested:false`) never open a turn and
+ * are intentionally ignored: they stay parked without affecting the action or
+ * turn-notice lanes. A parked action/turn-notice wake in an idle lead opens a
+ * drain turn that consumes it, so this settles quickly on a credential-less Host.
+ * @param ctx - probe context.
+ * @param lead - lead Agent to drain.
+ * @param timeoutMs - bounded wait.
+ * @returns whether the lead reached a quiet idle state.
+ */
+async function drainLead(ctx, lead, timeoutMs = 15_000) {
+  void ctx
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    const parked = [...lead.inbox.nextStep, ...lead.inbox.nextTurn].some((message) => {
+      const source = message?.source
+      return source?.kind === 'devlead' && source?.form === 'notice' && source?.wakeRequested === true
+    })
+    if (lead.status === 'idle' && !parked) return true
+    if (Date.now() >= deadline) return false
+    await sleep(100)
+  }
+}
+
+/**
+ * Resolve the lead's real step-time tool set and execute one read tool through
+ * the Host tools pipeline, so the probe reports the ACTUAL `devlead_notifications`
+ * / `devlead_get_session` output (lane / deliveryState / suppression fields) a
+ * model step would see, not a hand-assembled projection.
+ * @param ctx - probe context.
+ * @param lead - lead Agent the tool runs for.
+ * @param name - tool name (e.g. `devlead_notifications`).
+ * @param args - tool arguments object.
+ * @returns `{ isError, value, content }` of the single call.
+ */
+async function executeLeadReadTool(ctx, lead, name, args) {
+  const signal = AbortSignal.timeout(15_000)
+  const toolSet = await ctx.tools.resolve({ agent: lead, modelSelection: modelSelectionOf(lead), signal })
+  try {
+    const batch = await ctx.tools.execute({
+      calls: [{ type: 'tool-call', id: `e2e-read-${name}`, name, arguments: JSON.stringify(args) }],
+      agent: lead,
+      toolSet,
+      signal,
+    })
+    const entry = batch.results[0]
+    return {
+      isError: entry.result.isError,
+      value: entry.result.isError ? null : entry.result.value,
+      content: entry.result.content,
+    }
+  } finally {
+    toolSet.dispose()
+  }
+}
+
+/**
+ * Hold one lead RUNNING through a real scripted turn so a probe can observe
+ * lane delivery while the lead cannot claim its parked wakes. The lead's own
+ * `llm/stream` conversation requests are scripted (a `glob` tool step then a
+ * text step); while the glob dispatch is in flight the `duringGlob` hook runs
+ * (the lead is mid-turn, so action wakes park and the pending queue accumulates).
+ * The lead is opened with a real `followup` (the T1 primitive), so every event
+ * is a genuine agent-loop event. Returns the captured hook facts and turn counts.
+ * @param ctx - probe context.
+ * @param lead - lead Agent to run.
+ * @param options - `{ duringGlob, script? }`; script defaults to glob then text.
+ * @returns `{ requests, globFacts, turnEnds, eventCount }`.
+ */
+async function holdLeadRunning(ctx, lead, { duringGlob, script }) {
+  const leadId = String(lead.id)
+  const effectiveScript = script ?? [
+    toolCallChunks([{ id: 'e2e-lead-glob', name: 'glob', arguments: { pattern: '*' } }]),
+    textChunks('e2e lead lane turn complete'),
+  ]
+  const requests = []
+  let callIndex = 0
+  let globPending = true
+  let globFacts = null
+  const disposables = []
+  disposables.push(ctx.on('llm/stream', async function* (options, next) {
+    if (String(options.sessionId ?? '') !== leadId || options.purpose !== undefined) {
+      yield* next()
+      return
+    }
+    const entry = effectiveScript[Math.min(callIndex, effectiveScript.length - 1)]
+    callIndex += 1
+    requests.push(requestSummary(options))
+    for (const chunk of entry) yield chunk
+  }))
+  disposables.push(ctx.on('tools/execute', async (exec, next) => {
+    const result = await next()
+    if (globPending && exec.agent === lead && exec.name === 'glob') {
+      globPending = false
+      globFacts = await duringGlob({ lead, leadId })
+    }
+    return result
+  }))
+  try {
+    lead.followup({
+      id: `e2e-lead-${randomUUID()}`,
+      role: 'user',
+      content: [{ type: 'text', text: 'e2e lead turn: run a tool so the probe can inspect lane delivery' }],
+      source: { kind: 'user' },
+    })
+    await awaitChildTurn(ctx, lead, leadId)
+    const events = lead.session.snapshotEvents()
+    return {
+      requests,
+      globFacts,
+      turnEnds: events.filter(event => event?.type === 'turn/end').length,
+      eventCount: events.length,
+    }
+  } finally {
+    for (const dispose of disposables) dispose()
   }
 }
 
@@ -804,7 +984,7 @@ function requestSummary(options) {
  *   once during the glob dispatch whose returned facts are merged into the result.
  * @returns the child identity, captured requests/tool results, and log facts.
  */
-async function runScriptedChildTurn(ctx, lead, { title, prompt, script, steerOnGlob, answerOnGlob, duringGlob }) {
+async function runScriptedChildTurn(ctx, lead, { title, prompt, script, steerOnGlob, answerOnGlob, duringGlob, failRequest }) {
   const created = await ctx.devLead.createSession(lead, { watch: true, title })
   const childId = String(created.session.sessionId)
   const child = ctx.agents.get(childId)
@@ -823,6 +1003,9 @@ async function runScriptedChildTurn(ctx, lead, { title, prompt, script, steerOnG
       yield* next()
       return
     }
+    // A thrown adapter error settles the turn as a real `turn/end` error (the
+    // T2 review category), exactly like a credential-less provider failure.
+    if (failRequest === true) throw new Error('e2e scripted provider failure')
     const entry = script[Math.min(callIndex, script.length - 1)]
     callIndex += 1
     requests.push(requestSummary(options))
@@ -1737,6 +1920,291 @@ async function executeDispatch(ctx, invocation) {
   }
 }
 
+/**
+ * Phase 1e P1/P2 background lane: an idle lead receives progress and fyi reports
+ * as next-step injects with `lane:'background'` / `wakeRequested:false`, and NO
+ * new lead turn starts. Also reads the real `devlead_notifications` and
+ * `devlead_get_session` (self) tool output so the harness can assert the
+ * diagnostic `lane` / `deliveryState` fields and the durable receipts.
+ * @param ctx - probe context.
+ * @param invocation - command invocation carrying the lead Agent.
+ * @returns success JSON with the background facts, or an error result.
+ */
+async function executeLanesBackground(ctx, invocation) {
+  const lead = invocation.agent
+  try {
+    await drainLead(ctx, lead)
+    const created = await ctx.devLead.createSession(lead, { watch: true, title: 'e2e lanes background child' })
+    const childId = String(created.session.sessionId)
+    const child = ctx.agents.get(childId)
+    if (child === undefined) throw new Error('background child is not live')
+    const leadTurnBefore = ctx.agents.turnBoundaryOf(lead.session).lastTurn
+    const leadStatusBefore = lead.status
+    const progress = await ctx.devLead.reportProgress(child, {
+      kind: 'progress', message: 'e2e background progress: parser halfway', summary: 'e2e bg progress',
+    })
+    const fyi = await ctx.devLead.reportProgress(child, {
+      kind: 'fyi', message: 'e2e background fyi: cache warmed', summary: 'e2e bg fyi',
+    })
+    const progressNotice = await awaitLeadNotice(ctx, lead, {
+      lane: 'background', header: '[DEV LEAD REPORT]', reportIds: [progress.report.id],
+    })
+    const fyiNotice = await awaitLeadNotice(ctx, lead, {
+      lane: 'background', header: '[DEV LEAD REPORT]', reportIds: [fyi.report.id],
+    })
+    // Exceed the 400ms T1 coalescing window so a regressed followup wake cannot
+    // slip past the idle-lead/no-new-turn assertion.
+    await sleep(700)
+    const leadTurnAfter = ctx.agents.turnBoundaryOf(lead.session).lastTurn
+    const leadStatusAfter = lead.status
+    const notifications = await executeLeadReadTool(ctx, lead, 'devlead_notifications', { limit: 64 })
+    const selfView = await executeLeadReadTool(ctx, lead, 'devlead_get_session', { session: String(lead.id) })
+    return {
+      kind: 'success',
+      text: JSON.stringify({
+        childId,
+        leadTurnBefore, leadTurnAfter, leadStatusBefore, leadStatusAfter,
+        progress: { receipt: progress, notice: progressNotice, deliveryState: ctx.devLead.reportDeliveryState(lead, progress.report.id) ?? null },
+        fyi: { receipt: fyi, notice: fyiNotice, deliveryState: ctx.devLead.reportDeliveryState(lead, fyi.report.id) ?? null },
+        notificationsTool: notifications,
+        selfViewTool: selfView,
+      }),
+    }
+  } catch (error) {
+    return { kind: 'error', text: `devlead-e2e-lanes-background: ${messageOf(error)}` }
+  }
+}
+
+/**
+ * Phase 1e P3/P4 action-required lane: blocked and decision reports steer the
+ * lead with `[DEV LEAD ACTION REQUIRED]` wakes carrying the FULL message and the
+ * report id; the notification digest rows carry `lane:'action-required'`.
+ * @param ctx - probe context.
+ * @param invocation - command invocation carrying the lead Agent.
+ * @returns success JSON with the action wake facts, or an error result.
+ */
+async function executeLanesAction(ctx, invocation) {
+  const lead = invocation.agent
+  try {
+    await drainLead(ctx, lead)
+    const created = await ctx.devLead.createSession(lead, { watch: true, title: 'e2e lanes action child' })
+    const childId = String(created.session.sessionId)
+    const child = ctx.agents.get(childId)
+    if (child === undefined) throw new Error('action child is not live')
+    const blockedMessage = 'e2e blocked: the staging database refuses connections\nretry budget exhausted'
+    const decisionMessage = 'e2e decision: ship the blue-green cutover or roll back?'
+    const blocked = await ctx.devLead.reportProgress(child, { kind: 'blocked', message: blockedMessage, summary: 'e2e blocked' })
+    const decision = await ctx.devLead.reportProgress(child, { kind: 'decision', message: decisionMessage, summary: 'e2e decision' })
+    const blockedWake = await awaitLeadNotice(ctx, lead, {
+      lane: 'action-required', header: '[DEV LEAD ACTION REQUIRED]', reportIds: [blocked.report.id],
+    })
+    const decisionWake = await awaitLeadNotice(ctx, lead, {
+      lane: 'action-required', header: '[DEV LEAD ACTION REQUIRED]', reportIds: [decision.report.id],
+    })
+    const notifications = await executeLeadReadTool(ctx, lead, 'devlead_notifications', { limit: 64 })
+    return {
+      kind: 'success',
+      text: JSON.stringify({
+        childId, blockedMessage, decisionMessage,
+        blocked: { receipt: blocked, wake: blockedWake, deliveryState: ctx.devLead.reportDeliveryState(lead, blocked.report.id) ?? null },
+        decision: { receipt: decision, wake: decisionWake, deliveryState: ctx.devLead.reportDeliveryState(lead, decision.report.id) ?? null },
+        notificationsTool: notifications,
+      }),
+    }
+  } catch (error) {
+    return { kind: 'error', text: `devlead-e2e-lanes-action: ${messageOf(error)}` }
+  }
+}
+
+/**
+ * Phase 1e T1/T2 turn lanes: a REAL scripted child turn that completes rides the
+ * turn-notice lane (`[DEV LEAD NOTIFICATION]` followup); a REAL scripted child
+ * turn whose adapter throws settles as `turn/end` error and rides the
+ * action-required review lane (`[DEV LEAD REVIEW REQUIRED]` steer).
+ * @param ctx - probe context.
+ * @param invocation - command invocation carrying the lead Agent.
+ * @returns success JSON with both turn facts, or an error result.
+ */
+async function executeLanesTurn(ctx, invocation) {
+  const lead = invocation.agent
+  try {
+    await drainLead(ctx, lead)
+    const completed = await runScriptedChildTurn(ctx, lead, {
+      title: 'e2e lanes completed turn',
+      prompt: 'e2e turn: finish cleanly',
+      script: [textChunks('e2e lanes completed turn output')],
+    })
+    const completedWake = await awaitLeadNotice(ctx, lead, {
+      lane: 'turn-notice', header: '[DEV LEAD NOTIFICATION]', contains: completed.childId,
+    })
+    const failed = await runScriptedChildTurn(ctx, lead, {
+      title: 'e2e lanes failed turn',
+      prompt: 'e2e turn: the adapter fails',
+      script: [textChunks('unused')],
+      failRequest: true,
+    })
+    const failedWake = await awaitLeadNotice(ctx, lead, {
+      lane: 'action-required', header: '[DEV LEAD REVIEW REQUIRED]', contains: failed.childId,
+    })
+    return {
+      kind: 'success',
+      text: JSON.stringify({
+        completed: { facts: completed, wake: completedWake },
+        failed: { facts: failed, wake: failedWake },
+      }),
+    }
+  } catch (error) {
+    return { kind: 'error', text: `devlead-e2e-lanes-turn: ${messageOf(error)}` }
+  }
+}
+
+/**
+ * Phase 1e double-wake merge: while the lead is held RUNNING (a parked question
+ * wake occupies its inbox), a watched child's mid-turn question report stays
+ * PENDING and the child's same-turn `turn/end` merges into that pending wake.
+ * The durable notification row then carries `wakeSuppressedByReportId` /
+ * `wakeSuppressionReason:'merged-into-pending-wake'`, and the delivered question
+ * wake explicitly includes the turn-end line.
+ * @param ctx - probe context.
+ * @param invocation - command invocation carrying the lead Agent.
+ * @returns success JSON with the merge facts, or an error result.
+ */
+async function executeLanesMerge(ctx, invocation) {
+  const lead = invocation.agent
+  try {
+    await drainLead(ctx, lead)
+    const parking = await ctx.devLead.createSession(lead, { watch: true, title: 'e2e lanes merge parking child' })
+    const parkingId = String(parking.session.sessionId)
+    const parkingChild = ctx.agents.get(parkingId)
+    if (parkingChild === undefined) throw new Error('merge parking child is not live')
+    let mergeFacts = null
+    const held = await holdLeadRunning(ctx, lead, {
+      duringGlob: async () => {
+        // Park the first question wake (lead is running, so the steer is admitted
+        // but not claimed); every later action report of this lead stays pending.
+        const q0 = await ctx.devLead.reportProgress(parkingChild, {
+          kind: 'question', message: 'e2e merge parking question: which lane?',
+        })
+        // A REAL scripted child turn: mid-turn question Q1 (turn 1) then a
+        // completed turn/end (turn 1). Q1 is pending behind the parked wake, so
+        // the turn/end merges into Q1's wake.
+        const scripted = await runScriptedChildTurn(ctx, lead, {
+          title: 'e2e lanes merge scripted child',
+          prompt: 'e2e turn: ask the lead then finish',
+          script: [
+            toolCallChunks([{
+              id: 'e2e-merge-question',
+              name: 'devlead_report',
+              arguments: { kind: 'question', message: 'e2e merge question: which release train?', summary: 'e2e merge train' },
+            }]),
+            textChunks('e2e merge scripted turn complete'),
+          ],
+        })
+        const q1 = ctx.devLead.reports(lead, { limit: 64 })
+          .find(row => row.kind === 'question' && row.senderSessionId === scripted.childId)
+        const mergedRow = ctx.devLead.notifications(lead, { limit: 64 })
+          .find(row => row.id === `${scripted.childId}:1:completed`)
+        mergeFacts = {
+          q0Id: q0.report.id,
+          q1Id: q1?.id ?? null,
+          scriptedChildId: scripted.childId,
+          scriptedTurnEndReason: scripted.turnEndReason,
+          scriptedTurnEnds: scripted.turnEnds,
+          mergedRow: mergedRow ?? null,
+        }
+        return mergeFacts
+      },
+    })
+    // After the lead drains, the pending Q1 wake is delivered with the merged
+    // turn-end line explicitly included.
+    const q1Wake = mergeFacts?.q1Id == null
+      ? { found: false }
+      : await awaitLeadNotice(ctx, lead, {
+        lane: 'action-required', header: '[DEV LEAD QUESTION]', reportIds: [mergeFacts.q1Id], contains: '- included turn-end:',
+      })
+    const notificationsTool = await executeLeadReadTool(ctx, lead, 'devlead_notifications', { limit: 64 })
+    return {
+      kind: 'success',
+      text: JSON.stringify({ held: { turnEnds: held.turnEnds, eventCount: held.eventCount }, merge: mergeFacts, q1Wake, notificationsTool }),
+    }
+  } catch (error) {
+    return { kind: 'error', text: `devlead-e2e-lanes-merge: ${messageOf(error)}` }
+  }
+}
+
+/**
+ * Phase 1e action-cap explicitness: while the lead is held RUNNING with a parked
+ * action wake, a watched child fills the shared 16-pending-per-pair cap (a mix of
+ * blocked reports and questions). The 17th distinct report is accepted (1 parked
+ * + 16 pending); the 18th distinct report throws `DEVLEAD_DELIVERY_RATE_LIMITED`
+ * back to the child — no silent drop. Every accepted receipt stays durable.
+ * @param ctx - probe context.
+ * @param invocation - command invocation carrying the lead Agent.
+ * @returns success JSON with the per-report outcomes, or an error result.
+ */
+async function executeLanesRate(ctx, invocation) {
+  const lead = invocation.agent
+  try {
+    await drainLead(ctx, lead)
+    const created = await ctx.devLead.createSession(lead, { watch: true, title: 'e2e lanes rate child' })
+    const childId = String(created.session.sessionId)
+    const child = ctx.agents.get(childId)
+    if (child === undefined) throw new Error('rate child is not live')
+    let rateFacts = null
+    const held = await holdLeadRunning(ctx, lead, {
+      duringGlob: async () => {
+        const outcomes = []
+        // 4 blocked (the per-turn non-question budget) + 14 questions = 18 distinct
+        // action reports. The first parks (delivered), the next 16 fill the pending
+        // cap, and the 18th must be refused explicitly.
+        const plan = [
+          ...Array.from({ length: 4 }, (_, index) => ({ kind: 'blocked', message: `e2e rate blocked #${index}` })),
+          ...Array.from({ length: 14 }, (_, index) => ({ kind: 'question', message: `e2e rate question #${index}?` })),
+        ]
+        for (const item of plan) {
+          try {
+            const receipt = await ctx.devLead.reportProgress(child, { kind: item.kind, message: item.message })
+            outcomes.push({ kind: item.kind, accepted: true, durable: receipt.durable, id: receipt.report.id })
+          } catch (error) {
+            outcomes.push({ kind: item.kind, accepted: false, code: error?.code ?? null, message: messageOf(error) })
+          }
+        }
+        const accepted = outcomes.filter(entry => entry.accepted)
+        const refused = outcomes.filter(entry => !entry.accepted)
+        rateFacts = {
+          outcomes,
+          acceptedCount: accepted.length,
+          refusedCount: refused.length,
+          acceptedAllDurable: accepted.every(entry => entry.durable === true),
+          refusedCodes: refused.map(entry => entry.code),
+        }
+        return rateFacts
+      },
+    })
+    return { kind: 'success', text: JSON.stringify({ childId, held: { turnEnds: held.turnEnds }, rate: rateFacts }) }
+  } catch (error) {
+    return { kind: 'error', text: `devlead-e2e-lanes-rate: ${messageOf(error)}` }
+  }
+}
+
+/**
+ * Phase 1e metrics: return the process-local delivery/suppression/guard counter
+ * snapshot. The harness asserts the expected series exist and that every label
+ * is a low-cardinality enum (never a Session id, report id, or message text).
+ * @param ctx - probe context.
+ * @param invocation - command invocation carrying the lead Agent.
+ * @returns success JSON with the snapshot, or an error result.
+ */
+async function executeLanesMetrics(ctx, invocation) {
+  void invocation
+  try {
+    const snapshot = ctx.devLead.metricsSnapshot()
+    return { kind: 'success', text: JSON.stringify({ snapshot }) }
+  } catch (error) {
+    return { kind: 'error', text: `devlead-e2e-lanes-metrics: ${messageOf(error)}` }
+  }
+}
+
 /** Wrap one command handler so a Host failure settles as an error result. */
 function guarded(command, operation) {
   return async invocation => {
@@ -1829,5 +2297,41 @@ export function apply(ctx) {
     name: ANSWER_INBOX_COMMAND_NAME,
     description: 'E2E probe: answer inbox lifecycle — delivery metadata, retract refusal, clear-own/clear-all (Phase 1d).',
     handler: guarded(ANSWER_INBOX_COMMAND_NAME, invocation => executeAnswerInbox(ctx, invocation)),
+  })
+  ctx.commands.register({
+    definitionId: CommandDefinitionId(`${DEFINITION_ID}#lanes-background`),
+    name: LANES_BACKGROUND_COMMAND_NAME,
+    description: 'E2E probe: P1/P2 background inject without a wake + read-tool lane/deliveryState output (Phase 1e).',
+    handler: guarded(LANES_BACKGROUND_COMMAND_NAME, invocation => executeLanesBackground(ctx, invocation)),
+  })
+  ctx.commands.register({
+    definitionId: CommandDefinitionId(`${DEFINITION_ID}#lanes-action`),
+    name: LANES_ACTION_COMMAND_NAME,
+    description: 'E2E probe: P3/P4 blocked/decision action-required steer wakes with the full message (Phase 1e).',
+    handler: guarded(LANES_ACTION_COMMAND_NAME, invocation => executeLanesAction(ctx, invocation)),
+  })
+  ctx.commands.register({
+    definitionId: CommandDefinitionId(`${DEFINITION_ID}#lanes-turn`),
+    name: LANES_TURN_COMMAND_NAME,
+    description: 'E2E probe: T1 completed followup vs T2 failed review steer wakes (Phase 1e).',
+    handler: guarded(LANES_TURN_COMMAND_NAME, invocation => executeLanesTurn(ctx, invocation)),
+  })
+  ctx.commands.register({
+    definitionId: CommandDefinitionId(`${DEFINITION_ID}#lanes-merge`),
+    name: LANES_MERGE_COMMAND_NAME,
+    description: 'E2E probe: question + turn-end double-wake merge suppression fields (Phase 1e).',
+    handler: guarded(LANES_MERGE_COMMAND_NAME, invocation => executeLanesMerge(ctx, invocation)),
+  })
+  ctx.commands.register({
+    definitionId: CommandDefinitionId(`${DEFINITION_ID}#lanes-rate`),
+    name: LANES_RATE_COMMAND_NAME,
+    description: 'E2E probe: 16-pair action cap overflow returns DEVLEAD_DELIVERY_RATE_LIMITED (Phase 1e).',
+    handler: guarded(LANES_RATE_COMMAND_NAME, invocation => executeLanesRate(ctx, invocation)),
+  })
+  ctx.commands.register({
+    definitionId: CommandDefinitionId(`${DEFINITION_ID}#lanes-metrics`),
+    name: LANES_METRICS_COMMAND_NAME,
+    description: 'E2E probe: low-cardinality delivery/suppression/guard metrics snapshot (Phase 1e).',
+    handler: guarded(LANES_METRICS_COMMAND_NAME, invocation => executeLanesMetrics(ctx, invocation)),
   })
 }

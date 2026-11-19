@@ -19,6 +19,7 @@ import type {
   DevLeadDeliveryBoundary,
   DevLeadReportAnswer,
 } from '@yankeguo/dsh-devlead-protocol'
+import type { DevLeadMetrics } from './metrics.ts'
 
 /** One tracked answer message and its observed inbox lifecycle. */
 export interface AnswerMemoryEntry {
@@ -80,12 +81,29 @@ export class DevLeadAnswerTracker {
   private readonly byMessage = new Map<string, AnswerMemoryEntry>()
 
   /**
+   * @param metrics - optional shared counter registry; lifecycle transitions
+   *   (never restart seeds) increment low-cardinality status counters.
+   */
+  constructor(private readonly metrics?: DevLeadMetrics) {}
+
+  /** Count one observed answer lifecycle transition and its question effect. */
+  private count(status: DevLeadAnswerStatus): void {
+    if (this.metrics === undefined) return
+    this.metrics.increment('devlead_answer_status_total', { status })
+    if (status === 'admitted') this.metrics.increment('devlead_question_status_total', { status: 'answered' })
+    if (status === 'discarded' || status === 'failed') {
+      this.metrics.increment('devlead_question_status_total', { status: 'open' })
+    }
+  }
+
+  /**
    * Register one freshly admitted answer, replacing any earlier answer of the
    * same question (the newest admission is authoritative).
    * @param entry - admitted answer facts.
    */
   remember(entry: AnswerMemoryEntry): void {
     this.insert(entry)
+    this.count('admitted')
   }
 
   /**
@@ -169,6 +187,7 @@ export class DevLeadAnswerTracker {
     if (entry === undefined || entry.status !== 'admitted') return false
     entry.status = 'claimed'
     entry.at = at
+    this.count('claimed')
     return true
   }
 
@@ -186,6 +205,7 @@ export class DevLeadAnswerTracker {
     entry.status = 'presented'
     entry.at = at
     entry.presentedAt = at
+    this.count('presented')
     return true
   }
 
@@ -203,6 +223,7 @@ export class DevLeadAnswerTracker {
     if (entry === undefined || isTerminal(entry.status)) return undefined
     entry.status = 'discarded'
     entry.at = at
+    this.count('discarded')
     return entry
   }
 
@@ -221,6 +242,7 @@ export class DevLeadAnswerTracker {
       if (entry.sessionId !== sessionId || entry.status !== 'claimed') continue
       entry.status = 'discarded'
       entry.at = at
+      this.count('discarded')
       discarded.push(entry)
     }
     return discarded

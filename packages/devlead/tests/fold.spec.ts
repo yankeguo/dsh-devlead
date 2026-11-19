@@ -694,6 +694,105 @@ describe('wire view and schemas', () => {
   })
 })
 
+describe('Phase 1e wire question/answer status', () => {
+  it('derives questionStatus open then answered with the newest answerStatus on question rows', () => {
+    const question = report({ kind: 'question', message: 'Which target?' })
+    let state = fold([modeEvent(0, true), reportEvent(1, question)])
+    expect(devLeadProjectionView(state).reports).toEqual([{ ...question, questionStatus: 'open' }])
+    state = apply(state, answerEvent(2, answer({ reportId: question.id, status: 'admitted' })))
+    expect(devLeadProjectionView(state).reports[0]).toMatchObject({
+      questionStatus: 'answered',
+      answerStatus: 'admitted',
+    })
+    state = apply(state, answerEvent(3, answer({ reportId: question.id, status: 'claimed', messageId: 'msg-answer-2' })))
+    expect(devLeadProjectionView(state).reports[0]).toMatchObject({
+      questionStatus: 'answered',
+      answerStatus: 'claimed',
+    })
+    state = apply(state, answerEvent(4, answer({ reportId: question.id, status: 'presented', messageId: 'msg-answer-3', presentedAt: T0 + 1 })))
+    expect(devLeadProjectionView(state).reports[0]).toMatchObject({
+      questionStatus: 'answered',
+      answerStatus: 'presented',
+    })
+    // A discard reopens the question; the newest durable record stays visible.
+    state = apply(state, answerEvent(5, answer({ reportId: question.id, status: 'discarded', messageId: 'msg-answer-4' })))
+    expect(devLeadProjectionView(state).reports[0]).toMatchObject({
+      questionStatus: 'open',
+      answerStatus: 'discarded',
+    })
+  })
+
+  it('leaves non-question rows unchanged and reuses the state array when no question is retained', () => {
+    const progress = report({ kind: 'progress' })
+    const plain = fold([reportEvent(0, progress)])
+    const plainView = devLeadProjectionView(plain)
+    expect(plainView.reports).toBe(plain.reports)
+    expect(plainView.reports[0]).not.toHaveProperty('questionStatus')
+    // A mixed digest maps only the question rows; the ordinary row object is
+    // reused untouched so unchanged rows keep their identity.
+    const question = report({ kind: 'question', message: 'Which target?' })
+    const mixed = fold([reportEvent(0, progress), reportEvent(1, question)])
+    const mixedView = devLeadProjectionView(mixed)
+    expect(mixedView.reports[0]).toBe(mixed.reports[0])
+    expect(mixedView.reports[0]).not.toHaveProperty('questionStatus')
+    expect(mixedView.reports[1]).toMatchObject({ questionStatus: 'open' })
+  })
+
+  it('validates the additive pair on the wire and rejects it on non-question rows', () => {
+    const question = report({ kind: 'question', message: 'Which target?' })
+    const progress = report({ kind: 'progress' })
+    const base = { enabled: true, sessions: [], notifications: [] }
+    expect(devLeadProjectionSchema.safeParse({
+      ...base,
+      reports: [{ ...question, questionStatus: 'open' }],
+    }).success).toBe(true)
+    expect(devLeadProjectionSchema.safeParse({
+      ...base,
+      reports: [{ ...question, questionStatus: 'answered', answerStatus: 'presented' }],
+    }).success).toBe(true)
+    // The derived pair is question-only, and answerStatus requires questionStatus.
+    expect(devLeadProjectionSchema.safeParse({
+      ...base,
+      reports: [{ ...progress, questionStatus: 'open' }],
+    }).success).toBe(false)
+    expect(devLeadProjectionSchema.safeParse({
+      ...base,
+      reports: [{ ...question, answerStatus: 'admitted' }],
+    }).success).toBe(false)
+    expect(devLeadProjectionSchema.safeParse({
+      ...base,
+      reports: [{ ...question, questionStatus: 'unknown' }],
+    }).success).toBe(false)
+  })
+
+  it('accepts a wire digest up to the retention plus the open-question pin bound', () => {
+    const questions = Array.from(
+      { length: DEVLEAD_REPORT_RETENTION + DEVLEAD_OPEN_QUESTION_PIN_MAX },
+      (_, index) => ({ ...report({ kind: 'question', message: `Q${String(index)}?` }), questionStatus: 'open' as const }),
+    )
+    const base = { enabled: true, sessions: [], notifications: [] }
+    expect(devLeadProjectionSchema.safeParse({ ...base, reports: questions }).success).toBe(true)
+    expect(devLeadProjectionSchema.safeParse({
+      ...base,
+      reports: [...questions, { ...report({ kind: 'question', message: 'one too many?' }), questionStatus: 'open' as const }],
+    }).success).toBe(false)
+  })
+
+  it('memoizes the wire view per state object across unchanged folds', () => {
+    const state = fold([reportEvent(0, report({ kind: 'question', message: 'Which target?' }))])
+    const view = devLeadProjectionView(state)
+    expect(devLeadProjectionView(state)).toBe(view)
+    // An unrelated event keeps the state reference, so the view stays identical.
+    const next = apply(state, turnStartEvent(1))
+    expect(next).toBe(state)
+    expect(devLeadProjectionView(next)).toBe(view)
+    // A new state (an answer record) produces a new view with the derived pair.
+    const answered = apply(state, answerEvent(1, answer({ reportId: state.reports[0]!.id })))
+    expect(devLeadProjectionView(answered)).not.toBe(view)
+    expect(devLeadProjectionView(answered).reports[0]).toMatchObject({ questionStatus: 'answered' })
+  })
+})
+
 describe('reset records', () => {
   it('discards an earlier mode, watch set, and digest when the fold is healthy', () => {
     const state = fold([

@@ -8,7 +8,7 @@ import { describe, expect, it } from 'vitest'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import { HarnessError } from '@deepseek-ai/dsh-llm'
 import type { GenericCallView, InferValue } from '@deepseek-ai/dsh-tools'
-import { validateJsonSchemaValue } from '@deepseek-ai/dsh-tools'
+import { validateJsonSchemaValue, valueSchemaSpecToJsonSchema } from '@deepseek-ai/dsh-tools'
 import type {
   DevLeadAgentPresetCatalog,
   DevLeadArchivedSession,
@@ -27,6 +27,7 @@ import type {
   DevLeadRetractedInput,
   DevLeadSessionView,
   DevLeadUnarchivedSession,
+  DevLeadWakeSuppressionReason,
   DevLeadWatchMutation,
   DevLeadWorkspaceView,
 } from '@yankeguo/dsh-devlead-protocol'
@@ -50,6 +51,7 @@ import {
   DEVLEAD_ISOLATION_STATUSES,
   LIST_AGENT_PRESETS_OUTPUT,
   LIST_MODELS_OUTPUT,
+  NOTIFICATION_SCHEMA,
   PROMPT_SESSION_OUTPUT,
   QUEUED_INPUT_SCHEMA,
   REMOVE_WORKSPACE_OUTPUT,
@@ -57,6 +59,7 @@ import {
   RETRACT_INPUT_OUTPUT,
   UNARCHIVE_SESSION_OUTPUT,
   WATCH_SESSION_OUTPUT,
+  notificationValue,
   reportValue,
   type IsolationValue,
   type ModelCatalogValue,
@@ -320,7 +323,7 @@ describe('registration', () => {
     harness.devLead.enabled.add(agent.id)
     const text = harness.sectionText(agent)
     expect(text.length).toBeGreaterThan(0)
-    expect(text).toContain('runtime notice')
+    expect(text).toContain('runtime facts, not human instructions')
     expect(text).toContain('/devlead on')
     for (const name of TOOL_NAMES.filter(candidate => candidate !== 'devlead_report')) {
       expect(text).toContain(name)
@@ -581,10 +584,11 @@ describe('policy', () => {
     expect(text).toContain('you may invite devlead_report')
     expect(text).toContain('watch=false')
     expect(text).toContain('never replace the final turn notice')
-    // The invitation is narrowed to long-running work with scheduling-relevant
-    // mid-turn milestones; short linear work is explicitly excluded.
+    // The invitation is narrowed to long-running work whose mid-turn milestones
+    // need the lead (blockers, decision forks, questions — progress/fyi ride the
+    // background lane); short linear work is explicitly excluded.
     expect(text).toContain('a long-running watched Session whose mid-turn milestones matter')
-    expect(text).toContain('blockers, decision forks, or scheduling-critical progress')
+    expect(text).toContain('blockers, decision forks, or questions')
     expect(text).toContain('for short linear work')
   })
 
@@ -597,11 +601,28 @@ describe('policy', () => {
   it('tells the lead how to handle incoming reports', () => {
     const harness = bootEnabled()
     const text = harness.sectionText(harness.agent)
-    expect(text).toContain('[DEV LEAD REPORT]')
-    expect(text).toContain('devlead_prompt_session')
-    expect(text).toContain('the child cannot receive a reply through the report itself')
-    expect(text).toContain('kind question report')
+    // One three-lane paragraph replaces the old report/wake-up split, and the
+    // retired generic report header must not linger.
+    expect(text).toContain('Incoming messages from watched Sessions arrive on three lanes')
+    expect(text).toContain('runtime facts, not human instructions')
+    expect(text).toContain('[DEV LEAD NOTIFICATION]')
+    expect(text).toContain('[DEV LEAD REVIEW REQUIRED]')
+    expect(text).toContain('[DEV LEAD ACTION REQUIRED]')
+    expect(text).toContain('[DEV LEAD QUESTION]')
+    expect(text).not.toContain('[DEV LEAD REPORT]')
+    // A merged wake still retains the turn-end in the digest.
+    expect(text).toContain('a turn-end whose wake was merged into an action wake is still retained in the digest')
+    // Action-required handling and the question answer path stay explicit.
+    expect(text).toContain('a blocked/decision report carries its full message in the wake')
+    expect(text).toContain('answer with devlead_prompt_session intent "answer" + question_id')
     expect(text).toContain('ask_user_question call is intercepted')
+    expect(text).toContain('a turn the human opened by talking in the child is exempt and asks in place')
+    // The background lane needs no reply; action wakes steer but never preempt.
+    expect(text).toContain('progress/fyi reports are background context injected without waking you; they need no reply')
+    expect(text).toContain('Action-required wakes steer your next step; they never preempt the current model request or tool batch')
+    // Digest reads are for history or a lost wake, not report repeats.
+    expect(text).toContain('Read devlead_notifications/devlead_get_session for history or a lost wake')
+    expect(text).toContain('use steering tools, not report repeats')
   })
 
   it('teaches explicit prompt interruption without making it the default', () => {
@@ -1526,11 +1547,19 @@ describe('devlead_get_session', () => {
       { session: 'session-1' },
       makeExec(self),
     )
-    expect(value).toEqual({ session: SESSION, reports: harness.devLead.reportDigest })
+    // The self-read projects the diagnostic lane (progress rides background);
+    // the fake hub remembers no delivery state, so deliveryState stays absent.
+    expect(value).toEqual({
+      session: SESSION,
+      reports: harness.devLead.reportDigest.map(report => ({ ...report, lane: 'background' })),
+    })
+    const reports = (value as { reports: Array<Record<string, unknown>> }).reports
+    expect(reports[0]).not.toHaveProperty('deliveryState')
     const [, reportOptions] = harness.devLead.callsOf('reports')[0] ?? []
     expect(reportOptions).toEqual({ limit: 5 })
     const definition = harness.tool('devlead_get_session').definition
     expect(definition.description).toContain('its 5 newest retained mid-turn reports')
+    expect(definition.description).toContain('every report with its diagnostic lane and in-memory deliveryState')
   })
 
   it('leaves prefix resolution to the core service', async () => {
@@ -1855,7 +1884,7 @@ describe('devlead_notifications', () => {
     expect(options).toEqual({ limit: 20 })
     expect(value).toEqual({
       notifications: [NOTIFICATION],
-      reports: harness.devLead.reportDigest,
+      reports: harness.devLead.reportDigest.map(report => ({ ...report, lane: 'background' })),
       watched: ['session-1'],
     })
   })
@@ -1872,9 +1901,20 @@ describe('devlead_notifications', () => {
   it('describes both digests and the per-digest limit without a broken sentence', () => {
     const harness = boot()
     const definition = harness.tool('devlead_notifications').definition
-    expect(definition.description).toContain('the reports array carries mid-turn reports from watched Sessions')
+    expect(definition.description).toContain('The reports array carries mid-turn reports from watched Sessions')
     expect(definition.description).toContain('Both digests are newest last')
     expect(definition.description).not.toContain('from watched read it')
+    // Phase 1e: the wake-suppression pair and the lane/deliveryState diagnostics.
+    expect(definition.description).toContain('wakeSuppressedByReportId/wakeSuppressionReason pair')
+    expect(definition.description).toContain('the transition is still retained, not lost')
+    expect(definition.description).toContain('background for progress/fyi, action-required for blocked/decision/question')
+    expect(definition.description).toContain('in-memory deliveryState')
+    expect(definition.description).toContain('pending/delivered/digest-only')
+    expect(definition.description).toContain('absent after a restart')
+    expect(definition.description).toContain('not a presented confirmation')
+    // The Phase 1d question guidance survives the rewrite.
+    expect(definition.description).toContain('questionStatus === "open"')
+    expect(definition.description).toContain('answered does not mean presented')
     const parameters = definition.parameters as {
       properties: { limit: { type: string; description: string } }
     }
@@ -2078,9 +2118,19 @@ describe('devlead_report', () => {
     expect(description).toContain('The lead is already notified when your turn settles')
     expect(description).toContain('do not report routine progress or a final summary here')
     expect(description).toContain('only mid-turn, on a long-running task')
-    expect(description).toContain('a fork that needs the lead\'s decision')
-    expect(description).toContain('change scheduling correctness if it waited')
     expect(description).toContain('a short or linear task should not call it')
+    // Phase 1e: the kind selects the lane, with the background no-wake contract
+    // and the shared bounded action-required queue.
+    expect(description).toContain('The kind selects the lane')
+    expect(description).toContain('progress/fyi are non-urgent background context injected without waking the lead')
+    expect(description).toContain('a cold lead or a full background budget keeps them digest-only')
+    expect(description).toContain('updates that can wait for the next wake or settled-turn notice')
+    expect(description).toContain('a fork needing the lead before your turn ends')
+    expect(description).toContain('[DEV LEAD ACTION REQUIRED]')
+    expect(description).toContain('share a bounded pending queue per pair')
+    expect(description).toContain('DEVLEAD_DELIVERY_RATE_LIMITED')
+    expect(description).toContain('merge instead of resending')
+    expect(description).toContain('At most four non-question reports per turn; question reports are exempt')
     expect(description).toContain('durable` false means no durable receipt was written on this attempt')
     expect(description).toContain('the outbox write failed')
     const reportSchema = harness.tool('devlead_report').definition.output.schema as {
@@ -2786,6 +2836,7 @@ describe('question/answer state exposure (Phase 1d)', () => {
       answeredAt: 1_700_000_000_001,
       presentedAt: 1_700_000_000_002,
     }
+    harness.devLead.deliveryStates.set('report-q', 'delivered')
     const value = await harness.call('devlead_notifications')
     expect((value as { reports: unknown[] }).reports).toEqual([{
       ...questionReport,
@@ -2794,8 +2845,11 @@ describe('question/answer state exposure (Phase 1d)', () => {
       answerMessageId: 'msg-answer',
       answeredAt: 1_700_000_000_001,
       presentedAt: 1_700_000_000_002,
+      lane: 'action-required',
+      deliveryState: 'delivered',
     }])
     expect(harness.devLead.callsOf('questionAnswerView')[0]).toEqual([harness.agent, 'report-q'])
+    expect(harness.devLead.callsOf('reportDeliveryState')[0]).toEqual([harness.agent, 'report-q'])
     expectValidOutput(harness, 'devlead_notifications', value)
   })
 
@@ -2804,8 +2858,10 @@ describe('question/answer state exposure (Phase 1d)', () => {
     harness.devLead.reportDigest = [questionReport]
     harness.devLead.questionAnswer = { questionStatus: 'open' }
     const value = await harness.call('devlead_notifications')
-    expect((value as { reports: Array<Record<string, unknown>> }).reports[0])
-      .toEqual({ ...questionReport, questionStatus: 'open' })
+    const row = (value as { reports: Array<Record<string, unknown>> }).reports[0]
+    expect(row).toEqual({ ...questionReport, questionStatus: 'open', lane: 'action-required' })
+    // The hub remembers no delivery state for this report: the key stays absent.
+    expect(row).not.toHaveProperty('deliveryState')
     expectValidOutput(harness, 'devlead_notifications', value)
   })
 
@@ -2825,5 +2881,275 @@ describe('question/answer state exposure (Phase 1d)', () => {
     const value = await harness.call('devlead_get_session', { session: 'session-1' })
     expect((value as { queuedInputs: unknown[] }).queuedInputs).toEqual(harness.devLead.queuedInputs)
     expectValidOutput(harness, 'devlead_get_session', value)
+  })
+})
+
+describe('message lanes and delivery diagnostics (Phase 1e)', () => {
+  /** One minimal durable report fixture for the projection unit cases. */
+  const baseReport: DevLeadReport = {
+    id: 'report-lane',
+    kind: 'progress',
+    message: 'halfway through the migration',
+    senderSessionId: 'session-1',
+    leadSessionId: 'lead-1',
+    turn: 1,
+    at: 1_700_000_000_000,
+  }
+
+  /** One question report fixture for the self-read enrichment case. */
+  const questionReport: DevLeadReport = {
+    ...baseReport,
+    id: 'report-q',
+    kind: 'question',
+    message: 'Which target?',
+  }
+
+  /** Build one digest report of the given kind with a deterministic id. */
+  function reportOf(kind: DevLeadReportKind): DevLeadReport {
+    return { ...baseReport, id: `report-${kind}`, kind, message: `${kind} update` }
+  }
+
+  // The enforced schemas the executor compiles from the author DSL; validating
+  // against them exercises exactly the boundary a real tool result crosses.
+  const notificationJsonSchema = valueSchemaSpecToJsonSchema(NOTIFICATION_SCHEMA)
+  const reportJsonSchema = valueSchemaSpecToJsonSchema(REPORT_SCHEMA)
+
+  it('projects the wake-suppression pair only when the durable notification carries it', () => {
+    const suppressed: DevLeadNotification = {
+      ...NOTIFICATION,
+      wakeSuppressedByReportId: 'report-blocked',
+      wakeSuppressionReason: 'merged-into-pending-wake',
+    }
+    const withPair = notificationValue(suppressed)
+    expect(withPair).toEqual({
+      ...NOTIFICATION,
+      wakeSuppressedByReportId: 'report-blocked',
+      wakeSuppressionReason: 'merged-into-pending-wake',
+    })
+    expect(validateJsonSchemaValue(notificationJsonSchema, withPair)).toEqual([])
+    // Absent facts drop their keys entirely: the lossless-JSON boundary rejects
+    // undefined members, so a plain round trip must reproduce the value.
+    const plain = notificationValue(NOTIFICATION)
+    expect(plain).not.toHaveProperty('wakeSuppressedByReportId')
+    expect(plain).not.toHaveProperty('wakeSuppressionReason')
+    expect(JSON.parse(JSON.stringify(plain))).toEqual(plain)
+    expect(validateJsonSchemaValue(notificationJsonSchema, plain)).toEqual([])
+  })
+
+  it('accepts both suppression reasons and rejects an unknown one at the schema boundary', () => {
+    const reasons: Record<DevLeadWakeSuppressionReason, true> = {
+      'merged-into-pending-wake': true,
+      'included-in-sent-wake': true,
+    }
+    expect(NOTIFICATION_SCHEMA.properties.wakeSuppressionReason.enum)
+      .toEqual(Object.keys(reasons))
+    for (const reason of Object.keys(reasons) as DevLeadWakeSuppressionReason[]) {
+      const value = notificationValue({
+        ...NOTIFICATION,
+        wakeSuppressedByReportId: 'report-blocked',
+        wakeSuppressionReason: reason,
+      })
+      expect(validateJsonSchemaValue(notificationJsonSchema, value), reason).toEqual([])
+    }
+    expect(validateJsonSchemaValue(notificationJsonSchema, {
+      ...NOTIFICATION,
+      wakeSuppressedByReportId: 'report-blocked',
+      wakeSuppressionReason: 'merged',
+    })).not.toEqual([])
+  })
+
+  it('projects lane and deliveryState facts only when the caller supplies them', () => {
+    // The receipt-echo shape: no delivery facts means neither key exists.
+    const bare = reportValue(baseReport)
+    expect(bare).not.toHaveProperty('lane')
+    expect(bare).not.toHaveProperty('deliveryState')
+    expect(validateJsonSchemaValue(reportJsonSchema, bare)).toEqual([])
+    // A lane without an observed delivery state keeps deliveryState absent.
+    const laneOnly = reportValue(baseReport, undefined, { lane: 'background' })
+    expect(laneOnly).toEqual({ ...bare, lane: 'background' })
+    expect(laneOnly).not.toHaveProperty('deliveryState')
+    expect(validateJsonSchemaValue(reportJsonSchema, laneOnly)).toEqual([])
+    // Both facts project when the hub remembers a delivery state.
+    const both = reportValue(baseReport, undefined, { lane: 'action-required', deliveryState: 'pending' })
+    expect(both).toEqual({ ...bare, lane: 'action-required', deliveryState: 'pending' })
+    expect(validateJsonSchemaValue(reportJsonSchema, both)).toEqual([])
+  })
+
+  it('derives the diagnostic lane from the report kind on every digest row', async () => {
+    const lanes: Record<DevLeadReportKind, 'turn-notice' | 'action-required' | 'background'> = {
+      progress: 'background',
+      fyi: 'background',
+      blocked: 'action-required',
+      decision: 'action-required',
+      question: 'action-required',
+    }
+    const harness = boot()
+    harness.devLead.reportDigest = DEVLEAD_REPORT_KINDS.map(reportOf)
+    harness.devLead.questionAnswer = { questionStatus: 'open' }
+    const value = await harness.call('devlead_notifications')
+    const rows = (value as { reports: Array<Record<string, unknown>> }).reports
+    expect(rows).toEqual(DEVLEAD_REPORT_KINDS.map(kind => ({
+      ...reportOf(kind),
+      lane: lanes[kind],
+      ...kind === 'question' ? { questionStatus: 'open' } : {},
+    })))
+    // The question lifecycle lookup runs only for the question row.
+    expect(harness.devLead.callsOf('questionAnswerView')).toEqual([[harness.agent, 'report-question']])
+    expectValidOutput(harness, 'devlead_notifications', value)
+  })
+
+  it('surfaces the in-memory deliveryState only for reports the hub still remembers', async () => {
+    const harness = boot()
+    harness.devLead.reportDigest = ['pending', 'delivered', 'digest-only', 'forgotten'].map(state => ({
+      ...baseReport,
+      id: `report-${state}`,
+    }))
+    harness.devLead.deliveryStates.set('report-pending', 'pending')
+    harness.devLead.deliveryStates.set('report-delivered', 'delivered')
+    harness.devLead.deliveryStates.set('report-digest-only', 'digest-only')
+    const value = await harness.call('devlead_notifications')
+    const rows = (value as { reports: Array<Record<string, unknown>> }).reports
+    expect(rows.map(row => row.deliveryState)).toEqual(['pending', 'delivered', 'digest-only', undefined])
+    expect(rows[3]).not.toHaveProperty('deliveryState')
+    expect(rows.every(row => row.lane === 'background')).toBe(true)
+    expectValidOutput(harness, 'devlead_notifications', value)
+  })
+
+  it('carries the suppression pair through devlead_notifications rows', async () => {
+    const harness = boot()
+    harness.devLead.digest = [
+      {
+        ...NOTIFICATION,
+        wakeSuppressedByReportId: 'report-blocked',
+        wakeSuppressionReason: 'included-in-sent-wake',
+      },
+      { ...NOTIFICATION, id: 'session-1:4:completed', turn: 4 },
+    ]
+    const value = await harness.call('devlead_notifications')
+    const rows = (value as { notifications: Array<Record<string, unknown>> }).notifications
+    expect(rows[0]).toMatchObject({
+      wakeSuppressedByReportId: 'report-blocked',
+      wakeSuppressionReason: 'included-in-sent-wake',
+    })
+    expect(rows[1]).not.toHaveProperty('wakeSuppressedByReportId')
+    expect(rows[1]).not.toHaveProperty('wakeSuppressionReason')
+    expectValidOutput(harness, 'devlead_notifications', value)
+  })
+
+  it('keeps the reporter receipt echo free of read-side diagnostics', async () => {
+    const harness = boot()
+    // Even when the hub remembers a delivery state and a question lifecycle,
+    // the reporter's own echo passes neither: it stays the plain report shape.
+    harness.devLead.deliveryStates.set('report-2', 'pending')
+    harness.devLead.questionAnswer = { questionStatus: 'open' }
+    const blocked = await harness.call('devlead_report', { message: 'update', kind: 'blocked' }) as { report: Record<string, unknown> }
+    expect(blocked.report).toEqual(harness.devLead.report)
+    for (const key of ['lane', 'deliveryState', 'questionStatus', 'answerStatus']) {
+      expect(blocked.report).not.toHaveProperty(key)
+    }
+    harness.devLead.report = { ...harness.devLead.report, kind: 'question', message: 'Which target?' }
+    const question = await harness.call('devlead_report', { message: 'Which target?', kind: 'question' }) as { report: Record<string, unknown> }
+    for (const key of ['lane', 'deliveryState', 'questionStatus', 'answerStatus']) {
+      expect(question.report).not.toHaveProperty(key)
+    }
+    expect(harness.devLead.callsOf('reportDeliveryState')).toHaveLength(0)
+    expect(harness.devLead.callsOf('questionAnswerView')).toHaveLength(0)
+  })
+
+  it('enriches self-read reports with lane, deliveryState, and the question lifecycle', async () => {
+    const harness = boot()
+    const self = makeAgent('session-1')
+    harness.devLead.reportDigest = [questionReport]
+    harness.devLead.deliveryStates.set('report-q', 'delivered')
+    harness.devLead.questionAnswer = {
+      questionStatus: 'answered',
+      answerStatus: 'presented',
+      answerMessageId: 'msg-answer',
+      answeredAt: 1_700_000_000_001,
+      presentedAt: 1_700_000_000_002,
+    }
+    const value = await harness.call('devlead_get_session', { session: 'session-1' }, makeExec(self))
+    expect(value).toEqual({
+      session: SESSION,
+      reports: [{
+        ...questionReport,
+        questionStatus: 'answered',
+        answerStatus: 'presented',
+        answerMessageId: 'msg-answer',
+        answeredAt: 1_700_000_000_001,
+        presentedAt: 1_700_000_000_002,
+        lane: 'action-required',
+        deliveryState: 'delivered',
+      }],
+    })
+    const [, reportOptions] = harness.devLead.callsOf('reports')[0] ?? []
+    expect(reportOptions).toEqual({ limit: 5 })
+    expectValidOutput(harness, 'devlead_get_session', value)
+  })
+
+  it('omits the reports array and delivery lookups when reading another Session', async () => {
+    const harness = boot()
+    harness.devLead.deliveryStates.set('report-1', 'delivered')
+    const value = await harness.call('devlead_get_session', { session: 'session-1' })
+    expect(value).toEqual({ session: SESSION })
+    expect(value).not.toHaveProperty('reports')
+    expect(harness.devLead.callsOf('reports')).toHaveLength(0)
+    expect(harness.devLead.callsOf('reportDeliveryState')).toHaveLength(0)
+  })
+
+  it('rejects unknown keys and out-of-enum lane facts at the enforced schema boundary', () => {
+    const bare = reportValue(baseReport)
+    // additionalProperties:false closes both shapes against invented keys.
+    expect(validateJsonSchemaValue(reportJsonSchema, { ...bare, deliveryLane: 'background' })).not.toEqual([])
+    expect(validateJsonSchemaValue(notificationJsonSchema, { ...NOTIFICATION, wakeSuppressed: true })).not.toEqual([])
+    // The lane and deliveryState vocabularies are closed enums.
+    expect(validateJsonSchemaValue(reportJsonSchema, { ...bare, lane: 'steer' })).not.toEqual([])
+    expect(validateJsonSchemaValue(reportJsonSchema, { ...bare, deliveryState: 'presented' })).not.toEqual([])
+    // Every declared lane passes, including turn-notice (a lead-side lane the
+    // schema keeps valid even though child reports only ride two lanes).
+    for (const lane of ['turn-notice', 'action-required', 'background'] as const) {
+      expect(validateJsonSchemaValue(reportJsonSchema, { ...bare, lane, deliveryState: 'digest-only' }), lane).toEqual([])
+    }
+  })
+
+  it('pins the lane and deliveryState schema descriptions as diagnostic-only', () => {
+    expect(REPORT_SCHEMA.properties.lane.enum).toEqual(['turn-notice', 'action-required', 'background'])
+    expect(REPORT_SCHEMA.properties.lane.description).toContain('Read-only fact, not a selectable transport')
+    expect(REPORT_SCHEMA.properties.deliveryState.enum).toEqual(['pending', 'delivered', 'digest-only'])
+    expect(REPORT_SCHEMA.properties.deliveryState.description).toContain('Absent for old records or after a Host restart')
+    expect(REPORT_SCHEMA.properties.deliveryState.description)
+      .toContain('not a durable delivery record and not a presented confirmation')
+    expect(NOTIFICATION_SCHEMA.properties.wakeSuppressedByReportId.description)
+      .toContain('only the duplicate wake was merged')
+    expect(NOTIFICATION_SCHEMA.properties.wakeSuppressionReason.description)
+      .toContain('Present exactly when wakeSuppressedByReportId is')
+  })
+
+  it('teaches the child the kind-to-lane contract in the report policy', () => {
+    const harness = boot()
+    const reporter = makeAgent('agent-lane-child')
+    harness.devLead.supervised.add(reporter.id)
+    const text = harness.reportSectionText(reporter)
+    expect(text).toContain('The kind selects the delivery lane')
+    expect(text).toContain('progress/fyi are non-urgent background context injected into the lead without waking it')
+    expect(text).toContain('a cold lead or a full background budget keeps them digest-only')
+    expect(text).toContain('never use them for anything that needs action before the turn ends')
+    expect(text).toContain('blocked/decision steer the lead\'s next step under a [DEV LEAD ACTION REQUIRED] wake')
+    expect(text).toContain('share a bounded pending queue per lead/child pair')
+    expect(text).toContain('DEVLEAD_DELIVERY_RATE_LIMITED')
+    expect(text).toContain('merge reports instead of sending another')
+    expect(text).toContain('question seeks an answer')
+  })
+
+  it('keeps the tool input schemas unchanged by the lane diagnostics', () => {
+    const harness = boot()
+    const keysOf = (name: string): string[] => Object.keys(
+      (harness.tool(name).definition.parameters as { properties: Record<string, unknown> }).properties,
+    )
+    // The lane is a read-side diagnostic, never a model-selectable transport:
+    // no input parameter was added for it (DESIGN §4.4).
+    expect(keysOf('devlead_report')).toEqual(['message', 'kind', 'summary'])
+    expect(keysOf('devlead_notifications')).toEqual(['limit'])
+    expect(keysOf('devlead_get_session')).toEqual(['session'])
   })
 })

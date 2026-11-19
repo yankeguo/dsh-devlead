@@ -733,7 +733,7 @@ Session 的工作目录切到独立分支/检出，DevLead 用它**可选地**�
 
 ### 4.4 消息传递模型（Proposed，未实现）
 
-> **状态：Phase 1a/1b/1c/1d 已实现；Phase 1e 起仍为 Proposed。** 本节描述完整目标模型；尚未落地的
+> **状态：Phase 1a/1b/1c/1d/1e 已实现；Phase 2 起仍为 Proposed。** 本节描述完整目标模型；尚未落地的
 > 阶段仍以 §4.1.2（中途汇报）、§4.1.3（问题路由）与 §5（模型工具）的现有行为为准。本节描述把 lead ↔ watched Session 的通信从
 > 「所有方向、所有 kind 都走 `followup`」升级为「按消息类别与目标状态选择投递机制」的设计、
 > 取舍、API 提案、状态机、测试计划与分阶段落地。所有 DSH API 行为已按
@@ -1944,7 +1944,7 @@ Phase 1 前的 hub 只有一个 `pending` / `pendingReports` 队列和一个全�
 | Phase 1b（已完成） | question `action-required`：完整 payload、结构化 questions、跳过 400ms/queued turn notice、窄化双 wake 规则；16/pair 显式 cap、结构化内容幂等、idle/aborted parked-wake 防死锁/防重 | 否 | `pnpm verify` + fake harness 用例 7/10/11/12/33/34 与 durable inbox 生命周期回归 |
 | Phase 1c（已完成） | `devlead_report({kind:'question'})` `turnEndRequested` + durable 检查 + 结果/policy；F7 gate memory-only 重述提示；N1 cap 竞态孤儿 outbox 行修复（含 delete 失败分支）；N2 outbox schema 回归（含 open-time backup-and-skip） | 否 | 用例 8/9（含 durable+queued）；真实 DSH question E2E（结构化 digest/wake payload 深比对、action-required wake、conclude/durable/recovery、scripted `llm/stream` 真实 child turn：next-step marker 后续 step 执行 + 用例 33 模型继续） |
 | Phase 1d（已完成） | `devlead_prompt_session` intent/`question_id`/`idempotency_key` + answer/correction steering + answer record + `answerStatus` admitted/claimed/presented（内存观测）+ `delivery` 结果 + retract/clear-own/source + **minimal output**（notifications/get_session 的 question report 带 questionStatus/answerStatus/answerMessageId/answeredAt/presentedAt，queuedInputs 带 intent/questionId/wakeRequested/deliveryState） | 否 | 用例 13–25；`pnpm verify` + `pnpm check:packages` + 真实 DSH rc.5 answer E2E（scripted child answer 真实 step + 幂等重试 + 冲突 + clear-own/clear-all，patch/installed 两 flow 188/188） |
-| Phase 1e | T2/P1–P4 路径、notifications/get_session **全量**输出与 UI 呈现（1d 已落 minimal output，见上行）、policy/UI 文案、指标 | 否 | 全量单测/集成/E2E；`pnpm e2e`；UI 验收 |
+| Phase 1e（已完成） | T2/P1–P4 路径（T2 review steer、P3/P4 action steer、P1/P2 background inject 不唤醒 + 8/lead-turn、16/pair 预算降级 digest-only；action-required 16/pair 上限 Q1/P3/P4 共享，含 flush 前同步入队的竞态防护）、notifications/get_session **全量**输出（notification 行 wakeSuppressedByReportId/wakeSuppressionReason；report 行诊断 lane + 内存 deliveryState；wire projection question report 行附加 fold 派生 questionStatus/answerStatus）、policy/UI 文案（三 lane header 语义、DevLeadBar chip lane 着色与 question 状态）、指标（DevLeadMetrics 低基数 counters：delivery/suppression/guard/answer/question，service.metricsSnapshot() 暴露）；新增配置 actionRequiredBatchMs（0–400，默认 0） | 否 | 全量单测/集成/E2E（1236 tests；rc.5 installed/patch 双流各 221/221，phase 1e 31）；`pnpm verify` + `pnpm check:packages` + `pnpm e2e`；UI 验收 |
 | Phase 2 | `idempotency_key` durable、claimed/presented/discarded 的 durable replay/backfill、replay open question、multi-lead 硬门禁、answer TTL、background 背压、`possibleQuestion`、blocking bridge 指标评估（不写原型） | 否 | 全量 + 兼容性 + 指标复盘 |
 | Phase 3 | 仅当 Phase 2 指标支持时：blocking bridge 原型（capability flag）；以及 DSH 上游通用 ordinary-Session mailbox / ephemeral context / blocking question primitive / turn-boundary hooks | 部分是 | 上游设计 review；dsh-devlead 保留 fallback |
 
@@ -2007,10 +2007,10 @@ DSH peer 依赖。最小可交付闭环是 1b + 1c + 1d：question 快、answer 
 > 本节描述**当前实现**的工具面。`devlead_prompt_session` 的 intent / question_id /
 > idempotency_key、answer/correction steering、answer record、`delivery` 结果、
 > retract/clear-own/source 扩展已在 **Phase 1d** 实现（见下表与 §4.4.6/§4.4.9）；
-> `devlead_notifications` / `devlead_get_session` 已按 1d 最小面暴露 question report 的
-> questionStatus/answerStatus 与 queuedInputs 的 intent/questionId/wakeRequested/deliveryState。
-> §4.4 对 `devlead_report`（progress 走 background 不唤醒）、T2/P1–P4 lane、notifications
-> 全量输出与 policy/UI 文案的变更仍是 **Proposed（Phase 1e）**，实现前以本节为准。
+> **Phase 1e** 已落地 T2/P1–P4 lane（progress/fyi 走 background inject 不唤醒、blocked/decision
+> 走 action-required steer、T2 失败 turn 走 review steer）、notifications/get_session 全量输出
+> （notification 行带 wakeSuppressedByReportId/wakeSuppressionReason，report 行带诊断 lane 与
+> 内存 deliveryState）与 policy/UI 文案、指标。工具输入 schema 在 1e 未变化。
 > `devlead_report` 的 question `turnEndRequested`（durable 检查 + 结果/policy）已在 Phase 1c 实现。
 
 14 个主工具都带 `when: ({ agent }) => ctx.devLead.isEnabled(agent)`，只在 DevLead 会话可见；
@@ -2025,12 +2025,12 @@ DSH peer 依赖。最小可交付闭环是 1b + 1c + 1d：question 快、answer 
 | `devlead_use_workspace` | `path`(必填，绝对路径), `title?`, `create?`(默认 false；显式 true 才 mkdir) | `{ workspace }` |
 | `devlead_list_sessions` | `workspace?`(id / 注册路径 / 精确 title), `watched_only?`, `limit?` | `{ sessions, watched: string[] }` |
 | `devlead_create_session` | `workspace?`(id / 注册路径 / 精确 title), `prompt?`, `title?`, `watch?`(默认 true), `preset?`(Host 定义 id；空白回退插件默认再 Host 默认), `isolation?`(默认 `none`；`worktree` = 尽力隔离), `provider?`+`model?`(成对；可选 `reasoning_effort?`), `agent_teams?` | `DevLeadCreatedSession`（含 `isolation`；请求时含已应用的 `model`/`agentTeams`） |
-| `devlead_get_session` | `session`(必填) | `{ session, reports?, queuedInputs? }`（读取 lead 自身时携带最近 5 条 retained reports，question report 带 questionStatus/answerStatus；目标 live 时携带排队 inbox 输入明细 `DevLeadQueuedInput[]`，DevLead 消息带 intent/questionId/wakeRequested，被跟踪 answer 带 deliveryState） |
+| `devlead_get_session` | `session`(必填) | `{ session, reports?, queuedInputs? }`（读取 lead 自身时携带最近 5 条 retained reports，question report 带 questionStatus/answerStatus，每条 report 带诊断 lane 与内存 deliveryState；目标 live 时携带排队 inbox 输入明细 `DevLeadQueuedInput[]`，DevLead 消息带 intent/questionId/wakeRequested，被跟踪 answer 带 deliveryState） |
 | `devlead_prompt_session` | `session`(必填), `prompt`(必填), `intent?`(默认 `instruction`；`answer`/`correction`/`background`), `question_id?`(仅 `answer` 必填), `idempotency_key?`(≤200 码点), `watch?`(默认 true), `interrupt?`(默认 false；true = 先经 `workspace/session-stop` 停止运行中工作再投递；idle/cold no-op；`background` 时非法), `interrupt_inbox?`(默认 `clear-all`；`keep`/`clear-own` 见 §4 inbox 策略，`clear-own` 保留 pending answer) | `DevLeadPromptedSession`（含 `interrupted`、保留策略实际执行时含 `retainedInputs`、必填 `delivery`：`{ primitive, boundary, wakeRequested, messageId, questionId?, idempotencyKey? }`，无内部 lane；幂等重试返回原 receipt） |
 | `devlead_retract_input` | `session`(必填), `input_id`(必填，`queuedInputs` 报告的 Host 消息 id) | `DevLeadRetractedInput`（`{ sessionId, inputId, retracted }`；撤本 lead 自投 instruction/correction relay 与 background notice，**拒绝 answer**，幂等） |
 | `devlead_watch_session` | `session`(必填), `watching`(必填 bool) | `DevLeadWatchMutation` |
-| `devlead_notifications` | `limit?`(默认 20，分别作用于通知与汇报两个 digest) | `{ notifications, reports, watched: string[] }`（question report 带 `questionStatus`/`answerStatus`/`answerMessageId`/`answeredAt`/`presentedAt`；用 `questionStatus === 'open'` 过滤待答问题） |
-| `devlead_report` | `message`(必填，≤4000 码点), `kind?`(默认 progress；progress/blocked/decision/question/fyi), `summary?`(≤200 码点) | `{ report, durable, queued, warning?, turnEndRequested?, questionId?, guidance? }`（仅已关注非 lead 会话可见；`when: isSupervised`；durable question 设置 `turnEndRequested:true` + `questionId` + `guidance` 并调用 `exec.concludeTurn()`；memory-only question 不请求结束 turn，warning 追加重述提示） |
+| `devlead_notifications` | `limit?`(默认 20，分别作用于通知与汇报两个 digest) | `{ notifications, reports, watched: string[] }`（notification 行带 wakeSuppressedByReportId/wakeSuppressionReason（被合并唤醒时）；report 行带诊断 lane 与内存 deliveryState（pending/delivered/digest-only，重启后缺省）；question report 带 `questionStatus`/`answerStatus`/`answerMessageId`/`answeredAt`/`presentedAt`；用 `questionStatus === 'open'` 过滤待答问题） |
+| `devlead_report` | `message`(必填，≤4000 码点), `kind?`(默认 progress；progress/blocked/decision/question/fyi), `summary?`(≤200 码点) | `{ report, durable, queued, warning?, turnEndRequested?, questionId?, guidance? }`（仅已关注非 lead 会话可见；`when: isSupervised`；kind 决定 lane：progress/fyi → background inject 不唤醒（冷 lead/预算满 → digest-only），blocked/decision → action-required steer（16/pair 共享 pending 上限，溢出 `DEVLEAD_DELIVERY_RATE_LIMITED`），question → action-required；durable question 设置 `turnEndRequested:true` + `questionId` + `guidance` 并调用 `exec.concludeTurn()`；memory-only question 不请求结束 turn，warning 追加重述提示） |
 | `devlead_remove_workspace` | `workspace`(必填，id / 注册路径 / 精确 title) | `{ workspace, removed }`（注销前快照） |
 | `devlead_archive_session` | `session`(必填), `stop_running?`(默认 false) | `{ sessionId, archived: true, stopped }` |
 | `devlead_unarchive_session` | `session`(必填) | `{ sessionId, archived: false }` |
@@ -2071,27 +2071,37 @@ DSH peer 依赖。最小可交付闭环是 1b + 1c + 1d：question 快、answer 
   `stop_running` 等于主动取消运行中工作；每次自主关闭都要汇报关闭了什么、为什么、影响面
   （哪些 Session 变未分组、是否停止运行中工作）与可恢复性。
 - lead policy 明确「按需介绍」：创建/继续一个已关注 Session 时，仅当是长任务且途中节点对调度
-  重要，简报才邀请它用 `devlead_report` 发真实阻塞/需 lead 决策的分叉/等待会影响调度正确性的
-  关键进展；短线性任务不邀请，不强制每条简报都写，`watch:false` 时工具不可见所以不要写；报告是
+  重要，简报才邀请它用 `devlead_report` 发真实阻塞/需 lead 决策的分叉/提问；短线性任务不邀请，
+  不强制每条简报都写，`watch:false` 时工具不可见所以不要写；报告是
   单向的，不替代最终 turn 通知。子会话侧 policy 与工具描述同时收窄调用范围：turn 结束自带通知，
   常规进度/最终总结不得用 report 重复播报；report 只用于长任务途中 lead 必须在轮次结束前知道的
-  关键节点，短任务/线性任务默认不调用。
+  关键节点，短任务/线性任务默认不调用。Phase 1e 起 kind 决定 lane：progress/fyi 是可等下一次
+  唤醒的非紧急背景（background inject，不唤醒 lead），需要行动用 blocked/decision，需要回答用
+  question。
 - **中途汇报工具** `devlead_report` 是唯一不要求 DevLead 模式的工具：`when` 为
   `ctx.devLead.isSupervised(agent)`（非 enabled + 唯一 active lead 的 watch），schema 只有
-  `message` / `kind?` / `summary?`，没有 target。kind 含 `question`（lead 用新 turn 回答）；
+  `message` / `kind?` / `summary?`，没有 target（Phase 1e 未改输入 schema）。kind 决定 lane：
+  `progress`/`fyi` → background（立即 inject、不请求 wake；冷 lead/归档/预算满 → digest-only，
+  预算为每 pair 每 lead turn 8 次 inject + inbox 16 条未消费 background notice）；
+  `blocked`/`decision` → action-required（立即 steer，`[DEV LEAD ACTION REQUIRED]` 携带完整
+  message）；`question` → action-required（lead 用新 turn 回答或 steer）。
   普通 report 单向、不等待回复、最终 turn 仍走原通知、每轮最多 4 条不同普通报告、同轮相同
-  kind+消息幂等，`question` 不计入该预算。执行转发 `reportProgress` 并把 receipt 投影成
+  kind+消息幂等，`question`/`blocked`/`decision` 不计入该预算，但共享每 pair 16 条 pending
+  action-required 上限（溢出 `DEVLEAD_DELIVERY_RATE_LIMITED`，竞态败者在 receipt append 前被拒）。执行转发 `reportProgress` 并把 receipt 投影成
   `{ report, durable, queued, warning? }`（durable 为真才代表已落 durable outbox；queued 表示 lead receipt 尚未 flush）。`devlead_get_session` 读取 lead 自身时额外返回 `reports`（最近 5 条），
   读取其他 Session 时输出形状不变。参数长度/kind 由 core 再校验，错误码 `DEVLEAD_INVALID_INPUT` /
-  `DEVLEAD_NOT_SUPERVISED` / `DEVLEAD_REPORT_RATE_LIMITED` 由统一翻译层转成 `HarnessError`。
+  `DEVLEAD_NOT_SUPERVISED` / `DEVLEAD_REPORT_RATE_LIMITED` / `DEVLEAD_DELIVERY_RATE_LIMITED` 由统一翻译层转成 `HarnessError`。
 - **watched 子会话问题闸门**：`registerQuestionRouting` 在根上下文监听 `tools/pre-execute`；
   watched 非 lead 子会话的 `ask_user_question` 被格式化为 `kind: 'question'` report 后 deny
   （详见 §4.1.3）。它不注册新工具、不新增错误码；人类正在直接对话的子会话与未关注会话放行。
 - `systemPrompt` 另注册 `devlead:report-policy` 段，条件为 `ctx.devLead.isSupervised(agent)`；
-  文案明确单向汇报、普通 report 每轮 4 条与限流错误码、`question` 是受支持提问通道、直接
-  `ask_user_question` 会被拦截转给 lead。lead 的 `devlead:policy` 增加接收
-  `[DEV LEAD REPORT]`（尤其 `question`）后的处理口径（自行回答或代问人类，再用
-  `devlead_prompt_session` 转回；普通报告按需 steering）。
+  文案明确单向汇报、kind→lane 语义（progress/fyi 不唤醒、blocked/decision steer + 共享限流）、
+  普通 report 每轮 4 条与限流错误码、`question` 是受支持提问通道、直接
+  `ask_user_question` 会被拦截转给 lead。lead 的 `devlead:policy` 按 header 分 lane 给出处理口径：
+  `[DEV LEAD NOTIFICATION]` review/决定下一步，`[DEV LEAD REVIEW REQUIRED]` 诊断/介入/问人类，
+  `[DEV LEAD ACTION REQUIRED]` 读完整 message 后回答/改向/问人类，`[DEV LEAD QUESTION]` 用
+  `intent:'answer'` + `question_id` 回答（wake 已含完整 payload，不必先读 digest）；
+  background 的 progress/fyi 不要求回复。
 - 工具把领域失败翻译成 `HarnessError(message, code)`；需要调用者的工具在 `exec.agent` 缺失
   （条件可见性被绕过）时也走结构化错误 `DEVLEAD_AGENT_NOT_LIVE`，基础设施错误原样重抛。所有异步写调用转发
   `exec.signal`（`create_session` / `prompt_session` / `watch_session` / `remove_workspace` /
@@ -2423,17 +2433,26 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   暴露）。
   patch 与 installed 两条加载流都跑完整多阶段；`--no-worktree` 跳过阶段 2（阶段 1、1b、3 仍
   运行，调试用）。每阶段 check 总数已 pin（`EXPECTED_CHECKS`，删/增 check 未更新 pin 会失败），
-  PASS 与 SKIP 分开输出；基线 DSH 0.2.2-rc.5 的两条加载流完整组合计数为 **188/188**
-  （阶段 1 27 + 阶段 1b 12 + 阶段 2 23 + 阶段 3 126，阶段 3 含 agent preset roster、
+  PASS 与 SKIP 分开输出；基线 DSH 0.2.2-rc.5 的两条加载流完整组合计数为 **221/221**
+  （阶段 1 27 + 阶段 1b 12 + 阶段 2 23 + 阶段 3 128 + 阶段 1e 31，阶段 3 含 agent preset roster、
   watched-Session 问题路由、排队 inbox、question conclude/durable/memory-only、两条 scripted
-  真实 child turn，以及 Phase 1d answer routing：真实 scripted answer steer + 幂等重试 + 冲突 +
-  answer inbox 生命周期/clear-own/clear-all 检查；185 PASS + 3 条无凭据 SKIP）；跳过阶段 2 时
-  **165/165**（阶段 1 + 1b + 3）。历史轮次（Phase 1c 证据轮 174/174、排队输入轮 150/150 等）保留各自标签。
+  真实 child turn、Phase 1d answer routing：真实 scripted answer steer + 幂等重试 + 冲突 +
+  answer inbox 生命周期/clear-own/clear-all 检查，以及 Phase 1e 改写的 2 条 background lane
+  pins；阶段 1e 为独立 lane 实例：background 不唤醒 + 读工具 lane/deliveryState、blocked/decision
+  action steer、真实 T1 followup / T2 review steer、合并抑制字段、显式 16-pending action 上限、
+  低基数指标；218 PASS + 3 条无凭据 SKIP）；跳过阶段 2 时
+  **198/198**（阶段 1 + 1b + 3 + 1e）。历史轮次（Phase 1c 证据轮 174/174、Phase 1d 188/188、
+  排队输入轮 150/150 等）保留各自标签。
 - 本轮最终验证数字（工作树，排队 inbox 输入能力轮）：`pnpm verify` =
   typecheck 通过 + **26 文件 / 879 tests** + 7 个构建产物；`node scripts/check-packages.mjs` →
   `OK (6 packages)`；E2E 在安装版 rc.5 实跑 installed 与 patch **完整双流各 150/150**
   （phase 1 27 + 1b 12 + 2 23 + 3 88），`--no-worktree` **127/127**。上一轮（0.2.6+ 工具面审计，
   见 [AUDIT](AUDIT.md) §12）为 821 tests / 146/146。
+- Phase 1e 轮最终验证数字（工作树，message lanes）：`pnpm verify` = typecheck 通过 +
+  **30 文件 / 1236 tests** + 构建产物；`pnpm check:packages` → `OK (6 packages)`；E2E 在安装版
+  rc.5 实跑 installed 与 patch **完整双流各 221/221**（phase 1 27 + 1b 12 + 2 23 + 3 128 +
+  1e 31；218 PASS + 3 SKIP），`--no-worktree` pin **198/198**。上一轮（Phase 1d answer routing）
+  为 1119 tests / 188/188。
 - **DSH 版本兼容矩阵（本轮真实 E2E，npm 临时安装 CLI + `DSH_BIN`）**：
 
   | DSH | flow | checks | Team 分支 / 其他 |

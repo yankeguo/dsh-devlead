@@ -18,10 +18,13 @@ import {
   reportLine,
 } from '@yankeguo/dsh-devlead-protocol/client'
 import type {
+  DevLeadAnswerStatus,
   DevLeadNotification,
-  DevLeadReport,
+  DevLeadProjectionReport,
+  DevLeadQuestionStatus,
   DevLeadReportKind,
   DevLeadTransition,
+  DevLeadWakeSuppressionReason,
 } from '@yankeguo/dsh-devlead-protocol/client'
 
 /**
@@ -63,6 +66,39 @@ export function transitionLabelKey(transition: string): DevLeadTransitionKey {
   return isDevLeadTransition(transition) ? TRANSITION_LABEL_KEYS[transition] : 'transition.unknown'
 }
 
+/**
+ * Dictionary keys explaining why a turn-end notification did not send its own
+ * wake: one per known suppression reason plus the wire-drift fallback. The
+ * transition itself still rendered — only the separate wake was unnecessary.
+ */
+export type DevLeadWakeSuppressionKey =
+  | 'notification.wake.merged'
+  | 'notification.wake.included'
+  | 'notification.wake.unknown'
+
+/**
+ * Localized explanation key per known suppression reason. Exhaustive by type:
+ * a reason added to the shared protocol becomes a compile error here.
+ */
+const WAKE_SUPPRESSION_KEYS: Record<DevLeadWakeSuppressionReason, DevLeadWakeSuppressionKey> = {
+  'merged-into-pending-wake': 'notification.wake.merged',
+  'included-in-sent-wake': 'notification.wake.included',
+}
+
+/** Membership set of the known suppression reasons, for the wire-drift check. */
+const WAKE_SUPPRESSION_SET: ReadonlySet<string> = new Set(Object.keys(WAKE_SUPPRESSION_KEYS))
+
+/**
+ * Map one wire suppression reason to its localized explanation key.
+ * @param reason - reason value read from the projection.
+ * @returns the explanation key; unknown values fall back to the neutral copy.
+ */
+export function wakeSuppressionReasonKey(reason: unknown): DevLeadWakeSuppressionKey {
+  return typeof reason === 'string' && WAKE_SUPPRESSION_SET.has(reason)
+    ? WAKE_SUPPRESSION_KEYS[reason as DevLeadWakeSuppressionReason]
+    : 'notification.wake.unknown'
+}
+
 /** Rendered fields of the latest-notification chip. */
 export interface DevLeadNotificationSummary {
   /** Canonical Host digest line, used as the chip's technical tooltip. */
@@ -83,6 +119,18 @@ export interface DevLeadNotificationSummary {
    * excerpt wins), but the field stays independent so callers can inspect both.
    */
   readonly summary: string | undefined
+  /**
+   * Action-required report whose wake made this notification's separate wake
+   * unnecessary, when the Host recorded one. The transition still happened and
+   * still renders; only the wake marker is weakened. Undefined on rows without
+   * suppression (including every pre-Phase-1e row).
+   */
+  readonly wakeSuppressedBy: string | undefined
+  /**
+   * Dictionary key of the localized suppression explanation, present exactly
+   * when {@link wakeSuppressedBy} is present.
+   */
+  readonly wakeSuppressionKey: DevLeadWakeSuppressionKey | undefined
 }
 
 /**
@@ -99,9 +147,19 @@ export function notificationSummary(notification: DevLeadNotification): DevLeadN
     : undefined
   const who = title ?? notification.sessionId
   const turn = Number.isInteger(notification.turn) && notification.turn > 0 ? notification.turn : 0
-  const tooltip = isDevLeadTransition(notification.transition)
+  const baseTooltip = isDevLeadTransition(notification.transition)
     ? notificationLine(notification)
     : `${who} — ${String(notification.transition)}`
+  // Suppression is additive observability, not a swallowed transition: the
+  // chip keeps rendering the outcome and only weakens the wake marker. A
+  // blank or non-string report id from a drifted wire counts as "no recorded
+  // suppression" instead of producing an empty marker.
+  const wakeSuppressedBy = typeof notification.wakeSuppressedByReportId === 'string'
+    ? excerptLine(notification.wakeSuppressedByReportId, DEVLEAD_ERROR_EXCERPT_MAX)
+    : undefined
+  const tooltip = wakeSuppressedBy === undefined
+    ? baseTooltip
+    : `${baseTooltip} (wake suppressed by ${wakeSuppressedBy})`
   const error = typeof notification.error === 'string'
     ? excerptLine(notification.error, DEVLEAD_ERROR_EXCERPT_MAX)
     : undefined
@@ -118,6 +176,10 @@ export function notificationSummary(notification: DevLeadNotification): DevLeadN
     labelKey: transitionLabelKey(notification.transition),
     error,
     summary,
+    wakeSuppressedBy,
+    wakeSuppressionKey: wakeSuppressedBy === undefined
+      ? undefined
+      : wakeSuppressionReasonKey(notification.wakeSuppressionReason),
   }
 }
 
@@ -233,6 +295,101 @@ export function reportLabelKey(kind: string): DevLeadReportKey {
 }
 
 /**
+ * Delivery lane of one report kind, as the strip must present it:
+ * question/blocked/decision seek lead action (warning ink), progress/fyi are
+ * non-urgent background (weakened), and a drifted kind stays neutral.
+ */
+export type DevLeadReportLane = 'action-required' | 'background' | 'unknown'
+
+/** Lane per known report kind. Exhaustive by type, like the label table. */
+const REPORT_LANES: Record<DevLeadReportKind, DevLeadReportLane> = {
+  progress: 'background',
+  blocked: 'action-required',
+  decision: 'action-required',
+  question: 'action-required',
+  fyi: 'background',
+}
+
+/**
+ * Map one wire report kind to its presentation lane.
+ * @param kind - kind value read from the projection.
+ * @returns the lane; unknown values stay neutral instead of guessing urgency.
+ */
+export function reportLane(kind: string): DevLeadReportLane {
+  return isDevLeadReportKind(kind) ? REPORT_LANES[kind] : 'unknown'
+}
+
+/**
+ * Dictionary keys of the question-lifecycle suffix, one per known status plus
+ * the wire-drift fallback. Kept separate from the kind keys: the lifecycle is
+ * fold-derived and only question reports carry it.
+ */
+export type DevLeadQuestionStatusKey =
+  | 'report.question.open'
+  | 'report.question.answered'
+  | 'report.question.expired'
+  | 'report.question.cancelled'
+  | 'report.question.unknown'
+
+/** Localized label key per known question status. Exhaustive by type. */
+const QUESTION_STATUS_LABEL_KEYS: Record<DevLeadQuestionStatus, DevLeadQuestionStatusKey> = {
+  open: 'report.question.open',
+  answered: 'report.question.answered',
+  expired: 'report.question.expired',
+  cancelled: 'report.question.cancelled',
+}
+
+/** Membership set of the known question statuses, for the wire-drift check. */
+const QUESTION_STATUS_SET: ReadonlySet<string> = new Set(Object.keys(QUESTION_STATUS_LABEL_KEYS))
+
+/**
+ * Map one wire question status to its localized label key.
+ * @param status - status value read from the projection.
+ * @returns the label key; unknown values fall back to the neutral label.
+ */
+export function questionStatusLabelKey(status: string): DevLeadQuestionStatusKey {
+  return QUESTION_STATUS_SET.has(status)
+    ? QUESTION_STATUS_LABEL_KEYS[status as DevLeadQuestionStatus]
+    : 'report.question.unknown'
+}
+
+/**
+ * Dictionary keys of the answer-lifecycle suffix, one per known status plus
+ * the wire-drift fallback. Independent from the question keys: `answered`
+ * does not imply the answer was `presented`.
+ */
+export type DevLeadAnswerStatusKey =
+  | 'report.answer.admitted'
+  | 'report.answer.claimed'
+  | 'report.answer.presented'
+  | 'report.answer.discarded'
+  | 'report.answer.failed'
+  | 'report.answer.unknown'
+
+/** Localized label key per known answer status. Exhaustive by type. */
+const ANSWER_STATUS_LABEL_KEYS: Record<DevLeadAnswerStatus, DevLeadAnswerStatusKey> = {
+  admitted: 'report.answer.admitted',
+  claimed: 'report.answer.claimed',
+  presented: 'report.answer.presented',
+  discarded: 'report.answer.discarded',
+  failed: 'report.answer.failed',
+}
+
+/** Membership set of the known answer statuses, for the wire-drift check. */
+const ANSWER_STATUS_SET: ReadonlySet<string> = new Set(Object.keys(ANSWER_STATUS_LABEL_KEYS))
+
+/**
+ * Map one wire answer status to its localized label key.
+ * @param status - status value read from the projection.
+ * @returns the label key; unknown values fall back to the neutral label.
+ */
+export function answerStatusLabelKey(status: string): DevLeadAnswerStatusKey {
+  return ANSWER_STATUS_SET.has(status)
+    ? ANSWER_STATUS_LABEL_KEYS[status as DevLeadAnswerStatus]
+    : 'report.answer.unknown'
+}
+
+/**
  * Wire-drift-safe epoch milliseconds of one digest row. The value crossed the
  * Remote boundary, so a missing, non-numeric, or non-finite instant must
  * degrade to a comparable number instead of poisoning a newest-row comparison
@@ -255,10 +412,35 @@ export interface DevLeadReportSummary {
   readonly kind: string
   /** Dictionary key of the localized kind label. */
   readonly labelKey: DevLeadReportKey
+  /** Presentation lane of the kind: action-required, background, or neutral. */
+  readonly lane: DevLeadReportLane
   /** Compact summary or message excerpt, when the report carries one. */
   readonly detail: string | undefined
   /** Epoch milliseconds used to compare with the latest notification; 0 when the wire value is unusable. */
   readonly at: number
+  /**
+   * Raw question-lifecycle literal of a question report, forwarded to the DOM;
+   * undefined on non-question rows, pre-Phase-1e rows, and unusable values.
+   */
+  readonly questionStatus: string | undefined
+  /** Dictionary key of the localized question status, present exactly when {@link questionStatus} is. */
+  readonly questionStatusKey: DevLeadQuestionStatusKey | undefined
+  /** Raw answer-lifecycle literal of a question report, forwarded to the DOM. */
+  readonly answerStatus: string | undefined
+  /** Dictionary key of the localized answer status, present exactly when {@link answerStatus} is. */
+  readonly answerStatusKey: DevLeadAnswerStatusKey | undefined
+}
+
+/**
+ * One optional lifecycle literal as a bounded single line, or undefined when
+ * the wire value is absent, non-string, or blank. Statuses cross the Remote
+ * boundary like every other chip field, so a drifted value must degrade to
+ * "absent" instead of rendering an empty suffix or throwing.
+ * @param value - raw status value read from the projection.
+ * @returns the sanitized literal, when there is one.
+ */
+function statusLine(value: unknown): string | undefined {
+  return typeof value === 'string' ? excerptLine(value, DEVLEAD_ERROR_EXCERPT_MAX) : undefined
 }
 
 /**
@@ -266,7 +448,7 @@ export interface DevLeadReportSummary {
  * @param report - retained report to summarize.
  * @returns the localized chip fields plus the Host canonical tooltip.
  */
-export function reportSummary(report: DevLeadReport): DevLeadReportSummary {
+export function reportSummary(report: DevLeadProjectionReport): DevLeadReportSummary {
   const title = typeof report.senderSessionTitle === 'string'
     ? excerptLine(report.senderSessionTitle, DEVLEAD_ERROR_EXCERPT_MAX)
     : undefined
@@ -276,13 +458,28 @@ export function reportSummary(report: DevLeadReport): DevLeadReportSummary {
     : typeof report.message === 'string'
       ? excerptLine(report.message, DEVLEAD_ERROR_EXCERPT_MAX)
       : undefined
+  // The fold derives the lifecycle pair for question reports only; a stray
+  // status on another kind (wire drift or a hand-edited log) is ignored rather
+  // than advertised as a question fact.
+  const isQuestion = report.kind === 'question'
+  const questionStatus = isQuestion ? statusLine(report.questionStatus) : undefined
+  const answerStatus = isQuestion ? statusLine(report.answerStatus) : undefined
+  const lifecycle = [questionStatus, answerStatus].filter(value => value !== undefined).join(' · ')
+  const baseTooltip = isDevLeadReportKind(report.kind)
+    ? reportLine(report)
+    : `${who} — report ${String(report.kind)}`
   return {
-    tooltip: isDevLeadReportKind(report.kind) ? reportLine(report) : `${who} — report ${String(report.kind)}`,
+    tooltip: lifecycle.length === 0 ? baseTooltip : `${baseTooltip} (${lifecycle})`,
     who,
     kind: String(report.kind),
     labelKey: reportLabelKey(report.kind),
+    lane: reportLane(report.kind),
     detail,
     at: epochMillis(report.at),
+    questionStatus,
+    questionStatusKey: questionStatus === undefined ? undefined : questionStatusLabelKey(questionStatus),
+    answerStatus,
+    answerStatusKey: answerStatus === undefined ? undefined : answerStatusLabelKey(answerStatus),
   }
 }
 
@@ -293,7 +490,9 @@ export function reportSummary(report: DevLeadReport): DevLeadReportSummary {
  * @param reports - retained reports, oldest first.
  * @returns the newest report, or null when the collection is unusable.
  */
-export function latestReport(reports: readonly DevLeadReport[] | undefined): DevLeadReport | null {
+export function latestReport(
+  reports: readonly DevLeadProjectionReport[] | undefined,
+): DevLeadProjectionReport | null {
   if (!Array.isArray(reports)) return null
   return reports.at(-1) ?? null
 }
