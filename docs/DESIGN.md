@@ -284,9 +284,10 @@ default: boolean; broken? }[]; reason? }`；`default` 是 Host 有效默认（`s
   必要时释放 archived 占用者 → 写 mode 记录”，因此同一进程内两个并发 `on` 只有一个能成功；
   `setEnabled(false)` / `reset` 也走同一临界区，关闭立即释放。扫描来源：
   - live Session/Agent 直接读 `projectionHandle.stateOf`（权威）；
-  - 持久语料经 `sessionQuery.listSessions()` 遍历；projection cache 的 active 行（`devLead`
-    enabled，含空 watch）精确 fold，inactive 行零 I/O 跳过，其余行有界读取（64 条上限）并
-    warning。准入扫描是 **fail closed** 的：语料 listing 失败，或 cache 明确标为 active 的行
+  - 持久语料经 `sessionQuery.listSessions()` 遍历；`header.origin === 'subagent'` 记录在
+    cache 预筛前直接跳过；projection cache 的 active 行（`devLead` enabled，含空 watch）以
+    `snapshot.inheritedEventCount` 初始化后精确 fold，inactive 行零 I/O 跳过，其余行有界
+    读取（64 条上限）并 warning。准入扫描是 **fail closed** 的：语料 listing 失败，或 cache 明确标为 active 的行
     读取失败，都返回 `DEVLEAD_SESSION_UNAVAILABLE`，不会在无法证明单活时放行；reconcile /
     status 仍走 best-effort。unknown 行的 64 条读取上限是既有的可用性取舍（极老的历史会话
     仍可能不被扫描），由 warning 暴露；
@@ -511,8 +512,10 @@ title 是展示元数据，DSH 0.2.2-rc.1–rc.5 的 WorkspaceRegistry 明确允
   `cachedSnapshot(header)?.values?.devLead` 做零 I/O 预筛：明确 `enabled === true` 且 watch 非空
   → 候选；明确 disabled / 空 watch → 跳过；`undefined`（cache 无行/无该 key）→ 候选（unknown，
   仅当 cache 服务存在时）。
-- **精确折叠**：对候选 `await sessionQuery.readSession(id)`，用 `applyDevLeadProjection` 从空
-  状态折叠事件得到含 `failure` 的权威状态；`failure !== null` → 首个损坏候选 warning 一次并跳过；
+- **精确折叠**：对候选 `await sessionQuery.readSession(id)`，用
+  `snapshot.inheritedEventCount` 初始化 `emptyDevLeadProjectionState(count)`，再
+  `applyDevLeadProjection` 折叠 `snapshot.events` 得到含 `failure` 的权威状态；fork 继承前缀里
+  的 `plugin:devlead/*` 记录不参与判断。`failure !== null` → 首个损坏候选 warning 一次并跳过；
   `enabled && sessions.length > 0` → 记录（关注集合以精确折叠为准，cache 只作预筛）。
 - **读取上限**：unknown 候选的全量日志读取有上限常量（64），超过后停止读取并 warning，避免
   Host 重启扫描成千上万历史会话；已知 enabled 的候选不计入该上限（它们是真正的 lead，必须
@@ -1140,7 +1143,7 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   + 阶段 3 88，阶段 3 含 agent preset roster、watched-Session 问题路由与排队 inbox 检查）；跳过阶段 2 时
   **127/127**（阶段 1 + 1b + 3）。
 - 本轮最终验证数字（工作树，排队 inbox 输入能力轮）：`pnpm verify` =
-  typecheck 通过 + **26 文件 / 871 tests** + 7 个构建产物；`node scripts/check-packages.mjs` →
+  typecheck 通过 + **26 文件 / 877 tests** + 7 个构建产物；`node scripts/check-packages.mjs` →
   `OK (6 packages)`；E2E 在安装版 rc.5 实跑 installed 与 patch **完整双流各 150/150**
   （phase 1 27 + 1b 12 + 2 23 + 3 88），`--no-worktree` **127/127**。上一轮（0.2.6+ 工具面审计，
   见 [AUDIT](AUDIT.md) §12）为 821 tests / 146/146。

@@ -527,6 +527,13 @@ tag、未执行任何 stage/approve/publish/GitHub Release 动作。
 - **准入扫描的 64 条 unknown 读上限**（SEC-3）：cache 缺失或旧行不可分类时，扫描仍有界；
   strict 模式只覆盖“可验证但失败”的路径。改成对 capped 也 fail closed 会让没有 projection
   cache 的大历史 Host 无法开启 DevLead，属于可用性与严格性的取舍，保留 warning 并记录。
+  **与 stateVersion bump 的迁移交互**：本轮把 `devLead` / `devLeadWatch` / `devLeadMode`
+  升到 3/2/2，升级后旧 cache 行会一次性失效，cold scan 可能把大量历史 Session 归为 unknown；
+  若 unknown 行超过 64 条，排在后面的 cold active lead 可能被跳过并只留下 warning，此时
+  `setEnabled(true)` 仍可能成功。我们**没有**在没有产品决策的情况下改成 capped 即 fail
+  closed（会让无 cache 的大历史 Host 永久无法开启 DevLead）；缓解方式是打开该 cold lead
+  或让 cache 重建，重建后 active/inactive 行恢复精确预筛。该残余已在此记录，后续若要严格
+  保证单活，应引入持久 active 指针或提高/取消上限并配套性能预算。
 - **裸 `source.kind === 'user'` 仍被当作人类在场**（SEC-4）：DSH 的 source 是 merge-extensible
   开放集，某些插件（timeline、claude-code-mods、headless/SDK）也会以 `user` 注入内容。本轮
   已跳过已知 context kind/form 并让未知 kind fail closed；默认 Web 组合下 `user` 仍代表人类
@@ -564,3 +571,51 @@ tag、未执行任何 stage/approve/publish/GitHub Release 动作。
   - 侧栏 active lead 行有强调色 `::after` ring、无行尾图标；watched 行有弱化准星；
   - 点回开关后 `aria-pressed=false` 且 `DevLeadBar` 消失；临时 home 已删除。
 - 审计边界：未修改 `@deepseek-ai/*` 源码、未解压 app.asar、未触碰其他仓库或 release Session。
+
+### 13.5 Follow-up：cold fold 继承前缀补齐（2026-11-19）
+
+§13.2 的 SEC-1 修复覆盖了注册 projection 的 `init(header, inheritedEventCount)`，但复核发现
+两条 **cold/persisted fold** 仍从 `emptyDevLeadProjectionState()`（count 0）开始：
+
+- `scanActiveSessions`：`query.readSession(id)` 的返回快照被解构后只保留 `events`，丢弃
+  `inheritedEventCount`；且循环没有跳过 `header.origin === 'subagent'`。
+- `persistedLeadRecords`：同样只保留 `events`，丢弃 `inheritedEventCount`（已有 subagent
+  origin 跳过）。
+
+影响：legacy subagent fork 的日志含父会话 `plugin:devlead/mode|watch` 前缀时，cold admission
+会把它 fold 成 active occupant（`DEVLEAD_ALREADY_ACTIVE`）；普通 Session fork 还可能在 boot
+reconcile 中被当成 ghost lead，按 `createdAt` outrank 并尝试 release 真正的 parent。
+`stateVersion` 3/2/2 使旧 cache 行失效后，更多 fork 会走 unknown cold fold，问题更明显。
+
+修复：
+
+- `scanActiveSessions` 在 cache 预筛与日志读取**之前**跳过 `origin === 'subagent'`，并加入
+  `seen`；读取 `snapshot` 后用 `snapshot.inheritedEventCount` 初始化 fold。
+- `persistedLeadRecords` 同样用 `snapshot.inheritedEventCount` 初始化 fold；保留既有
+  subagent origin 跳过。
+- 全仓复核：`liveAttachLeads` 已跳过 subagent；`views.ts` 的 `readSession` 只读 turn facts，
+  不 fold DevLead 状态；测试 helper `projectionStateOf` 改为使用
+  `session.inheritedEventCount`。没有其他 cold fold 调用点。
+- 回归测试（`service.spec.ts`）：
+  - real seeded subagent fork（父前缀含 enabled mode + watch）在 cold admission 中被跳过，
+    `setEnabled(true)` 成功且不读该日志；
+  - real ordinary fork 在 boot rehydration 中不被当成 lead，parent 仍保持 supervisor；
+  - stateVersion 失效的 stale cache 行回退到 unknown 后，cold fold 仍按 inherited prefix
+    跳过，parent 仍保持 active。
+- Harness：`FakePersistedSession` / `readSession` 支持每行 `inheritedEventCount`；
+  `buildForkedPersistedLogs` 用真实 `sessions.fork` / seeded subagent Session 构造 fork 日志，
+  `seedPersistedLog` 保留 count。
+
+P2 复核：
+
+- **64-cap × stateVersion 迁移**：已写入 §13.3；没有未经证明改成 capped 即 fail closed。
+- **tool 参数登记**：新增 `TOOL_ARGUMENT_KEYS` 与每个注册工具 `parameters` keys 的逐一比对
+  测试，新增参数漏登记会直接失败。
+- **prune throttle**：新增 1 小时内第二次 report write 不再 sweep 的测试；新增
+  `deleteMany` 失败时 prune 吞错、report delivery 仍成功的测试。
+
+补丁后验证：`pnpm verify` = typecheck + **26 文件 / 877 tests** + build；`pnpm check:packages`
+OK；e2e 在安装版 DSH 0.2.2-rc.5 上 `--flow patch` 与 `--flow installed` 各 **150/150**
+（phase 1 27 + 1b 12 + 2 23 + 3 88，3 条 model 正向检查因无 provider 凭据 SKIP）。
+README/README.zh 中“fork 继承记录不参与 fold / subagent 永远不具备资格”的表述现在对 live、
+cold admission 与 cold rehydration 三条路径都成立。

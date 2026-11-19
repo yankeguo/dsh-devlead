@@ -2436,6 +2436,14 @@ export class DevLeadService extends Service {
       signal?.throwIfAborted()
       const sessionId = String(record.header.id)
       if (seen.has(sessionId)) continue
+      // A subagent Session is never a lead candidate. Skip it before the cache
+      // pre-filter and the log read: a legacy fork may carry the parent's
+      // plugin:devlead/mode/watch records in its inherited prefix, and those
+      // records must not make it an occupant.
+      if (record.header.origin === 'subagent') {
+        seen.add(sessionId)
+        continue
+      }
       const prefilter = cache === undefined
         ? 'unknown'
         : devLeadActivePrefilterOf(cache, record.header)
@@ -2452,8 +2460,11 @@ export class DevLeadService extends Service {
       }
       seen.add(sessionId)
       let events: readonly SessionEvent[]
+      let inheritedEventCount = 0
       try {
-        events = (await query.readSession(record.header.id)).events
+        const snapshot = await query.readSession(record.header.id)
+        events = snapshot.events
+        inheritedEventCount = snapshot.inheritedEventCount
       } catch (error: unknown) {
         if (signal?.aborted === true) throw error
         if (strict && prefilter === 'active') {
@@ -2469,7 +2480,10 @@ export class DevLeadService extends Service {
         }
         continue
       }
-      let state = emptyDevLeadProjectionState()
+      // The query snapshot carries the exact fork-inherited prefix length. A
+      // cold fold must start with it, exactly like the registered projection
+      // unit initialized by the Session registry.
+      let state = emptyDevLeadProjectionState(inheritedEventCount)
       for (const event of events) {
         state = applyDevLeadProjection(state, event)
         if (state.failure !== null) break
@@ -2789,8 +2803,11 @@ export class DevLeadService extends Service {
         unknownReads += 1
       }
       let events: readonly SessionEvent[]
+      let inheritedEventCount = 0
       try {
-        events = (await query.readSession(record.header.id)).events
+        const snapshot = await query.readSession(record.header.id)
+        events = snapshot.events
+        inheritedEventCount = snapshot.inheritedEventCount
       } catch (error: unknown) {
         if (!warnedRead) {
           warnedRead = true
@@ -2798,7 +2815,7 @@ export class DevLeadService extends Service {
         }
         continue
       }
-      let state = emptyDevLeadProjectionState()
+      let state = emptyDevLeadProjectionState(inheritedEventCount)
       for (const event of events) {
         state = applyDevLeadProjection(state, event)
         if (state.failure !== null) break

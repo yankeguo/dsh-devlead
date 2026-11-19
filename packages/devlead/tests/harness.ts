@@ -14,7 +14,8 @@ import type { Agent, AgentRegistry, AgentStatus, ModelSelection, TurnBoundaryPro
 import type { SessionController, SessionCreateRequest, SessionCreateValue } from '@deepseek-ai/dsh-api-session-controller'
 import { MessageId, createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { TextBlock, UserMessage } from '@deepseek-ai/dsh-llm'
-import SessionStore, { SessionId, SessionSeq, appendPluginRecord, pluginRecordOf } from '@deepseek-ai/dsh-session'
+import SessionStore, { SessionId, SessionLogOffset, SessionSeq, appendPluginRecord, pluginRecordOf } from '@deepseek-ai/dsh-session'
+import { buildForkSeed } from '@deepseek-ai/dsh-session/fork'
 import type { Session, SessionEvent, SessionHeader, TurnEndReason } from '@deepseek-ai/dsh-session'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import type { SessionQueryEngine } from '@deepseek-ai/dsh-session-query'
@@ -80,7 +81,7 @@ export function messageText(message: UserMessage): string {
  * @returns the fold state, exactly as the registered projection unit produces it.
  */
 export function projectionStateOf(session: Session): DevLeadProjectionState {
-  let state = emptyDevLeadProjectionState()
+  let state = emptyDevLeadProjectionState(session.inheritedEventCount)
   for (const event of session.snapshotEvents()) state = applyDevLeadProjection(state, event)
   return state
 }
@@ -685,6 +686,8 @@ interface FakePersistedSession {
   readonly header: SessionHeader
   readonly events: readonly SessionEvent[]
   readonly title?: string
+  /** Exact fork-inherited prefix length; zero for a plain persisted Session. */
+  readonly inheritedEventCount: number
 }
 
 /** Fake `ctx.sessionQuery`: scripted cold logs and folded titles. */
@@ -722,7 +725,7 @@ export class FakeSessionQuery {
    * @returns this fake, for chaining.
    */
   seed(sessionId: string, events: readonly SessionEvent[], title?: string): this {
-    return this.seedRecord({ id: SessionId(sessionId) } as unknown as SessionHeader, events, title)
+    return this.seedRecord({ id: SessionId(sessionId) } as unknown as SessionHeader, events, title, 0)
   }
 
   /**
@@ -732,8 +735,18 @@ export class FakeSessionQuery {
    * @param title - folded title, when one exists.
    * @returns this fake, for chaining.
    */
-  seedRecord(header: SessionHeader, events: readonly SessionEvent[], title?: string): this {
-    this.rows.set(String(header.id), title === undefined ? { header, events: [...events] } : { header, events: [...events], title })
+  seedRecord(
+    header: SessionHeader,
+    events: readonly SessionEvent[],
+    title?: string,
+    inheritedEventCount = 0,
+  ): this {
+    this.rows.set(String(header.id), {
+      header,
+      events: [...events],
+      ...(title === undefined ? {} : { title }),
+      inheritedEventCount,
+    })
     return this
   }
 
@@ -758,7 +771,7 @@ export class FakeSessionQuery {
     if (this.readError !== undefined) throw this.readError
     const row = this.rows.get(String(sessionId))
     if (row === undefined) throw new Error(`persisted Session ${String(sessionId)} does not exist`)
-    return { session: row.header, inheritedEventCount: 0, events: row.events }
+    return { session: row.header, inheritedEventCount: row.inheritedEventCount, events: row.events }
   }
 
   /**
@@ -833,6 +846,8 @@ export class FakeSessionQuery {
 export interface FakeCachedProjectionRow {
   /** Projection values map; the cache stores one entry per registered unit. */
   readonly values?: Readonly<Record<string, unknown>>
+  /** Emulate a stateVersion-mismatched row the real cache discards on read. */
+  readonly stale?: boolean
 }
 
 /**
@@ -867,7 +882,11 @@ export class FakeProjectionCache {
    * @param state - enabled flag and watch set the cached digest reports.
    * @returns this fake, for chaining.
    */
-  setDevLead(sessionId: string, state: { readonly enabled: boolean; readonly sessions?: readonly string[] }): this {
+  setDevLead(
+    sessionId: string,
+    state: { readonly enabled: boolean; readonly sessions?: readonly string[] },
+    options: { readonly stale?: boolean } = {},
+  ): this {
     const values = {
       devLead: {
         enabled: state.enabled,
@@ -875,7 +894,7 @@ export class FakeProjectionCache {
         notifications: [],
       },
     }
-    return this.set(sessionId, { values })
+    return this.set(sessionId, options.stale === true ? { values, stale: true } : { values })
   }
 
   /**
@@ -896,7 +915,9 @@ export class FakeProjectionCache {
     this.lookupCalls += 1
     if (this.lookupError !== undefined) throw this.lookupError
     const id = (header as { id?: unknown } | undefined)?.id
-    return typeof id === 'string' ? this.rows.get(id) : undefined
+    const row = typeof id === 'string' ? this.rows.get(id) : undefined
+    // A stateVersion-mismatched row is discarded, exactly like the real cache.
+    return row?.stale === true ? undefined : row
   }
 
   /**
@@ -1118,6 +1139,8 @@ export interface PersistedLog {
   readonly header: SessionHeader
   /** Complete raw committed events, in log order. */
   readonly events: readonly SessionEvent[]
+  /** Exact fork-inherited prefix length; zero for a plain Session. */
+  readonly inheritedEventCount: number
 }
 
 /**
@@ -1141,7 +1164,7 @@ export async function buildPersistedLog(
       ? ctx.sessions.create(SessionId(sessionId))
       : ctx.sessions.create(SessionId(sessionId), { meta: { cwd: options.cwd } })
     build(session)
-    return { header: session.header, events: session.snapshotEvents() }
+    return { header: session.header, events: session.snapshotEvents(), inheritedEventCount: 0 }
   } finally {
     await ctx.fiber.dispose()
   }
@@ -1175,8 +1198,90 @@ export async function seedPersistedLead(query: FakeSessionQuery, seed: Persisted
     }
     seed.seed?.(session)
   }, seed.cwd === undefined ? {} : { cwd: seed.cwd })
-  query.seedRecord(log.header, log.events)
+  seedPersistedLog(query, log)
   return log.header
+}
+
+/** One pair of real parent/fork logs built through a throwaway Session store. */
+export interface ForkedPersistedLogs {
+  /** The parent Session whose completed prefix the fork copied. */
+  readonly parent: PersistedLog
+  /** The fork child, carrying the inherited prefix length. */
+  readonly child: PersistedLog
+}
+
+/** Inputs of {@link buildForkedPersistedLogs}. */
+export interface ForkedPersistedLogSeed {
+  /** Parent Session identity. */
+  readonly parentId: string
+  /** Fork child Session identity. */
+  readonly childId: string
+  /** Fork origin; `subagent` creates a real subagent-origin seeded Session. */
+  readonly origin?: 'subagent'
+  /** Seed the parent log whose prefix the child inherits. */
+  readonly buildInherited: (session: Session) => void
+  /** Seed child-owned events after the inherited prefix. */
+  readonly buildChild?: (session: Session) => void
+  /** Recorded working directory for both Sessions. */
+  readonly cwd?: string
+}
+
+/**
+ * Build a real parent log and a real fork child through the same Session store
+ * semantics DSH uses: `sessions.fork` for an ordinary Session or an explicitly
+ * seeded `origin: 'subagent'` Session for a subagent fork.
+ * @param seed - parent/child identities and log seeding.
+ * @returns both captured logs, with the child's inherited prefix length.
+ */
+export async function buildForkedPersistedLogs(seed: ForkedPersistedLogSeed): Promise<ForkedPersistedLogs> {
+  const ctx = new Context()
+  await ctx.plugin(SessionStore)
+  try {
+    const parent = ctx.sessions.create(
+      SessionId(seed.parentId),
+      seed.cwd === undefined ? undefined : { meta: { cwd: seed.cwd } },
+    )
+    seed.buildInherited(parent)
+    const last = parent.snapshotEvents().at(-1)
+    if (last === undefined) throw new Error('a fork parent must carry at least one event')
+    let child: Session
+    if (seed.origin === 'subagent') {
+      const inheritedEventCount = SessionLogOffset(Number(last.seq) + 1)
+      child = ctx.sessions.create(SessionId(seed.childId), {
+        seed: buildForkSeed(parent.snapshotEvents(), last.seq),
+        inheritedEventCount,
+        meta: {
+          ...(seed.cwd === undefined ? {} : { cwd: seed.cwd }),
+          isSeeded: true,
+          origin: 'subagent',
+        },
+      })
+    } else {
+      child = ctx.sessions.fork(parent, last.seq, SessionId(seed.childId))
+    }
+    seed.buildChild?.(child)
+    return {
+      parent: { header: parent.header, events: parent.snapshotEvents(), inheritedEventCount: 0 },
+      child: {
+        header: child.header,
+        events: child.snapshotEvents(),
+        inheritedEventCount: Number(child.inheritedEventCount),
+      },
+    }
+  } finally {
+    await ctx.fiber.dispose()
+  }
+}
+
+/**
+ * Seed one captured log (plain or forked) into a fake query engine, preserving
+ * its inherited prefix length.
+ * @param query - fake query engine receiving the row.
+ * @param log - captured persisted log.
+ * @param title - folded title, when one exists.
+ */
+export function seedPersistedLog(query: FakeSessionQuery, log: PersistedLog, title?: string): void {
+  query.seedRecord(log.header, log.events, title, log.inheritedEventCount)
 }
 
 /**
@@ -1507,12 +1612,19 @@ export class FakeStorageTable {
   putError: Error | undefined
   /** Number of durable puts attempted. */
   putCalls = 0
+  /** Number of table snapshots requested (outbox prune/read sweeps). */
+  entriesCalls = 0
+  /** Number of bulk deletes attempted. */
+  deleteManyCalls = 0
+  /** When set, every bulk delete rejects with this failure. */
+  deleteManyError: Error | undefined
 
   get(key: string): unknown {
     return this.records.get(key)
   }
 
   entries(): IterableIterator<[string, unknown]> {
+    this.entriesCalls += 1
     return this.records.entries()
   }
 
@@ -1527,6 +1639,8 @@ export class FakeStorageTable {
   }
 
   async deleteMany(keys: readonly string[]): Promise<number> {
+    this.deleteManyCalls += 1
+    if (this.deleteManyError !== undefined) throw this.deleteManyError
     let removed = 0
     for (const key of keys) if (this.records.delete(key)) removed += 1
     return removed

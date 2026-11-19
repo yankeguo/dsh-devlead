@@ -57,6 +57,7 @@ import {
   appendTurnStart,
   attachPersistedLead,
   bootService,
+  buildForkedPersistedLogs,
   disposeHarnesses,
   flushMicrotasks,
   humanMessage,
@@ -66,6 +67,7 @@ import {
   projectionStateOf,
   queuedMessage,
   seedPersistedLead,
+  seedPersistedLog,
 } from './harness.ts'
 import type { ServiceHarness } from './harness.ts'
 import { sessionEvent } from './fixtures.ts'
@@ -481,6 +483,100 @@ describe('global single active mode', () => {
     expect(notificationRecords(duplicate)).toEqual([])
   })
 
+  it('skips a legacy subagent fork inherited prefix during cold admission', async () => {
+    const query = new FakeSessionQuery()
+    const cache = new FakeProjectionCache()
+    const watchedId = 'fork-admission-child'
+    const logs = await buildForkedPersistedLogs({
+      parentId: 'fork-admission-parent',
+      childId: 'fork-admission-subagent',
+      origin: 'subagent',
+      buildInherited: (session) => {
+        appendPluginRecord(session, DEVLEAD_MODE_RECORD_TYPE, modeRecord(true, T0))
+        appendPluginRecord(session, DEVLEAD_WATCH_RECORD_TYPE, watchRecord([watchedId], T0))
+      },
+    })
+    expect(logs.child.inheritedEventCount).toBeGreaterThan(0)
+    seedPersistedLog(query, logs.child)
+    cache.setDevLead('fork-admission-subagent', { enabled: true, sessions: [watchedId] })
+    const harness = await bootService({
+      sessionIds: [watchedId],
+      sessionQuery: query,
+      projectionCache: cache,
+    })
+    const child = new FakeAgent(requireSession(harness, watchedId))
+    harness.agents.add(child)
+    await harness.service.setEnabled(child.agent, true)
+    expect(harness.service.isEnabled(child.agent)).toBe(true)
+    // The subagent origin is skipped before the cache pre-filter or log read.
+    expect(query.readSessionCalls).toBe(0)
+  })
+
+  it('does not rehydrate an ordinary fork as a lead or displace its parent', async () => {
+    const query = new FakeSessionQuery()
+    const cache = new FakeProjectionCache()
+    const persistence = new FakeSessionPersistence()
+    const watchedId = 'fork-watched-child'
+    const logs = await buildForkedPersistedLogs({
+      parentId: 'fork-parent-lead',
+      childId: 'fork-ordinary-child',
+      buildInherited: (session) => {
+        appendPluginRecord(session, DEVLEAD_MODE_RECORD_TYPE, modeRecord(true, T0))
+        appendPluginRecord(session, DEVLEAD_WATCH_RECORD_TYPE, watchRecord([watchedId], T0))
+      },
+    })
+    expect(logs.child.inheritedEventCount).toBeGreaterThan(0)
+    seedPersistedLog(query, logs.parent)
+    seedPersistedLog(query, logs.child)
+    cache.setDevLead('fork-parent-lead', { enabled: true, sessions: [watchedId] })
+    cache.setDevLead('fork-ordinary-child', { enabled: true, sessions: [watchedId] })
+    persistence.ids = ['fork-parent-lead', 'fork-ordinary-child']
+    const harness = await bootService({
+      sessionIds: [watchedId],
+      sessionQuery: query,
+      projectionCache: cache,
+      sessionPersistence: persistence,
+      config: { notificationBatchMs: 0 },
+    })
+    const watched = new FakeAgent(requireSession(harness, watchedId))
+    harness.agents.add(watched)
+    expect(harness.service.supervisorOf(watched.agent)).toBe('fork-parent-lead')
+    expect(harness.service.isSupervised(watched.agent)).toBe(true)
+  })
+
+  it('refolds a stale fork cache row with its inherited prefix', async () => {
+    const query = new FakeSessionQuery()
+    const cache = new FakeProjectionCache()
+    const persistence = new FakeSessionPersistence()
+    const watchedId = 'stale-fork-watched-child'
+    const logs = await buildForkedPersistedLogs({
+      parentId: 'stale-fork-parent',
+      childId: 'stale-fork-child',
+      buildInherited: (session) => {
+        appendPluginRecord(session, DEVLEAD_MODE_RECORD_TYPE, modeRecord(true, T0))
+        appendPluginRecord(session, DEVLEAD_WATCH_RECORD_TYPE, watchRecord([watchedId], T0))
+      },
+    })
+    seedPersistedLog(query, logs.parent)
+    seedPersistedLog(query, logs.child)
+    cache.setDevLead('stale-fork-parent', { enabled: true, sessions: [watchedId] })
+    // The stateVersion bump discards the old cache row: the pre-filter becomes
+    // unknown and the cold fold must still honor the inherited prefix.
+    cache.setDevLead('stale-fork-child', { enabled: true, sessions: [watchedId] }, { stale: true })
+    persistence.ids = ['stale-fork-parent', 'stale-fork-child']
+    const harness = await bootService({
+      sessionIds: [watchedId],
+      sessionQuery: query,
+      projectionCache: cache,
+      sessionPersistence: persistence,
+      config: { notificationBatchMs: 0 },
+    })
+    const watched = new FakeAgent(requireSession(harness, watchedId))
+    harness.agents.add(watched)
+    expect(harness.service.supervisorOf(watched.agent)).toBe('stale-fork-parent')
+    expect(query.readSessionCalls).toBeGreaterThanOrEqual(2)
+  })
+
   it('rejects a live activation when a cold persisted Session holds the mode', async () => {
     const query = new FakeSessionQuery()
     const cache = new FakeProjectionCache()
@@ -890,6 +986,72 @@ describe('mid-turn reports', () => {
       report: { message: string }
     }>
     expect(rows.map(row => row.report.message)).toEqual(['fresh row'])
+  })
+
+  it('throttles report-write outbox sweeps to once per hour', async () => {
+    const storage = new FakeStorageDomain()
+    const harness = await bootService({
+      enabled: true,
+      sessionIds: ['child-throttle'],
+      watched: ['child-throttle'],
+      storageDomain: storage,
+    })
+    const child = new FakeAgent(requireSession(harness, 'child-throttle'))
+    harness.agents.add(child)
+    const table = storage.table('devlead_report_outbox', 'pending')
+    const base = Date.now()
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(base + 2 * 60 * 60 * 1_000)
+    try {
+      await harness.service.reportProgress(child.agent, { message: 'first sweep' })
+      const afterFirst = table.entriesCalls
+      expect(afterFirst).toBeGreaterThan(0)
+      // One minute later the throttle must skip the second sweep entirely.
+      clock.mockReturnValue(base + 2 * 60 * 60 * 1_000 + 60 * 1_000)
+      await harness.service.reportProgress(child.agent, { message: 'second write' })
+      expect(table.entriesCalls).toBe(afterFirst)
+    } finally {
+      clock.mockRestore()
+    }
+  })
+
+  it('keeps report delivery alive when the outbox sweep rejects', async () => {
+    const storage = new FakeStorageDomain()
+    const harness = await bootService({
+      enabled: true,
+      sessionIds: ['child-prune-failure'],
+      watched: ['child-prune-failure'],
+      storageDomain: storage,
+    })
+    const child = new FakeAgent(requireSession(harness, 'child-prune-failure'))
+    harness.agents.add(child)
+    const table = storage.table('devlead_report_outbox', 'pending')
+    const base = Date.now()
+    // Seed after boot so the open-time sweep cannot consume the stale row.
+    seedOutboxRow(
+      storage,
+      devLeadReport({
+        senderSessionId: 'child-prune-failure',
+        leadSessionId: String(harness.lead.id),
+        turn: 1,
+        kind: 'progress',
+        message: 'stale before failed sweep',
+        at: T0,
+      }),
+      base - 8 * 24 * 60 * 60 * 1_000,
+    )
+    table.deleteManyError = new Error('simulated prune failure')
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(base + 2 * 60 * 60 * 1_000)
+    try {
+      const receipt = await harness.service.reportProgress(child.agent, { message: 'fresh report' })
+      expect(receipt.durable).toBe(true)
+      expect(table.deleteManyCalls).toBeGreaterThan(0)
+    } finally {
+      clock.mockRestore()
+      table.deleteManyError = undefined
+    }
+    const rows = [...table.records.values()] as Array<{ report: { message: string } }>
+    expect(rows.some(row => row.report.message === 'stale before failed sweep')).toBe(true)
+    expect(rows.some(row => row.report.message === 'fresh report')).toBe(false)
   })
 
   it('closes a late outbox open that races disposal and reopens cleanly', async () => {
