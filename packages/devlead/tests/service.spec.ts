@@ -64,6 +64,7 @@ import {
   nextTask,
   notificationRecords,
   projectionStateOf,
+  queuedMessage,
   seedPersistedLead,
 } from './harness.ts'
 import type { ServiceHarness } from './harness.ts'
@@ -3806,3 +3807,267 @@ function durableResetRecords(harness: ServiceHarness): Array<Record<string, unkn
     return record?.type === DEVLEAD_RESET_RECORD_TYPE ? [record.data as Record<string, unknown>] : []
   })
 }
+
+describe('queued inbox visibility', () => {
+  it('projects pending inputs with identity, boundary, source, excerpt, and enqueue instant', async () => {
+    const harness = await bootService({ enabled: true, sessionIds: ['target'], watched: ['target'] })
+    const target = new FakeAgent(requireSession(harness, 'target'))
+    harness.agents.add(target)
+    const own = queuedMessage(
+      'msg-own',
+      { kind: 'devlead', form: 'relay', senderSessionId: String(harness.lead.id) },
+      'stale instruction',
+    )
+    const human = queuedMessage('msg-human', { kind: 'user' }, 'human follow-up')
+    target.inbox.nextTurn.push(own)
+    target.inbox.nextStep.push(human)
+    // The durable enqueue splice is the source of enqueuedAt; the human message
+    // has no recorded splice in this log and must omit the field.
+    const event = target.session.append('agent/inbox/spliced', { target: 'next-turn', start: 0, inserted: [own] })
+    expect(harness.service.sessionQueuedInputs(harness.lead.agent, 'target')).toEqual([
+      {
+        id: 'msg-own',
+        boundary: 'next-turn',
+        sourceKind: 'devlead',
+        sourceForm: 'relay',
+        senderSessionId: String(harness.lead.id),
+        excerpt: 'stale instruction',
+        enqueuedAt: event.time,
+      },
+      { id: 'msg-human', boundary: 'next-step', sourceKind: 'user', excerpt: 'human follow-up' },
+    ])
+  })
+
+  it('reports an empty list for a live empty inbox and undefined for a cold target', async () => {
+    const harness = await bootService({ enabled: true, sessionIds: ['target'] })
+    const target = new FakeAgent(requireSession(harness, 'target'))
+    harness.agents.add(target)
+    expect(harness.service.sessionQueuedInputs(harness.lead.agent, 'target')).toEqual([])
+    harness.agents.remove(target.id)
+    expect(harness.service.sessionQueuedInputs(harness.lead.agent, 'target')).toBeUndefined()
+  })
+})
+
+describe('retract queued input', () => {
+  async function bootTarget(): Promise<{ harness: ServiceHarness; target: FakeAgent }> {
+    const harness = await bootService({ enabled: true, sessionIds: ['target'], watched: ['target'] })
+    const target = new FakeAgent(requireSession(harness, 'target'))
+    harness.agents.add(target)
+    return { harness, target }
+  }
+
+  it('withdraws an own relay from either boundary and is idempotent', async () => {
+    const { harness, target } = await bootTarget()
+    const own = queuedMessage('msg-own', { kind: 'devlead', form: 'relay', senderSessionId: String(harness.lead.id) })
+    const step = queuedMessage('msg-step', { kind: 'devlead', form: 'relay', senderSessionId: String(harness.lead.id) })
+    target.inbox.nextTurn.push(own)
+    target.inbox.nextStep.push(step)
+    expect(await harness.service.retractQueuedInput(harness.lead.agent, 'target', 'msg-own'))
+      .toEqual({ sessionId: 'target', inputId: 'msg-own', retracted: true })
+    expect(target.inbox.nextTurn).toEqual([])
+    expect(target.inbox.nextStep).toHaveLength(1)
+    expect(await harness.service.retractQueuedInput(harness.lead.agent, 'target', 'msg-step'))
+      .toEqual({ sessionId: 'target', inputId: 'msg-step', retracted: true })
+    // Already withdrawn: the idempotent outcome, not an error.
+    expect(await harness.service.retractQueuedInput(harness.lead.agent, 'target', 'msg-own'))
+      .toEqual({ sessionId: 'target', inputId: 'msg-own', retracted: false })
+  })
+
+  it('refuses human, scheduled, notice, and other-lead inputs and leaves them pending', async () => {
+    const { harness, target } = await bootTarget()
+    const foreign = [
+      queuedMessage('msg-human', { kind: 'user' }),
+      queuedMessage('msg-sched', { kind: 'schedule' }),
+      queuedMessage('msg-notice', { kind: 'devlead', form: 'notice' }),
+      queuedMessage('msg-other', { kind: 'devlead', form: 'relay', senderSessionId: 'another-lead' }),
+    ]
+    target.inbox.nextTurn.push(...foreign)
+    for (const message of foreign) {
+      const error = await expectCodeAsync(
+        () => harness.service.retractQueuedInput(harness.lead.agent, 'target', String(message.id)),
+        'DEVLEAD_INVALID_INPUT',
+      )
+      expect(error.message).toContain('not authored by this DevLead Session')
+    }
+    expect(target.inbox.nextTurn.map(message => String(message.id)))
+      .toEqual(['msg-human', 'msg-sched', 'msg-notice', 'msg-other'])
+  })
+
+  it('refuses a self-addressed retraction and a cold target', async () => {
+    const { harness, target } = await bootTarget()
+    await expectCodeAsync(
+      () => harness.service.retractQueuedInput(harness.lead.agent, String(harness.lead.id), 'msg-1'),
+      'DEVLEAD_INVALID_INPUT',
+    )
+    harness.agents.remove(target.id)
+    await expectCodeAsync(
+      () => harness.service.retractQueuedInput(harness.lead.agent, 'target', 'msg-1'),
+      'DEVLEAD_SESSION_UNAVAILABLE',
+    )
+  })
+
+  it('resolves a unique prefix before retracting', async () => {
+    const { harness, target } = await bootTarget()
+    target.inbox.nextTurn.push(
+      queuedMessage('msg-own', { kind: 'devlead', form: 'relay', senderSessionId: String(harness.lead.id) }),
+    )
+    expect(await harness.service.retractQueuedInput(harness.lead.agent, 'tar', 'msg-own'))
+      .toEqual({ sessionId: 'target', inputId: 'msg-own', retracted: true })
+  })
+})
+
+describe('interrupt inbox policies', () => {
+  /**
+   * Register one fake stop provider and return the Session ids it observed.
+   * Emulates the Host turn provider: `agent.cancel({kind:'user'})` clears the
+   * inbox before aborting the turn, which is exactly the behavior the retention
+   * policies restore against.
+   */
+  function recordStops(harness: ServiceHarness, target?: FakeAgent): string[] {
+    const stops: string[] = []
+    harness.ctx.on('workspace/session-stop', ({ sessionId }) => {
+      stops.push(String(sessionId))
+      target?.inbox.clear()
+      target?.setRunning(false)
+    })
+    return stops
+  }
+
+  async function bootRunning(): Promise<{ harness: ServiceHarness; target: FakeAgent }> {
+    const harness = await bootService({ enabled: true, sessionIds: ['target'] })
+    const target = new FakeAgent(requireSession(harness, 'target'))
+    target.setRunning(true)
+    harness.agents.add(target)
+    return { harness, target }
+  }
+
+  /** Seed one own relay, one human turn prompt, and one human steering note. */
+  function seed(target: FakeAgent, leadId: string): { own: ReturnType<typeof queuedMessage>; human: ReturnType<typeof queuedMessage>; steering: ReturnType<typeof queuedMessage> } {
+    const own = queuedMessage('msg-own', { kind: 'devlead', form: 'relay', senderSessionId: leadId }, 'stale own instruction')
+    const human = queuedMessage('msg-human', { kind: 'user' }, 'human instruction')
+    const steering = queuedMessage('msg-step', { kind: 'user' }, 'steering note')
+    target.inbox.nextTurn.push(own, human)
+    target.inbox.nextStep.push(steering)
+    return { own, human, steering }
+  }
+
+  it('keep restores every pending message with its id, boundary, and order ahead of the replacement', async () => {
+    const { harness, target } = await bootRunning()
+    const { own, human, steering } = seed(target, String(harness.lead.id))
+    const stops = recordStops(harness, target)
+    const receipt = await harness.service.promptSession(harness.lead.agent, 'target', 'replacement', {
+      interrupt: true,
+      interruptInbox: 'keep',
+    })
+    expect(stops).toEqual(['target'])
+    expect(receipt.interrupted).toBe(true)
+    expect(receipt.retainedInputs).toBe(3)
+    // Restored messages keep their identity and queue order; the replacement
+    // prompt is admitted after them.
+    expect(target.inbox.nextTurn).toHaveLength(3)
+    expect(target.inbox.nextTurn[0]).toBe(own)
+    expect(target.inbox.nextTurn[1]).toBe(human)
+    expect(messageText(target.inbox.nextTurn[2]!)).toContain('replacement')
+    expect(target.inbox.nextStep).toHaveLength(1)
+    expect(target.inbox.nextStep[0]).toBe(steering)
+  })
+
+  it('clear-own drops only this lead\'s relays and keeps human input', async () => {
+    const { harness, target } = await bootRunning()
+    const { human, steering } = seed(target, String(harness.lead.id))
+    recordStops(harness, target)
+    const receipt = await harness.service.promptSession(harness.lead.agent, 'target', 'replacement', {
+      interrupt: true,
+      interruptInbox: 'clear-own',
+    })
+    expect(receipt.retainedInputs).toBe(2)
+    expect(target.inbox.nextTurn).toHaveLength(2)
+    expect(target.inbox.nextTurn[0]).toBe(human)
+    expect(messageText(target.inbox.nextTurn[1]!)).toContain('replacement')
+    expect(target.inbox.nextStep[0]).toBe(steering)
+  })
+
+  it('clear-all stays the default: the stop clears everything and no retention is reported', async () => {
+    for (const options of [{ interrupt: true }, { interrupt: true, interruptInbox: 'clear-all' as const }]) {
+      const { harness, target } = await bootRunning()
+      seed(target, String(harness.lead.id))
+      recordStops(harness, target)
+      const receipt = await harness.service.promptSession(harness.lead.agent, 'target', 'replacement', options)
+      expect(receipt.interrupted).toBe(true)
+      expect(receipt.retainedInputs).toBeUndefined()
+      expect(target.inbox.nextTurn).toHaveLength(1)
+      expect(messageText(target.inbox.nextTurn[0]!)).toContain('replacement')
+      expect(target.inbox.nextStep).toEqual([])
+    }
+  })
+
+  it('ignores the policy without interrupt and for an idle target', async () => {
+    const running = await bootRunning()
+    const { own } = seed(running.target, String(running.harness.lead.id))
+    const stops = recordStops(running.harness, running.target)
+    // No interrupt: the prompt queues behind the running turn, inbox untouched.
+    const queued = await running.harness.service.promptSession(running.harness.lead.agent, 'target', 'follow-up', {
+      interruptInbox: 'clear-own',
+    })
+    expect(stops).toEqual([])
+    expect(queued.interrupted).toBe(false)
+    expect(queued.retainedInputs).toBeUndefined()
+    expect(running.target.inbox.nextTurn[0]).toBe(own)
+    // Idle target: interrupt is a no-op, so the policy never runs.
+    const idle = await bootRunning()
+    idle.target.setRunning(false)
+    const idleStops = recordStops(idle.harness, idle.target)
+    const idleReceipt = await idle.harness.service.promptSession(idle.harness.lead.agent, 'target', 'go', {
+      interrupt: true,
+      interruptInbox: 'keep',
+    })
+    expect(idleStops).toEqual([])
+    expect(idleReceipt.interrupted).toBe(false)
+    expect(idleReceipt.retainedInputs).toBeUndefined()
+  })
+
+  it('restores kept messages ahead of inputs enqueued during the stop', async () => {
+    const { harness, target } = await bootRunning()
+    const { own, human } = seed(target, String(harness.lead.id))
+    const late = queuedMessage('msg-late', { kind: 'user' }, 'arrived during the stop')
+    const stops: string[] = []
+    harness.ctx.on('workspace/session-stop', ({ sessionId }) => {
+      stops.push(String(sessionId))
+      target.inbox.clear()
+      target.setRunning(false)
+      // A human prompt lands after the provider cleared the inbox.
+      target.inbox.nextTurn.push(late)
+    })
+    const receipt = await harness.service.promptSession(harness.lead.agent, 'target', 'replacement', {
+      interrupt: true,
+      interruptInbox: 'keep',
+    })
+    expect(stops).toEqual(['target'])
+    expect(receipt.retainedInputs).toBe(3)
+    expect(target.inbox.nextTurn).toHaveLength(4)
+    expect(target.inbox.nextTurn[0]).toBe(own)
+    expect(target.inbox.nextTurn[1]).toBe(human)
+    expect(target.inbox.nextTurn[2]).toBe(late)
+    expect(messageText(target.inbox.nextTurn[3]!)).toContain('replacement')
+    expect(target.inbox.nextStep).toHaveLength(1)
+  })
+
+  it('keeps restored inputs when the replacement admission fails after the stop', async () => {
+    const { harness, target } = await bootRunning()
+    const { own, human } = seed(target, String(harness.lead.id))
+    target.failFollowups = 1
+    recordStops(harness, target)
+    const error = await expectCodeAsync(
+      () => harness.service.promptSession(harness.lead.agent, 'target', 'replacement', {
+        interrupt: true,
+        interruptInbox: 'keep',
+      }),
+      'DEVLEAD_SESSION_UNAVAILABLE',
+    )
+    expect(error.message).toContain('already asked to stop')
+    // The restore happened before the failed admission and survives it.
+    expect(target.inbox.nextTurn[0]).toBe(own)
+    expect(target.inbox.nextTurn[1]).toBe(human)
+    expect(harness.service.view(harness.lead.agent).sessions).toEqual(['target'])
+  })
+})

@@ -14,7 +14,7 @@ import { Service } from '@deepseek-ai/cordis'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
+import { MessageId, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-api-session-controller'
 import type { SessionCreateValue } from '@deepseek-ai/dsh-api-session-controller'
 import { appendPluginRecord } from '@deepseek-ai/dsh-session'
@@ -39,6 +39,7 @@ import type {
   DevLeadArchiveSessionOptions,
   DevLeadCreatedSession,
   DevLeadCreateSessionRequest,
+  DevLeadInterruptInboxPolicy,
   DevLeadIsolation,
   DevLeadIsolationMode,
   DevLeadModelCatalog,
@@ -48,7 +49,9 @@ import type {
   DevLeadProjectionState,
   DevLeadPromptedSession,
   DevLeadPromptSessionOptions,
+  DevLeadQueuedInput,
   DevLeadReport,
+  DevLeadRetractedInput,
   DevLeadReportKind,
   DevLeadRemovedWorkspace,
   DevLeadSessionView,
@@ -77,6 +80,7 @@ import {
 } from './dispatch.ts'
 import type { AgentTeamsCapability, NormalizedModelSelection } from './dispatch.ts'
 import { DevLeadError, thrownMessage } from './error.ts'
+import { isOwnRelay, keptInputsOf, queuedInputsOf, restoreInputs } from './inbox.ts'
 import { DevLeadReportOutbox } from './outbox.ts'
 import {
   applyDevLeadProjection,
@@ -216,6 +220,8 @@ interface PromptAdmission {
   readonly resumed: boolean
   /** Whether the Host's stop providers were asked to interrupt a running turn. */
   readonly interrupted: boolean
+  /** Inputs restored after the stop under a keep/clear-own policy; absent otherwise. */
+  readonly retainedInputs?: number
 }
 
 /**
@@ -1352,6 +1358,83 @@ export class DevLeadService extends Service {
   }
 
   /**
+   * Read the pending inbox inputs of one Session for the detail tool.
+   *
+   * The inbox is driver-owned: only a live Agent has one, so a cold Session
+   * reports undefined (the caller omits the field) rather than an empty list
+   * that would claim "nothing queued" about a log the Host has not folded.
+   * @param agent - exact live lead Agent.
+   * @param sessionId - exact Session identity (already resolved by the caller).
+   * @param signal - cancellation checked before the read.
+   * @returns queued inputs in queue order, or undefined when the target is not live.
+   * @throws {@link DevLeadError} when the caller is not live.
+   */
+  sessionQueuedInputs(agent: Agent, sessionId: string, signal?: AbortSignal): DevLeadQueuedInput[] | undefined {
+    this.assertLive(agent)
+    signal?.throwIfAborted()
+    const target = this.ctx.agents.get(toSessionId(sessionId))
+    return target === undefined ? undefined : queuedInputsOf(target)
+  }
+
+  /**
+   * Withdraw one queued inbox input this lead Session authored.
+   *
+   * Only the lead's own relay prompts are retractable: a human's queued
+   * instruction is the human's intent, a scheduled wake belongs to the
+   * schedule plugin, and another lead's relay belongs to that lead. The call
+   * is idempotent — an input already consumed or withdrawn reports
+   * `retracted: false`. The target must be live (the inbox is driver-owned)
+   * and cannot be the lead itself.
+   * @param agent - exact live lead Agent.
+   * @param sessionId - target Session reference (id or unique prefix).
+   * @param inputId - Host message identity reported by queuedInputs.
+   * @param signal - cancellation checked before each stage.
+   * @returns the retraction outcome.
+   * @throws {@link DevLeadError} `DEVLEAD_INVALID_INPUT` for a self-addressed
+   *   call or an input this lead did not author, `DEVLEAD_SESSION_UNAVAILABLE`
+   *   for a cold target, and the usual resolution failures.
+   */
+  async retractQueuedInput(
+    agent: Agent,
+    sessionId: string,
+    inputId: string,
+    signal?: AbortSignal,
+  ): Promise<DevLeadRetractedInput> {
+    this.assertReady(agent)
+    signal?.throwIfAborted()
+    const deps = this.viewDeps(agent, signal)
+    const resolved = await resolveSessionReference(deps, sessionId)
+    signal?.throwIfAborted()
+    const targetId = String(resolved.sessionId)
+    if (targetId === String(agent.id)) {
+      throw new DevLeadError(
+        'a DevLead Session cannot retract inputs from its own inbox; ask the human to manage this Session',
+        'DEVLEAD_INVALID_INPUT',
+      )
+    }
+    const target = this.ctx.agents.get(resolved.sessionId)
+    if (target === undefined) {
+      throw new DevLeadError(
+        `Session "${targetId}" is not live, so its inbox cannot be inspected or retracted; open it first`,
+        'DEVLEAD_SESSION_UNAVAILABLE',
+      )
+    }
+    const pending = [...target.inbox.nextTurn, ...target.inbox.nextStep]
+      .find(message => String(message.id) === inputId)
+    if (pending === undefined) return { sessionId: targetId, inputId, retracted: false }
+    if (!isOwnRelay(pending, String(agent.id))) {
+      throw new DevLeadError(
+        `queued input "${inputId}" was not authored by this DevLead Session; only your own relay prompts can be `
+        + 'retracted — human, scheduled, and other producers\' inputs are not yours to remove',
+        'DEVLEAD_INVALID_INPUT',
+      )
+    }
+    const retracted = target.inbox.remove(MessageId(inputId))
+    if (retracted) await this.flushDurably(target.session, `retraction of input "${inputId}"`)
+    return { sessionId: targetId, inputId, retracted }
+  }
+
+  /**
    * Create one ordinary Session in a Workspace and optionally prompt it.
    *
    * A requested `worktree` checkout isolation is applied best effort between
@@ -1470,7 +1553,12 @@ export class DevLeadService extends Service {
       const prompt = request.prompt?.trim() ?? ''
       const prompted = prompt.length > 0
       if (prompted) {
-        await this.admitPrompt(agent, created.sessionId, prompt, { allowResume: false, interrupt: false, signal })
+        await this.admitPrompt(agent, created.sessionId, prompt, {
+          allowResume: false,
+          interrupt: false,
+          interruptInbox: 'clear-all',
+          signal,
+        })
       }
       const deps = this.viewDeps(agent, signal)
       return {
@@ -1549,6 +1637,7 @@ export class DevLeadService extends Service {
       admission = await this.admitPrompt(agent, resolved.sessionId, text, {
         allowResume: true,
         interrupt: options.interrupt ?? false,
+        interruptInbox: options.interruptInbox ?? 'clear-all',
         signal,
       })
     } catch (error: unknown) {
@@ -1574,6 +1663,7 @@ export class DevLeadService extends Service {
       watched: this.strictStateOf(agent.session).sessions.includes(String(resolved.sessionId)),
       resumed: admission.resumed,
       interrupted: admission.interrupted,
+      ...(admission.retainedInputs === undefined ? {} : { retainedInputs: admission.retainedInputs }),
     }
   }
 
@@ -2990,7 +3080,12 @@ export class DevLeadService extends Service {
     leadAgent: Agent,
     sessionId: ReturnType<typeof toSessionId>,
     text: string,
-    options: { allowResume: boolean; interrupt: boolean; signal: AbortSignal | undefined },
+    options: {
+      allowResume: boolean
+      interrupt: boolean
+      interruptInbox: DevLeadInterruptInboxPolicy
+      signal: AbortSignal | undefined
+    },
   ): Promise<PromptAdmission> {
     const signal = options.signal
     signal?.throwIfAborted()
@@ -3030,12 +3125,20 @@ export class DevLeadService extends Service {
     }
     signal?.throwIfAborted()
     let interrupted = false
+    let retainedInputs: number | undefined
     if (options.interrupt && target.status === 'running') {
       // This is the last cancellation point: once the stop providers are asked
       // to cancel the child, the replacement prompt is committed with the stop
       // rather than leaving a stopped Session without its new instruction.
       interrupted = true
+      // The stop providers always clear the inbox, so a retention policy is a
+      // snapshot before the stop and a restore of the same identified messages
+      // after it — never a veto of the stop itself.
+      const kept = keptInputsOf(target, String(leadAgent.id), options.interruptInbox)
       await this.stopSessionActivity(sessionId)
+      if (options.interruptInbox !== 'clear-all') {
+        retainedInputs = restoreInputs(target, kept)
+      }
     }
     try {
       target.followup(createDevLeadPromptMessage(text, leadAgent))
@@ -3049,7 +3152,7 @@ export class DevLeadService extends Service {
       throw new DevLeadError(detail, 'DEVLEAD_SESSION_UNAVAILABLE')
     }
     await this.flushDurably(target.session, `prompt into Session "${sessionId}"`)
-    return { resumed, interrupted }
+    return { resumed, interrupted, ...(retainedInputs === undefined ? {} : { retainedInputs }) }
   }
 
   /**

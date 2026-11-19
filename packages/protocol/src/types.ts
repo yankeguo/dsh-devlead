@@ -559,6 +559,58 @@ export interface DevLeadCreatedSession {
   readonly agentTeams?: boolean
 }
 
+/**
+ * One pending inbox input of a live Session, as the detail tool reports it.
+ *
+ * The identity is the Host message id, stable across restarts because the
+ * inbox is folded from durable splices. The source vocabulary is the Host's
+ * merge-extensible message-source kinds, so `sourceKind` stays a plain string
+ * rather than a closed enum.
+ */
+export interface DevLeadQueuedInput {
+  /** Stable Host message identity, accepted by retraction. */
+  readonly id: string
+  /** Inbox boundary holding the message: its own turn, or the next step. */
+  readonly boundary: 'next-turn' | 'next-step'
+  /** Producer kind of the message source (user, devlead, schedule, …). */
+  readonly sourceKind: string
+  /** Producer-declared context form, when the source carries one. */
+  readonly sourceForm?: string
+  /** Authoring Session identity, when the source records one. */
+  readonly senderSessionId?: string
+  /** Bounded single-line excerpt of the text content, when any exists. */
+  readonly excerpt?: string
+  /** Epoch milliseconds of the durable splice that enqueued the message, when the log records one. */
+  readonly enqueuedAt?: number
+}
+
+/**
+ * Result of withdrawing one queued inbox input.
+ *
+ * Retraction is idempotent: an input already consumed or withdrawn reports
+ * `retracted: false` rather than an error. Only relay prompts the calling
+ * lead Session authored are retractable; other producers' inputs are refused.
+ */
+export interface DevLeadRetractedInput {
+  /** Addressed Session identity. */
+  readonly sessionId: string
+  /** Host message identity the call addressed. */
+  readonly inputId: string
+  /** Whether this call removed the input from the pending inbox. */
+  readonly retracted: boolean
+}
+
+/**
+ * Inbox policy applied when an interrupt stops a running turn.
+ *
+ * `clear-all` (the default) keeps the historical behavior: the Host stop
+ * discards every pending input. `keep` restores every pending message after
+ * the stop; `clear-own` restores everything except the relay prompts this
+ * lead Session authored. Restored messages keep their identity and queue
+ * order ahead of the replacement prompt.
+ */
+export type DevLeadInterruptInboxPolicy = 'clear-all' | 'keep' | 'clear-own'
+
 /** One watch-set mutation result. */
 export interface DevLeadWatchMutation {
   /** Session identity the call addressed. */
@@ -640,6 +692,12 @@ export interface DevLeadPromptSessionOptions {
   readonly watch?: boolean
   /** Stop the Session's running work before admitting the prompt. Defaults to false. */
   readonly interrupt?: boolean
+  /**
+   * Inbox policy applied when the interrupt stops a running turn. Defaults to
+   * `clear-all` (the historical behavior). Ignored without `interrupt` and for
+   * an idle or cold target, where no stop runs.
+   */
+  readonly interruptInbox?: DevLeadInterruptInboxPolicy
   /** Cancellation checked before each stage. */
   readonly signal?: AbortSignal
 }
@@ -659,6 +717,12 @@ export interface DevLeadPromptedSession {
    * active turn to stop.
    */
   readonly interrupted: boolean
+  /**
+   * Pending inputs restored after the stop under a `keep`/`clear-own` inbox
+   * policy. Present only when such a policy actually ran against a running
+   * turn; absent for the default `clear-all` and for every no-op interrupt.
+   */
+  readonly retainedInputs?: number
 }
 
 declare module '@deepseek-ai/dsh-session-projection/types' {

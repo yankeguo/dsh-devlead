@@ -12,7 +12,7 @@
 import { Context } from '@deepseek-ai/cordis'
 import type { Agent, AgentRegistry, AgentStatus, ModelSelection, TurnBoundaryProjection } from '@deepseek-ai/dsh-agent'
 import type { SessionController, SessionCreateRequest, SessionCreateValue } from '@deepseek-ai/dsh-api-session-controller'
-import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
+import { MessageId, createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { TextBlock, UserMessage } from '@deepseek-ai/dsh-llm'
 import SessionStore, { SessionId, SessionSeq, appendPluginRecord, pluginRecordOf } from '@deepseek-ai/dsh-session'
 import type { Session, SessionEvent, SessionHeader, TurnEndReason } from '@deepseek-ai/dsh-session'
@@ -97,6 +97,57 @@ export function notificationRecords(session: Session): DevLeadNotification[] {
   })
 }
 
+/**
+ * In-memory Inbox stand-in with the per-message operations the core uses
+ * (`prepend`/`remove`) on top of the plain boundary arrays the specs script.
+ * Mutations are not durable here; specs that assert enqueue instants append
+ * the real `agent/inbox/spliced` event to the Session log themselves.
+ */
+export class FakeInbox {
+  /** Prompts awaiting individual turns. */
+  readonly nextTurn: UserMessage[] = []
+  /** Input awaiting the next step boundary. */
+  readonly nextStep: UserMessage[] = []
+
+  /** Whether either boundary holds work. */
+  get hasPending(): boolean {
+    return this.nextTurn.length > 0 || this.nextStep.length > 0
+  }
+
+  /** The array of one boundary. */
+  private list(target: 'next-turn' | 'next-step'): UserMessage[] {
+    return target === 'next-turn' ? this.nextTurn : this.nextStep
+  }
+
+  /** Durably-shaped clear of both boundaries. */
+  clear(): void {
+    this.nextStep.splice(0)
+    this.nextTurn.splice(0)
+  }
+
+  /** Append one message to a boundary. */
+  append(target: 'next-turn' | 'next-step', message: UserMessage): void {
+    this.list(target).push(message)
+  }
+
+  /** Prepend one message to a boundary. */
+  prepend(target: 'next-turn' | 'next-step', message: UserMessage): void {
+    this.list(target).unshift(message)
+  }
+
+  /** Remove one pending message by identity; whether it was still pending. */
+  remove(messageId: string): boolean {
+    for (const list of [this.nextTurn, this.nextStep]) {
+      const index = list.findIndex(message => String(message.id) === String(messageId))
+      if (index >= 0) {
+        list.splice(index, 1)
+        return true
+      }
+    }
+    return false
+  }
+}
+
 /** One scriptable fake Agent owning a real Session log. */
 export class FakeAgent {
   /** Session-backed Agent identity. */
@@ -105,8 +156,8 @@ export class FakeAgent {
   readonly session: Session
   /** Current lifecycle state. */
   status: AgentStatus = 'idle'
-  /** Pending inbox boundaries read by the notification hub. */
-  readonly inbox: { nextTurn: UserMessage[]; nextStep: UserMessage[] } = { nextTurn: [], nextStep: [] }
+  /** Pending inbox boundaries read by the notification hub and inbox tools. */
+  readonly inbox = new FakeInbox()
   /** Every message admitted through {@link followup}, in order. */
   readonly followups: UserMessage[] = []
   /** When true, the next {@link followup} throws instead of admitting. */
@@ -1425,6 +1476,21 @@ export async function bootHub(options: BootHubOptions = {}): Promise<HubHarness>
 /** Build one human-authored user message fixture. */
 export function humanMessage(text: string): UserMessage {
   return createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } })
+}
+
+/**
+ * Build one queued user message with a controlled identity and source, so
+ * inbox specs can script ownership and stable ids.
+ * @param id - stable message identity.
+ * @param source - producer source record (user, devlead relay, schedule, …).
+ * @param text - text content of the message.
+ * @returns the identified user message.
+ */
+export function queuedMessage(id: string, source: unknown, text = 'queued instruction'): UserMessage {
+  return {
+    ...createUserMessage({ content: [{ type: 'text', text }], source: source as UserMessage['source'] }),
+    id: MessageId(id),
+  }
 }
 
 /** One in-memory table of {@link FakeStorageDomain}. */
