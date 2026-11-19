@@ -164,6 +164,7 @@
  * Test-only package: private, never published, and not part of the workspace.
  * @module @yankeguo/dsh-devlead-e2e-probe
  */
+import { randomUUID } from 'node:crypto'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { CommandDefinitionId } from '@deepseek-ai/dsh-commands/brand'
@@ -198,6 +199,8 @@ export const WATCH_CHILD_COMMAND_NAME = 'devlead-e2e-watch-child'
 export const REPORT_COMMAND_NAME = 'devlead-e2e-report'
 /** Drive the watched-Session ask_user_question gate from the lead. */
 export const QUESTION_COMMAND_NAME = 'devlead-e2e-question'
+/** Queued-inbox visibility / ownership / idempotent retraction through the real Host. */
+export const INBOX_COMMAND_NAME = 'devlead-e2e-inbox'
 /** Upper bound for one prompted child turn to settle inside the close command. */
 const CHILD_TURN_TIMEOUT_MS = 45_000
 /** Poll interval of the close command's child-turn wait. */
@@ -649,6 +652,59 @@ async function executeQuestion(ctx, invocation) {
 }
 
 /**
+ * Exercise queued-inbox visibility and retraction against the real durable
+ * inbox: create one idle watched child, append a human-authored and a
+ * lead-authored queued input through the Host `inbox.append` (no wake, so the
+ * state is deterministic on a credential-less Host), read them back through
+ * `sessionQueuedInputs`, refuse the human input, and retract the own relay
+ * twice to prove idempotency.
+ * @param ctx - probe context.
+ * @param invocation - command invocation carrying the lead Agent.
+ * @returns success JSON with every read-back fact, or an error result.
+ */
+async function executeInbox(ctx, invocation) {
+  const agent = invocation.agent
+  try {
+    const created = await ctx.devLead.createSession(agent, { watch: true, title: 'e2e inbox child' })
+    const childId = String(created.session.sessionId)
+    const child = ctx.agents.get(childId)
+    if (child === undefined) throw new Error('created child is not live')
+    const empty = ctx.devLead.sessionQueuedInputs(agent, childId)
+    const human = {
+      id: `e2e-human-${randomUUID()}`,
+      role: 'user',
+      content: [{ type: 'text', text: 'human queued instruction' }],
+      source: { kind: 'user' },
+    }
+    child.inbox.append('next-turn', human)
+    const withHuman = ctx.devLead.sessionQueuedInputs(agent, childId)
+    let humanRefusal
+    try {
+      await ctx.devLead.retractQueuedInput(agent, childId, human.id)
+      humanRefusal = { refused: false }
+    } catch (error) {
+      humanRefusal = { refused: true, code: error?.code }
+    }
+    const own = {
+      id: `e2e-own-${randomUUID()}`,
+      role: 'user',
+      content: [{ type: 'text', text: 'stale lead instruction' }],
+      source: { kind: 'devlead', form: 'relay', senderSessionId: String(agent.id) },
+    }
+    child.inbox.append('next-turn', own)
+    const first = await ctx.devLead.retractQueuedInput(agent, childId, own.id)
+    const second = await ctx.devLead.retractQueuedInput(agent, childId, own.id)
+    const after = ctx.devLead.sessionQueuedInputs(agent, childId)
+    return {
+      kind: 'success',
+      text: JSON.stringify({ childId, empty, withHuman, humanRefusal, first, second, after }),
+    }
+  } catch (error) {
+    return { kind: 'error', text: `devlead-e2e-inbox: ${messageOf(error)}` }
+  }
+}
+
+/**
  * Drive creation-time model selection and Agent Teams through the real Host.
  *
  * The model route comes from the Host's own `modelCatalog()`; when the catalog
@@ -897,5 +953,11 @@ export function apply(ctx) {
     name: QUESTION_COMMAND_NAME,
     description: 'E2E probe: ask a real ask_user_question call through a watched child and report the gate.',
     handler: guarded(QUESTION_COMMAND_NAME, invocation => executeQuestion(ctx, invocation)),
+  })
+  ctx.commands.register({
+    definitionId: CommandDefinitionId(`${DEFINITION_ID}#inbox`),
+    name: INBOX_COMMAND_NAME,
+    description: 'E2E probe: queued-inbox visibility, ownership refusal, and idempotent retraction.',
+    handler: guarded(INBOX_COMMAND_NAME, invocation => executeInbox(ctx, invocation)),
   })
 }

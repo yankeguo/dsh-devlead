@@ -80,7 +80,7 @@
  *             bundle is not required) and drives the close lifecycle through
  *             `ctx.devLead`:
  *               - a real step-time tool activation (`ctx.tools.resolve`) admits
- *                 exactly the thirteen lead `devlead_*` tools while the mode is on
+ *                 exactly the fourteen lead `devlead_*` tools while the mode is on
  *                 and none while it is off, both before and after a toggle;
  *               - a real watched non-lead child step admits exactly
  *                 `devlead_report`, receives the one-way report policy, and a
@@ -125,15 +125,15 @@
  *                 Agent Teams is version-adaptive: rc.2+ (default composition)
  *                 must apply it, while an rc.1 Host must reject the explicit
  *                 request with DEVLEAD_TEAM_UNAVAILABLE and create nothing.
- *             84 checks.
+ *             88 checks.
  *
  * `--no-worktree` skips phase 2 only (debugging escape hatch when the
  * experimental composition cannot boot on this machine); phases 1, 1b, and 3
  * still run.
  *
- * Check counts: phase 1 = 27, phase 1b = 12, phase 2 = 23, phase 3 = 84, so
- * every flow reports 146/146 checks when all four phases pass (`--no-worktree`
- * skips phase 2: 123/123). Run both flows before a release:
+ * Check counts: phase 1 = 27, phase 1b = 12, phase 2 = 23, phase 3 = 88, so
+ * every flow reports 150/150 checks when all four phases pass (`--no-worktree`
+ * skips phase 2: 127/127). Run both flows before a release:
  *
  *   node scripts/e2e-smoke.mjs --flow patch
  *   node scripts/e2e-smoke.mjs --flow installed
@@ -216,6 +216,8 @@ const PROBE_WATCH_CHILD_COMMAND = 'devlead-e2e-watch-child'
 const PROBE_REPORT_COMMAND = 'devlead-e2e-report'
 /** Drive the watched-Session question gate through a real ask_user_question call. */
 const PROBE_QUESTION_COMMAND = 'devlead-e2e-question'
+/** Probe command: queued-inbox visibility / ownership / idempotent retraction. */
+const PROBE_INBOX_COMMAND = 'devlead-e2e-inbox'
 /** Exact DevLead tool surface an enabled lead step admits. */
 const DEVLEAD_TOOL_NAMES = [
   'devlead_archive_session',
@@ -228,6 +230,7 @@ const DEVLEAD_TOOL_NAMES = [
   'devlead_notifications',
   'devlead_prompt_session',
   'devlead_remove_workspace',
+  'devlead_retract_input',
   'devlead_unarchive_session',
   'devlead_use_workspace',
   'devlead_watch_session',
@@ -1367,7 +1370,7 @@ async function runCloseChecks(client, paths, dshVersion) {
   )
   const devleadTools = inspectOn.report?.devleadTools ?? []
   checks.expect(
-    'phase 3 enabled exposes exactly the thirteen devlead tools',
+    'phase 3 enabled exposes exactly the fourteen devlead tools',
     JSON.stringify(devleadTools) === JSON.stringify(DEVLEAD_TOOL_NAMES),
     JSON.stringify(devleadTools),
   )
@@ -1513,6 +1516,41 @@ async function runCloseChecks(client, paths, dshVersion) {
       && typeof row?.message === 'string'
       && row.message.includes('Which e2e target?')),
     JSON.stringify(questionReports),
+  )
+
+  // Queued inbox inputs: the probe appends a human and an own-relay input to a
+  // live idle child through the real durable inbox, reads them back, and
+  // exercises the ownership refusal and idempotent retraction.
+  const inboxProbe = await runProbeCommand(client, leadId, PROBE_INBOX_COMMAND, DISPATCH_PROBE_TIMEOUT_MS)
+  checks.expect(
+    'phase 3 inbox probe settles success with an empty live queue',
+    inboxProbe.execution?.result?.kind === 'success'
+      && Array.isArray(inboxProbe.report?.empty) && inboxProbe.report.empty.length === 0,
+    inboxProbe.text.slice(0, 500),
+  )
+  const inboxHumanRow = Array.isArray(inboxProbe.report?.withHuman) ? inboxProbe.report.withHuman[0] : undefined
+  checks.expect(
+    'phase 3 queuedInputs reports the human input with source, excerpt, and enqueue time',
+    inboxHumanRow?.sourceKind === 'user'
+      && inboxHumanRow?.boundary === 'next-turn'
+      && inboxHumanRow?.excerpt === 'human queued instruction'
+      && typeof inboxHumanRow?.enqueuedAt === 'number',
+    JSON.stringify(inboxProbe.report?.withHuman),
+  )
+  checks.expect(
+    'phase 3 retract refuses a human-authored queued input',
+    inboxProbe.report?.humanRefusal?.refused === true
+      && inboxProbe.report?.humanRefusal?.code === 'DEVLEAD_INVALID_INPUT',
+    JSON.stringify(inboxProbe.report?.humanRefusal),
+  )
+  const inboxAfter = Array.isArray(inboxProbe.report?.after) ? inboxProbe.report.after : []
+  checks.expect(
+    'phase 3 retract withdraws the own relay idempotently and keeps the human input',
+    inboxProbe.report?.first?.retracted === true
+      && inboxProbe.report?.second?.retracted === false
+      && inboxAfter.length === 1
+      && inboxAfter[0]?.id === inboxHumanRow?.id,
+    JSON.stringify({ first: inboxProbe.report?.first, second: inboxProbe.report?.second, after: inboxAfter }),
   )
 
   // Creation-time dispatch settings: the probe creates real Sessions with a
