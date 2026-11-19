@@ -109,8 +109,8 @@ TMPDIR="$BASE/tmp" DSH_BIN="$DSH_BIN" node scripts/e2e-smoke.mjs \
 | `0.2.2-rc.5` | patch 完整（排队输入轮重跑） | **150/150**（同上） |
 | `0.2.2-rc.5` | installed `--no-worktree`（排队输入轮重跑） | **127/127**（phase 1 27 + 1b 12 + 3 88） |
 
-rc.1–rc.4 的行是各自发布时的 harness 计数；下一版（0.3.0，未发布，含 question 路由与排队 inbox 输入）给 phase 3
-新增 3 条 checks。0.2.6+ 审计轮（[AUDIT](AUDIT.md) §12）已按当前 harness 重跑 rc.5
+rc.1–rc.4 的行是各自发布时的 harness 计数；0.3.0 的 prerelease 候选（0.3.0-rc.1 / rc.2，尚未 promote
+为稳定版）含 question 路由与排队 inbox 输入，当前 harness 的 phase 3 含这些 checks。0.2.6+ 审计轮（[AUDIT](AUDIT.md) §12）已按当前 harness 重跑 rc.5
 `--no-worktree`（123/123）与 installed/patch 完整（各 146/146，安装版 rc.5）；排队输入轮再增
 4 条 inbox checks 后重跑 rc.5 installed/patch 完整（各 **150/150**）与 `--no-worktree`（**127/127**）。发布前需按
 [PUBLISHING](PUBLISHING.md) 重跑完整组合。

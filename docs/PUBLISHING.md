@@ -350,12 +350,12 @@ scripts/trusted-publishers.sh --list
 - 试验版/预发布：**打 prerelease tag 并推送即可**——CI 自动以 `next` dist-tag stage（稳定版才用
   `latest`），其余流程与稳定版完全一致（人工 approve + GitHub Release 自动标 prerelease）：
   ```sh
-  git tag -a v0.3.0-rc.1 -m "v0.3.0-rc.1"
-  git push origin v0.3.0-rc.1                 # CI 以 next stage 全部 6 包
+  git tag -a v0.3.0-rc.2 -m "v0.3.0-rc.2"
+  git push origin v0.3.0-rc.2                 # CI 以 next stage 全部 6 包
   npm login
-  node scripts/promote-release.mjs --version 0.3.0-rc.1   # approve（2FA）+ prerelease Release
+  node scripts/promote-release.mjs --version 0.3.0-rc.2   # approve（2FA）+ prerelease Release
   ```
-  本地 stage 仍可作为备用路径（`stage-release.mjs --version 0.3.0-rc.1 --dist-tag next`，
+  本地 stage 仍可作为备用路径（`stage-release.mjs --version 0.3.0-rc.2 --dist-tag next`，
   无 provenance）。三道防误发闸门：
   1. `stage-release.mjs` **拒绝 prerelease 版本 + `--dist-tag latest`**（approve 会按 stage 时
      记录的 dist-tag 公开，prerelease 一旦挂 latest 就成了默认安装）；
@@ -364,7 +364,7 @@ scripts/trusted-publishers.sh --list
      不指向该 prerelease；
   3. GitHub Release 自动按版本标记：prerelease → `--prerelease --latest=false`，稳定版 →
      `--prerelease=false`（edit 时纠正旧标记），都带 `--verify-tag`。
-  prerelease 的 tag（`v0.3.0-rc.1`）推送到远端即触发 CI stage，也供 Release 的 `--verify-tag`
+  prerelease 的 tag（`v0.3.0-rc.2`）推送到远端即触发 CI stage，也供 Release 的 `--verify-tag`
   使用。用户安装时必须写精确版本；发布后 24 小时内尤其不能用 `@next`——pnpm 的
   `minimumReleaseAge` 会把它回退到 npm 占位版本 `0.0.0-stage`，解包失败（见下文「发布后的
   用户安装方式」）。
@@ -385,6 +385,10 @@ scripts/trusted-publishers.sh --list
   **0.3.0-rc.1**（prerelease，dist-tag `next`，首个由 CI 直接 stage 的 prerelease）是 0.3.0 的首个候选：Workspace 三寻址、
   `prompt_session interrupt`、watched 子会话问题路由、排队 inbox 可见/可撤/保留策略、
   全面审计修复与 report 指引收窄（详见 `docs/releases/v0.3.0-rc.1.md`）。
+  **0.3.0-rc.2**（prerelease，dist-tag `next`）是 DeepSeek v4.1 独立审计后的第二个候选：阻断
+  fork 继承 DevLead 状态（live projection + 两条 cold fold）、fail-closed admission、interrupt
+  inbox / question gating / 未声明参数拒绝、subagent UI 隐藏、LICENSE 与 pnpm pin、测试补强
+  （879 tests；e2e 双流各 150/150）；详见 `docs/releases/v0.3.0-rc.2.md`。
   各版发布时同步 README / README.zh 与 `docs/releases/v<version>.md`；0.2.0 另复核
   旧 core + 新 tool 混装时 `isolation` 的防御性降级（tool 对缺失字段回退
   `{requested:'none',status:'none'}`）。

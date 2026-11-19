@@ -250,8 +250,8 @@ requires Node ≥ 24.9):
 | `0.2.2-rc.5` | `DSH_BIN=<cache>/rc5/install/node_modules/@deepseek-ai/dsh/lib/bin.js node scripts/e2e-smoke.mjs --flow installed` | **150/150** (queued-input round rerun on the current harness, includes the experimental worktree phase) |
 | `0.2.2-rc.5` | same, `--flow patch` | **150/150** (same rerun) |
 
-The next release (0.3.0, unpublished, includes question routing and queued inbox inputs) adds three phase-3 question-gate
-checks. The 0.2.6+ audit round reran rc.5 on the current harness: installed `--no-worktree`
+The 0.3.0 prerelease candidates (0.3.0-rc.1 / 0.3.0-rc.2, not yet promoted as stable) include question routing
+and queued inbox inputs; the current harness adds three phase-3 question-gate checks. The 0.2.6+ audit round reran rc.5 on the current harness: installed `--no-worktree`
 reports **127/127**, and the installed/patch full flows report **150/150** each. A pre-release
 rerun of the full combination is still required by the publishing guide.
 
@@ -266,6 +266,17 @@ with the oldest supported release.
 # Main bundle: core service + model tools + command + status strip
 dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 ```
+
+`latest` remains **0.2.6** until the 0.3.0 candidate is promoted. To install the current
+prerelease candidate, pin the exact version (staged versions are not public until a maintainer
+approves them):
+
+```sh
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.3.0-rc.2
+```
+
+Do not use `@next` within 24 hours of staging: pnpm's `minimumReleaseAge` can fall back to the
+`0.0.0-stage` placeholder and fail to extract (see [PUBLISHING.md](docs/PUBLISHING.md)).
 
 You can also install it from the Web UI via **Plugins → Add plugin** and the name
 `@yankeguo/dsh-devlead-bundle`. Afterwards, confirm the bundle is enabled on the **Plugins**
@@ -1029,8 +1040,8 @@ the GitHub Release from `docs/releases/v<version>.md`:
 
 ```sh
 npm login
-node scripts/promote-release.mjs --version 0.3.0 --list-only   # inspect the staged versions
-node scripts/promote-release.mjs --version 0.3.0                # approve (2FA prompt) + gh release
+node scripts/promote-release.mjs --version 0.3.0-rc.2 --list-only   # inspect the staged versions
+node scripts/promote-release.mjs --version 0.3.0-rc.2                # approve (2FA prompt) + gh release
 ```
 
 The setup and the full release flow (version bump, pre-flight, tag push, re-staging an existing

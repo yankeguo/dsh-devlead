@@ -222,7 +222,7 @@ durable `team/mode`）。模型 API（`modelCatalog`、`Agent.model.select`、`m
 | `0.2.2-rc.5` | `DSH_BIN=<cache>/rc5/install/node_modules/@deepseek-ai/dsh/lib/bin.js node scripts/e2e-smoke.mjs --flow installed` | **150/150**（排队输入轮按当前 harness 重跑，含实验 worktree 阶段） |
 | `0.2.2-rc.5` | 同上，`--flow patch` | **150/150**（同轮重跑） |
 
-下一版（0.3.0，未发布，含 question 路由与排队 inbox 输入）给 phase 3 新增 3 条 question-gate checks。0.2.6+ 审计轮
+0.3.0 的 prerelease 候选（0.3.0-rc.1 / rc.2，尚未 promote 为稳定版）含 question 路由与排队 inbox 输入；当前 harness 的 phase 3 含 3 条 question-gate checks。0.2.6+ 审计轮
 已按当前 harness 重跑 rc.5：installed `--no-worktree` 为 **127/127**，installed/patch 完整双流各
 **150/150**。发布前仍需按发布指南重跑完整组合。
 
@@ -236,6 +236,16 @@ model 路径与 `devlead_list_models` 在每个版本都真实运行。单元测
 # 主 bundle：核心服务 + 模型工具 + 命令 + 状态条
 dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 ```
+
+`latest` 在 0.3.0 候选被 promote 前仍是 **0.2.6**。安装当前 prerelease 候选必须写精确版本
+（stage 不等于公开，维护者 approve 后才会在 registry 可见）：
+
+```sh
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.3.0-rc.2
+```
+
+发布后 24 小时内不要用 `@next` 安装：pnpm 的 `minimumReleaseAge` 可能回退到
+`0.0.0-stage` 占位版本并解包失败（见 [docs/PUBLISHING.md](docs/PUBLISHING.md)）。
 
 也可以在 Web 的 **Plugins → Add plugin** 中输入 `@yankeguo/dsh-devlead-bundle` 安装。
 安装后在 **Plugins** 页面确认 bundle 已启用（新安装的 bundle 通常默认启用；若显示为未启用，
@@ -861,8 +871,8 @@ GitHub Release：
 
 ```sh
 npm login
-node scripts/promote-release.mjs --version 0.3.0 --list-only   # 查看已暂存的版本
-node scripts/promote-release.mjs --version 0.3.0               # approve（交互式 2FA）+ gh release
+node scripts/promote-release.mjs --version 0.3.0-rc.2 --list-only   # 查看已暂存的版本
+node scripts/promote-release.mjs --version 0.3.0-rc.2               # approve（交互式 2FA）+ gh release
 ```
 
 完整流程（一次性配置、版本升级、预检、tag 推送、已存在 tag 的重新 stage、approve、
