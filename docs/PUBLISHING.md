@@ -222,14 +222,13 @@ git push origin v0.3.0                 # 触发 .github/workflows/publish.yml
    `refs/tags/<tag>`，`fetch-depth: 0` 取全量历史与 tag）。
 2. **Resolve and verify the release tag**：`git fetch --tags`，确认 `refs/tags/<tag>` 指向的
    commit 与当前 `HEAD` 一致，并从 tag 推导版本号；不一致直接失败（**CI 不会创建、移动或删除
-   tag**）。prerelease tag（版本号带 `-rc`/`-alpha` 等后缀）在此步被**优雅跳过**（notice +
-   job summary 说明，其余步骤 `if: env.PRERELEASE_SKIP != 'true'` 全部跳过，运行记为成功）：
-   CI 只 stage 稳定版（`latest`），预发布走本地 stage（见「版本与 dist-tag 策略」）。这一步在
+   tag**）。同时按版本推导 dist-tag：稳定版 `latest`，prerelease（版本号带 `-rc`/`-alpha` 等
+   后缀）`next`，写入 `RELEASE_DIST_TAG`。**打 tag 并推送即可触发任一类型的 stage**。这一步在
    安装依赖之前执行，坏 tag 数秒内失败。
 3. 安装 pnpm `12.16.1`、Node `24`，并显式安装/校验 **npm 11.20.0**（`npm stage --help` 能力探测）。
 4. **tag-version 门禁**：`v<version>` 必须与 6 个可发布包 + 根 `package.json` 的 `version` 完全一致。
 5. `pnpm install --frozen-lockfile` → typecheck → test → build → `node scripts/check-packages.mjs`。
-6. **Stage**：`node scripts/stage-release.mjs --version "$RELEASE_VERSION" --dist-tag latest`。
+6. **Stage**：`node scripts/stage-release.mjs --version "$RELEASE_VERSION" --dist-tag "$RELEASE_DIST_TAG"`（稳定版 latest，prerelease next）。
    每个包打印一行 stage id，并写入 job summary；失败时停止并打印已 stage 的包与修复提示。
 7. **Release summary**：仅在全部 stage 成功后写入下一步人工审批命令。
 
@@ -348,14 +347,16 @@ scripts/trusted-publishers.sh --list
 
 - 稳定版：默认 `latest`。CI 固定以 `--dist-tag latest` stage；promote 批准后即成为 `latest` 对应的
   已发布版本。
-- 试验版/预发布：**CI 只 stage 稳定版**；prerelease tag 推送后工作流优雅跳过（不 stage、不报
-  红）。预发布在本地以非 latest 的 dist-tag stage：
+- 试验版/预发布：**打 prerelease tag 并推送即可**——CI 自动以 `next` dist-tag stage（稳定版才用
+  `latest`），其余流程与稳定版完全一致（人工 approve + GitHub Release 自动标 prerelease）：
   ```sh
+  git tag -a v0.3.0-rc.1 -m "v0.3.0-rc.1"
+  git push origin v0.3.0-rc.1                 # CI 以 next stage 全部 6 包
   npm login
-  node scripts/stage-release.mjs --version 0.3.0-rc.1 --dist-tag next
-  node scripts/promote-release.mjs --version 0.3.0-rc.1
+  node scripts/promote-release.mjs --version 0.3.0-rc.1   # approve（2FA）+ prerelease Release
   ```
-  三道防误发闸门：
+  本地 stage 仍可作为备用路径（`stage-release.mjs --version 0.3.0-rc.1 --dist-tag next`，
+  无 provenance）。三道防误发闸门：
   1. `stage-release.mjs` **拒绝 prerelease 版本 + `--dist-tag latest`**（approve 会按 stage 时
      记录的 dist-tag 公开，prerelease 一旦挂 latest 就成了默认安装）；
   2. `promote-release.mjs` 预检**拒绝 approve 任何以 latest stage 的 prerelease 记录**，并给出
@@ -363,8 +364,8 @@ scripts/trusted-publishers.sh --list
      不指向该 prerelease；
   3. GitHub Release 自动按版本标记：prerelease → `--prerelease --latest=false`，稳定版 →
      `--prerelease=false`（edit 时纠正旧标记），都带 `--verify-tag`。
-  prerelease 的 tag（`v0.3.0-rc.1`）仍需推送到远端供 `--verify-tag` 使用；推送触发的 CI 运行
-  会优雅跳过。用户安装时需要显式指定版本（DSH 插件市场按版本安装，不受 dist-tag 影响）。
+  prerelease 的 tag（`v0.3.0-rc.1`）推送到远端即触发 CI stage，也供 Release 的 `--verify-tag`
+  使用。用户安装时需要显式指定版本（DSH 插件市场按版本安装，不受 dist-tag 影响）。
 - `engines.dsh` 当前为 `>=0.2.2-rc.1 <0.3.0`，**所有插件 / bundle 包都声明**；
   DSH 升级到 0.3 时需更新该范围并回归。
 - 破坏性变更：遵循 semver；预发布版本使用 `-rc.N` / `-alpha.N` 后缀。
@@ -379,7 +380,7 @@ scripts/trusted-publishers.sh --list
   审计缺陷；**0.2.5**（patch）新增全局单活、`devlead_report`（13 主工具 + 1 汇报工具）、
   durable report outbox 与 archived 占用者非阻塞准入；**0.2.6**（patch）统一「关注」术语、
   lead 按需邀请中途汇报，并为侧栏增加 active DevLead ring 与被关注行准星标识；
-  **0.3.0-rc.1**（prerelease，dist-tag `next`）是 0.3.0 的首个候选：Workspace 三寻址、
+  **0.3.0-rc.1**（prerelease，dist-tag `next`，首个由 CI 直接 stage 的 prerelease）是 0.3.0 的首个候选：Workspace 三寻址、
   `prompt_session interrupt`、watched 子会话问题路由、排队 inbox 可见/可撤/保留策略、
   全面审计修复与 report 指引收窄（详见 `docs/releases/v0.3.0-rc.1.md`）。
   各版发布时同步 README / README.zh 与 `docs/releases/v<version>.md`；0.2.0 另复核

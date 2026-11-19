@@ -4,11 +4,10 @@ name: publish
 #
 # Pushing a `v*` tag (or dispatching this workflow with an existing
 # `release_tag`) installs, typechecks, tests, builds, and STAGES every workspace
-# package on the npm registry. Staging publishes nothing. Prerelease tags
-# (v<version>-rc.N etc.) are verified and then SKIPPED gracefully: CI stages
-# stable releases with the latest dist-tag only; prereleases are staged locally
-# with scripts/stage-release.mjs --dist-tag next (docs/PUBLISHING.md). A
-# maintainer then approves the staged versions locally with:
+# package on the npm registry. Staging publishes nothing. Stable versions stage
+# with the latest dist-tag; prerelease tags (v<version>-rc.N etc.) stage with
+# next, so pushing a tag is the whole trigger for either kind. A maintainer
+# then approves the staged versions locally with:
 #
 #   node scripts/promote-release.mjs
 #
@@ -116,37 +115,29 @@ jobs:
             echo "::error::cannot derive a semver version from tag ${RELEASE_TAG} (expected v<version>)"
             exit 1
           fi
+          # Stable versions stage with the latest dist-tag; prereleases
+          # (-rc.N etc.) stage with next so approving them can never replace
+          # the default install. Pushing the tag is the whole trigger.
           if [[ "${release_version}" == *-* ]]; then
-            # Prerelease tags are pushed for the GitHub Release (--verify-tag),
-            # but CI stages stable releases only. Skip gracefully instead of
-            # failing: the local stage path (scripts/stage-release.mjs
-            # --dist-tag next) owns prereleases, and a red run on every rc tag
-            # would be noise, not a signal.
-            echo "::notice::${RELEASE_TAG} is a prerelease (${release_version}); CI stages stable releases with the latest dist-tag only. Skipping staging — stage prereleases locally with scripts/stage-release.mjs --dist-tag next (see docs/PUBLISHING.md)."
-            echo "PRERELEASE_SKIP=true" >> "${GITHUB_ENV}"
-            {
-              echo "### Release ${RELEASE_TAG} — prerelease, CI staging skipped"
-              echo ""
-              echo "Prerelease \`${release_version}\`: this workflow stages stable releases only."
-              echo "Stage locally with \`node scripts/stage-release.mjs --version ${release_version} --dist-tag next\`, then approve with \`node scripts/promote-release.mjs --version ${release_version}\` (marks the GitHub Release as prerelease)."
-            } >> "${GITHUB_STEP_SUMMARY}"
-            exit 0
+            release_dist_tag="next"
+            echo "::notice::${RELEASE_TAG} is a prerelease (${release_version}); staging with dist-tag next (never latest)."
+          else
+            release_dist_tag="latest"
           fi
           echo "RELEASE_TAG=${RELEASE_TAG}" >> "${GITHUB_ENV}"
           echo "RELEASE_VERSION=${release_version}" >> "${GITHUB_ENV}"
+          echo "RELEASE_DIST_TAG=${release_dist_tag}" >> "${GITHUB_ENV}"
           echo "Release tag ${RELEASE_TAG} verified: ${head_commit} (version ${release_version})"
           echo "### Release ${RELEASE_TAG}" >> "${GITHUB_STEP_SUMMARY}"
           echo "" >> "${GITHUB_STEP_SUMMARY}"
           echo "Tag \`${RELEASE_TAG}\` verified at \`${head_commit}\`; release version \`${release_version}\`." >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Set up pnpm
-        if: env.PRERELEASE_SKIP != 'true'
         uses: pnpm/action-setup@v6.1.1
         with:
           version: 12.16.1
 
       - name: Set up Node.js
-        if: env.PRERELEASE_SKIP != 'true'
         uses: actions/setup-node@v7.1.0
         with:
           node-version: 24
@@ -155,7 +146,6 @@ jobs:
           package-manager-cache: false
 
       - name: Install and verify npm 11.20.0
-        if: env.PRERELEASE_SKIP != 'true'
         # Staged publishing, OIDC token exchange, and provenance are implemented
         # by the npm CLI, not by pnpm. Staged publishing needs npm >= 11.15.0 and
         # Node's bundled npm may be older, so pin the tested 11.20.0 explicitly
@@ -177,7 +167,6 @@ jobs:
           echo "npm ${installed} supports staged publishing"
 
       - name: Verify the release tag matches every package version
-        if: env.PRERELEASE_SKIP != 'true'
         # Staging a tag whose version differs from the manifests would produce a
         # release whose npm versions cannot be found from the tag/GitHub
         # Release, and the local promote script would fail after CI succeeded.
@@ -207,40 +196,34 @@ jobs:
           NODE
 
       - name: Install dependencies
-        if: env.PRERELEASE_SKIP != 'true'
         run: pnpm install --frozen-lockfile
 
       - name: Typecheck
-        if: env.PRERELEASE_SKIP != 'true'
         run: pnpm typecheck
 
       - name: Test
-        if: env.PRERELEASE_SKIP != 'true'
         run: pnpm test
 
       - name: Build
-        if: env.PRERELEASE_SKIP != 'true'
         run: pnpm build
 
       - name: Validate package manifests
-        if: env.PRERELEASE_SKIP != 'true'
         run: node scripts/check-packages.mjs
 
       - name: Stage packages on npm (publishes nothing)
-        if: env.PRERELEASE_SKIP != 'true'
         # This uploads every package as a staged version and prints the stage
         # ids. Nothing is public until a maintainer approves them locally with
         # scripts/promote-release.mjs (npm login + 2FA). No NODE_AUTH_TOKEN and
         # no NPM_TOKEN: the npm CLI detects GitHub Actions, exchanges the OIDC
         # token (`id-token: write`) for a short-lived registry token per
         # package, and attaches provenance.
-        run: node scripts/stage-release.mjs --version "$RELEASE_VERSION" --dist-tag latest
+        run: node scripts/stage-release.mjs --version "$RELEASE_VERSION" --dist-tag "$RELEASE_DIST_TAG"
 
       - name: Release summary and next steps
         # Only after a fully successful staging run: a partial failure must not
         # suggest approving an incomplete version. The staging step itself
         # writes the stage-id table to the job summary.
-        if: success() && env.PRERELEASE_SKIP != 'true'
+        if: success()
         run: |
           set -euo pipefail
           {
@@ -254,7 +237,8 @@ jobs:
             echo "node scripts/promote-release.mjs --version ${RELEASE_VERSION}             # approve + GitHub Release"
             echo '```'
             echo ""
+            echo "- Staged with dist-tag \`${RELEASE_DIST_TAG}\` (stable: latest; prerelease: next). Approval publishes under that tag; a prerelease can never become latest."
             echo "- Approval prompts for the one-time password; npm publishes each package as it is approved."
             echo "- To restage after a fix, re-run this workflow via workflow_dispatch with the SAME \`release_tag\` (\`${RELEASE_TAG}\`); never move or recreate the tag."
-            echo "- The GitHub Release is created/updated by the promote script, not by this workflow."
+            echo "- The GitHub Release is created/updated by the promote script, not by this workflow (prereleases are marked --prerelease --latest=false)."
           } >> "${GITHUB_STEP_SUMMARY}"
