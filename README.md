@@ -55,7 +55,7 @@ Documentation: [Design notes (中文)](docs/DESIGN.md) · [Publishing guide (中
 | Role model | Dispatch-first: determine the owning Workspace from registered metadata, send a self-contained brief to a Session there, watch it, review the delivery, report; read-only inspection is bounded feasibility triage (ownership, current behavior at a high level, verification) plus checking a specific claim during review, while the deeper investigation and implementation stay in the owning Workspace's Session (including the lead's own workspace; direct work only when the human explicitly authorizes it in this conversation; record-file upkeep may follow the lead's repository instructions) |
 | Standard DSH entities | Child sessions are ordinary Sessions (visible in the sidebar; humans can open and take them over); Workspaces go through `workspaceRegistry`, not subagents |
 | Optional worktree isolation | When the Host composes DSH's experimental Git worktree service (`ctx.worktrees`), `devlead_create_session` can request `isolation: "worktree"` so a writing Session gets its own branch and checkout instead of sharing the Workspace checkout; detection is optional and a missing capability degrades to the shared checkout with a reported status, never an error (see [Optional worktree isolation](#optional-worktree-isolation)) |
-| 13 lead tools + 1 report tool | Register/list/remove Workspaces, list Host models and Agent presets, create (model/Agent Teams inherited or pinned)/read/continue/archive/restore/watch Sessions, read the notification/report digest; watched non-lead Sessions can send a one-way `devlead_report` update (see [Model tools](#model-tools)) |
+| 14 lead tools + 1 report tool | Register/list/remove Workspaces, list Host models and Agent presets, create (model/Agent Teams inherited or pinned)/read/continue/archive/restore/watch Sessions, inspect/retract queued inbox inputs, read the notification/report digest; watched non-lead Sessions can send a one-way `devlead_report` update (see [Model tools](#model-tools)) |
 | Human commands | `/devlead` (status), `/devlead on\|off`, `/devlead reset` (damaged-state recovery), `/devlead watch\|unwatch <session>`; sessions are addressable by full id or unique prefix |
 | Notification loop | A watched session's `turn/end` writes a durable notification and wakes an indexed DevLead through a coalescing window (configurable window; cold leads are resumed by default); the watch index is rebuilt from durable records after a Host restart, and a disposed lead keeps observing (see [Notification loop](#notification-loop)) |
 | Event sourcing | Mode / watch set / notifications / reports / reset are ignorable `plugin:devlead/*` records with strict replay validation; survive restart / resume / fork |
@@ -145,7 +145,7 @@ A pnpm workspace under `packages/*`:
 packages/
   protocol/    @yankeguo/dsh-devlead-protocol     pure types + constants + formatting (shared by host and browser), devLead/devLeadMode/devLeadWatch projection types
   devlead/     @yankeguo/dsh-devlead              core service: mode, Workspace/Session orchestration, watch index, notification delivery, strict fold
-  tool/        @yankeguo/dsh-tool-devlead         13 lead tools + 1 report tool + conditional prompt
+  tool/        @yankeguo/dsh-tool-devlead         14 lead tools + 1 report tool + conditional prompt
   command/     @yankeguo/dsh-command-devlead      the /devlead human command
   client-ui/   @yankeguo/dsh-client-ui-devlead    browser UI: toolbar toggle + DevLeadBar status strip + active/watched sidebar marks
   bundle/      @yankeguo/dsh-devlead-bundle       bundle: cordis.patch.yml + dependencies
@@ -201,7 +201,7 @@ accept every 0.2.2 release candidate instead of reporting unmet peers on rc.2+.
 
 | Capability | rc.1 | rc.2 | rc.3 | rc.4 | rc.5 | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
-| Plugin load, 13 lead tools + 1 report tool, `/devlead`, Web UI | yes | yes | yes | yes | yes | base plugin surface |
+| Plugin load, 14 lead tools + 1 report tool, `/devlead`, Web UI | yes | yes | yes | yes | yes | base plugin surface |
 | `devlead_list_agent_presets` | yes | yes | yes | yes | yes | `dsh-web-app` composes `agent-presets` from rc.1; tested through the real roster (`standard` default) on every version |
 | Dispatch model selection + `reasoning_effort` (`agent.model.select`) | yes | yes | yes | yes | yes | Session-level only; never rewrites the profile default |
 | `devlead_list_models` (`sessionController.modelCatalog()`) | yes | yes | yes | yes | yes | read-only compact catalog |
@@ -245,12 +245,12 @@ requires Node ≥ 24.9):
 | `0.2.2-rc.4` | `DSH_BIN=<tmp>/rc.4/node_modules/.bin/dsh node scripts/e2e-smoke.mjs --flow installed` | **143/143** (includes the experimental worktree phase) |
 | `0.2.2-rc.4` | same, `--flow patch` | **143/143** |
 | `0.2.2-rc.5` | same, `rc.5` | **120/120** (Team success branch) |
-| `0.2.2-rc.5` | `DSH_BIN=<cache>/rc5/install/node_modules/@deepseek-ai/dsh/lib/bin.js node scripts/e2e-smoke.mjs --flow installed` | **146/146** (0.2.6+ audit-round rerun on the current harness, includes the experimental worktree phase) |
-| `0.2.2-rc.5` | same, `--flow patch` | **146/146** (same rerun) |
+| `0.2.2-rc.5` | `DSH_BIN=<cache>/rc5/install/node_modules/@deepseek-ai/dsh/lib/bin.js node scripts/e2e-smoke.mjs --flow installed` | **150/150** (queued-input round rerun on the current harness, includes the experimental worktree phase) |
+| `0.2.2-rc.5` | same, `--flow patch` | **150/150** (same rerun) |
 
 The next release (0.2.7, unpublished, includes question routing) adds three phase-3 question-gate
 checks. The 0.2.6+ audit round reran rc.5 on the current harness: installed `--no-worktree`
-reports **123/123**, and the installed/patch full flows report **146/146** each. A pre-release
+reports **127/127**, and the installed/patch full flows report **150/150** each. A pre-release
 rerun of the full combination is still required by the publishing guide.
 
 Three positive model-selection checks per flow are reported as SKIP on this credential-less
@@ -480,7 +480,7 @@ follow up on failures instead of claiming success.
 
 ### Model tools
 
-The thirteen lead tools carry `when: ({ agent }) => ctx.devLead.isEnabled(agent)` and are only
+The fourteen lead tools carry `when: ({ agent }) => ctx.devLead.isEnabled(agent)` and are only
 visible in a DevLead session. `devlead_report` is the inverse surface: it is visible only in a
 non-DevLead Session watched by the unique active lead.
 
@@ -499,8 +499,9 @@ rather than implying the directory is unregistered.
 | `devlead_use_workspace` | `path` (required, absolute), `title?`, `create?` (default false: a missing directory is an error; `true` creates it with `mkdir -p` after the human asked) | `{ workspace }` |
 | `devlead_list_sessions` | `workspace?` (id, registered path, or exact title), `watched_only?`, `limit?` | `{ sessions, watched }` |
 | `devlead_create_session` | `workspace?` (id, registered path, or exact title), `prompt?`, `title?`, `watch?` (default true), `preset?` (Host-defined id; blank/omitted falls back to the plugin default then the Host default), `isolation?` (default `none`; `worktree` = best-effort isolated checkout), `provider?`+`model?` (paired; optional `reasoning_effort?`), `agent_teams?` | creation result (including the `isolation` outcome, and the applied `model`/`agentTeams` when requested) |
-| `devlead_get_session` | `session` (required) | `{ session, reports? }` — when reading this lead itself, `reports` carries its 5 newest retained reports |
-| `devlead_prompt_session` | `session`, `prompt` (required), `watch?` (default true), `interrupt?` (default false: queue behind the running turn; `true` = stop the running turn and Host-reported subagent/job/schedule work, discard queued input, then admit a new turn; idle/cold = no-op) | prompt result (including `interrupted`) |
+| `devlead_get_session` | `session` (required) | `{ session, reports?, queuedInputs? }` — when reading this lead itself, `reports` carries its 5 newest retained reports; while the target is live, `queuedInputs` lists its pending inbox inputs (id, boundary, source kind/form/sender, text excerpt, enqueue time) so stale or duplicate queued instructions can be identified before they run |
+| `devlead_prompt_session` | `session`, `prompt` (required), `watch?` (default true), `interrupt?` (default false: queue behind the running turn; `true` = stop the running turn and Host-reported subagent/job/schedule work, discard queued input, then admit a new turn; idle/cold = no-op), `interrupt_inbox?` (default `clear-all`; `keep` restores every pending input after the stop, `clear-own` restores everything except this lead's own relay prompts; restored inputs keep their id and queue order ahead of the replacement prompt; ignored without `interrupt` and for idle/cold targets) | prompt result (including `interrupted`, and `retainedInputs` when a retention policy ran) |
+| `devlead_retract_input` | `session`, `input_id` (required; the id `queuedInputs` reports) | `{ sessionId, inputId, retracted }` — withdraw one queued inbox input before it runs; only relay prompts this lead authored (human/scheduled/other producers' inputs are refused); idempotent (`retracted: false` when already consumed or withdrawn); target must be live and not the lead itself |
 | `devlead_watch_session` | `session`, `watching` (required bool) | watch mutation result |
 | `devlead_notifications` | `limit?` (default 20, applied to each digest separately) | `{ notifications, reports, watched }` |
 | `devlead_report` | `message` (required, plain text, max 4000 code points), `kind?` (`progress` default / `blocked` / `decision` / `question` / `fyi`), `summary?` (max 200) | `{ report, durable, queued, warning? }` — visible only in a watched non-lead Session; one-way, never waits for a reply; only for a long-running task's mid-turn milestones (the settled turn already notifies the lead, so no routine progress / final summary; short or linear tasks should not call it); a `question` report is answered in a new turn via `devlead_prompt_session` |
@@ -545,7 +546,8 @@ queues behind its current turn. Pass `interrupt: true` only when the lead means 
 work. The Host then dispatches the same `workspace/session-stop` providers that
 `devlead_archive_session`'s `stop_running` uses: the running turn is cancelled, running subagent
 descendants are cancelled, owned jobs are killed, and active schedule rows are removed; queued
-inbox input is discarded. The prompt is admitted immediately afterwards as a new turn. The stop is
+inbox input is discarded by default (`interrupt_inbox` can retain it, see below). The prompt is
+admitted immediately afterwards as a new turn. The stop is
 fire-and-forget and is not awaited to settlement — the Agent queues the replacement prompt for the
 next turn and starts it once the cancelled activity converges, so it cannot join the cancelling
 turn. The call returns after the replacement prompt is admitted, not after the old turn settles.
@@ -555,6 +557,20 @@ watched-turn notification with transition `aborted` (rendered as cancelled), and
 turn notifies separately. The result's `interrupted` field reports whether a stop was actually
 requested (`false` when the option was omitted, or when there was no running turn). Stop-provider
 failures are logged and do not block the replacement prompt.
+
+Queued inbox inputs are visible, retractable, and survivable across an interrupt. While the target
+is live, `devlead_get_session` adds `queuedInputs`: each pending message's stable id, boundary
+(`next-turn` / `next-step`), source kind/form/sender, a bounded text excerpt, and its enqueue
+instant — so stale or duplicate queued instructions can be identified before they run.
+`devlead_retract_input` withdraws one such input by id; only relay prompts this lead Session
+authored are retractable (human, scheduled, and other producers' inputs are refused with an
+explanation), and the call is idempotent (`retracted: false` once the input is consumed or
+withdrawn). Because the Host stop providers always clear the inbox, `interrupt_inbox` retention is
+a snapshot before the stop and a restore of the same identified messages after it: `keep` restores
+every pending input, `clear-own` everything except this lead's own relay prompts, in their original
+queue order ahead of the replacement prompt; the result reports `retainedInputs` when a retention
+policy ran. The default `clear-all` keeps the historical behavior exactly, and the policy is
+ignored without `interrupt: true` and for idle/cold targets.
 
 A watched Session must not ask the human directly. The tool plugin installs a hard
 `tools/pre-execute` gate: an `ask_user_question` call from a watched non-lead Session is denied
@@ -912,7 +928,7 @@ non-empty `path`/`branch`/`baseCommit`; `git worktree list` and the branch exist
 equals the checkout `HEAD`; the child's effective cwd is the worktree path while its header cwd
 still points at the Workspace; the Session still belongs to that Workspace); phase 3 links the
 same private probe package and restarts (the worktree bundle is not required) to drive the close
-tools through the real Host: a real step-time tool activation shows exactly the thirteen lead
+tools through the real Host: a real step-time tool activation shows exactly the fourteen lead
 `devlead_*` tools while the mode is on and none while it is off, the assembled `devlead:policy`
 section carries judgment-based closing with its safety boundaries and the
 triage/open-question handoff, archiving a prompted child updates the durable archive set and
@@ -931,16 +947,17 @@ providers, failures). When a credential-less Host exposes no model catalog, the 
 checks are reported as SKIP with the reason instead of being faked. The watched-child surface is
 exercised too: the child sees exactly `devlead_report`, its report lands in the lead digest as a
 durable receipt, and its `ask_user_question` call is denied and forwarded to the lead as a
-`question` report. Per-phase and total check counts are **146/146 per flow** (phase 1 = 27,
-phase 1b = 12, phase 2 = 23, phase 3 = 84, including the three question-gate checks);
+`question` report, and queued-inbox visibility/ownership/idempotent-retraction checks. Per-phase and total check counts are **150/150 per flow** (phase 1 = 27,
+phase 1b = 12, phase 2 = 23, phase 3 = 88, including the three question-gate and four inbox checks);
 `--no-worktree` skips only the experimental phase, reporting
-**123/123** (phases 1 + 1b + 3) for debugging. The compatibility runs above used each release's
+**127/127** (phases 1 + 1b + 3) for debugging. The compatibility runs above used each release's
 harness: npm-installed `0.2.2-rc.1` through `0.2.2-rc.5` CLIs (`DSH_BIN`, `--no-worktree`) reported
 **120/120** each — on rc.1 the Team success checks become expected-unavailable assertions
 (`DEVLEAD_TEAM_UNAVAILABLE`, no Session created), while rc.2–rc.5 run the Team success path — and
 the rc.4 / rc.5 installed and patch flows passed **143/143** with the worktree phase. The 0.2.6+
-audit round reran rc.5 on the current harness: `--no-worktree` **123/123** and the installed/patch
-full flows **146/146** each. The probe is a private
+audit round reran rc.5 on the then-current harness (`--no-worktree` 123/123, full flows 146/146);
+the queued-input round reran rc.5 on the current harness: `--no-worktree` **127/127** and the
+installed/patch full flows **150/150** each. The probe is a private
 test-only package under `scripts/e2e-probe/`, not a published or workspace package. The profile
 mutations happen only in the throwaway profile under `os.tmpdir()`; no pnpm install, network, or
 lockfile change is involved.

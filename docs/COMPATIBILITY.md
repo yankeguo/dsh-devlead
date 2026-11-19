@@ -37,12 +37,13 @@ rc.5 的 `dsh-web` 在未配置 `web.searchProvider` 时按模型路由选择：
 
 | 能力 | rc.1 | rc.2 | rc.3 | rc.4 | rc.5 |
 | --- | --- | --- | --- | --- | --- |
-| 插件加载、13 个主工具 + `devlead_report`、`/devlead`、Web UI | 支持 | 支持 | 支持 | 支持 | 支持 |
+| 插件加载、14 个主工具 + `devlead_report`、`/devlead`、Web UI | 支持 | 支持 | 支持 | 支持 | 支持 |
 | `devlead_list_agent_presets` / 真实 roster | 支持 | 支持 | 支持 | 支持 | 支持 |
 | 派发模型选择 + `reasoning_effort` | 支持 | 支持 | 支持 | 支持 | 支持 |
 | `devlead_list_models` | 支持 | 支持 | 支持 | 支持 | 支持 |
 | Workspace id/注册路径/精确 title 三寻址 | 支持 | 支持 | 支持 | 支持 | 支持 |
 | `devlead_prompt_session interrupt`（`workspace/session-stop` providers） | 支持 | 支持 | 支持 | 支持 | 支持 |
+| 排队 inbox 输入：`queuedInputs` 明细 / `devlead_retract_input` / `interrupt_inbox` 策略 | 支持 | 支持 | 支持 | 支持 | 支持 |
 | watched 子会话问题路由（`tools/pre-execute` + `question` report） | 支持 | 支持 | 支持 | 支持 | 支持 |
 | 可选 worktree 隔离 | 可选 bundle | 可选 bundle | 可选 bundle | 可选 bundle | 可选 bundle |
 | `agent_teams: true` | 不可用\* | 支持† | 支持† | 支持† | 支持† |
@@ -53,6 +54,14 @@ rc.5 的 `dsh-web` 在未配置 `web.searchProvider` 时按模型路由选择：
 Workspace 三寻址（`resolveWorkspaceReference`：id → 注册路径 → trim 后大小写敏感的精确 title）
 版本无关：rc.1–rc.5 的 WorkspaceRegistry 都允许不同 canonical path 共用 display title，同 title
 歧义报 `DEVLEAD_WORKSPACE_AMBIGUOUS` 并列出候选 id/path（见 [DESIGN](DESIGN.md) §4）。
+
+排队 inbox 输入能力依赖的 Host API 在五个 tag 都存在：`Inbox` 契约的按条
+`remove(messageId)` / `prepend` / `append` / `clear`（rc.1 `dsh-agent` 声明
+`runtime-types.d.ts` 已含全部方法与 `CancelOptions.keepInbox`），消息 id 稳定
+（`MessageBase.id`，inbox fold 强制唯一），`agent/inbox/spliced` durable 事件携带入队时间。
+`interrupt_inbox` 的保留是快照-停止-恢复（stop provider 固定清队列，无法 veto），不依赖
+`keepInbox` 透传；rc.5 驱动循环在每次同步 claim 前检查 abort，恢复的消息不会被垂死 turn
+claim。该能力不新增 DSH peer 范围要求。
 
 `devlead_prompt_session interrupt` 复用五个 tag 都存在的 `workspace/session-stop` 事件；
 Agent registry 的 turn provider、jobs / subagent / schedule providers，以及 aborted phase 上
@@ -95,10 +104,14 @@ TMPDIR="$BASE/tmp" DSH_BIN="$DSH_BIN" node scripts/e2e-smoke.mjs \
 | `0.2.2-rc.5` | installed `--no-worktree` | **123/123**（phase 1 27 + 1b 12 + 3 84，含问题路由 gate） |
 | `0.2.2-rc.5` | installed 完整（0.2.6+ 审计轮重跑） | **146/146**（phase 1 27 + 1b 12 + 2 23 + 3 84，含 question gate） |
 | `0.2.2-rc.5` | patch 完整（0.2.6+ 审计轮重跑） | **146/146**（同上） |
+| `0.2.2-rc.5` | installed 完整（排队输入轮重跑） | **150/150**（phase 3 88，另含 4 条排队 inbox checks） |
+| `0.2.2-rc.5` | patch 完整（排队输入轮重跑） | **150/150**（同上） |
+| `0.2.2-rc.5` | installed `--no-worktree`（排队输入轮重跑） | **127/127**（phase 1 27 + 1b 12 + 3 88） |
 
 rc.1–rc.4 的行是各自发布时的 harness 计数；下一版（0.2.7，未发布，含 question 路由）给 phase 3
 新增 3 条 checks。0.2.6+ 审计轮（[AUDIT](AUDIT.md) §12）已按当前 harness 重跑 rc.5
-`--no-worktree`（123/123）与 installed/patch 完整（各 146/146，安装版 rc.5）。发布前需按
+`--no-worktree`（123/123）与 installed/patch 完整（各 146/146，安装版 rc.5）；排队输入轮再增
+4 条 inbox checks 后重跑 rc.5 installed/patch 完整（各 **150/150**）与 `--no-worktree`（**127/127**）。发布前需按
 [PUBLISHING](PUBLISHING.md) 重跑完整组合。
 
 每条 flow 有 3 条正向模型选择检查因无 provider 凭据 SKIP（打印真实原因）；负向

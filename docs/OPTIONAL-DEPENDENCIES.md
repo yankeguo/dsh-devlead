@@ -638,7 +638,7 @@ DSH 包不得作为直接/optional 依赖、不得声明 `dsh-experimental`；�
 | R5 | headless/acp/sdk 组合可安装本套件但 dispatch 不可用（§6.4），当前只有 README 一句"面向默认 Web 组合" | 低-中 | 决策：是否在详细文档/插件描述中显式标注"Web/Desktop 完整支持；headless/ACP 仅模式与只读可用"？代码侧不建议加硬限制（会妨碍未来组合） |
 | R6 | `dsh.client.inject` 里有非 client row 的名字（`dsh-client-ui-primitives`）；rc.1 loader 忽略之，保留作文档（`docs/AUDIT.md` 遗留限制） | 低 | 观察：若未来 DSH 改为严格校验 inject 名字，需移除该项；当前不动 |
 | R7 | `dsh-api-gateway`（提供 client `remote` 服务）未在本套件任何清单中出现 | 低 | 它是默认组合的传递依赖，且我们的代码没有直接 import/peer；保持不声明（声明反而会误导安装） |
-| R8 | ~~worktree 隔离 happy path 未在真实实验组合上实测~~：**0.2.0 已解决**。本地 E2E 阶段 2 在一次性 profile 里显式追加官方 `@deepseek-ai/dsh-experimental-forge-bundle`，通过私有 probe 命令走 `useWorkspace(agent, request)` + `createSession({ isolation: 'worktree' })`，对真实 git 仓库端到端断言 isolation 结果、worktree/分支存在、baseCommit、子会话有效 cwd 与 header cwd、Workspace 归属 | 已关闭 | 保留为本地验收的一部分（当前 harness 每流 146/146）；无需再手动验收 |
+| R8 | ~~worktree 隔离 happy path 未在真实实验组合上实测~~：**0.2.0 已解决**。本地 E2E 阶段 2 在一次性 profile 里显式追加官方 `@deepseek-ai/dsh-experimental-forge-bundle`，通过私有 probe 命令走 `useWorkspace(agent, request)` + `createSession({ isolation: 'worktree' })`，对真实 git 仓库端到端断言 isolation 结果、worktree/分支存在、baseCommit、子会话有效 cwd 与 header cwd、Workspace 归属 | 已关闭 | 保留为本地验收的一部分（当前 harness 每流 150/150）；无需再手动验收 |
 
 ## 10. 附录：复现命令
 

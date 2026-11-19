@@ -11,6 +11,17 @@ Session holds it; `off`/`reset` release immediately, archiving or deleting the h
 releasable, and a restart/rehydration reconciles historical duplicates and keeps one Session.
 Admission is serialized in-process and scans live projections plus the durable corpus.
 
+`sessionQueuedInputs(agent, sessionId, signal?)` projects a live Session's pending inbox inputs
+(id, boundary, source kind/form/sender, bounded text excerpt, enqueue instant from the durable
+`agent/inbox/spliced` log); a cold target reports undefined. `retractQueuedInput(agent, sessionId,
+inputId, signal?)` withdraws one queued input this lead authored (devlead relay with its own
+sender id) through the Host's per-message `inbox.remove`; other producers' inputs are refused,
+an already-gone input is idempotent (`retracted: false`), and the target must be live and not the
+lead itself. `promptSession` accepts `interruptInbox: 'clear-all' | 'keep' | 'clear-own'`
+(default `clear-all`): because the Host stop providers always clear the inbox, retention is a
+snapshot before the stop and a restore of the same identified messages after it, ahead of the
+replacement prompt; the result reports `retainedInputs` when a retention policy ran.
+
 `reportProgress(agent, { message, kind?, summary? }, signal?)` lets a watched, non-DevLead Session
 send a one-way report to its unique active lead. It resolves the active lead that watches it through
 the hub's reverse index, validates size/kind, deduplicates identical kind+message pairs within a turn, enforces four
