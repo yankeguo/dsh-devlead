@@ -48,8 +48,9 @@
 ## UI 约定（不要回退）
 
 - `DevLeadBar` 只读：显示关注/运行计数和最新通知，不承载模式开关。
-- 唯一的模式开关是 composer 工具栏的 `DevLeadIconToggle`，两种状态都渲染；关闭模式后
-  开关仍在原位，不能随状态条一起消失。
+- 唯一的模式开关是 composer 工具栏的 `DevLeadIconToggle`，top-level Session 的两种状态都
+  渲染；关闭模式后开关仍在原位，不能随状态条一起消失。subagent Session 例外：它不可能升格
+  为 DevLead，`DevLeadIconToggle` 与 `DevLeadBar` 都不渲染。
 - 侧栏 active lead 行只画 CSS overlay ring，不加行尾图标；watched 行用弱化的准星标记。
   不要给 Session 行加 border / padding / height（shell 行只有左右 transparent border）。
 - 搜索态结果行和 blank 行没有 trailing seat，因此不显示 active/watched 标记；这是 shell

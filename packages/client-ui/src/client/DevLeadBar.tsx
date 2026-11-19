@@ -12,10 +12,15 @@
  * Enabled state shows the brand, the watched/running counts, and the latest
  * retained notification (or the help hint when there is none). Durable state
  * arrives through the `devLead` projection; this surface never writes it.
+ *
+ * A subagent Session never renders the strip even when its projection still
+ * folds as enabled (old data or a hand-edited log). The toolbar toggle is hidden
+ * there too, so showing a strip would advertise a state the human could not
+ * turn off from this surface.
  */
 
 import { IconUsersOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { SessionListState } from '@deepseek-ai/dsh-api-session-controller/client'
+import type { SessionListState, SessionSnapshot } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { SessionStatusSnapshot } from '@deepseek-ai/dsh-client-ui-session/client'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import { DEVLEAD_PROJECTION_KEY } from '@yankeguo/dsh-devlead-protocol/client'
@@ -34,8 +39,11 @@ export type DevLeadBarProps =
 
 /** The DevLead strip above the composer, rendered only in enabled mode. */
 export function DevLeadBar({
-  useProjection, useSessions, useSessionStatus, t,
+  useSession, useProjection, useSessions, useSessionStatus, t,
 }: DevLeadBarProps) {
+  // Unconditional hook: the surface must keep a stable hook order even when the
+  // Session's subagent status changes between renders.
+  const subagent = useSession((snapshot: SessionSnapshot) => snapshot.subagent !== null) ?? false
   const projection = useProjection(DEVLEAD_PROJECTION_KEY)
   // Both sources are selector hooks over framework snapshots; the explicit
   // parameter types keep this component typed even in a workspace that does not
@@ -44,6 +52,7 @@ export function DevLeadBar({
   const statuses = useSessionStatus((current: SessionStatusSnapshot) => current)
   const enabled = projection?.enabled ?? false
 
+  if (subagent) return null
   if (projection === undefined || !enabled) return null
 
   // Every collection below crossed the Remote boundary. The Host schemas

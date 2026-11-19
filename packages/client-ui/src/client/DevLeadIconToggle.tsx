@@ -3,8 +3,10 @@
  * (`conversation.input.left`).
  *
  * The button is mounted whenever the `devLead` projection is loaded, in both
- * states. With the mode off it submits `/devlead on`; with the mode on it
- * submits `/devlead off`. It therefore stays in place while the enabled-only
+ * states, except in a subagent Session: a subagent can never become the
+ * Host-wide DevLead, so advertising the switch there would only offer an action
+ * the Host rejects. With the mode off it submits `/devlead on`; with the mode on
+ * it submits `/devlead off`. It therefore stays in place while the enabled-only
  * DevLeadBar appears and disappears above the composer — the status strip owns
  * no switch, so turning the mode off cannot hide the control that did it.
  *
@@ -25,6 +27,7 @@
 
 import { useState } from 'react'
 import { Button, IconUsersOutlineRegular, Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
+import type { SessionSnapshot } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import { DEVLEAD_COMMAND_NAME, DEVLEAD_PROJECTION_KEY } from '@yankeguo/dsh-devlead-protocol/client'
 import { failureMessage, type DevLeadCommandAdmission } from './results.ts'
@@ -50,7 +53,10 @@ export type DevLeadIconToggleProps =
 type ToggleDirection = 'on' | 'off'
 
 /** The compact DevLead switch shown in both mode states. */
-export function DevLeadIconToggle({ useProjection, executeCommand, t }: DevLeadIconToggleProps) {
+export function DevLeadIconToggle({ useSession, useProjection, executeCommand, t }: DevLeadIconToggleProps) {
+  // Called unconditionally so the hook order is stable across renders. A
+  // subagent Session never qualifies as DevLead, so its toolbar stays clean.
+  const subagent = useSession((snapshot: SessionSnapshot) => snapshot.subagent !== null) ?? false
   const projection = useProjection(DEVLEAD_PROJECTION_KEY)
   const enabled = projection?.enabled ?? false
   const { pending, failure, run } = useDevLeadAdmission(executeCommand, enabled)
@@ -59,6 +65,7 @@ export function DevLeadIconToggle({ useProjection, executeCommand, t }: DevLeadI
   // matters while a rejected command left the mode unchanged.
   const [attempt, setAttempt] = useState<ToggleDirection>('on')
 
+  if (subagent) return null
   if (projection === undefined) return null
 
   const direction: ToggleDirection = enabled ? 'off' : 'on'

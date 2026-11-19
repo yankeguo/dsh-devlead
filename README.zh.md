@@ -49,7 +49,7 @@
 | 事件溯源 | 模式/关注集合/通知/中途汇报/reset 全部是可忽略的 `plugin:devlead/*` 记录，严格回放校验，可跨重启 / 恢复（fork 会复制日志，但被继承的记录不参与 fold，forked subagent 不会继承模式） |
 | 损坏状态恢复 | 损坏的 `plugin:devlead/*` 记录会冻结 fold；人类专属 `/devlead reset`（或冻结时的 `/devlead off`）追加 `plugin:devlead/reset` 记录，让三个 projection 回到默认 disabled 状态（见[通知机制](#通知机制)） |
 | Session projection | `devLead` projection（`{ enabled, sessions, notifications, reports }`）把状态同步到浏览器，无需自定义 Remote API；summary 级的 `devLeadMode`（`{ enabled }`）与 `devLeadWatch`（`{ sessions }`）随每个 Session 列表行下发，供侧边栏渲染激活 lead 与已关注标记 |
-| 界面 | composer 工具条里带 DevLead 文本的图标按钮是唯一开关，两态都存在（关闭态发 `/devlead on`、开启态发 `/devlead off`）；开启后 composer 上方出现只读 DevLeadBar：已关注会话数/运行中数、最近一条通知；状态条不带开关；激活 lead 行有强调色 ring（无行尾图标），已关注行有弱化准星图标 |
+| 界面 | composer 工具条里带 DevLead 文本的图标按钮是 top-level Session 的唯一开关，两态都存在（关闭态发 `/devlead on`、开启态发 `/devlead off`）；开启后 composer 上方出现只读 DevLeadBar：已关注会话数/运行中数、最近一条通知；状态条不带开关；激活 lead 行有强调色 ring（无行尾图标），已关注行有弱化准星图标 |
 | 权限模型 | 模式开关只能由人类命令/UI 触发；通知是运行时提示而非人类指令（见[权限模型](#权限模型)） |
 | 一键安装 | bundle 的 `cordis.patch.yml` 插入全部 4 个运行时插件行，也可单独安装某个包 |
 
@@ -57,11 +57,12 @@
 
 UI 有一个开关、两种状态。插件**不会**在每个会话上摆一条明显的常驻条：
 
-- **始终存在**：composer 工具条里（权限下拉旁，槽位 `conversation.input.left`）有一个很小的
-  用户图标 + DevLead 文本按钮。模式关闭时悬停显示「开启 DevLead 模式」，点击即发送
-  `/devlead on`；模式开启时同一个按钮留在原位，并出现品牌强调色边框与很轻的光晕，悬停显示
-  「关闭 DevLead 模式」，点击发送
-  `/devlead off`。
+- **top-level Session 始终存在**：composer 工具条里（权限下拉旁，槽位
+  `conversation.input.left`）有一个很小的用户图标 + DevLead 文本按钮。模式关闭时悬停显示
+  「开启 DevLead 模式」，点击即发送 `/devlead on`；模式开启时同一个按钮留在原位，并出现品牌
+  强调色边框与很轻的光晕，悬停显示「关闭 DevLead 模式」，点击发送 `/devlead off`。subagent
+  Session 不渲染该按钮与 DevLeadBar：它不可能升格为 Host 级 DevLead，界面不应提供一个 Host
+  必拒绝的动作。
 - **已开启**：composer 上方出现状态条 DevLeadBar（槽位 `conversation.input.dock`）：品牌、
   已关注会话数、运行中数、最近一条通知；没有通知时显示帮助提示。状态条只做展示，不承载开关，
   因此关闭模式时不会把执行关闭的控件一起藏掉。模式关闭时没有状态条。
@@ -111,7 +112,7 @@ UI 有一个开关、两种状态。插件**不会**在每个会话上摆一条�
 | 交互方式 | 模型在单个 turn 内调用工具派发、等待结果 | DevLead 会话本身是普通会话；模型用 `devlead_*` 跨 turn 编排——派发后结束本轮，由唤醒开启新 turn——人类可以在同一界面介入 |
 | 生命周期 | 随父 turn / 父 Agent 结束 | 子会话独立存在，可续写；`turn/end` 持久通知，可跨重启 |
 | 唤醒机制 | 父 Agent 阻塞等待或 team 消息 | 已关注会话的 `turn/end` → 持久通知 → 合并窗口唤醒 DevLead（Agent 存活时） |
-| 开关 | 无 | **人类专属** `/devlead on\|off` 或 composer 工具条开关（两态都显示）；模型无工具可开启 |
+| 开关 | 无 | **人类专属** `/devlead on\|off` 或 composer 工具条开关（top-level Session 两态都显示；subagent Session 不显示）；模型无工具可开启 |
 | 适用场景 | 一次性并行子任务 | 跨仓库、长周期、需要人类持续参与和审查的統管工作 |
 
 选择建议：只需要并行跑一次性子任务时用 subagent / agent-team；要让 Agent 长期负责多个仓库、
@@ -310,8 +311,9 @@ DSH 跳过。
 ### 打开 / 关闭模式
 
 模式开关是**人类专属**的：在任意会话里执行命令，或点击 composer 工具条里的 DevLead
-图标 + 文本按钮。按钮在两种状态下都存在：未开启时发送 `/devlead on`，已开启时发送
-`/devlead off`。
+图标 + 文本按钮。top-level Session 的按钮在两种状态下都存在：未开启时发送 `/devlead on`，
+已开启时发送 `/devlead off`；subagent Session 不显示按钮（也不显示状态条），因为它不可能
+成为 DevLead。
 
 ```
 /devlead on        # 打开当前会话的 DevLead 模式（需要 Agent live）

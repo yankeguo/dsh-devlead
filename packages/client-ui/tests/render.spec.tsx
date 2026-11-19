@@ -22,7 +22,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ReactElement, ReactNode } from 'react'
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer'
-import type { SessionListState } from '@deepseek-ai/dsh-api-session-controller/client'
+import type { SessionListState, SessionSnapshot } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { SessionStatusSnapshot } from '@deepseek-ai/dsh-client-ui-session/client'
 import {
   DEVLEAD_MODE_PROJECTION_KEY,
@@ -186,6 +186,8 @@ interface SurfaceFakes {
   readonly statuses?: TestStatuses
   /** Session identity this surface renders for. */
   readonly sessionId?: string
+  /** Whether the current Session is a subagent Session. */
+  readonly subagent?: boolean
   /** Injected command-admission face. */
   readonly executeCommand?: DevLeadCommandInjected['executeCommand']
   /** Locale translate seat. */
@@ -205,6 +207,10 @@ interface SurfaceFakes {
 function surfaceProps(fakes: SurfaceFakes): Record<string, unknown> {
   return {
     sessionId: fakes.sessionId ?? 'session-1',
+    useSession: (selector: (snapshot: SessionSnapshot) => unknown) =>
+      selector({
+        subagent: fakes.subagent === true ? { address: {} } : null,
+      } as unknown as SessionSnapshot),
     useProjection: () => fakes.projection,
     useSessions: (selector: (state: SessionListState) => unknown) =>
       selector({ byId: fakes.rows ?? {} } as unknown as SessionListState),
@@ -318,6 +324,13 @@ afterEach(async () => {
 })
 
 describe('DevLeadBar', () => {
+  it('renders nothing for a subagent Session even with an enabled projection', async () => {
+    const renderer = await mount(
+      <DevLeadBar {...barProps({ projection: ENABLED_PROJECTION, subagent: true })} />,
+    )
+    expect(renderer.toJSON()).toBeNull()
+  })
+
   it('renders nothing without a projection or while mode is disabled', async () => {
     const absent = await mount(<DevLeadBar {...barProps({ projection: undefined })} />)
     expect(absent.toJSON()).toBeNull()
@@ -606,6 +619,23 @@ describe('DevLeadIconToggle', () => {
   it('renders nothing without a projection', async () => {
     const absent = await mount(<DevLeadIconToggle {...toggleProps({ projection: undefined })} />)
     expect(absent.toJSON()).toBeNull()
+  })
+
+  it('renders nothing for a subagent Session even with a projection', async () => {
+    for (const projection of [DISABLED_PROJECTION, ENABLED_PROJECTION]) {
+      const renderer = await mount(
+        <DevLeadIconToggle {...toggleProps({ projection, subagent: true })} />,
+      )
+      expect(renderer.toJSON()).toBeNull()
+    }
+  })
+
+  it('still renders the toggle for a top-level Session', async () => {
+    const renderer = await mount(
+      <DevLeadIconToggle {...toggleProps({ projection: DISABLED_PROJECTION, subagent: false })} />,
+    )
+    const button = renderer.root.findByType('button')
+    expect(button.props['data-devlead-toggle']).toBe('true')
   })
 
   it('renders the off-state button and turns mode on when clicked', async () => {

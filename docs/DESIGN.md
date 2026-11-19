@@ -909,16 +909,19 @@ report，新者胜出；report chip 显示 sender、`report.kind.*` 本地化 ki
 
 UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
 
-- **两种状态都存在**：`conversation.input.left`（composer 工具条，权限下拉旁）里一个 ghost
-  图标 + 可见 DevLead 文本按钮 `DevLeadIconToggle`。它只读 projection，projection 未加载时
-  不渲染；`enabled=false` 时点击发送 `/devlead on`，`enabled=true` 时点击发送
-  `/devlead off`。按钮在两种状态下保持同一位置、28px 内容高度与自适应宽度（本地化
+- **top-level Session 的两种状态都存在**：`conversation.input.left`（composer 工具条，权限
+  下拉旁）里一个 ghost 图标 + 可见 DevLead 文本按钮 `DevLeadIconToggle`。它只读 projection，
+  projection 未加载时不渲染；`useSession(snapshot => snapshot.subagent !== null)` 为真时也不
+  渲染——subagent 不可能升格为 DevLead，按钮不应提供一个 Host 必拒绝的动作。
+  `enabled=false` 时点击发送 `/devlead on`，`enabled=true` 时点击发送 `/devlead off`。按钮在两种状态下保持同一位置、28px 内容高度与自适应宽度（本地化
   `DevLead` 文本来自 locale，不占用固定方形 seat），`aria-label`/tooltip 随状态切换；
   pending 时禁用并置 `aria-busy`，
   失败时按钮保留原位，错误文本进入 tooltip、aria-label 和隐藏的 `role=status` live region
   （toolbar 没有内联错误位）；失败态 tooltip 点击/触摸可固定阅读，便于无 hover 设备。
   按钮不会自行翻转状态。
 - **已开启**：`conversation.input.dock`（composer 上方）里的只读 `DevLeadBar`。
+  - subagent Session 即使 projection 仍 fold 为 `enabled=true`（旧数据或手写日志）也不渲染：
+    它的工具条开关已被隐藏，显示状态条只会给出一个无法在该界面关闭的开关状态。
   - `useProjection('devLead')`：`undefined`（加载中）或 `enabled=false` → 不渲染；
     `enabled=true` → 已关注会话数/运行中数（标准 props `useSessions`/`useSessionStatus` 与
     projection 的 `sessions` 计算）+ 最近一条通知摘要 + 帮助提示。状态条不含 Switch，也不
@@ -942,7 +945,8 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
     setState、失败保留与 `resetKey` 清空。
   - `role=status` live region 覆盖状态条提示 / 最新通知，以及工具条开关的开启/关闭失败文本，
     保证屏幕阅读器能听到通知与错误；`aria-busy` / label 与 pending 状态一致。
-  - 开关不随状态条出现/消失而消失；同一时刻只有一个模式开关。
+  - top-level Session 的开关不随状态条出现/消失而消失；同一时刻只有一个模式开关。subagent
+  Session 不渲染开关与状态条。
 - **侧边栏会话行标记**：
   - **当前激活的 lead** 行用 `::after` overlay 画 business-accent ring（1px border + 轻
     outer halo），颜色与 composer 工具栏开关一致，不增加 padding/margin/height，因此 32px
@@ -1136,7 +1140,7 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   + 阶段 3 88，阶段 3 含 agent preset roster、watched-Session 问题路由与排队 inbox 检查）；跳过阶段 2 时
   **127/127**（阶段 1 + 1b + 3）。
 - 本轮最终验证数字（工作树，排队 inbox 输入能力轮）：`pnpm verify` =
-  typecheck 通过 + **26 文件 / 868 tests** + 7 个构建产物；`node scripts/check-packages.mjs` →
+  typecheck 通过 + **26 文件 / 871 tests** + 7 个构建产物；`node scripts/check-packages.mjs` →
   `OK (6 packages)`；E2E 在安装版 rc.5 实跑 installed 与 patch **完整双流各 150/150**
   （phase 1 27 + 1b 12 + 2 23 + 3 88），`--no-worktree` **127/127**。上一轮（0.2.6+ 工具面审计，
   见 [AUDIT](AUDIT.md) §12）为 821 tests / 146/146。
