@@ -159,8 +159,8 @@ const CREATE_SESSION_DESCRIPTION =
   + 'of waiting: never sleep, never poll devlead_get_session, devlead_list_sessions, or devlead_notifications, and '
   + 'never call wait_agent to wait for it. A watched Session is the default, and its settled turn starts a new turn '
   + 'of this lead session with the wake-up message. When watched, the child can use devlead_report '
-  + 'for key progress, real blockers, or decisions; mention it in a long, multi-stage, or blockage-prone brief, and '
-  + 'omit that advice with watch=false (the tool is absent).'
+  + 'for mid-turn blockers, decision forks, or scheduling-critical progress; mention it only in a long-running '
+  + 'brief whose mid-turn milestones matter, and omit that advice with watch=false (the tool is absent).'
 
 const GET_SESSION_DESCRIPTION =
   'Read one Session in detail: whether it is live and running, whether it is archived, and, when the Host can read '
@@ -172,8 +172,9 @@ const PROMPT_SESSION_DESCRIPTION =
   'Admit a follow-up prompt into an existing Session, resuming a cold Session first. The prompt is attributed to this '
   + 'DevLead Session. Archived Sessions are rejected. The Session is watched by default, so after this call end the '
   + 'turn instead of waiting: its settled turn starts a new turn of this lead session with the wake-up message. A '
-  + 'watched Session gains devlead_report; in a long or blockage-prone continuation, tell it to send key progress, '
-  + 'blockers, or decisions. With watch=false the tool is unavailable. Default delivery queues the prompt behind the '
+  + 'watched Session gains devlead_report; in a long-running continuation whose mid-turn milestones matter, tell it '
+  + 'to report blockers, decision forks, or scheduling-critical progress. With watch=false the tool is unavailable. '
+  + 'Default delivery queues the prompt behind the '
   + 'Session\'s current turn; set interrupt true only to replace that work, with the exact stop-and-replace semantics '
   + 'described on the interrupt parameter.'
 
@@ -192,9 +193,11 @@ const NOTIFICATIONS_DESCRIPTION =
 
 const REPORT_DESCRIPTION =
   'Send a one-way mid-turn report to the single active DevLead Session that watches this Session; the lead cannot '
-  + 'reply through the report itself. Use it for progress worth acting on, a real blocker, a decision the lead or '
-  + 'human must make, an important finding, or a question that needs the lead\'s answer, instead of waiting for the '
-  + 'turn to end. Use kind question when you are blocked on missing information or a decision, '
+  + 'reply through the report itself. The lead is already notified when your turn settles, so do not report routine '
+  + 'progress or a final summary here. Use it only mid-turn, on a long-running task, for a milestone the lead must '
+  + 'know before the turn ends: a real blocker, a fork that needs the lead\'s decision, or progress that would '
+  + 'change scheduling correctness if it waited; a short or linear task should not call it. Use kind question when '
+  + 'you are blocked on missing information or a decision, '
   + 'then end your turn; the lead answers in a new turn (directly, or after asking the human). Keep the message '
   + 'concise and actionable; at most four distinct non-question reports are accepted per turn, question reports are '
   + 'exempt from that budget, the same kind and message in one turn is deduplicated, and no target Session can be '

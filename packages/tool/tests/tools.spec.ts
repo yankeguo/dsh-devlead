@@ -271,6 +271,12 @@ describe('registration', () => {
     expect(text).toContain('kind question')
     expect(text).toContain('ask_user_question call is intercepted')
     expect(text).toContain('end your turn')
+    // Reports are long-task mid-turn milestones, not a re-broadcast of what the
+    // settled-turn notification already carries.
+    expect(text).toContain('Your settled turn already notifies the lead')
+    expect(text).toContain('do not use devlead_report to re-broadcast routine progress or your final summary')
+    expect(text).toContain("a long-running task's mid-turn milestones")
+    expect(text).toContain('a short or linear task should not call it')
     // A DevLead-enabled Session must not see the child reporting guidance.
     harness.devLead.enabled.add(reporter.id)
     expect(harness.reportSectionText(reporter)).toBe('')
@@ -499,6 +505,11 @@ describe('policy', () => {
     expect(text).toContain('you may invite devlead_report')
     expect(text).toContain('watch=false')
     expect(text).toContain('never replace the final turn notice')
+    // The invitation is narrowed to long-running work with scheduling-relevant
+    // mid-turn milestones; short linear work is explicitly excluded.
+    expect(text).toContain('a long-running watched Session whose mid-turn milestones matter')
+    expect(text).toContain('blockers, decision forks, or scheduling-critical progress')
+    expect(text).toContain('for short linear work')
   })
 
   it('defines watch as a follow relationship, not a permission grant', () => {
@@ -1570,6 +1581,22 @@ describe('devlead_report', () => {
     expect(parameters.properties.kind.enum).toContain('question')
     expect(definition.description).toContain('question reports are exempt')
     expect(definition.description).toContain('end your turn')
+  })
+
+  it('positions reports as long-task mid-turn milestones, not turn-end re-broadcasts', () => {
+    const harness = boot()
+    const description = harness.tool('devlead_report').definition.description
+    expect(description).toContain('The lead is already notified when your turn settles')
+    expect(description).toContain('do not report routine progress or a final summary here')
+    expect(description).toContain('only mid-turn, on a long-running task')
+    expect(description).toContain('a fork that needs the lead\'s decision')
+    expect(description).toContain('change scheduling correctness if it waited')
+    expect(description).toContain('a short or linear task should not call it')
+    // The brief-writing guidance on create/prompt matches the narrowed scope.
+    expect(harness.tool('devlead_create_session').definition.description)
+      .toContain('mention it only in a long-running brief whose mid-turn milestones matter')
+    expect(harness.tool('devlead_prompt_session').definition.description)
+      .toContain('in a long-running continuation whose mid-turn milestones matter')
   })
 
   it('translates a not-watched refusal', async () => {
