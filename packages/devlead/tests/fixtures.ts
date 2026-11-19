@@ -235,6 +235,7 @@ export interface AnswerOverrides {
   readonly messageId?: string
   readonly at?: number
   readonly status?: DevLeadAnswerStatus
+  readonly answerSeq?: number
   readonly text?: string
   readonly answeredAt?: number
   readonly presentedAt?: number
@@ -256,6 +257,7 @@ export function answer(overrides: AnswerOverrides = {}): DevLeadReportAnswer {
     messageId: overrides.messageId ?? 'msg-answer-1',
     at,
     status,
+    ...(overrides.answerSeq === undefined ? {} : { answerSeq: overrides.answerSeq }),
     textHash: answerTextHash(overrides.text ?? 'use staging'),
     answeredAt: overrides.answeredAt ?? at,
     ...(overrides.presentedAt === undefined ? {} : { presentedAt: overrides.presentedAt }),

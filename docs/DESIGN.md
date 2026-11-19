@@ -121,7 +121,8 @@ DSH 的所有读取路径会保留并重放这些记录，但不会把它们投�
   非空；`turn` 允许 0（命令调用常发生在首个 turn 之前）。最多保留 64 条 report，按 `id` 去重。
 - 新类型 `plugin:devlead/report` 对旧版本是未知插件记录：旧 fold 忽略、不冻结，因此回滚不会
   因新记录损坏日志；旧版本也读不到 report（预期降级）。`devLead` projection 的
-  `stateVersion` 现为 3（2 新增 `reports`，3 新增 fork 继承前缀长度），`devLeadWatch` 为 2、
+  `stateVersion` 现为 5（2 新增 `reports`，3 新增 fork 继承前缀长度，4 新增 answer audit，
+  5 改为按 `answerSeq` 选 latest answer），`devLeadWatch` 为 2、
   `devLeadMode` 为 2（都新增 fork 继承前缀长度）；旧 projection-cache 行会失效并从 durable
   log 重新 fold。
 - 每次变更都是**先追加日志，后发通知**。
@@ -599,6 +600,11 @@ DevLead 无需额外工具调用即可判断是否要介入。
    `hub.persistReport`，只有 lead 日志 flush 成功才删除。cold lead 的 resume 由同一 hub 水泵
    处理；归档 lead 不自动 resume。outbox 行按 7 天 retention 清理；`/devlead reset` 丢弃该
    lead 的待投递行；lead 被删除且不返回到期后清理。
+   同一 domain（spec version 2，`compatibleVersions:[1]`，旧 `pending`/`ignored` 行原样可读）
+   还有 `answer_discards` 表：写不进 lead log 的 answer discard 在此排队，Host 重启且 lead 仍
+   cold 时队列不丢；service init/晚挂载时 rehydrate 进内存队列并 seed tracker（question 立即读
+   open），lead log 可写时 drain——append + flush 都成功才删行，drain 前按 `answerSeq` 丢弃已被
+   新 answer 取代的旧 discard。无 storage 的 Host 显式 warning 降级为内存队列 + child log 重建。
 6. `report` 记录驱动 `devLead` projection，状态条、`/devlead` status、`devlead_notifications`
    读取同一份 durable digest；重启后从 lead 日志折叠恢复。
 7. 若 Host 未组合 `storageDomain`（或被显式禁用），工具回执为
@@ -1253,7 +1259,7 @@ blocked/decision/review 分支＋ `background`（progress/fyi）＋ source metad
 | record | 变更 | 兼容 |
 | --- | --- | --- |
 | `plugin:devlead/report` | 可选 `questions?: DevLeadQuestion[]`（gate 填充；`devlead_report` 文本路径没有） | 旧记录无该字段，fold 按 undefined 处理 |
-| `plugin:devlead/report-answer` | **Phase 1d 已实现**：`{kind, version, answer:{reportId, leadSessionId, sessionId, messageId, at, status, textHash, answeredAt?, presentedAt?, idempotencyKey?, textExcerpt?, primitive?, boundary?, wakeRequested?}}`；`status` 为 `admitted \| claimed \| presented \| discarded \| failed`。admission 写 `admitted`，service 主动 discard（clear-all/replacement）与观测到的 inbox discard/turn-end 对账写 `discarded`；claimed/presented 为内存观测（durable backfill 属 Phase 2）。`textHash`/`idempotencyKey` 支撑跨重启幂等，delivery 字段支撑原 receipt 回放 | 新 record；旧日志无，视作 `questionStatus:'open'`；fold stateVersion 3→4 |
+| `plugin:devlead/report-answer` | **Phase 1d 已实现**：`{kind, version, answer:{reportId, leadSessionId, sessionId, messageId, at, status, answerSeq?, textHash, answeredAt?, presentedAt?, idempotencyKey?, textExcerpt?, primitive?, boundary?, wakeRequested?}}`；`status` 为 `admitted \| claimed \| presented \| discarded \| failed`。admission 写 `admitted`，service 主动 discard（clear-all/replacement）与观测到的 inbox discard/turn-end 对账写 `discarded`；claimed/presented 为内存观测（durable backfill 属 Phase 2）。`answerSeq` 是 per-question admission 序号（首次 answer 为 1，re-answer 递增，同一 answer 的生命周期事实携带该序号）：**latest 按最高序号选，不按 append 顺序**，旧 answer 的延迟 discard 不会压过新 re-answer；无序号的旧记录视作 0、彼此间按日志顺序。`textHash`/`idempotencyKey` 支撑跨重启幂等，delivery 字段支撑原 receipt 回放 | 新 record；旧日志无，视作 `questionStatus:'open'`；fold stateVersion 3→4（answer audit）、4→5（序号选 latest） |
 | `plugin:devlead/notification` | 可选 `wakeSuppressedByReportId?`、`wakeSuppressionReason?: 'merged-into-pending-wake' \| 'included-in-sent-wake'` | 旧记录无；UI 可折叠，不表示状态变化被吞 |
 | `plugin:devlead/delivery` | Phase 2：`{version, idempotencyKey, leadSessionId, sessionId, messageId, primitive, boundary, intent, questionId?, at, status}` | 新 record；Phase 1 只用内存窗口 |
 
@@ -1467,9 +1473,10 @@ If you need the human, ask them first with ask_user_question, then relay.
   完成。
 - `questionStatus:'answered'` 时 `question_id` 不接受**新** answer，但允许同
   `idempotency_key`/同文本的幂等重试。
-- answer 被 discard/fail 时 questionStatus 回 `open`；最新一条 answer record 对 fold 生效；
-  旧 answer 保留为 audit。`answeredAt` 保留首次 admitted 的时间，`presentedAt` 只在
-  presented 时记录；discard 不删除 `answeredAt`。
+- answer 被 discard/fail 时 questionStatus 回 `open`；**最高 `answerSeq` 的 answer record**
+  对 fold 生效（无序号的旧记录视作 0、彼此按日志顺序），旧 answer 保留为 audit；旧 answer
+  的延迟 discard 即使 append 得更晚也不压过新 re-answer。`answeredAt` 保留首次 admitted 的
+  时间，`presentedAt` 只在 presented 时记录；discard 不删除 `answeredAt`。
 - `expired`/`cancelled` 不删 report，只改状态；`question_id` 拒绝并提示 lead 用普通
   instruction。
 
@@ -1526,7 +1533,11 @@ DSH 的 `ReactLoopInbox.claim(target, turn)` 在一个 turn 的第一个 pre-ste
 - `agent/inbox/claimed` 只表示消息被取出用于一次 proposed pre-step；pre-step reject 不会
   补发 `agent/inbox/discarded`。服务要按 message id 对账 `user/message`：claim 后如果没有
   `presented`，就在 `turn/end` 或下一次 `agent/pre-step` 标 `discarded`；answer 时
-  questionStatus 回 `open`。
+  questionStatus 回 `open`。该对账不依赖内存 tracker：child 的 durable log
+  （`agent/inbox/spliced` 的 claim/canceled 移除 + `user/message` + `turn/end`）在
+  Session 变 live 时 replay、之后增量观测，即使重启后 tracker 为空、lead 仍 cold，也能
+  从 lead 的 durable answer record（live projection 或 sessionQuery 读 persisted log）派生
+  discard 并落 durable 队列。
 
 **顺序规则**
 
@@ -1579,7 +1590,7 @@ Phase 1 前的 hub 只有一个 `pending` / `pendingReports` 队列和一个全�
 | question | 同上 + `plugin:devlead/report-answer` | report receipt durable；answer 在 admission 成功后 append | questionStatus/answerStatus 可恢复 |
 | lead prompt | child Session log `agent/inbox/spliced` + lead tool result | admission 成功即写 log；`flushDurably` 失败只 warning，不改变成功回执 | send/resume 失败返回错误；flush 失败不是重试信号（Phase 2 delivery record 才提供强持久化回执） |
 | lead background | child Session log `agent/inbox/spliced` | admission 成功即写 log；`flushDurably` 失败只 warning | send/resume 失败返回错误；flush 失败不是重试信号 |
-| answer | child inbox + lead answer record | 先 admission，成功后写 answer record 并 **await flush**；`presented` 由 `user/message` 事件确认 | answer record append/flush 失败把警告反映到 prompt receipt 的 `warning`（投递已发生，question 状态可能不抗重启），不静默宣称 durable；cold/detached lead 的 discard 入队、lead 变 live 时对账落 durable；重试可能重复（`idempotency_key` 缓解）；discard/fail 时 question 回 open |
+| answer | child inbox + lead answer record；discard 队列在 `devlead_report_outbox` 的 `answer_discards` 表 | 先 admission，成功后写 answer record 并 **await flush**；`presented` 由 `user/message` 事件确认；discard append + flush 都成功才删队列行 | answer record append/flush 失败把警告反映到 prompt receipt 的 `warning`（投递已发生，question 状态可能不抗重启），不静默宣称 durable；写不进 lead log 的 discard（cold/detached、append 失败、flush 失败）入 durable 队列并在 lead 变 live、下一次 prompt 前、5s 重试定时器上 drain（队列溢出/无 storage 显式 warning）；Host 重启后队列 rehydrate，child durable inbox log（canceled splice、claimed 未 presented + turn/end）独立重建 discard，cold lead 经 sessionQuery 读 persisted audit 派生、无 query 时 defer 到 lead live；drain 前按 answerSeq 丢弃已被新 answer 取代的旧 discard；重试可能重复（`idempotency_key` 缓解）；discard/fail 时 question 回 open |
 | delivery receipt | lead tool result | tool result durable | 结果里有 `messageId`/`primitive`/`boundary`/`wakeRequested`；不是 `presented` 确认 |
 
 **at-least-once 与去重**
@@ -1733,9 +1744,10 @@ Phase 1 前的 hub 只有一个 `pending` / `pendingReports` 队列和一个全�
 
 - `questionStatus:'answered'` 只表示 answer 已分配，不表示 child 已看到；`answerStatus:
   'presented'` 才是投递完成。
-- answer 被 discard/fail 时 questionStatus 回 `open`；最新一条 answer record 对 fold 生效；
-  旧 answer 保留为 audit。`answeredAt` 保留首次 admitted 的时间，`presentedAt` 只在
-  presented 时记录；discard 不删除 `answeredAt`。
+- answer 被 discard/fail 时 questionStatus 回 `open`；**最高 `answerSeq` 的 answer record**
+  对 fold 生效（无序号的旧记录视作 0、彼此按日志顺序），旧 answer 保留为 audit；旧 answer
+  的延迟 discard 即使 append 得更晚也不压过新 re-answer。`answeredAt` 保留首次 admitted 的
+  时间，`presentedAt` 只在 presented 时记录；discard 不删除 `answeredAt`。
 - `expired`/`cancelled` 不删 report，只改状态；`question_id` 拒绝并提示 lead 用普通
   instruction。
 
@@ -1944,6 +1956,7 @@ Phase 1 前的 hub 只有一个 `pending` / `pendingReports` 队列和一个全�
 | Phase 1b（已完成） | question `action-required`：完整 payload、结构化 questions、跳过 400ms/queued turn notice、窄化双 wake 规则；16/pair 显式 cap、结构化内容幂等、idle/aborted parked-wake 防死锁/防重 | 否 | `pnpm verify` + fake harness 用例 7/10/11/12/33/34 与 durable inbox 生命周期回归 |
 | Phase 1c（已完成） | `devlead_report({kind:'question'})` `turnEndRequested` + durable 检查 + 结果/policy；F7 gate memory-only 重述提示；N1 cap 竞态孤儿 outbox 行修复（含 delete 失败分支）；N2 outbox schema 回归（含 open-time backup-and-skip） | 否 | 用例 8/9（含 durable+queued）；真实 DSH question E2E（结构化 digest/wake payload 深比对、action-required wake、conclude/durable/recovery、scripted `llm/stream` 真实 child turn：next-step marker 后续 step 执行 + 用例 33 模型继续） |
 | Phase 1d（已完成） | `devlead_prompt_session` intent/`question_id`/`idempotency_key` + answer/correction steering + answer record + `answerStatus` admitted/claimed/presented（内存观测）+ `delivery` 结果 + retract/clear-own/source + **minimal output**（notifications/get_session 的 question report 带 questionStatus/answerStatus/answerMessageId/answeredAt/presentedAt，queuedInputs 带 intent/questionId/wakeRequested/deliveryState） | 否 | 用例 13–25；`pnpm verify` + `pnpm check:packages` + 真实 DSH rc.5 answer E2E（scripted child answer 真实 step + 幂等重试 + 冲突 + clear-own/clear-all，patch/installed 两 flow 188/188） |
+| Phase 1d cold-discard durable 修复（已完成） | discard 队列落 `answer_discards` durable 表（spec v2 compat v1）+ 重启 rehydrate；cold lead + 空 tracker 时从 message source/child durable log 派生 discard（sessionQuery 读 persisted audit，无 query 则 defer 到 lead live）；live append/flush 失败入 durable retry（lead live、下一次 prompt 前、5s 定时器 drain）；`answerSeq` 选 latest，延迟旧 discard 不压新 re-answer（fold stateVersion 4→5）；队列溢出/无 storage 显式 warning；disabled→enabled 也 drain；reset 清队列；`answeredAt ?? at` view fallback | 否 | 重启/cold/live-failure/顺序/flush-failure/溢出/reset 单测+集成；`pnpm verify` + `pnpm check:packages` |
 | Phase 1e | T2/P1–P4 路径、notifications/get_session **全量**输出与 UI 呈现（1d 已落 minimal output，见上行）、policy/UI 文案、指标 | 否 | 全量单测/集成/E2E；`pnpm e2e`；UI 验收 |
 | Phase 2 | `idempotency_key` durable、claimed/presented/discarded 的 durable replay/backfill、replay open question、multi-lead 硬门禁、answer TTL、background 背压、`possibleQuestion`、blocking bridge 指标评估（不写原型） | 否 | 全量 + 兼容性 + 指标复盘 |
 | Phase 3 | 仅当 Phase 2 指标支持时：blocking bridge 原型（capability flag）；以及 DSH 上游通用 ordinary-Session mailbox / ephemeral context / blocking question primitive / turn-boundary hooks | 部分是 | 上游设计 review；dsh-devlead 保留 fallback |

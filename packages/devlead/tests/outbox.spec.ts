@@ -7,7 +7,8 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { devLeadReport } from '../src/index.ts'
-import { DEVLEAD_REPORT_OUTBOX_RETENTION_MS, DevLeadReportOutbox, OUTBOX_SPEC, devLeadOutboxKey } from '../src/outbox.ts'
+import { DEVLEAD_REPORT_OUTBOX_RETENTION_MS, DevLeadReportOutbox, OUTBOX_SPEC, devLeadAnswerDiscardKey, devLeadOutboxKey } from '../src/outbox.ts'
+import { answer } from './fixtures.ts'
 import { FakeStorageDomain, T0, disposeContext } from './harness.ts'
 
 /** Contexts opened by one test, disposed in afterEach. */
@@ -335,5 +336,145 @@ describe('DevLeadReportOutbox', () => {
     storage.table('devlead_report_outbox', 'pending').putError = new Error('read-only')
     expect(await outbox!.put(report())).toBe(false)
     expect(outbox!.entries()).toEqual([])
+  })
+})
+
+describe('DevLeadReportOutbox answer discard queue', () => {
+  /** One deterministic discard fact fixture. */
+  function discard(messageId = 'm1', leadSessionId = 'lead-1') {
+    return answer({ reportId: 'child-1:1:report:question:abc', leadSessionId, sessionId: 'child-1', messageId, status: 'discarded', at: T0 + 1, answeredAt: T0, answerSeq: 1 })
+  }
+
+  it('queues a discard durably across a close/reopen and removes it explicitly', async () => {
+    const storage = new FakeStorageDomain()
+    const first = await DevLeadReportOutbox.open(storageContext(storage))
+    expect(await first!.putAnswerDiscard(discard())).toBe(true)
+    expect(first!.answerDiscards().map(row => row.answer.messageId)).toEqual(['m1'])
+    await first!.close()
+    const second = await DevLeadReportOutbox.open(storageContext(storage))
+    expect(second!.answerDiscards().map(row => row.answer.messageId)).toEqual(['m1'])
+    expect(await second!.deleteAnswerDiscard(discard())).toBe(true)
+    expect(second!.answerDiscards()).toEqual([])
+  })
+
+  it('keeps the first enqueue instant when the same discard is re-queued', async () => {
+    const storage = new FakeStorageDomain()
+    const outbox = await DevLeadReportOutbox.open(storageContext(storage))
+    await outbox!.putAnswerDiscard(discard())
+    const first = outbox!.answerDiscards()[0]?.enqueuedAt
+    await outbox!.putAnswerDiscard(discard())
+    expect(outbox!.answerDiscards()).toHaveLength(1)
+    expect(outbox!.answerDiscards()[0]?.enqueuedAt).toBe(first)
+  })
+
+  it('adds the queue table to a version-1 domain without losing its rows', async () => {
+    // A Host incarnation before the queue existed wrote pending/ignored rows
+    // under spec version 1. The version-2 open must read them (compatible
+    // versions) and materialize the new empty table, not reset the domain.
+    const storage = new FakeStorageDomain()
+    const legacySpec = {
+      name: 'devlead_report_outbox',
+      version: 1,
+      layout: 'per-record',
+      invalidRecords: 'backup-and-skip',
+      tables: {
+        pending: { valueSchema: OUTBOX_SPEC.tables.pending.valueSchema },
+        ignored: { valueSchema: OUTBOX_SPEC.tables.ignored.valueSchema },
+      },
+    }
+    const legacyHandle = await storage.open(legacySpec)
+    await legacyHandle.table('pending').put(devLeadOutboxKey(report('v1 row')), { report: report('v1 row'), enqueuedAt: T0 })
+    await legacyHandle.close()
+    const outbox = await DevLeadReportOutbox.open(storageContext(storage))
+    expect(outbox).toBeDefined()
+    expect(outbox!.entries().map(entry => entry.report.message)).toEqual(['v1 row'])
+    expect(outbox!.answerDiscards()).toEqual([])
+    expect(await outbox!.putAnswerDiscard(discard())).toBe(true)
+    expect(storage.table('devlead_report_outbox', 'pending').backups.size).toBe(0)
+  })
+
+  it('drops only the queued discards of one lead (reset)', async () => {
+    const storage = new FakeStorageDomain()
+    const outbox = await DevLeadReportOutbox.open(storageContext(storage))
+    await outbox!.putAnswerDiscard(discard('m1', 'lead-1'))
+    await outbox!.putAnswerDiscard(discard('m2', 'lead-2'))
+    expect(await outbox!.dropAnswerDiscardsForLead('lead-1')).toBe(1)
+    expect(outbox!.answerDiscards().map(row => row.answer.leadSessionId)).toEqual(['lead-2'])
+    expect(await outbox!.dropAnswerDiscardsForLead('lead-1')).toBe(0)
+  })
+
+  it('prunes queued discards older than the retention horizon', async () => {
+    const storage = new FakeStorageDomain()
+    const outbox = await DevLeadReportOutbox.open(storageContext(storage))
+    await outbox!.putAnswerDiscard(discard())
+    const table = storage.table('devlead_report_outbox', 'answer_discards')
+    const [key, stored] = [...table.records.entries()][0] ?? []
+    if (key === undefined || stored === undefined) throw new Error('discard row missing')
+    table.records.set(key, {
+      ...(stored as { answer: unknown }),
+      enqueuedAt: Date.now() - DEVLEAD_REPORT_OUTBOX_RETENTION_MS - 1,
+    })
+    expect(await outbox!.prune()).toBe(1)
+    expect(outbox!.answerDiscards()).toEqual([])
+  })
+
+  it('parses stored discard rows with the exact Host open-time schema', async () => {
+    const schema = OUTBOX_SPEC.tables.answer_discards.valueSchema
+    const storage = new FakeStorageDomain()
+    const outbox = await DevLeadReportOutbox.open(storageContext(storage))
+    const sequenced = discard('m1')
+    const legacy = answer({ reportId: 'child-1:1:report:question:abc', leadSessionId: 'lead-1', sessionId: 'child-1', messageId: 'm2', status: 'discarded', at: T0 + 1, answeredAt: T0 })
+    expect(await outbox!.putAnswerDiscard(sequenced)).toBe(true)
+    expect(await outbox!.putAnswerDiscard(legacy)).toBe(true)
+    const rows = [...storage.table('devlead_report_outbox', 'answer_discards').records.values()]
+    expect(rows).toHaveLength(2)
+    for (const row of rows) {
+      const reread: unknown = JSON.parse(JSON.stringify(row))
+      expect(schema.parse(reread)).toEqual(row)
+    }
+    // The reopen itself runs the same parse (backup-and-skip on rejection).
+    await outbox!.close()
+    const second = await DevLeadReportOutbox.open(storageContext(storage))
+    expect(second!.answerDiscards()).toHaveLength(2)
+    expect(storage.table('devlead_report_outbox', 'answer_discards').backups.size).toBe(0)
+  })
+
+  it('rejects malformed discard rows at the schema boundary', () => {
+    const schema = OUTBOX_SPEC.tables.answer_discards.valueSchema
+    const base = { answer: discard(), enqueuedAt: T0 }
+    expect(schema.safeParse(base).success).toBe(true)
+    const invalid: Array<[string, unknown]> = [
+      ['unknown row field', { ...base, extra: true }],
+      ['unknown answer field', { ...base, answer: { ...base.answer, extra: true } }],
+      ['negative answerSeq', { ...base, answer: { ...base.answer, answerSeq: -1 } }],
+      ['bad textHash', { ...base, answer: { ...base.answer, textHash: 'nope' } }],
+      ['presentedAt on a discard', { ...base, answer: { ...base.answer, presentedAt: T0 } }],
+      ['missing enqueuedAt', { answer: base.answer }],
+    ]
+    for (const [label, row] of invalid) {
+      expect(schema.safeParse(row).success, label).toBe(false)
+    }
+  })
+
+  it('guards queue writes and reads after close, and reports write failures', async () => {
+    const storage = new FakeStorageDomain()
+    const outbox = await DevLeadReportOutbox.open(storageContext(storage))
+    await outbox!.putAnswerDiscard(discard())
+    await outbox!.close()
+    expect(await outbox!.putAnswerDiscard(discard('late'))).toBe(false)
+    expect(await outbox!.deleteAnswerDiscard(discard())).toBe(false)
+    expect(outbox!.answerDiscards()).toEqual([])
+    expect(storage.table('devlead_report_outbox', 'answer_discards').records.size).toBe(1)
+
+    const second = await DevLeadReportOutbox.open(storageContext(storage))
+    storage.table('devlead_report_outbox', 'answer_discards').putError = new Error('read-only')
+    expect(await second!.putAnswerDiscard(discard('m9'))).toBe(false)
+  })
+
+  it('pins the queue key to lead + question + message identity', () => {
+    const a = discard('m1', 'lead-1')
+    expect(devLeadAnswerDiscardKey(a)).toBe(devLeadAnswerDiscardKey({ ...a, at: T0 + 99 }))
+    expect(devLeadAnswerDiscardKey(a)).not.toBe(devLeadAnswerDiscardKey({ ...a, messageId: 'm2' }))
+    expect(devLeadAnswerDiscardKey(a)).not.toBe(devLeadAnswerDiscardKey({ ...a, leadSessionId: 'lead-2' }))
   })
 })

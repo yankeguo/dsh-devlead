@@ -298,6 +298,15 @@ export interface DevLeadReportAnswer {
   readonly at: number
   /** Lifecycle status recorded by this fact. */
   readonly status: DevLeadAnswerStatus
+  /**
+   * Per-question admission sequence: the first answer is 1, every re-answer
+   * increments it, and every lifecycle fact of one answer carries that
+   * answer's sequence. The newest answer is the highest sequence (not the
+   * last appended row), so a delayed discard of an older answer can never
+   * outrank a newer re-answer. Absent on pre-sequence legacy records (treated
+   * as 0, ordered by log position among themselves).
+   */
+  readonly answerSeq?: number
   /** SHA-256 hex of the trimmed answer prompt, for same-text retry recognition. */
   readonly textHash: string
   /** First admission instant of the question; carried forward across reopens. */

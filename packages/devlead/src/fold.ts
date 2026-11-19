@@ -170,14 +170,19 @@ const reportSchema: ZodType<DevLeadReport> = zod.object({
   { message: 'report id must match senderSessionId, turn, kind, and message' },
 ) as ZodType<DevLeadReport>
 
-/** Wire schema validating one retained answer lifecycle record. */
-const answerSchema: ZodType<DevLeadReportAnswer> = zod.object({
+/**
+ * Wire schema validating one retained answer lifecycle record. Exported so the
+ * durable discard queue (outbox) validates restored rows with the exact schema
+ * the fold applies.
+ */
+export const answerSchema: ZodType<DevLeadReportAnswer> = zod.object({
   reportId: zod.string().min(1),
   leadSessionId: zod.string().min(1),
   sessionId: zod.string().min(1),
   messageId: zod.string().min(1),
   at: zod.number().int().nonnegative().max(DEVLEAD_MAX_INSTANT),
   status: zod.enum(['admitted', 'claimed', 'presented', 'discarded', 'failed']),
+  answerSeq: zod.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
   textHash: zod.string().regex(/^[0-9a-f]{64}$/u),
   answeredAt: zod.number().int().nonnegative().max(DEVLEAD_MAX_INSTANT).optional(),
   presentedAt: zod.number().int().nonnegative().max(DEVLEAD_MAX_INSTANT).optional(),
@@ -195,8 +200,12 @@ const answerSchema: ZodType<DevLeadReportAnswer> = zod.object({
 ) as ZodType<DevLeadReportAnswer>
 
 /**
- * Newest answer lifecycle record of one question report, in log order. The
- * newest record is authoritative for `questionStatus`; older records are audit.
+ * Newest answer lifecycle record of one question report. The highest
+ * per-question admission sequence wins (a delayed discard of an older answer
+ * appended after a newer re-answer must not reopen the question); records
+ * without a sequence are legacy and tie at 0, where the later log position
+ * wins, exactly the pre-sequence behavior. The newest record is authoritative
+ * for `questionStatus`; older records are audit.
  * @param answers - retained answer records, oldest first.
  * @param reportId - question report identity.
  * @returns the newest record, or undefined when the question has no answer.
@@ -205,11 +214,17 @@ export function latestAnswerOf(
   answers: readonly DevLeadReportAnswer[],
   reportId: string,
 ): DevLeadReportAnswer | undefined {
-  for (let index = answers.length - 1; index >= 0; index -= 1) {
-    const answer = answers[index]
-    if (answer !== undefined && answer.reportId === reportId) return answer
+  let newest: DevLeadReportAnswer | undefined
+  let newestSeq = -1
+  for (const answer of answers) {
+    if (answer.reportId !== reportId) continue
+    const seq = answer.answerSeq ?? 0
+    if (seq >= newestSeq) {
+      newest = answer
+      newestSeq = seq
+    }
   }
-  return undefined
+  return newest
 }
 
 /**
@@ -319,7 +334,14 @@ function retainAnswer(
   if (next.length <= DEVLEAD_ANSWER_RETENTION) return next
   const retainedQuestions = new Set(reports.map(report => report.id))
   const newestOf = new Map<string, DevLeadReportAnswer>()
-  for (const entry of next) newestOf.set(entry.reportId, entry)
+  for (const entry of next) {
+    // Pin the same record `latestAnswerOf` derives: the highest admission
+    // sequence, with the later log position breaking a legacy tie.
+    const current = newestOf.get(entry.reportId)
+    if (current === undefined || (entry.answerSeq ?? 0) >= (current.answerSeq ?? 0)) {
+      newestOf.set(entry.reportId, entry)
+    }
+  }
   while (next.length > DEVLEAD_ANSWER_RETENTION) {
     const evictable = next.findIndex(entry => newestOf.get(entry.reportId) !== entry
       || !retainedQuestions.has(entry.reportId))
@@ -600,10 +622,11 @@ export const devLeadProjectionDefinition = {
     // conversation reads it: keep it out of every Session summary/list row.
     summary: false,
   },
-  // 4: adds the answer lifecycle audit (version 3 added the fork-inherited
-  // prefix length, version 2 added reports); older cache rows are discarded
-  // and refolded from the durable log.
-  stateVersion: 4,
+  // 5: latest-answer selection became admission-sequence aware (version 4
+  // added the answer lifecycle audit, version 3 the fork-inherited prefix
+  // length, version 2 reports); older cache rows are discarded and refolded
+  // from the durable log.
+  stateVersion: 5,
 } satisfies ProjectionDefinition<'devLead', DevLeadProjectionState>
 
 /**

@@ -5439,3 +5439,522 @@ describe('answer restart and durability (Phase 1d review fixes)', () => {
     expect(answerRecords(harness).some(record => record.status === 'discarded')).toBe(false)
   })
 })
+
+describe('cold-discard durability (Phase 1d review round 2)', () => {
+  /** Seed one durable question report into the lead log and return its id. */
+  function seedQuestion(harness: ServiceHarness, message = 'Which target?'): string {
+    const value = devLeadReport({
+      senderSessionId: 'target',
+      leadSessionId: String(harness.lead.id),
+      turn: 1,
+      kind: 'question',
+      message,
+      at: T0,
+    })
+    appendPluginRecord(harness.leadSession, DEVLEAD_REPORT_RECORD_TYPE, reportRecord(value))
+    return value.id
+  }
+
+  /** Durable answer records of the lead Session, in log order. */
+  function answerRecords(harness: ServiceHarness): DevLeadReportAnswer[] {
+    return harness.leadSession.snapshotEvents().flatMap((event) => {
+      const record = pluginRecordOf(event)
+      return record?.type === DEVLEAD_REPORT_ANSWER_RECORD_TYPE
+        ? [(record.data as { answer: DevLeadReportAnswer }).answer]
+        : []
+    })
+  }
+
+  /** Queued durable discard rows of the shared storage domain. */
+  function discardRows(storage: FakeStorageDomain): DevLeadReportAnswer[] {
+    const table = storage.domains.get('devlead_report_outbox')?.tables.get('answer_discards')
+    if (table === undefined) return []
+    return [...table.records.values()].map(row => (row as { answer: DevLeadReportAnswer }).answer)
+  }
+
+  /** Simulate a cold/detached lead log: sessions.get hides the lead Session. */
+  function coldLead(harness: ServiceHarness): { restore(): void } {
+    const realGet = harness.ctx.sessions.get.bind(harness.ctx.sessions)
+    const spy = vi.spyOn(harness.ctx.sessions, 'get')
+      .mockImplementation((id: Parameters<typeof realGet>[0]) => String(id) === String(harness.lead.id) ? undefined : realGet(id))
+    return { restore: () => spy.mockRestore() }
+  }
+
+  /** Register one live target Agent and announce it. */
+  function liveTarget(harness: ServiceHarness): FakeAgent {
+    const target = new FakeAgent(requireSession(harness, 'target'))
+    harness.agents.add(target)
+    harness.ctx.emit('agent/created', { agent: target.agent, source: 'resume' })
+    return target
+  }
+
+  /** One runtime-stamped answer message with a controlled identity. */
+  function answerMessage(messageId: string, questionId: string, leadId: string) {
+    return queuedMessage(messageId, {
+      kind: 'devlead',
+      form: 'relay',
+      intent: 'answer',
+      questionId,
+      senderSessionId: leadId,
+      wakeRequested: true,
+    }, `[DEV LEAD ANSWER to question ${questionId}]\nuse staging`)
+  }
+
+  it('a cold-lead discard queue survives a Host restart and drains to a durable open question', async () => {
+    const storage = new FakeStorageDomain()
+    const first = await bootService({ leadId: 'restart-lead', enabled: true, sessionIds: ['target'], watched: ['target'], storageDomain: storage })
+    const target = liveTarget(first)
+    const questionId = seedQuestion(first)
+    const receipt = await first.service.promptSession(first.lead.agent, 'target', 'use staging', { intent: 'answer', questionId })
+    const message = target.inbox.nextStep.find(entry => String(entry.id) === receipt.delivery.messageId)
+    if (message === undefined) throw new Error('expected the admitted answer to be pending')
+    // The lead goes cold before the child drops the answer: the discard queues.
+    const cold = coldLead(first)
+    first.ctx.emit('agent/inbox/discarded', { agent: target.agent, message })
+    await flushMicrotasks()
+    expect(answerRecords(first).some(record => record.status === 'discarded')).toBe(false)
+    expect(discardRows(storage).map(row => row.messageId)).toEqual([receipt.delivery.messageId])
+    cold.restore()
+    await first.dispose()
+
+    // Host restart: the lead stays cold (no live Agent), the durable audit only
+    // carries the admitted row, but the queued discard survives in storage.
+    const second = await bootService({
+      leadId: 'restart-lead',
+      enabled: true,
+      sessionIds: ['target'],
+      watched: ['target'],
+      storageDomain: storage,
+      registerLeadAgent: false,
+      seedLead: (session) => {
+        const q = devLeadReport({ senderSessionId: 'target', leadSessionId: 'restart-lead', turn: 1, kind: 'question', message: 'Which target?', at: T0 })
+        appendPluginRecord(session, DEVLEAD_REPORT_RECORD_TYPE, reportRecord(q))
+        appendPluginRecord(session, DEVLEAD_REPORT_ANSWER_RECORD_TYPE, reportAnswerRecord(answer({
+          reportId: q.id, leadSessionId: 'restart-lead', sessionId: 'target',
+          messageId: receipt.delivery.messageId, status: 'admitted', at: T0, answerSeq: 1,
+        })))
+      },
+    })
+    // The rehydrated queue drained as soon as the lead log was attachable again:
+    // the discard is durable and the row is gone, without any live observation.
+    await flushMicrotasks()
+    expect(answerRecords(second).some(record => record.status === 'discarded' && record.messageId === receipt.delivery.messageId)).toBe(true)
+    expect(discardRows(storage)).toEqual([])
+    // The lead becomes live: the question reads open from the durable audit.
+    second.agents.add(second.lead)
+    second.ctx.emit('agent/created', { agent: second.lead.agent, source: 'resume' })
+    await flushMicrotasks()
+    expect(second.service.questionAnswerView(second.lead.agent, questionId)).toMatchObject({ questionStatus: 'open', answerStatus: 'discarded' })
+    // The open question accepts a new answer after the restart.
+    liveTarget(second)
+    const again = await second.service.promptSession(second.lead.agent, 'target', 'use prod', { intent: 'answer', questionId })
+    expect(again.delivery.messageId).not.toBe(receipt.delivery.messageId)
+    expect(second.service.questionAnswerView(second.lead.agent, questionId)?.questionStatus).toBe('answered')
+  })
+
+  it('restart with an empty tracker and a cold lead derives an inbox discard from the durable record (query engine)', async () => {
+    const storage = new FakeStorageDomain()
+    const query = new FakeSessionQuery()
+    let questionId = ''
+    const persisted = await seedPersistedLead(query, {
+      sessionId: 'cold-lead',
+      watched: ['target'],
+      seed: (session) => {
+        const q = devLeadReport({ senderSessionId: 'target', leadSessionId: 'cold-lead', turn: 1, kind: 'question', message: 'Which target?', at: T0 })
+        questionId = q.id
+        appendPluginRecord(session, DEVLEAD_REPORT_RECORD_TYPE, reportRecord(q))
+        appendPluginRecord(session, DEVLEAD_REPORT_ANSWER_RECORD_TYPE, reportAnswerRecord(answer({
+          reportId: q.id, leadSessionId: 'cold-lead', sessionId: 'target', messageId: 'm1', status: 'admitted', at: T0, answerSeq: 1,
+        })))
+      },
+    })
+    expect(persisted.id).toBeDefined()
+    const harness = await bootService({
+      leadId: 'cold-lead',
+      enabled: true,
+      sessionIds: ['target'],
+      watched: ['target'],
+      storageDomain: storage,
+      sessionQuery: query,
+      registerLeadAgent: false,
+      seedLead: (session) => {
+        const q = devLeadReport({ senderSessionId: 'target', leadSessionId: 'cold-lead', turn: 1, kind: 'question', message: 'Which target?', at: T0 })
+        appendPluginRecord(session, DEVLEAD_REPORT_RECORD_TYPE, reportRecord(q))
+        appendPluginRecord(session, DEVLEAD_REPORT_ANSWER_RECORD_TYPE, reportAnswerRecord(answer({
+          reportId: q.id, leadSessionId: 'cold-lead', sessionId: 'target', messageId: 'm1', status: 'admitted', at: T0, answerSeq: 1,
+        })))
+      },
+    })
+    const cold = coldLead(harness)
+    // The child becomes live with an empty tracker (the cold lead cannot seed it).
+    const target = liveTarget(harness)
+    const message = answerMessage('m1', questionId, 'cold-lead')
+    target.inbox.append('next-step', message)
+    harness.ctx.emit('agent/inbox/discarded', { agent: target.agent, message })
+    await flushMicrotasks()
+    // The discard was derived from the cold lead's persisted audit and queued.
+    expect(discardRows(storage).map(row => row.messageId)).toEqual(['m1'])
+    expect(answerRecords(harness).some(record => record.status === 'discarded')).toBe(false)
+    cold.restore()
+    harness.agents.add(harness.lead)
+    harness.ctx.emit('agent/created', { agent: harness.lead.agent, source: 'resume' })
+    await flushMicrotasks()
+    expect(answerRecords(harness).some(record => record.status === 'discarded' && record.messageId === 'm1')).toBe(true)
+    expect(harness.service.questionAnswerView(harness.lead.agent, questionId)).toMatchObject({ questionStatus: 'open', answerStatus: 'discarded' })
+    expect(discardRows(storage)).toEqual([])
+  })
+
+  it('without a query engine the cold-lead derivation defers until the lead becomes live', async () => {
+    const storage = new FakeStorageDomain()
+    let questionId = ''
+    const seedAudit = (session: Session): void => {
+      const q = devLeadReport({ senderSessionId: 'target', leadSessionId: String(session.id), turn: 1, kind: 'question', message: 'Which target?', at: T0 })
+      questionId = q.id
+      appendPluginRecord(session, DEVLEAD_REPORT_RECORD_TYPE, reportRecord(q))
+      appendPluginRecord(session, DEVLEAD_REPORT_ANSWER_RECORD_TYPE, reportAnswerRecord(answer({
+        reportId: q.id, leadSessionId: String(session.id), sessionId: 'target', messageId: 'm1', status: 'admitted', at: T0, answerSeq: 1,
+      })))
+    }
+    // Restart shape: the lead Agent is not live, the tracker starts empty, and
+    // no query engine can read the cold lead log.
+    const harness = await bootService({
+      enabled: true,
+      sessionIds: ['target'],
+      watched: ['target'],
+      storageDomain: storage,
+      registerLeadAgent: false,
+      seedLead: seedAudit,
+    })
+    const cold = coldLead(harness)
+    const target = liveTarget(harness)
+    const message = answerMessage('m1', questionId, String(harness.lead.id))
+    target.inbox.append('next-step', message)
+    harness.ctx.emit('agent/inbox/discarded', { agent: target.agent, message })
+    await flushMicrotasks()
+    // No query engine composed: nothing durable yet, the derivation is deferred.
+    expect(discardRows(storage)).toEqual([])
+    expect(answerRecords(harness).some(record => record.status === 'discarded')).toBe(false)
+    cold.restore()
+    harness.agents.add(harness.lead)
+    harness.ctx.emit('agent/created', { agent: harness.lead.agent, source: 'resume' })
+    await flushMicrotasks()
+    // The deferred derivation read the now-live durable audit and drained.
+    expect(answerRecords(harness).some(record => record.status === 'discarded' && record.messageId === 'm1')).toBe(true)
+    expect(harness.service.questionAnswerView(harness.lead.agent, questionId)).toMatchObject({ questionStatus: 'open', answerStatus: 'discarded' })
+  })
+
+  it('a cold-lead turn/end with an empty tracker reconstructs the claimed-answer discard from the child log', async () => {
+    const storage = new FakeStorageDomain()
+    const query = new FakeSessionQuery()
+    // The question identity is deterministic; compute it before the child log
+    // is seeded (seedSessions runs before seedLead in the boot harness).
+    const questionId = devLeadReport({ senderSessionId: 'target', leadSessionId: 'cold-lead-2', turn: 1, kind: 'question', message: 'Which target?', at: T0 }).id
+    const seedAudit = (session: Session): void => {
+      const q = devLeadReport({ senderSessionId: 'target', leadSessionId: String(session.id), turn: 1, kind: 'question', message: 'Which target?', at: T0 })
+      appendPluginRecord(session, DEVLEAD_REPORT_RECORD_TYPE, reportRecord(q))
+      appendPluginRecord(session, DEVLEAD_REPORT_ANSWER_RECORD_TYPE, reportAnswerRecord(answer({
+        reportId: q.id, leadSessionId: String(session.id), sessionId: 'target', messageId: 'm1', status: 'admitted', at: T0, answerSeq: 1,
+      })))
+    }
+    await seedPersistedLead(query, { sessionId: 'cold-lead-2', watched: ['target'], seed: seedAudit })
+    const harness = await bootService({
+      leadId: 'cold-lead-2',
+      enabled: true,
+      sessionIds: ['target'],
+      watched: ['target'],
+      storageDomain: storage,
+      sessionQuery: query,
+      registerLeadAgent: false,
+      seedLead: seedAudit,
+      // The child's durable history already proves the rejected pre-step: the
+      // answer was spliced in, claimed (removed without cancel), never presented,
+      // and the turn ended — all before the service ever saw the child live.
+      seedSessions: (sessions) => {
+        const child = sessions['target']!
+        const message = answerMessage('m1', questionId, 'cold-lead-2')
+        child.append('agent/inbox/spliced', { target: 'next-step', start: 0, inserted: [message] })
+        child.append('agent/inbox/spliced', { target: 'next-step', start: 0, removedCount: 1, inserted: [] })
+        child.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+      },
+    })
+    const cold = coldLead(harness)
+    liveTarget(harness)
+    await flushMicrotasks()
+    expect(discardRows(storage).map(row => row.messageId)).toEqual(['m1'])
+    cold.restore()
+    harness.agents.add(harness.lead)
+    harness.ctx.emit('agent/created', { agent: harness.lead.agent, source: 'resume' })
+    await flushMicrotasks()
+    expect(answerRecords(harness).some(record => record.status === 'discarded' && record.messageId === 'm1')).toBe(true)
+    expect(harness.service.questionAnswerView(harness.lead.agent, questionId)).toMatchObject({ questionStatus: 'open', answerStatus: 'discarded' })
+  })
+
+  it('a live-lead discard append failure drains before the next prompt (no stale admitted latest)', async () => {
+    const storage = new FakeStorageDomain()
+    const harness = await bootService({ enabled: true, sessionIds: ['target'], watched: ['target'], storageDomain: storage })
+    const target = liveTarget(harness)
+    const questionId = seedQuestion(harness)
+    const receipt = await harness.service.promptSession(harness.lead.agent, 'target', 'use staging', { intent: 'answer', questionId })
+    const message = target.inbox.nextStep.find(entry => String(entry.id) === receipt.delivery.messageId)
+    if (message === undefined) throw new Error('expected the admitted answer to be pending')
+    // The lead is LIVE, but the discard append fails once: the queue must still
+    // drain later, not wait for a lead activation that never comes.
+    const spy = vi.spyOn(harness.leadSession as unknown as { commit: (...args: unknown[]) => unknown }, 'commit')
+      .mockImplementationOnce(() => {
+        throw new Error('disk full')
+      })
+    harness.ctx.emit('agent/inbox/discarded', { agent: target.agent, message })
+    await flushMicrotasks()
+    spy.mockRestore()
+    expect(harness.service.questionAnswerView(harness.lead.agent, questionId)?.questionStatus).toBe('open')
+    expect(answerRecords(harness).some(record => record.status === 'discarded')).toBe(false)
+    expect(discardRows(storage).map(row => row.messageId)).toEqual([receipt.delivery.messageId])
+    // The next prompt drains the queue before its own admission stages.
+    await harness.service.promptSession(harness.lead.agent, 'target', 'a normal instruction')
+    await flushMicrotasks()
+    const records = answerRecords(harness)
+    expect(records.some(record => record.status === 'discarded' && record.messageId === receipt.delivery.messageId)).toBe(true)
+    expect(discardRows(storage)).toEqual([])
+    expect(harness.service.questionAnswerView(harness.lead.agent, questionId)).toMatchObject({ questionStatus: 'open', answerStatus: 'discarded' })
+  })
+
+  it('a delayed old discard drained after a re-answer is dropped, keeping the new answer latest across restart', async () => {
+    const storage = new FakeStorageDomain()
+    const harness = await bootService({ leadId: 'order-lead', enabled: true, sessionIds: ['target'], watched: ['target'], storageDomain: storage })
+    const target = liveTarget(harness)
+    const questionId = seedQuestion(harness)
+    const first = await harness.service.promptSession(harness.lead.agent, 'target', 'use staging', { intent: 'answer', questionId })
+    const message = target.inbox.nextStep.find(entry => String(entry.id) === first.delivery.messageId)
+    if (message === undefined) throw new Error('expected the admitted answer to be pending')
+    // Two lead-log append failures: the discard write and its pre-prompt drain
+    // both fail, so the old discard is still queued when the re-answer lands.
+    let failures = 2
+    const commitTarget = harness.leadSession as unknown as { commit: (...args: unknown[]) => unknown }
+    const realCommit = commitTarget.commit.bind(harness.leadSession)
+    const spy = vi.spyOn(commitTarget, 'commit').mockImplementation((...args: unknown[]) => {
+      if (failures > 0) {
+        failures -= 1
+        throw new Error('disk full')
+      }
+      return realCommit(...args)
+    })
+    harness.ctx.emit('agent/inbox/discarded', { agent: target.agent, message })
+    await flushMicrotasks()
+    const second = await harness.service.promptSession(harness.lead.agent, 'target', 'use prod', { intent: 'answer', questionId })
+    spy.mockRestore()
+    expect(second.delivery.messageId).not.toBe(first.delivery.messageId)
+    expect(discardRows(storage).map(row => row.messageId)).toEqual([first.delivery.messageId])
+    // The delayed drain now sees the newer re-answer and drops the old discard.
+    harness.ctx.emit('agent/created', { agent: harness.lead.agent, source: 'resume' })
+    await flushMicrotasks()
+    expect(discardRows(storage)).toEqual([])
+    const records = answerRecords(harness)
+    expect(records.some(record => record.status === 'discarded')).toBe(false)
+    expect(records.at(-1)).toMatchObject({ messageId: second.delivery.messageId, status: 'admitted', answerSeq: 2 })
+    expect(harness.service.questionAnswerView(harness.lead.agent, questionId)).toMatchObject({
+      questionStatus: 'answered',
+      answerMessageId: second.delivery.messageId,
+    })
+    // Restart: the newest admission stays latest; the old discard never lands.
+    await harness.dispose()
+    const restarted = await bootService({
+      leadId: 'order-lead',
+      enabled: true,
+      sessionIds: ['target'],
+      watched: ['target'],
+      storageDomain: storage,
+      seedLead: (session) => {
+        const q = devLeadReport({ senderSessionId: 'target', leadSessionId: 'order-lead', turn: 1, kind: 'question', message: 'Which target?', at: T0 })
+        appendPluginRecord(session, DEVLEAD_REPORT_RECORD_TYPE, reportRecord(q))
+        for (const record of records) appendPluginRecord(session, DEVLEAD_REPORT_ANSWER_RECORD_TYPE, reportAnswerRecord(record))
+      },
+    })
+    expect(restarted.service.questionAnswerView(restarted.lead.agent, questionId)).toMatchObject({
+      questionStatus: 'answered',
+      answerStatus: 'admitted',
+      answerMessageId: second.delivery.messageId,
+    })
+    const retry = await restarted.service.promptSession(restarted.lead.agent, 'target', 'use prod', { intent: 'answer', questionId })
+    expect(retry.delivery.messageId).toBe(second.delivery.messageId)
+  })
+
+  it('a discard flush failure re-queues durably, retries, and keeps the question open across restart', async () => {
+    const storage = new FakeStorageDomain()
+    const harness = await bootService({ enabled: true, sessionIds: ['target'], watched: ['target'], storageDomain: storage })
+    const target = liveTarget(harness)
+    const questionId = seedQuestion(harness)
+    const receipt = await harness.service.promptSession(harness.lead.agent, 'target', 'use staging', { intent: 'answer', questionId })
+    const message = target.inbox.nextStep.find(entry => String(entry.id) === receipt.delivery.messageId)
+    if (message === undefined) throw new Error('expected the admitted answer to be pending')
+    const warn = vi.spyOn(harness.ctx.logger, 'warn')
+    let failFlush = true
+    harness.ctx.on('session/flush', (session) => {
+      if (failFlush && String(session.id) === String(harness.lead.id)) throw new Error('flush down')
+    })
+    harness.ctx.emit('agent/inbox/discarded', { agent: target.agent, message })
+    await flushMicrotasks()
+    // The append landed in the live log, but the flush failed: the discard is
+    // queued for retry (durable row kept), not silently logged.
+    expect(warn.mock.calls.some(call => String(call[0]).includes('queued for retry'))).toBe(true)
+    expect(discardRows(storage).map(row => row.messageId)).toEqual([receipt.delivery.messageId])
+    expect(harness.service.questionAnswerView(harness.lead.agent, questionId)?.questionStatus).toBe('open')
+    failFlush = false
+    harness.ctx.emit('agent/created', { agent: harness.lead.agent, source: 'resume' })
+    await flushMicrotasks()
+    expect(discardRows(storage)).toEqual([])
+    // The retry re-appended the exact fact; the fold deduplicated it.
+    const discards = answerRecords(harness).filter(record => record.status === 'discarded')
+    expect(discards).toHaveLength(1)
+    expect(discards[0]).toMatchObject({ messageId: receipt.delivery.messageId, answerSeq: 1 })
+    // Restart: the durable discard keeps the question open.
+    const records = answerRecords(harness)
+    await harness.dispose()
+    const restarted = await bootService({
+      enabled: true,
+      sessionIds: ['target'],
+      watched: ['target'],
+      seedLead: (session) => {
+        const q = devLeadReport({ senderSessionId: 'target', leadSessionId: String(session.id), turn: 1, kind: 'question', message: 'Which target?', at: T0 })
+        appendPluginRecord(session, DEVLEAD_REPORT_RECORD_TYPE, reportRecord(q))
+        for (const record of records) {
+          appendPluginRecord(session, DEVLEAD_REPORT_ANSWER_RECORD_TYPE, reportAnswerRecord({ ...record, leadSessionId: String(session.id) }))
+        }
+      },
+    })
+    expect(restarted.service.questionAnswerView(restarted.lead.agent, questionId)?.questionStatus).toBe('open')
+  })
+
+  it('warns and keeps the newest when the cold-lead discard queue exceeds its bound', async () => {
+    const storage = new FakeStorageDomain()
+    const harness = await bootService({ enabled: true, sessionIds: ['target'], watched: ['target'], storageDomain: storage })
+    const target = liveTarget(harness)
+    const warn = vi.spyOn(harness.ctx.logger, 'warn')
+    const cold = coldLead(harness)
+    const messageIds: string[] = []
+    for (let index = 0; index < 130; index += 1) {
+      const questionId = seedQuestion(harness, `question ${index}?`)
+      const receipt = await harness.service.promptSession(harness.lead.agent, 'target', `answer ${index}`, { intent: 'answer', questionId })
+      messageIds.push(receipt.delivery.messageId)
+      const message = target.inbox.nextStep.find(entry => String(entry.id) === receipt.delivery.messageId)
+      if (message === undefined) throw new Error('expected the admitted answer to be pending')
+      harness.ctx.emit('agent/inbox/discarded', { agent: target.agent, message })
+      await flushMicrotasks()
+    }
+    cold.restore()
+    expect(warn.mock.calls.some(call => String(call[0]).includes('exceeded 128 entries'))).toBe(true)
+    const rows = discardRows(storage)
+    expect(rows).toHaveLength(128)
+    // The newest discards survived; the two oldest were dropped explicitly.
+    expect(rows.map(row => row.messageId)).toEqual(messageIds.slice(2))
+  })
+
+  it('drains queued discards even while the lead mode is disabled (disabled→enabled never strands the queue)', async () => {
+    const storage = new FakeStorageDomain()
+    const harness = await bootService({ enabled: true, sessionIds: ['target'], watched: ['target'], storageDomain: storage })
+    const target = liveTarget(harness)
+    const questionId = seedQuestion(harness)
+    const receipt = await harness.service.promptSession(harness.lead.agent, 'target', 'use staging', { intent: 'answer', questionId })
+    const message = target.inbox.nextStep.find(entry => String(entry.id) === receipt.delivery.messageId)
+    if (message === undefined) throw new Error('expected the admitted answer to be pending')
+    const cold = coldLead(harness)
+    harness.ctx.emit('agent/inbox/discarded', { agent: target.agent, message })
+    await flushMicrotasks()
+    expect(discardRows(storage)).toHaveLength(1)
+    // The lead's mode goes off while the discard is queued.
+    appendPluginRecord(harness.leadSession, DEVLEAD_MODE_RECORD_TYPE, modeRecord(false, Date.now()))
+    cold.restore()
+    harness.ctx.emit('agent/created', { agent: harness.lead.agent, source: 'resume' })
+    await flushMicrotasks()
+    // The drain ran despite the disabled mode.
+    expect(answerRecords(harness).some(record => record.status === 'discarded' && record.messageId === receipt.delivery.messageId)).toBe(true)
+    expect(discardRows(storage)).toEqual([])
+    // Re-enabling exposes the reopened question.
+    appendPluginRecord(harness.leadSession, DEVLEAD_MODE_RECORD_TYPE, modeRecord(true, Date.now()))
+    expect(harness.service.questionAnswerView(harness.lead.agent, questionId)?.questionStatus).toBe('open')
+  })
+
+  it('reset drops the queued discards (memory and durable rows) of the lead', async () => {
+    const storage = new FakeStorageDomain()
+    const harness = await bootService({ enabled: true, sessionIds: ['target'], watched: ['target'], storageDomain: storage })
+    const target = liveTarget(harness)
+    const questionId = seedQuestion(harness)
+    const receipt = await harness.service.promptSession(harness.lead.agent, 'target', 'use staging', { intent: 'answer', questionId })
+    const message = target.inbox.nextStep.find(entry => String(entry.id) === receipt.delivery.messageId)
+    if (message === undefined) throw new Error('expected the admitted answer to be pending')
+    const cold = coldLead(harness)
+    harness.ctx.emit('agent/inbox/discarded', { agent: target.agent, message })
+    await flushMicrotasks()
+    expect(discardRows(storage)).toHaveLength(1)
+    cold.restore()
+    await harness.service.reset(harness.lead.agent)
+    expect(discardRows(storage)).toEqual([])
+    harness.ctx.emit('agent/created', { agent: harness.lead.agent, source: 'resume' })
+    await flushMicrotasks()
+    // Nothing drains into the fresh epoch.
+    expect(answerRecords(harness).some(record => record.status === 'discarded')).toBe(false)
+  })
+
+  it('a late inbox discard/claim of an old answer never reopens a re-answered question', async () => {
+    const harness = await bootService({ enabled: true, sessionIds: ['target'], watched: ['target'] })
+    const target = liveTarget(harness)
+    const questionId = seedQuestion(harness)
+    const first = await harness.service.promptSession(harness.lead.agent, 'target', 'use staging', { intent: 'answer', questionId })
+    const oldMessage = target.inbox.nextStep.find(entry => String(entry.id) === first.delivery.messageId)
+    if (oldMessage === undefined) throw new Error('expected the admitted answer to be pending')
+    // Discard the first answer (clear-all style direct event), then re-answer.
+    harness.ctx.emit('agent/inbox/discarded', { agent: target.agent, message: oldMessage })
+    await flushMicrotasks()
+    const second = await harness.service.promptSession(harness.lead.agent, 'target', 'use prod', { intent: 'answer', questionId })
+    // Late lifecycle events of the OLD message arrive after the re-answer.
+    harness.ctx.emit('agent/inbox/claimed', { agent: target.agent, message: oldMessage, turn: 9 })
+    harness.ctx.emit('agent/inbox/discarded', { agent: target.agent, message: oldMessage })
+    await flushMicrotasks()
+    expect(harness.service.questionAnswerView(harness.lead.agent, questionId)).toMatchObject({
+      questionStatus: 'answered',
+      answerMessageId: second.delivery.messageId,
+    })
+    expect(answerRecords(harness).filter(record => record.status === 'discarded').every(record => record.messageId === first.delivery.messageId)).toBe(true)
+  })
+
+  it('questionAnswerView falls back to the admission instant when a legacy record lacks answeredAt', async () => {
+    let questionId = ''
+    const harness = await bootService({
+      enabled: true,
+      sessionIds: ['target'],
+      watched: ['target'],
+      seedLead: (session) => {
+        const q = devLeadReport({ senderSessionId: 'target', leadSessionId: String(session.id), turn: 1, kind: 'question', message: 'Which target?', at: T0 })
+        questionId = q.id
+        appendPluginRecord(session, DEVLEAD_REPORT_RECORD_TYPE, reportRecord(q))
+        const legacy = answer({ reportId: q.id, leadSessionId: String(session.id), sessionId: 'target', messageId: 'm1', status: 'admitted', at: T0 + 5 })
+        const { answeredAt: _answeredAt, ...withoutAnsweredAt } = legacy
+        appendPluginRecord(session, DEVLEAD_REPORT_ANSWER_RECORD_TYPE, reportAnswerRecord(withoutAnsweredAt))
+      },
+    })
+    expect(harness.service.questionAnswerView(harness.lead.agent, questionId)).toMatchObject({
+      questionStatus: 'answered',
+      answerStatus: 'admitted',
+      answerMessageId: 'm1',
+      answeredAt: T0 + 5,
+    })
+  })
+
+  it('warns once per lead when the discard queue is memory-only (no storage composed)', async () => {
+    const harness = await bootService({ enabled: true, sessionIds: ['target'], watched: ['target'] })
+    const target = liveTarget(harness)
+    const questionId = seedQuestion(harness)
+    const receipt = await harness.service.promptSession(harness.lead.agent, 'target', 'use staging', { intent: 'answer', questionId })
+    const message = target.inbox.nextStep.find(entry => String(entry.id) === receipt.delivery.messageId)
+    if (message === undefined) throw new Error('expected the admitted answer to be pending')
+    const warn = vi.spyOn(harness.ctx.logger, 'warn')
+    const cold = coldLead(harness)
+    harness.ctx.emit('agent/inbox/discarded', { agent: target.agent, message })
+    await flushMicrotasks()
+    cold.restore()
+    expect(warn.mock.calls.some(call => String(call[0]).includes('memory-only'))).toBe(true)
+    // The in-memory queue still drains when the lead is live again.
+    harness.ctx.emit('agent/created', { agent: harness.lead.agent, source: 'resume' })
+    await flushMicrotasks()
+    expect(answerRecords(harness).some(record => record.status === 'discarded' && record.messageId === receipt.delivery.messageId)).toBe(true)
+  })
+})
