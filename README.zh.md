@@ -259,8 +259,11 @@ durable `team/mode`）。模型 API（`modelCatalog`、`Agent.model.select`、`m
 | `0.2.2-rc.5` | `pnpm e2e --flow installed --no-build`（Phase 1e × cold-discard r3–r9 合并，pin 总数） | **221/221**（218 PASS + 3 SKIP；合并树重跑，phase 3 128 + phase 1e 31） |
 | `0.2.2-rc.5` | `pnpm e2e`（patch，合并轮） | **221/221**（同轮） |
 | `0.2.2-rc.5` | `pnpm e2e --no-worktree --no-build`（合并轮） | **198/198**（同轮，跳过 phase 2） |
+| `0.2.2-rc.5` | `pnpm e2e --flow installed --no-build`（Phase 1e background-retry 修复轮，pin 总数） | **221/221**（218 PASS + 3 SKIP；background-retry 修复轮重跑） |
+| `0.2.2-rc.5` | `pnpm e2e`（patch，background-retry 修复轮） | **221/221**（同轮） |
+| `0.2.2-rc.5` | `pnpm e2e --no-worktree --no-build`（background-retry 修复轮） | **198/198**（同轮，跳过 phase 2） |
 
-0.3.0 的 prerelease 候选（0.3.0-rc.1 / rc.2，尚未 promote 为稳定版）含 question 路由与排队 inbox 输入。Phase 1c 的 harness 轮新增 question-gate 与 `devlead_report` question checks（结构化多问题 payload 深比对、完整 wake payload 深比对、action-required wake admission、conclude/durable/memory-only 路径，以及只证明恢复可写性、不宣称自动 replay 的 recovery report），并新增两条**真实 prompted child turn**：用 scripted `llm/stream` 脚本驱动真实 agent-loop turn/step/tool 事件（无需 provider 凭据）——conclude 的 question batch 之后，已提交的 next-step marker 仍会在后续真实 step 中执行、先于唯一 completed `turn/end`；被 gate deny 的 `ask_user_question` 不会阻止模型继续运行（用例 33）。Phase 1d 轮新增一条真实 scripted child turn：lead 在 glob dispatch 期间用 `intent:"answer"` **steer 回答运行中的 child**（答案在后续真实 step 中 presented、先于唯一 completed `turn/end`；同键/同文本重试返回原 receipt；不同答案冲突；durable answer record 与派生视图报 answered/presented），以及 answer inbox 生命周期（queuedInputs 的 intent/questionId/wakeRequested/deliveryState、retract 拒绝 answer 但接受 background/instruction、运行中 child interrupt `clear-own` 保留 pending answer 而 `clear-all` 丢弃并重新 open question，经真实 `workspace/session-stop` fan-out）。Phase 1e 轮新增独立的 lane 实例：progress/fyi background inject 让 idle lead 保持 idle（不唤醒、不开新 turn），读工具输出带 `lane`/`deliveryState`；blocked/decision 以 `[DEV LEAD ACTION REQUIRED]` steer 携带完整 message；真实 completed turn 走 `[DEV LEAD NOTIFICATION]` followup，真实 adapter 失败 turn 走 `[DEV LEAD REVIEW REQUIRED]` steer；question+turn-end 合并抑制字段；共享 16-pending action 上限溢出显式返回 `DEVLEAD_DELIVERY_RATE_LIMITED`；低基数指标快照。每阶段 check 总数已 pin（27 / 12 / 23 / 128 / 31，基线 DSH 0.2.2-rc.5；删 check 会使该阶段失败），PASS 与 SKIP 分开输出；rc.5 的 installed/patch 完整双流各报 **221/221**（218 PASS + 3 条无凭据 SKIP；`--no-worktree`：**198/198**）。Phase 1e × cold-discard r3–r9 合并轮在合并树上重跑全部门禁并保持同一组 pin（30 个测试文件 / 1330 tests；installed/patch 各 **221/221**，`--no-worktree` **198/198**；见[合并证据](docs/e2e-evidence/phase1e-merge.md)）。发布前仍需按发布指南重跑完整组合。
+0.3.0 的 prerelease 候选（0.3.0-rc.1 / rc.2，尚未 promote 为稳定版）含 question 路由与排队 inbox 输入。Phase 1c 的 harness 轮新增 question-gate 与 `devlead_report` question checks（结构化多问题 payload 深比对、完整 wake payload 深比对、action-required wake admission、conclude/durable/memory-only 路径，以及只证明恢复可写性、不宣称自动 replay 的 recovery report），并新增两条**真实 prompted child turn**：用 scripted `llm/stream` 脚本驱动真实 agent-loop turn/step/tool 事件（无需 provider 凭据）——conclude 的 question batch 之后，已提交的 next-step marker 仍会在后续真实 step 中执行、先于唯一 completed `turn/end`；被 gate deny 的 `ask_user_question` 不会阻止模型继续运行（用例 33）。Phase 1d 轮新增一条真实 scripted child turn：lead 在 glob dispatch 期间用 `intent:"answer"` **steer 回答运行中的 child**（答案在后续真实 step 中 presented、先于唯一 completed `turn/end`；同键/同文本重试返回原 receipt；不同答案冲突；durable answer record 与派生视图报 answered/presented），以及 answer inbox 生命周期（queuedInputs 的 intent/questionId/wakeRequested/deliveryState、retract 拒绝 answer 但接受 background/instruction、运行中 child interrupt `clear-own` 保留 pending answer 而 `clear-all` 丢弃并重新 open question，经真实 `workspace/session-stop` fan-out）。Phase 1e 轮新增独立的 lane 实例：progress/fyi background inject 让 idle lead 保持 idle（不唤醒、不开新 turn），读工具输出带 `lane`/`deliveryState`；blocked/decision 以 `[DEV LEAD ACTION REQUIRED]` steer 携带完整 message；真实 completed turn 走 `[DEV LEAD NOTIFICATION]` followup，真实 adapter 失败 turn 走 `[DEV LEAD REVIEW REQUIRED]` steer；question+turn-end 合并抑制字段；共享 16-pending action 上限溢出显式返回 `DEVLEAD_DELIVERY_RATE_LIMITED`；低基数指标快照。每阶段 check 总数已 pin（27 / 12 / 23 / 128 / 31，基线 DSH 0.2.2-rc.5；删 check 会使该阶段失败），PASS 与 SKIP 分开输出；rc.5 的 installed/patch 完整双流各报 **221/221**（218 PASS + 3 条无凭据 SKIP；`--no-worktree`：**198/198**）。Phase 1e × cold-discard r3–r9 合并轮在合并树上重跑全部门禁并保持同一组 pin（30 个测试文件 / 1330 tests；installed/patch 各 **221/221**，`--no-worktree` **198/198**；见[合并证据](docs/e2e-evidence/phase1e-merge.md)）。Phase 1e 复核修复轮（live lead 的 background receipt append 失败有界重试，30 个测试文件 / 1339 tests）重跑同一组门禁：installed/patch 各 **221/221**、`--no-worktree` **198/198**（见[background-retry 证据](docs/e2e-evidence/phase1e-bg-retry.md)）。发布前仍需按发布指南重跑完整组合。
 
 每条 flow 有 3 条正向模型选择检查因本机无 provider 凭据记为 SKIP（打印真实原因）；负向
 model 路径与 `devlead_list_models` 在每个版本都真实运行。单元测试使用 rc.1 devDependencies，
@@ -503,7 +506,10 @@ id 与 path，绝不静默取第一个；此时改用 id 或路径。未知引�
 `devlead_report_outbox`，按记录的原子写，写入完成后才 resolve）。lead receipt 追加到 lead
 自己的会话日志（`plugin:devlead/report`），**只有该日志 flush 成功后**才清理 outbox 行。lead
 cold / 归档 / 未 resume 时 outbox 行保留，下次启动或 lead 激活时 replay；归档 lead 不会仅为
-投递被自动 resume。Host 未组合 storage 时回执明确变 degraded：`durable:false` 并带 warning，
+投递被自动 resume。lead **live** 但 receipt append 失败时不会被静默搁置：报告保留自己的 lane，
+background report 在有界重试（8 次）使 append 成功后**恰好一次**进入 background lane，超过上限
+则降级 digest-only 并告警；durable outbox 行在 lead live 时也按有界定时器（1s、5 次）replay，
+不必等待无关事件。真正在 lead cold 时观察到的报告仍按策略 digest-only。Host 未组合 storage 时回执明确变 degraded：`durable:false` 并带 warning，
 子会话可在 lead 可用后重试。outbox 行最多保留 7 天，`/devlead reset` 会丢弃该 lead 的待投递
 报告。receipt 出现在 `devLead` projection、状态条、`/devlead` 状态、`devlead_notifications`，
 读取 lead 自身时也出现在 `devlead_get_session`。报告投递按 lane 区分（Phase 1e）：
@@ -949,7 +955,7 @@ Session），rc.2–rc.5 走 Team 成功路径；rc.4 / rc.5 的 installed 与 p
 排队输入轮按其 harness 重跑 rc.5：`--no-worktree` **127/127**，installed/patch 完整双流各
 **150/150**；Phase 1c 证据轮 pin **174/174**，Phase 1d answer routing 轮 pin **188/188**，
 Phase 1e message-lane 轮 pin **221/221**（installed/patch 完整双流各）；Phase 1e × cold-discard
-r3–r9 合并轮在合并树上重跑同一组 pin：两条完整流各 **221/221**、`--no-worktree` **198/198**。probe 是
+r3–r9 合并轮在合并树上重跑同一组 pin：两条完整流各 **221/221**、`--no-worktree` **198/198**；Phase 1e 复核修复轮再跑一次，数字相同。probe 是
 `scripts/e2e-probe/` 下的私有测试包，不发布、不属于 workspace 包；profile 变更只发生在
 `os.tmpdir()` 下的一次性 profile，不涉及 pnpm install / 网络 / lockfile。
 

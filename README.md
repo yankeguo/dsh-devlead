@@ -288,6 +288,9 @@ requires Node ≥ 24.9):
 | `0.2.2-rc.5` | `pnpm e2e --flow installed --no-build` (Phase 1e × cold-discard r3–r9 merge, pinned totals) | **221/221** (218 PASS + 3 SKIP; merged tree rerun, phase 3 128 + phase 1e 31) |
 | `0.2.2-rc.5` | `pnpm e2e` (patch, merge round) | **221/221** (same round) |
 | `0.2.2-rc.5` | `pnpm e2e --no-worktree --no-build` (merge round) | **198/198** (same round, phase 2 skipped) |
+| `0.2.2-rc.5` | `pnpm e2e --flow installed --no-build` (Phase 1e background-retry fix, pinned totals) | **221/221** (218 PASS + 3 SKIP; background-retry fix rerun) |
+| `0.2.2-rc.5` | `pnpm e2e` (patch, background-retry fix round) | **221/221** (same round) |
+| `0.2.2-rc.5` | `pnpm e2e --no-worktree --no-build` (background-retry fix round) | **198/198** (same round, phase 2 skipped) |
 
 The 0.3.0 prerelease candidates (0.3.0-rc.1 / 0.3.0-rc.2, not yet promoted as stable) include question routing
 and queued inbox inputs. The Phase 1c harness rounds add the question-gate and `devlead_report` question
@@ -316,8 +319,11 @@ SKIP are reported separately, and the installed/patch full flows report **221/22
 credential-less SKIP; `--no-worktree`: **198/198**). The Phase 1e × cold-discard r3–r9 merge round
 reran every gate on the merged tree and kept the same pinned totals (30 test files / 1330 tests;
 installed/patch **221/221** each, `--no-worktree` **198/198**; see
-[merge evidence](docs/e2e-evidence/phase1e-merge.md)). A pre-release rerun of the full combination
-is still required by the publishing guide.
+[merge evidence](docs/e2e-evidence/phase1e-merge.md)). The Phase 1e review-fix round (bounded
+retry for a live lead's failed background receipt append, 30 test files / 1339 tests) reran the
+same gates: installed/patch **221/221** each and `--no-worktree` **198/198** (see
+[background-retry evidence](docs/e2e-evidence/phase1e-bg-retry.md)). A pre-release rerun of the
+full combination is still required by the publishing guide.
 
 Three positive model-selection checks per flow are reported as SKIP on this credential-less
 Host (the real reason is printed); the negative model path and `devlead_list_models` run on every
@@ -600,7 +606,12 @@ Before the tool returns, a report is written to a durable plugin outbox over the
 after durability). The lead receipt is appended to the lead's own Session log
 (`plugin:devlead/report`) and the outbox row is cleared only after that log was flushed. If the
 lead is cold, archived, or not yet resumed, the outbox row remains and is replayed on the next
-boot/lead activation; archived holders are never auto-resumed just for delivery. The fallback
+boot/lead activation; archived holders are never auto-resumed just for delivery. A live lead whose
+receipt append fails is retried instead of silently parked: the report keeps its lane, a
+background report re-enters the background lane exactly once when a bounded retry (8 attempts)
+makes the append durable and degrades to digest-only with a warning after the cap, and a durable
+outbox row is replayed on a bounded (1 s, 5 attempts) timer while its lead is live. Reports
+genuinely observed while the lead was cold stay digest-only by policy. The fallback
 when a Host composes no storage is explicit: the receipt has `durable: false` and a warning, and
 the child can retry after the lead is available. Outbox rows are pruned after 7 days if their lead
 never returns; `/devlead reset` drops that lead's pending rows. The receipt appears in the
@@ -1164,8 +1175,8 @@ the queued-input round reran rc.5 on its harness: `--no-worktree` **127/127** an
 installed/patch full flows **150/150** each; the Phase 1c evidence round pinned **174/174** and the
 Phase 1d answer-routing round pinned **188/188**, and the Phase 1e message-lane round pinned
 **221/221** (installed/patch full flows each). The Phase 1e × cold-discard r3–r9 merge round reran
-the same pins on the merged tree: **221/221** each full flow and **198/198** `--no-worktree`. The
-probe is a private
+the same pins on the merged tree: **221/221** each full flow and **198/198** `--no-worktree`; the
+Phase 1e review-fix round reran them once more with the same totals. The probe is a private
 test-only package under `scripts/e2e-probe/`, not a published or workspace package. The profile
 mutations happen only in the throwaway profile under `os.tmpdir()`; no pnpm install, network, or
 lockfile change is involved.

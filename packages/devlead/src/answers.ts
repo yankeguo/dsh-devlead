@@ -120,6 +120,21 @@ export class DevLeadAnswerTracker {
   }
 
   /**
+   * Count one repair-driven state change: the repaired answer status and, only
+   * when the repair leaves a terminal discard/failed state, the question's
+   * open→answered transition. A live entry repaired forward was already an
+   * answered question, so incrementing the question counter there would double
+   * the same lifecycle fact. Normal transitions are counted by {@link count}.
+   * @param status - repaired answer status.
+   * @param reopenedToAnswered - whether the repair leaves a terminal discard/failed.
+   */
+  private countRepair(status: DevLeadAnswerStatus, reopenedToAnswered: boolean): void {
+    if (this.metrics === undefined) return
+    this.metrics.increment('devlead_answer_status_total', { status })
+    if (reopenedToAnswered) this.metrics.increment('devlead_question_status_total', { status: 'answered' })
+  }
+
+  /**
    * Register one freshly admitted answer, replacing any earlier answer of the
    * same question (the newest admission is authoritative).
    * @param entry - admitted answer facts.
@@ -297,15 +312,18 @@ export class DevLeadAnswerTracker {
       entry.status = status
       entry.at = at
       if (status === 'presented') entry.presentedAt = at
+      this.countRepair(status, true)
       return true
     }
     // A live entry advances forward only, and only with a newer proving fact.
     const rank = { admitted: 0, claimed: 1, presented: 2 } as const
     if (rank[status] < rank[entry.status]) return false
     if (at <= entry.at && status === entry.status) return false
+    const changed = status !== entry.status
     entry.status = status
     entry.at = at
     if (status === 'presented') entry.presentedAt = at
+    if (changed) this.countRepair(status, false)
     return true
   }
 

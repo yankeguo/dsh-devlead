@@ -257,6 +257,17 @@ const MAX_ACTIVE_SCAN_UNKNOWN_READS = 64
 const REPORT_OUTBOX_PRUNE_INTERVAL_MS = 60 * 60 * 1_000
 
 /**
+ * Delay before retrying a durable outbox replay after a live report's receipt
+ * append failed. The outbox row is already durable; this timer only re-attempts
+ * the lead-log delivery without waiting for an unrelated event (mode toggle,
+ * watch change, agent activation, restart).
+ */
+const OUTBOX_REPLAY_RETRY_MS = 1_000
+
+/** Maximum consecutive delayed outbox replay attempts per burst of report writes. */
+const MAX_OUTBOX_REPLAY_RETRIES = 5
+
+/**
  * Bound on the boot-time corpus-readiness barrier. The real Session query
  * engine binds the optional `sessionPersistence` service through a scheduled
  * callback, so its persisted listing can lag the service's availability by a
@@ -871,6 +882,10 @@ export class DevLeadService extends Service {
   private outboxInjection: { dispose(): void } | undefined
   /** Guard against overlapping outbox replay passes. */
   private outboxReplaying = false
+  /** Delayed outbox replay timer armed after a live report receipt append failure. */
+  private outboxReplayTimer: ReturnType<typeof setTimeout> | undefined
+  /** Consecutive delayed outbox replay attempts since the last fresh report failure. */
+  private outboxReplayAttempts = 0
   /** Last outbox retention sweep (open or opportunistic report-write prune). */
   private outboxPrunedAt = 0
   /**
@@ -925,6 +940,10 @@ export class DevLeadService extends Service {
         if (this.answerDiscardRetryTimer !== undefined) {
           clearTimeout(this.answerDiscardRetryTimer)
           this.answerDiscardRetryTimer = undefined
+        }
+        if (this.outboxReplayTimer !== undefined) {
+          clearTimeout(this.outboxReplayTimer)
+          this.outboxReplayTimer = undefined
         }
         this.outboxInjection?.dispose()
         this.outboxInjection = undefined
@@ -2567,12 +2586,45 @@ export class DevLeadService extends Service {
       }
       if (waiting > 0) {
         this.ctx.logger.warn(
-          `devlead: ${String(waiting)} durable report(s) wait for their lead Session or watch relationship to return`,
+          `devlead: ${String(waiting)} durable report(s) wait for their lead Session, watch relationship, or a writable receipt append`,
         )
       }
     } finally {
       this.outboxReplaying = false
     }
+  }
+
+  /**
+   * Arm one bounded delayed replay after a live report's receipt append failed.
+   *
+   * The outbox row is durable, but without this timer it would wait for an
+   * unrelated event (mode toggle, watch change, activation, restart) even
+   * though the lead is live now. Each timer tick is one attempt; a fresh report
+   * failure resets the burst budget, and the cap logs once before leaving the
+   * rows to the next activation/restart.
+   * @param resetAttempts - reset the burst budget for a fresh report failure.
+   */
+  private scheduleOutboxReplayRetry(resetAttempts: boolean): void {
+    if (this.disposed || this.outbox === undefined) return
+    const live = this.outbox.entries().some(entry => this.ctx.agents.get(toSessionId(entry.report.leadSessionId)) !== undefined)
+    if (!live) return
+    if (resetAttempts) this.outboxReplayAttempts = 0
+    if (this.outboxReplayTimer !== undefined) return
+    if (this.outboxReplayAttempts >= MAX_OUTBOX_REPLAY_RETRIES) {
+      this.ctx.logger.warn(
+        `devlead: giving up delayed outbox replay after ${String(MAX_OUTBOX_REPLAY_RETRIES)} attempts; `
+        + 'the durable row(s) stay for the next live activation or Host restart',
+      )
+      return
+    }
+    this.outboxReplayAttempts += 1
+    this.outboxReplayTimer = setTimeout(() => {
+      this.outboxReplayTimer = undefined
+      void this.replayOutbox().then(() => {
+        if (this.disposed || this.outbox === undefined) return
+        this.scheduleOutboxReplayRetry(false)
+      }, () => undefined)
+    }, OUTBOX_REPLAY_RETRY_MS)
   }
 
   /**
@@ -2616,8 +2668,10 @@ export class DevLeadService extends Service {
         this.ctx.logger.warn(
           `devlead: report "${report.id}" is durable but its first delivery attempt failed: ${thrownMessage(error)}`,
         )
+        this.scheduleOutboxReplayRetry(true)
       }
       if (delivered) await this.outbox.delete(report)
+      else this.scheduleOutboxReplayRetry(true)
       return {
         report,
         durable: true,

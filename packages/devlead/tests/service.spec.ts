@@ -1083,6 +1083,59 @@ describe('mid-turn reports', () => {
       .toEqual(['durable update'])
   })
 
+  it('retries a live background report receipt append failure from the outbox and injects once', async () => {
+    const storage = new FakeStorageDomain()
+    const { harness, child } = await bootReporting({}, { storageDomain: storage })
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+    try {
+      // Fail the hub's lead-log receipt append once; the outbox row is already
+      // durable, so without a delayed replay it would wait for an unrelated event.
+      const commit = vi.spyOn(harness.leadSession as unknown as { commit: (...args: unknown[]) => unknown }, 'commit')
+        .mockImplementationOnce(() => { throw new Error('disk full') })
+      const receipt = await harness.service.reportProgress(child.agent, { message: 'retry from outbox', kind: 'progress' })
+      commit.mockRestore()
+      expect(receipt.durable).toBe(true)
+      expect(receipt.queued).toBe(true)
+      const rows = (): Array<{ report: { message: string } }> => [...storage.table('devlead_report_outbox', 'pending').records.values()] as Array<{
+        report: { message: string }
+      }>
+      expect(rows()).toHaveLength(1)
+      expect(harness.lead.injects).toHaveLength(0)
+      await vi.advanceTimersByTimeAsync(1_000)
+      await flushMicrotasks()
+      expect(harness.lead.injects).toHaveLength(1)
+      expect(messageText(harness.lead.injects[0]!)).toContain('retry from outbox')
+      expect(rows()).toHaveLength(0)
+      // Exactly one background delivery, even when the hub retry and the
+      // scheduled outbox replay both run in the same timer window.
+      const delivered = harness.service.metricsSnapshot()
+        .filter(sample => sample.name === 'devlead_delivery_total'
+          && sample.labels.lane === 'background'
+          && sample.labels.outcome === 'delivered')
+        .reduce((total, sample) => total + sample.value, 0)
+      expect(delivered).toBe(1)
+      await vi.advanceTimersByTimeAsync(10_000)
+      await flushMicrotasks()
+      expect(harness.lead.injects).toHaveLength(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('clears the delayed outbox replay timer on dispose', async () => {
+    const storage = new FakeStorageDomain()
+    const { harness, child } = await bootReporting({}, { storageDomain: storage })
+    const commit = vi.spyOn(harness.leadSession as unknown as { commit: (...args: unknown[]) => unknown }, 'commit')
+      .mockImplementationOnce(() => { throw new Error('disk full') })
+    const receipt = await harness.service.reportProgress(child.agent, { message: 'dispose before retry' })
+    commit.mockRestore()
+    expect(receipt).toMatchObject({ durable: true, queued: true })
+    const service = harness.service as unknown as { outboxReplayTimer?: unknown }
+    expect(service.outboxReplayTimer).toBeDefined()
+    await harness.dispose()
+    expect(service.outboxReplayTimer).toBeUndefined()
+  })
+
   it('releases the outbox domain on dispose so a reload opens it durably again', async () => {
     const storage = new FakeStorageDomain()
     const first = await bootReporting({}, { storageDomain: storage })

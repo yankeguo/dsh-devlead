@@ -124,6 +124,13 @@ interface LeadRuntime {
   unsaved: DevLeadNotification[]
   /** Reports observed while the lead was cold; their durable receipts are not written yet. */
   unsavedReports: DevLeadReport[]
+  /**
+   * Reports whose receipt append failed while the lead was live. A retry must
+   * re-enter the report's lane (background inject / action steer) after the
+   * append finally succeeds; this set distinguishes that case from a report
+   * genuinely observed while the lead was cold (digest-only by policy).
+   */
+  liveReportFailures: Set<string>
   /** Pending turn-notice coalescing/retry timer. */
   timer: ReturnType<typeof setTimeout> | undefined
   /** Whether a zero-delay turn-notice microtask flush is queued (the `batchMs: 0` path). */
@@ -136,6 +143,10 @@ interface LeadRuntime {
   actionScheduled: boolean
   /** Whether one action-required delivery is in flight. */
   actionFlushing: boolean
+  /** Independent bounded retry timer for live background reports whose receipt append failed. */
+  backgroundTimer: ReturnType<typeof setTimeout> | undefined
+  /** Consecutive background receipt retries since the last successful append or lane delivery. */
+  backgroundRetryAttempts: number
   /** Turn-end facts merged into each not-yet-sent action-required wake, keyed by report id. */
   actionTurnEnds: Map<string, DevLeadNotification[]>
   /** Turn-end facts explicitly included in sent action-required wakes, keyed by notification id. */
@@ -175,6 +186,14 @@ const DELIVERY_STATE_RETENTION = 256
  * a batch is kept pending instead of being dropped while a notice is queued.
  */
 const DELIVERY_RETRY_MS = 1_000
+
+/**
+ * Maximum consecutive retries of a live background report whose durable receipt
+ * append failed. The retry re-arms on the shared delivery timer; after this cap
+ * the row degrades to digest-only with an explicit warning instead of retrying
+ * forever or silently dropping the observation.
+ */
+const MAX_BACKGROUND_REPORT_RETRIES = 8
 
 /** Maximum consecutive cold-lead resume attempts before the hub gives up. */
 const MAX_COLD_RESUME_ATTEMPTS = 5
@@ -262,13 +281,13 @@ export function renderDevLeadReviewNotice(notifications: readonly DevLeadNotific
   const omitted = notifications.length - shown.length
   const lines = shown.map(notification => `- ${notificationLine(notification)}`)
   if (omitted > 0) lines.unshift(`- (${omitted} earlier notification(s) omitted; call devlead_notifications for the digest)`)
-  return [
+  return boundWake([
     '[DEV LEAD REVIEW REQUIRED]',
     'A watched session\'s turn ended in a failure or interruption. This is a runtime notice, not a human instruction.',
     ...lines,
     'Read the full message (devlead_notifications / devlead_get_session), then decide whether to diagnose, '
     + 'intervene with devlead_prompt_session, or ask the human. A failed or interrupted turn must not be silently ignored.',
-  ].join('\n')
+  ].join('\n'), '\n… Review payload truncated; call devlead_notifications for the full failure detail.')
 }
 
 /**
@@ -443,6 +462,7 @@ export class DevLeadNotificationHub {
         if (runtime === undefined) return
         if (this.hasActionWork(runtime)) void this.flushActionRequired(runtime)
         if (this.hasOrdinaryWork(runtime)) void this.flush(runtime)
+        if (this.hasLiveBackgroundWork(runtime)) void this.flushBackground(runtime)
       })
       this.ctx.on('session/event', (session, event) => { this.onSessionEvent(session, event) })
       yield () => {
@@ -485,6 +505,7 @@ export class DevLeadNotificationHub {
     // turn-notice lane when both are explicitly drained together.
     await this.flushActionRequired(runtime)
     await this.flush(runtime)
+    await this.flushBackground(runtime)
   }
 
   /**
@@ -543,10 +564,10 @@ export class DevLeadNotificationHub {
         return true
       }
       if (this.appendReportRecord(session, report)) this.routeReport(runtime, report)
-      else this.queueUnsavedReport(runtime, report)
+      else this.queueUnsavedReport(runtime, report, true)
     }
     else {
-      this.queueUnsavedReport(runtime, report)
+      this.queueUnsavedReport(runtime, report, false)
     }
     return true
   }
@@ -570,7 +591,7 @@ export class DevLeadNotificationHub {
     this.assertReportCapacity(report)
     const session = this.ctx.sessions.get(toSessionId(report.leadSessionId))
     if (session === undefined) {
-      this.queueUnsavedReport(runtime, report)
+      this.queueUnsavedReport(runtime, report, false)
       return false
     }
     const state = this.stateOf(session)
@@ -583,13 +604,20 @@ export class DevLeadNotificationHub {
         this.ctx.logger.warn(
           `devlead: could not record a report for lead "${runtime.sessionId}": ${thrownMessage(error)}`,
         )
-        this.queueUnsavedReport(runtime, report)
+        this.queueUnsavedReport(runtime, report, true)
         return false
       }
+      // The retry path may have queued this identity already. This append just
+      // made it durable and routes it below; drop the unsaved copy first so a
+      // later persist pass cannot inject the same report twice.
+      this.dropUnsavedReport(runtime, report.id)
       // Route synchronously BEFORE the flush await: a concurrent caller's
       // capacity preflight must see this report already queued, so the pair cap
       // rejects the loser before its own receipt append (no orphan durable row).
       this.routeReport(runtime, report)
+    } else {
+      // An outbox replay of an already-durable receipt must not route it again.
+      this.dropUnsavedReport(runtime, report.id)
     }
     try {
       await this.ctx.sessions.flush(session)
@@ -638,20 +666,66 @@ export class DevLeadNotificationHub {
     )
   }
 
-  /** Keep action unsaved rows under the explicit pair cap; retain ordinary digest bounds. */
-  private queueUnsavedReport(runtime: LeadRuntime, report: DevLeadReport): void {
+  /**
+   * Queue one report whose durable receipt could not be appended.
+   *
+   * A report observed while the lead was live (`live`) keeps its lane: the
+   * failure is retried on a bounded background timer and must inject/steer once
+   * the append succeeds, so its state is `pending` rather than the cold
+   * digest-only outcome. A report genuinely observed while the lead was cold
+   * (`live` false) is digest-only by policy and never resumes a cold lead; its
+   * metric is counted exactly once here.
+   * @param runtime - lead runtime row.
+   * @param report - report whose receipt append failed.
+   * @param live - whether the lead was live when the append failed.
+   */
+  private queueUnsavedReport(runtime: LeadRuntime, report: DevLeadReport, live: boolean): void {
+    const duplicate = runtime.unsavedReports.some(existing => existing.id === report.id)
+    if (!duplicate) {
+      runtime.unsavedReports = isActionReportKind(report.kind)
+        ? [...runtime.unsavedReports, report]
+        : [...runtime.unsavedReports, report].slice(-DEVLEAD_REPORT_RETENTION)
+    }
     if (isActionReportKind(report.kind)) {
-      runtime.unsavedReports = [...runtime.unsavedReports, report]
-      this.markDeliveryState(runtime, report.id, 'pending')
-      this.countReport(report, 'queued')
+      if (!duplicate) {
+        this.markDeliveryState(runtime, report.id, 'pending')
+        this.countReport(report, 'queued')
+      }
       this.scheduleActionFlush(runtime)
       return
     }
-    runtime.unsavedReports = [...runtime.unsavedReports, report].slice(-DEVLEAD_REPORT_RETENTION)
-    // A cold lead is never resumed for background context; the durable digest
-    // (written when the lead returns) is the only delivery.
-    this.markDeliveryState(runtime, report.id, 'digest-only')
-    this.countReport(report, 'digest-only')
+    if (!live) {
+      if (duplicate) return
+      // A cold lead is never resumed for background context; the durable digest
+      // (written when the lead returns) is the only delivery.
+      this.markDeliveryState(runtime, report.id, 'digest-only')
+      this.countReport(report, 'digest-only')
+      return
+    }
+    if (!runtime.liveReportFailures.has(report.id)) {
+      runtime.liveReportFailures.add(report.id)
+      this.markDeliveryState(runtime, report.id, 'pending')
+      this.countReport(report, 'queued')
+    }
+    this.scheduleBackgroundRetry(runtime)
+  }
+
+  /**
+   * Remove one report from the unsaved queue after another writer made its
+   * receipt durable or routed it. Also clears the live-failure marker so a
+   * later persistence pass cannot deliver the same identity twice.
+   * @param runtime - lead runtime row.
+   * @param reportId - report identity.
+   */
+  private dropUnsavedReport(runtime: LeadRuntime, reportId: string): void {
+    runtime.liveReportFailures.delete(reportId)
+    runtime.unsavedReports = runtime.unsavedReports.filter(report => report.id !== reportId)
+    if (!this.hasLiveBackgroundWork(runtime)) this.clearBackgroundTimer(runtime)
+  }
+
+  /** Whether any queued background report must still re-enter its lane after a receipt retry. */
+  private hasLiveBackgroundWork(runtime: LeadRuntime): boolean {
+    return runtime.unsavedReports.some(report => runtime.liveReportFailures.has(report.id))
   }
 
   /** Route one persisted report to the only lane the policy assigns to its kind. */
@@ -900,6 +974,8 @@ export class DevLeadNotificationHub {
     // written the moment the lead returns.
     if (runtime.unsaved.length > 0 || runtime.unsavedReports.length > 0) {
       this.persistUnsaved(session, runtime)
+    } else {
+      this.clearBackgroundTimer(runtime)
     }
     if (this.hasOrdinaryWork(runtime) || this.hasActionWork(runtime)) {
       // The live index supersedes any cold-resume retry that was armed while
@@ -926,12 +1002,15 @@ export class DevLeadNotificationHub {
       pendingReviews: [],
       unsaved: [],
       unsavedReports: [],
+      liveReportFailures: new Set(),
       timer: undefined,
       scheduled: false,
       flushing: false,
       actionTimer: undefined,
       actionScheduled: false,
       actionFlushing: false,
+      backgroundTimer: undefined,
+      backgroundRetryAttempts: 0,
       actionTurnEnds: new Map(),
       sentActionTurnEnds: new Map(),
       backgroundCounts: new Map(),
@@ -988,6 +1067,9 @@ export class DevLeadNotificationHub {
     runtime.unsaved = runtime.unsaved.filter(notification => next.has(notification.sessionId))
     runtime.pendingActionReports = runtime.pendingActionReports.filter(report => next.has(report.senderSessionId))
     runtime.unsavedReports = runtime.unsavedReports.filter(report => next.has(report.senderSessionId))
+    for (const reportId of [...runtime.liveReportFailures]) {
+      if (!runtime.unsavedReports.some(report => report.id === reportId)) runtime.liveReportFailures.delete(reportId)
+    }
     for (const sender of [...runtime.backgroundCounts.keys()]) {
       if (!next.has(sender)) runtime.backgroundCounts.delete(sender)
     }
@@ -1001,6 +1083,7 @@ export class DevLeadNotificationHub {
     }
     if (!this.hasOrdinaryWork(runtime)) this.clearOrdinaryTimer(runtime)
     if (!this.hasActionWork(runtime)) this.clearActionTimer(runtime)
+    if (!this.hasLiveBackgroundWork(runtime)) this.clearBackgroundTimer(runtime)
   }
 
   /**
@@ -1015,6 +1098,7 @@ export class DevLeadNotificationHub {
     const runtime = this.leads.get(leadId)
     if (runtime !== undefined) {
       this.clearTimer(runtime)
+      this.clearBackgroundTimer(runtime)
       for (const watched of runtime.watched) {
         const set = this.watchers.get(watched)
         if (set === undefined) continue
@@ -1061,6 +1145,14 @@ export class DevLeadNotificationHub {
       runtime.actionTimer = undefined
     }
     runtime.actionScheduled = false
+  }
+
+  /** Clear the live-background report retry timer. */
+  private clearBackgroundTimer(runtime: LeadRuntime): void {
+    if (runtime.backgroundTimer !== undefined) {
+      clearTimeout(runtime.backgroundTimer)
+      runtime.backgroundTimer = undefined
+    }
   }
 
   /** Whether the turn-notice lane has anything to persist or deliver. */
@@ -1374,6 +1466,14 @@ export class DevLeadNotificationHub {
       }
     }
     for (const report of runtime.unsavedReports) {
+      // Another writer (a scheduled outbox replay or a concurrent lane retry)
+      // may already have appended and routed this identity. Re-appending is a
+      // harmless fold duplicate, but re-delivering it would inject/steer twice,
+      // so retire the unsaved copy without touching the lane.
+      if (this.stateOf(session)?.reports.some(existing => existing.id === report.id) === true) {
+        runtime.liveReportFailures.delete(report.id)
+        continue
+      }
       try {
         appendPluginRecord(session, DEVLEAD_REPORT_RECORD_TYPE, reportRecord(report))
       } catch (error: unknown) {
@@ -1387,11 +1487,16 @@ export class DevLeadNotificationHub {
       if (isActionReportKind(report.kind)) {
         runtime.pendingActionReports = [...runtime.pendingActionReports, report]
         this.markDeliveryState(runtime, report.id, 'pending')
+      } else if (runtime.liveReportFailures.delete(report.id)) {
+        // The receipt append finally succeeded for a report observed while the
+        // lead was live: re-enter the background lane instead of treating the
+        // earlier append failure as a cold-observation digest-only outcome.
+        this.deliverBackground(runtime, report)
       } else {
-        // Cold-observed background context is digest-only by policy; the lead
-        // reads it from the retained digest, not from a late inject.
+        // Cold-observed background context is digest-only by policy. The
+        // digest-only metric was counted when it was queued; counting again
+        // here would double the same transition on every persistence retry.
         this.markDeliveryState(runtime, report.id, 'digest-only')
-        this.countReport(report, 'digest-only')
       }
     }
     runtime.unsaved = remaining
@@ -1406,6 +1511,8 @@ export class DevLeadNotificationHub {
       && childTurnCategory(notification.transition) === 'T1')) {
       this.scheduleRetry(runtime)
     }
+    if (this.hasLiveBackgroundWork(runtime)) this.scheduleBackgroundRetry(runtime)
+    else this.clearBackgroundTimer(runtime)
   }
 
   /**
@@ -1804,6 +1911,76 @@ export class DevLeadNotificationHub {
       runtime.actionTimer = undefined
       void this.flushActionRequired(runtime)
     }, DELIVERY_RETRY_MS)
+  }
+
+  /**
+   * Arm one bounded retry of a live background report whose receipt append
+   * failed. The row is not cold-observed context: once the append succeeds it
+   * must enter the background lane (a single inject or the budget's digest-only
+   * degradation), never stay silently unsaved.
+   * @param runtime - lead runtime row.
+   */
+  private scheduleBackgroundRetry(runtime: LeadRuntime): void {
+    if (this.stopping || runtime.backgroundTimer !== undefined) return
+    runtime.backgroundTimer = setTimeout(() => {
+      runtime.backgroundTimer = undefined
+      void this.flushBackground(runtime)
+    }, DELIVERY_RETRY_MS)
+  }
+
+  /**
+   * Retry the durable append of live background reports and re-enter their lane.
+   *
+   * One timer tick is one bounded attempt: a failed append re-arms until
+   * {@link MAX_BACKGROUND_REPORT_RETRIES}, then the remaining rows degrade to
+   * digest-only with an explicit warning (the append may still succeed later on
+   * a live index, but the lane delivery is not promised anymore).
+   * @param runtime - lead runtime row.
+   */
+  private async flushBackground(runtime: LeadRuntime): Promise<void> {
+    if (this.stopping || this.leads.get(runtime.sessionId) !== runtime) return
+    if (!this.hasLiveBackgroundWork(runtime)) {
+      this.clearBackgroundTimer(runtime)
+      runtime.backgroundRetryAttempts = 0
+      return
+    }
+    const agent = this.ctx.agents.get(toSessionId(runtime.sessionId))
+    if (agent === undefined) return
+    runtime.backgroundRetryAttempts += 1
+    this.persistUnsaved(agent.session, runtime)
+    if (!this.hasLiveBackgroundWork(runtime)) {
+      runtime.backgroundRetryAttempts = 0
+      this.clearBackgroundTimer(runtime)
+      return
+    }
+    if (runtime.backgroundRetryAttempts >= MAX_BACKGROUND_REPORT_RETRIES) {
+      this.degradeLiveBackground(runtime)
+      return
+    }
+    this.scheduleBackgroundRetry(runtime)
+  }
+
+  /**
+   * Give up lane delivery of live background reports after the retry cap. The
+   * rows stay queued (a later live index may still persist their receipt) but
+   * their delivery state is honestly degraded to digest-only.
+   * @param runtime - lead runtime row.
+   */
+  private degradeLiveBackground(runtime: LeadRuntime): void {
+    let degraded = 0
+    for (const report of runtime.unsavedReports) {
+      if (!runtime.liveReportFailures.delete(report.id)) continue
+      degraded += 1
+      this.markDeliveryState(runtime, report.id, 'digest-only')
+      this.countReport(report, 'failed')
+    }
+    this.clearBackgroundTimer(runtime)
+    runtime.backgroundRetryAttempts = 0
+    this.ctx.logger.warn(
+      `devlead: gave up delivering ${String(degraded)} background report(s) after `
+      + `${String(MAX_BACKGROUND_REPORT_RETRIES)} receipt retries for lead "${runtime.sessionId}"; `
+      + 'they stay digest-only and their durable receipts are retried when the lead log is next written',
+    )
   }
 
   /**

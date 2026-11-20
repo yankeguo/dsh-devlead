@@ -591,15 +591,24 @@ DevLead 无需额外工具调用即可判断是否要介入。
    - lead 日志 attached 且 enabled：append `plugin:devlead/report`，进入 `pendingReports`；
      **await `ctx.sessions.flush(leadSession)` 成功后**才删除 outbox 行；
    - lead cold / 未 attached / 归档 / 关注关系暂时消失：outbox 行保留，hub 只做内存唤醒队列；
-     不把“已入内存”当作 durable 交付；
+     不把“已入内存”当作 durable 交付；cold 时观察到的 background report 按策略 digest-only；
+   - **live lead 的 receipt append 失败**：报告进入 `unsavedReports` 并标记 live-failure，保留
+     lane 语义（deliveryState=`pending`，metric `queued`），由独立的有界 retry timer
+     （1s × 8）重试 append；成功后重新走 `routeReport`/`deliverBackground`，background 报告
+     **恰好一次** inject；超过上限降级 digest-only + warning（不无限重试）。service 层另有
+     有界 outbox replay timer（1s × 5，仅当 outbox 中存在 live lead 的行）处理 durable 行，
+     不再等待 `agent/created`/mode/watch 等无关事件；hub retry 与 outbox replay 通过
+     `dropUnsavedReport` + durable `known` 去重，不会重复 inject/steer；cold-observed
+     background 的 digest-only metric 只在入队时计一次，persistUnsaved 不重复计数；
    - 若 flush 失败，outbox 行保留，receipt 已 append 的状态会在 replay 时再次 flush 并清理。
 4. `scheduleFlush` 与 turn 通知共用合并窗口 / `hasQueuedNotice` 避让 / 1s 重试；lead 空闲时唤醒，
    运行中排到下一步。报告与通知同批时合并为一条 `[DEV LEAD NOTIFICATION] + [DEV LEAD REPORT]`。
 5. **Replay**：service init、storage-domain 晚挂载、`agent/created`、`setEnabled(true)`、
-   `watchSession(true)` 时扫描 outbox；对每条 report 重新执行
-   `hub.persistReport`，只有 lead 日志 flush 成功才删除。cold lead 的 resume 由同一 hub 水泵
-   处理；归档 lead 不自动 resume。outbox 行按 7 天 retention 清理；`/devlead reset` 丢弃该
-   lead 的待投递行；lead 被删除且不返回到期后清理。
+   `watchSession(true)`，以及 receipt append 失败后的有界延迟 timer 扫描 outbox；对每条 report
+   重新执行 `hub.persistReport`，只有 lead 日志 flush 成功才删除。cold lead 的 resume 由同一 hub
+   水泵处理；归档 lead 不自动 resume。outbox 行按 7 天 retention 清理；`/devlead reset` 丢弃该
+   lead 的待投递行；lead 被删除且不返回到期后清理。dispose/stop 清除 delayed replay timer 与
+   hub background retry timer。
    同一 domain（spec version 2，`compatibleVersions:[1]`，旧 `pending`/`ignored` 行原样可读）
    还有 `answer_discards` 表：写不进 lead log 的 answer discard 在此排队，Host 重启且 lead 仍
    cold 时队列不丢；service init/晚挂载时 rehydrate 进内存队列并 seed tracker（question 立即读
@@ -642,7 +651,7 @@ DevLead 无需额外工具调用即可判断是否要介入。
    以 `DEVLEAD_SESSION_UNAVAILABLE` 可重试退出，只放弃等待（drain 后台继续，race 输掉后挂
    no-op catch 防 unhandled），`withTargetAdmission` 的 finally 释放 target tail。`questionAnswerView` 对 repair in-flight/deferred/unknown
    的 question 标 `repairPending:true`（protocol view 可选字段，tool `REPORT_SCHEMA`/`reportValue`
-   透传给 get_session/notifications 消费者），UI 不把 stale terminal 当最终 open。
+   透传给 get_session/notifications 消费者），UI 不把 stale terminal 当最终 open。`DevLeadProjectionReport`（wire projection 行）**不包含** `repairPending`：该字段是 service/runtime 观测，只有 tool 输出（`devlead_notifications`/`devlead_get_session`）暴露；浏览器 strip 显示最后 durable 状态，provisional 判断以 tool 读取为准。这是已知的 Phase 2 投影缺口（若要把 repair 状态带进浏览器，需要把 runtime repair 状态并入 projection）。
    resolvedAnswer 对 same-message presented 优先于 durable terminal，claimed/admitted 与
    durable terminal 按 at 比较（更晚 live fact 胜出）；seed 对 admitted 也要求 terminal.at
    严格更晚才覆盖。
@@ -2014,7 +2023,7 @@ Phase 1 前的 hub 只有一个 `pending` / `pendingReports` 队列和一个全�
 | Phase 1b（已完成） | question `action-required`：完整 payload、结构化 questions、跳过 400ms/queued turn notice、窄化双 wake 规则；16/pair 显式 cap、结构化内容幂等、idle/aborted parked-wake 防死锁/防重 | 否 | `pnpm verify` + fake harness 用例 7/10/11/12/33/34 与 durable inbox 生命周期回归 |
 | Phase 1c（已完成） | `devlead_report({kind:'question'})` `turnEndRequested` + durable 检查 + 结果/policy；F7 gate memory-only 重述提示；N1 cap 竞态孤儿 outbox 行修复（含 delete 失败分支）；N2 outbox schema 回归（含 open-time backup-and-skip） | 否 | 用例 8/9（含 durable+queued）；真实 DSH question E2E（结构化 digest/wake payload 深比对、action-required wake、conclude/durable/recovery、scripted `llm/stream` 真实 child turn：next-step marker 后续 step 执行 + 用例 33 模型继续） |
 | Phase 1d（已完成） | `devlead_prompt_session` intent/`question_id`/`idempotency_key` + answer/correction steering + answer record + `answerStatus` admitted/claimed/presented（内存观测）+ `delivery` 结果 + retract/clear-own/source + **minimal output**（notifications/get_session 的 question report 带 questionStatus/answerStatus/answerMessageId/answeredAt/presentedAt，queuedInputs 带 intent/questionId/wakeRequested/deliveryState） | 否 | 用例 13–25；`pnpm verify` + `pnpm check:packages` + 真实 DSH rc.5 answer E2E（scripted child answer 真实 step + 幂等重试 + 冲突 + clear-own/clear-all，patch/installed 两 flow 188/188） |
-| Phase 1e（已完成） | T2/P1–P4 路径（T2 review steer、P3/P4 action steer、P1/P2 background inject 不唤醒 + 8/lead-turn、16/pair 预算降级 digest-only；action-required 16/pair 上限 Q1/P3/P4 共享，含 flush 前同步入队的竞态防护）、notifications/get_session **全量**输出（notification 行 wakeSuppressedByReportId/wakeSuppressionReason；report 行诊断 lane + 内存 deliveryState；wire projection question report 行附加 fold 派生 questionStatus/answerStatus）、policy/UI 文案（三 lane header 语义、DevLeadBar chip lane 着色与 question 状态）、指标（DevLeadMetrics 低基数 counters：delivery/suppression/guard/answer/question，service.metricsSnapshot() 暴露）；新增配置 actionRequiredBatchMs（0–400，默认 0） | 否 | 全量单测/集成/E2E（Phase 1e 分支 1236 tests；合并 cold-discard r3–r9 后合并树 30 文件 / 1330 tests；rc.5 installed/patch 双流各 221/221，phase 1e 31）；`pnpm verify` + `pnpm check:packages` + `pnpm e2e`；UI 验收 |
+| Phase 1e（已完成） | T2/P1–P4 路径（T2 review steer、P3/P4 action steer、P1/P2 background inject 不唤醒 + 8/lead-turn、16/pair 预算降级 digest-only；action-required 16/pair 上限 Q1/P3/P4 共享，含 flush 前同步入队的竞态防护）、notifications/get_session **全量**输出（notification 行 wakeSuppressedByReportId/wakeSuppressionReason；report 行诊断 lane + 内存 deliveryState；wire projection question report 行附加 fold 派生 questionStatus/answerStatus）、policy/UI 文案（三 lane header 语义、DevLeadBar chip lane 着色与 question 状态）、指标（DevLeadMetrics 低基数 counters：delivery/suppression/guard/answer/question，service.metricsSnapshot() 暴露）；新增配置 actionRequiredBatchMs（0–400，默认 0） | 否 | 全量单测/集成/E2E（Phase 1e 分支 1236 tests；合并 cold-discard r3–r9 后合并树 30 文件 / 1330 tests（Phase 1e 复核修复后 1339 tests）；rc.5 installed/patch 双流各 221/221，phase 1e 31）；`pnpm verify` + `pnpm check:packages` + `pnpm e2e`；UI 验收 |
 | Phase 1d cold-discard durable 修复（已完成） | discard 队列落 `answer_discards` durable 表（spec v2 compat v1）+ 重启 rehydrate；cold lead + 空 tracker 时从 message source/child durable log 派生 discard（sessionQuery 读 persisted audit，无 query 则 defer 到 lead live）；live append/flush 失败入 durable retry（lead live、下一次 prompt 前、5s 定时器 drain）；`answerSeq` 选 latest，延迟旧 discard 不压新 re-answer（fold stateVersion 4→5）；队列溢出/无 storage 显式 warning；disabled→enabled 也 drain；reset 清队列；`answeredAt ?? at` view fallback | 否 | 重启/cold/live-failure/顺序/flush-failure/溢出/reset 单测+集成；`pnpm verify` + `pnpm check:packages` |
 | Phase 1d cold-discard 复核修复（已完成） | observer canceled+restore 不再误 discard：cancellation 候选 + 同 id insert/`user/message` 撤销 + replay 末尾/窗口外 turn/end finalize；每次 `agent/created` 全量 replay（cold→live 补放）、`agent/disposed` 清 observer；seed 不回退 presented；drain/rehydrate/child 激活做 survival 证明（live inbox/observer，cold child durable log replay），stale 行丢弃并修复 tracker；`discardPendingAnswer` 写前查 `locatedInputs`/presented；`answer_discards` 单独 30 天 retention + 告警；rehydrate 128 bounded + overflow warning；`answerDiscardHealth()` visible health；eviction warning；v1→v2 e2e 未覆盖显式声明 | 否 | canceled+restore/replay/窗口内首事件/cold→live/stale presented/stale pending/restore 溢出/health/timer/in-flight 并发/eviction 单测+集成；`pnpm verify` + `pnpm check:packages` + rc.5 e2e |
 | Phase 1d cold-discard 复核修复 round 4（已完成） | claimed 是 survival 状态：observer `isClaimed/claimedAtOf`，tracker claimed 且 `discard.at < entry.at` 视为 survival，`repairLifecycle` 支持 claimed/at，live/cold 两路径 + observer 缺失回退 child log replay；**stale durable discard 修复**：resolvedAnswer same-message presented 优先、claimed 与 durable terminal 按 at 比较，survival 证明后追加 durable repair fact（同 message/answerSeq、proven status、更晚 at）使 restart 后仍 answered，cold lead defer + retry；seed same-message claimed 只被 claim 之后的 terminal 覆盖；drop-only drain 清 `lastAnswerDiscardFailure`；首事件 canceled、legacy claimed tie 按 durable log position；survivalProof 内部 observer eviction sink | 否 | claimed drain/restore/cold-log、stale durable pending/presented/claimed repair + restart、genuine reject 不 repair、drop-only health、observer 缺失回退、claimed seed/repair/legacy tie 单测+集成；`pnpm verify` + `pnpm check:packages` + rc.5 e2e |
@@ -2024,6 +2033,7 @@ Phase 1 前的 hub 只有一个 `pending` / `pendingReports` 队列和一个全�
 | Phase 1d cold-discard 收口 round 8（已完成） | in-flight drain 并发窗口：`promptSession` 无条件 await `reconcileAnswerDiscards(leadId)`（复用 in-flight promise，无队列立即返回）；drain 删除 queue 后把 rows 发布到 `drainingAnswerDiscards`，`finally` 清理，`pendingRepairIds`/`answerDiscardHealth` 在 drain 期间计入 unresolved（普通未开始 drain 的 queued row 仍只对 child unreadable 计入）；`repairDisprovenDurableDiscards` 的 genuine settle 同时清 repair failure；并发测试（挂起 `sessionQuery.readSession`）验证 prompt 等待、view/health 可见、unknown 拒绝、无第二条 answer、恢复后幂等；三条 e2e 日志末尾写入真实 exit code | 否 | in-flight drain 窗口 + genuine settle failure clear；`pnpm verify`（1211 tests）+ `pnpm check:packages` + rc.5 e2e 188/188/165 |
 | Phase 1d cold-discard 收口 round 9（已完成） | in-flight drain await 有界化：answer admission 总是、其它 intent 仅在自身有 queued rows 时等待 `reconcileAnswerDiscards`；抽通用 `awaitBounded` 供 repair/drain 复用，新增 `ANSWER_DISCARD_DRAIN_TIMEOUT_MS`(30s) + `options.signal`，超时/取消抛 `DEVLEAD_SESSION_UNAVAILABLE` 可重试并释放 target admission tail；drain 后台继续，race 输掉后 catch 防 unhandled；abort 后无关 instruction 可立即投递；fake-timer 验证 30s 超时、后台完成与无 unhandled | 否 | abort + fake-timer deadline + r8 release 并发 + 全量；`pnpm verify`（1213 tests）+ `pnpm check:packages` + rc.5 e2e 188/188/165 |
 | Phase 1e × cold-discard 合并（已完成） | 本地 `--no-ff` 合并 `dsh-a673526c-9a26`（r3–r9 cold-discard durable/repair 收口，HEAD `f3c6a3a`，base `83b0541`）进 Phase 1e（`main` @ `08f8207`）：保留 1e 的 T2/P1–P4 lane、notifications/get_session 全量输出、policy/UI、metrics，与 cold 的 `OUTBOX_SPEC` v2、fold `stateVersion 5`/`answerSeq`、30 天 `answer_discards` retention、`repairPending`/`pendingRepairIds`/`drainingAnswerDiscards`、`ANSWER_DISCARD_DRAIN_TIMEOUT_MS` + `awaitBounded`/`awaitDiscardDrain`、repair barrier（`REPAIR_BARRIER_TIMEOUT_MS`）；6 个冲突文件逐项合并，读工具 lane 输出同时携带 repairPending | 否 | 合并树实跑：`pnpm verify`（30 文件 / 1330 tests + 6 targets）、`pnpm check:packages` `OK (6 packages)`、rc.5 installed/patch 各 221/221、`--no-worktree` 198/198、cold 定向 5 spec / 632 tests；历史 `phase1d-cold-discard-*` 证据保留 |
+| Phase 1e 复核修复（background retry，已完成） | 1e 首次独立审 major：live lead 的 background report receipt append 失败后被静默搁置（无 retry/inject，误记 digest-only）。修复：`queueUnsavedReport` 区分 live/cold，live 失败保留 lane（deliveryState pending、metric queued），独立 background retry timer（1s × 8）重试 append 成功后经 `deliverBackground` **恰好一次** inject，超限降级 digest-only + warning；service 增加有界 outbox replay timer（1s × 5，仅 live lead 行），失败不再等无关事件；`dropUnsavedReport` + durable `known` 去重防重复 inject；dispose 清两个 timer；cold-observed digest-only metric 只计一次。附带：`repairLifecycle` answer/question counters、`renderDevLeadReviewNotice` 复用 `boundWake`（8k）、wire projection 明确不投影 `repairPending` | 否 | 新增 live retry（有/无 outbox）、cold digest-only 单次计数、retry cap、dispose timer、repair counters、review wake bound 测试；negative control 在回退修复后 8 条相关测试失败；`pnpm verify`（30 文件 / 1339 tests）+ `pnpm check:packages` + rc.5 installed/patch 各 221/221、`--no-worktree` 198/198 |
 | Phase 2 | `idempotency_key` durable、claimed/presented/discarded 的 durable replay/backfill、replay open question、multi-lead 硬门禁、answer TTL、background 背压、`possibleQuestion`、blocking bridge 指标评估（不写原型） | 否 | 全量 + 兼容性 + 指标复盘 |
 | Phase 3 | 仅当 Phase 2 指标支持时：blocking bridge 原型（capability flag）；以及 DSH 上游通用 ordinary-Session mailbox / ephemeral context / blocking question primitive / turn-boundary hooks | 部分是 | 上游设计 review；dsh-devlead 保留 fallback |
 
@@ -2538,6 +2548,12 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   （phase 1 27 + 1b 12 + 2 23 + 3 128 + 1e 31；218 PASS + 3 SKIP），`--no-worktree`
   **198/198**；本轮 e2e 日志与冲突解析见
   [`phase1e-merge.md`](e2e-evidence/phase1e-merge.md)。
+- Phase 1e 复核修复轮最终验证数字（主 checkout `main`，background retry）：`pnpm verify` =
+  typecheck 通过 + **30 文件 / 1339 tests** + 6 个构建目标；`pnpm check:packages` →
+  `OK (6 packages)`；E2E 在安装版 rc.5 实跑 installed 与 patch **完整双流各 221/221**
+  （phase 1 27 + 1b 12 + 2 23 + 3 128 + 1e 31；218 PASS + 3 SKIP），`--no-worktree` **198/198**；
+  negative control（回退 source 修复、保留新测试）实测 8 条相关测试失败；证据见
+  [`phase1e-bg-retry.md`](e2e-evidence/phase1e-bg-retry.md)。
 - **DSH 版本兼容矩阵（本轮真实 E2E，npm 临时安装 CLI + `DSH_BIN`）**：
 
   | DSH | flow | checks | Team 分支 / 其他 |

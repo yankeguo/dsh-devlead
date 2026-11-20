@@ -7,6 +7,7 @@
 import { describe, expect, it } from 'vitest'
 import { DEVLEAD_MESSAGE_KIND } from '@yankeguo/dsh-devlead-protocol'
 import { DevLeadAnswerTracker, DevLeadChildAnswerObserver, entryOfRecord, recordOfEntry } from '../src/answers.ts'
+import { DevLeadMetrics } from '../src/metrics.ts'
 import { answer, sessionEvent } from './fixtures.ts'
 
 const LEAD = 'lead-1'
@@ -92,6 +93,43 @@ describe('DevLeadAnswerTracker seed (restart semantics)', () => {
     // A genuinely later terminal still discards it.
     tracker.seed(answer({ reportId: REPORT, leadSessionId: LEAD, sessionId: CHILD, messageId: 'm1', status: 'discarded', at: 200, answeredAt: 10, answerSeq: 1 }))
     expect(tracker.entryOfQuestion(LEAD, REPORT)?.status).toBe('discarded')
+  })
+
+  it('counts answer/question status when repairLifecycle changes the state', () => {
+    const metrics = new DevLeadMetrics()
+    const tracker = new DevLeadAnswerTracker(metrics)
+    const total = (name: string, labels: Readonly<Record<string, string>>): number => metrics.snapshot()
+      .filter(sample => sample.name === name
+        && Object.entries(labels).every(([key, value]) => sample.labels[key] === value))
+      .reduce((sum, sample) => sum + sample.value, 0)
+    tracker.remember(entryOfRecord(answer({
+      reportId: REPORT, leadSessionId: LEAD, sessionId: CHILD, messageId: 'm1', status: 'discarded', at: 10,
+    })))
+    const presentedBefore = total('devlead_answer_status_total', { status: 'presented' })
+    const answeredBefore = total('devlead_question_status_total', { status: 'answered' })
+    expect(tracker.repairLifecycle(CHILD, 'm1', 'presented', 20)).toBe(true)
+    expect(total('devlead_answer_status_total', { status: 'presented' })).toBe(presentedBefore + 1)
+    expect(total('devlead_question_status_total', { status: 'answered' })).toBe(answeredBefore + 1)
+    // A second repair (discarded → claimed) counts its own answer status and
+    // re-answered question, not the normal lifecycle transition.
+    tracker.remember(entryOfRecord(answer({
+      reportId: REPORT, leadSessionId: LEAD, sessionId: CHILD, messageId: 'm2', status: 'discarded', at: 30,
+    })))
+    const claimedBefore = total('devlead_answer_status_total', { status: 'claimed' })
+    const answeredSecond = total('devlead_question_status_total', { status: 'answered' })
+    expect(tracker.repairLifecycle(CHILD, 'm2', 'claimed', 40)).toBe(true)
+    expect(total('devlead_answer_status_total', { status: 'claimed' })).toBe(claimedBefore + 1)
+    expect(total('devlead_question_status_total', { status: 'answered' })).toBe(answeredSecond + 1)
+    // A live entry repaired forward was already an answered question: the
+    // answer counter moves, the question counter must not double-count it.
+    tracker.remember(entryOfRecord(answer({
+      reportId: REPORT, leadSessionId: LEAD, sessionId: CHILD, messageId: 'm3', status: 'admitted', at: 60,
+    })))
+    const claimedThird = total('devlead_answer_status_total', { status: 'claimed' })
+    const answeredThird = total('devlead_question_status_total', { status: 'answered' })
+    expect(tracker.repairLifecycle(CHILD, 'm3', 'claimed', 70)).toBe(true)
+    expect(total('devlead_answer_status_total', { status: 'claimed' })).toBe(claimedThird + 1)
+    expect(total('devlead_question_status_total', { status: 'answered' })).toBe(answeredThird)
   })
 
   it('repairLifecycle advances a live entry forward only, never rewinding a presentation', () => {

@@ -454,7 +454,9 @@ export interface DevLeadProjectionState {
  * additive (Phase 1e): an older bundle ignores it, and an older record without
  * answers folds as `questionStatus:'open'`. It reflects the durable audit only;
  * the runtime's finer in-memory claim/presentation observation stays on the
- * read-tool surface (`devlead_notifications`).
+ * read-tool surface (`devlead_notifications`). The runtime-only `repairPending`
+ * flag is likewise NOT part of this fold-derived row: the browser shows the last
+ * durable status and the read tools expose the provisional repair state.
  */
 export interface DevLeadProjectionReport extends DevLeadReport {
   /** Question lifecycle derived from the durable answer audit (question reports only). */
