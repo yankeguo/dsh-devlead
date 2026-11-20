@@ -5,8 +5,11 @@
   全部门禁与 E2E 都在该最终树上重跑（不是复用 round 6 结果）。
 - 门禁：`pnpm verify` → typecheck 通过、**28 文件 / 1209 tests passed**、build **6 targets**；
   `pnpm check:packages` → `OK (6 packages)`。
-- E2E：三条流全部在本轮最终树上实测并留存日志，均 **PASS**；当轮日志末尾未写 shell
-  exit code，r8 重跑已把真实退出码写入新日志（见 [r8 证据](phase1d-cold-discard-r8.md)）。
+- E2E：三条流全部在本轮最终树上实测并留存日志，日志内均为 `E2E SMOKE PASS` 且计数
+  188/188/188（patch/installed）与 165/165（no-worktree）。当轮 runner 未把 shell exit code
+  写入日志，因此**本文件不声明任何 `*_EXIT=` 值**；同一代码线的 r8 / r9 重跑日志末尾带有真实
+  `PATCH_EXIT=0` / `INSTALLED_EXIT=0` / `NOWORKTREE_EXIT=0`（见
+  [r8 证据](phase1d-cold-discard-r8.md)、[r9 证据](phase1d-cold-discard-r9.md)）。
 
 ## 汇总
 
@@ -22,9 +25,17 @@ patch / installed（各）:
   total:                                    165/165
 ```
 
-- patch：`PATCH_EXIT=0`，`188/188`，日志 [phase1d-cold-discard-r7-patch.log](phase1d-cold-discard-r7-patch.log)
-- installed：`INSTALLED_EXIT=0`，`188/188`，日志 [phase1d-cold-discard-r7-installed.log](phase1d-cold-discard-r7-installed.log)
-- no-worktree：`NOWORKTREE_EXIT=0`，`165/165`，日志 [phase1d-cold-discard-r7-no-worktree.log](phase1d-cold-discard-r7-no-worktree.log)
+- patch：`188/188`（日志内 `E2E SMOKE PASS (patch, ...)`），日志
+  [phase1d-cold-discard-r7-patch.log](phase1d-cold-discard-r7-patch.log)（无 exit code 记录）
+- installed：`188/188`（日志内 `E2E SMOKE PASS (installed, ...)`），日志
+  [phase1d-cold-discard-r7-installed.log](phase1d-cold-discard-r7-installed.log)（无 exit code 记录）
+- no-worktree：`165/165`（日志内 `E2E SMOKE PASS (patch, ...); phase 2 skipped`），日志
+  [phase1d-cold-discard-r7-no-worktree.log](phase1d-cold-discard-r7-no-worktree.log)（无 exit code 记录）
+
+> **证据缺口说明**：r7 的 installed/patch/no-worktree 三条日志都只记录到
+> `E2E SMOKE PASS`，没有 shell 退出码；真实退出码缺口由同一代码线 r8 的重跑补齐
+> （r8/r9 日志末尾分别是 `PATCH_EXIT=0` / `INSTALLED_EXIT=0` / `NOWORKTREE_EXIT=0`）。
+> r7 的 188/188（installed/patch）与 165/165（no-worktree）计数本身是日志可核对的。
 
 3 条 SKIP 为无 provider 凭据的正向模型选择检查（打印真实原因，不伪造）。
 

@@ -1,0 +1,124 @@
+pack destination: /var/folders/55/gq03m5rx5_n44dyw8crkg2y00000gn/T//dsh-devlead-pack-inspect.vJfvui
+
+===== @yankeguo package: protocol =====
+tarball: yankeguo-dsh-devlead-protocol-0.4.0-rc.1.tgz
+--- files in tarball ---
+package/LICENSE
+package/README.md
+package/lib/client.js
+package/lib/index.js
+package/locale/en.json
+package/locale/zh.json
+package/package.json
+--- packed manifest (version / workspace deps) ---
+version: 0.4.0-rc.1
+peerDependencies: @deepseek-ai/dsh-session-projection@>=0.2.2-rc.1 <0.3.0
+contains workspace: protocol -> false
+--- manifest checks done ---
+
+===== @yankeguo package: client-ui =====
+tarball: yankeguo-dsh-client-ui-devlead-0.4.0-rc.1.tgz
+--- files in tarball ---
+package/LICENSE
+package/README.md
+package/lib/client.js
+package/lib/index.js
+package/locale/en.json
+package/locale/zh.json
+package/package.json
+--- packed manifest (version / workspace deps) ---
+version: 0.4.0-rc.1
+dependencies: @yankeguo/dsh-devlead-protocol@0.4.0-rc.1 workspace-dep
+peerDependencies: @deepseek-ai/cordis@~4.1.0
+contains workspace: protocol -> false
+--- manifest checks done ---
+
+===== @yankeguo package: devlead =====
+tarball: yankeguo-dsh-devlead-0.4.0-rc.1.tgz
+--- files in tarball ---
+package/LICENSE
+package/README.md
+package/lib/index.js
+package/locale/en.json
+package/locale/zh.json
+package/package.json
+--- packed manifest (version / workspace deps) ---
+version: 0.4.0-rc.1
+dependencies: @yankeguo/dsh-devlead-protocol@0.4.0-rc.1 workspace-dep
+peerDependencies: @deepseek-ai/cordis@~4.1.0
+peerDependencies: @deepseek-ai/dsh-agent@>=0.2.2-rc.1 <0.3.0
+peerDependencies: @deepseek-ai/dsh-api-session-controller@>=0.2.2-rc.1 <0.3.0
+peerDependencies: @deepseek-ai/dsh-llm@>=0.2.2-rc.1 <0.3.0
+peerDependencies: @deepseek-ai/dsh-session@>=0.2.2-rc.1 <0.3.0
+peerDependencies: @deepseek-ai/dsh-session-projection@>=0.2.2-rc.1 <0.3.0
+peerDependencies: @deepseek-ai/dsh-session-query@>=0.2.2-rc.1 <0.3.0
+peerDependencies: @deepseek-ai/dsh-session-title@>=0.2.2-rc.1 <0.3.0
+peerDependencies: @deepseek-ai/dsh-workspace@>=0.2.2-rc.1 <0.3.0
+peerDependencies: @deepseek-ai/schemastery@~3.19.0
+peerDependencies: zod@^4.4.3
+contains workspace: protocol -> false
+--- manifest checks done ---
+
+===== @yankeguo package: command =====
+tarball: yankeguo-dsh-command-devlead-0.4.0-rc.1.tgz
+--- files in tarball ---
+package/LICENSE
+package/README.md
+package/lib/index.js
+package/locale/en.json
+package/locale/zh.json
+package/package.json
+--- packed manifest (version / workspace deps) ---
+version: 0.4.0-rc.1
+dependencies: @yankeguo/dsh-devlead@0.4.0-rc.1 workspace-dep
+dependencies: @yankeguo/dsh-devlead-protocol@0.4.0-rc.1 workspace-dep
+peerDependencies: @deepseek-ai/cordis@~4.1.0
+peerDependencies: @deepseek-ai/dsh-commands@>=0.2.2-rc.1 <0.3.0
+contains workspace: protocol -> false
+--- manifest checks done ---
+
+===== @yankeguo package: tool =====
+tarball: yankeguo-dsh-tool-devlead-0.4.0-rc.1.tgz
+--- files in tarball ---
+package/LICENSE
+package/README.md
+package/lib/index.js
+package/locale/en.json
+package/locale/zh.json
+package/package.json
+--- packed manifest (version / workspace deps) ---
+version: 0.4.0-rc.1
+dependencies: @yankeguo/dsh-devlead@0.4.0-rc.1 workspace-dep
+dependencies: @yankeguo/dsh-devlead-protocol@0.4.0-rc.1 workspace-dep
+peerDependencies: @deepseek-ai/cordis@~4.1.0
+peerDependencies: @deepseek-ai/dsh-agent@>=0.2.2-rc.1 <0.3.0
+peerDependencies: @deepseek-ai/dsh-llm@>=0.2.2-rc.1 <0.3.0
+peerDependencies: @deepseek-ai/dsh-session@>=0.2.2-rc.1 <0.3.0
+peerDependencies: @deepseek-ai/dsh-system-prompt@>=0.2.2-rc.1 <0.3.0
+peerDependencies: @deepseek-ai/dsh-tools@>=0.2.2-rc.1 <0.3.0
+peerDependencies: @deepseek-ai/schemastery@~3.19.0
+contains workspace: protocol -> false
+--- manifest checks done ---
+
+===== @yankeguo package: bundle =====
+tarball: yankeguo-dsh-devlead-bundle-0.4.0-rc.1.tgz
+--- files in tarball ---
+package/LICENSE
+package/README.md
+package/cordis.patch.yml
+package/icon.svg
+package/locale/en.json
+package/locale/zh.json
+package/package.json
+--- packed manifest (version / workspace deps) ---
+version: 0.4.0-rc.1
+dependencies: @yankeguo/dsh-devlead@0.4.0-rc.1 workspace-dep
+dependencies: @yankeguo/dsh-tool-devlead@0.4.0-rc.1 workspace-dep
+dependencies: @yankeguo/dsh-command-devlead@0.4.0-rc.1 workspace-dep
+dependencies: @yankeguo/dsh-client-ui-devlead@0.4.0-rc.1 workspace-dep
+peerDependencies: @deepseek-ai/cordis@~4.1.0
+contains workspace: protocol -> false
+--- manifest checks done ---
+
+pack root kept at: /var/folders/55/gq03m5rx5_n44dyw8crkg2y00000gn/T//dsh-devlead-pack-inspect.vJfvui
+PACK_INSPECT_EXIT=0

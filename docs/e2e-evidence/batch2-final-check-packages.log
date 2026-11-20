@@ -1,0 +1,3 @@
+$ node scripts/check-packages.mjs
+check-packages: OK (6 packages)
+FINAL_CHECK_PACKAGES_EXIT=0

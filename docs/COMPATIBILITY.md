@@ -1,6 +1,8 @@
 # DSH 兼容性矩阵
 
-本仓库的目标兼容面是 **DeepSeek Harness `0.2.2-rc.1` – `0.2.2-rc.5`**。6 个可发布包的
+本仓库的目标兼容面是 **DeepSeek Harness `0.2.2-rc.1` – `0.2.2-rc.5`**；当前发布候选是插件版本
+**`0.4.0-rc.1`**（6 个可发布包共用同一版本号；prerelease，npm dist-tag `next`）。`0.4.0-rc.1`
+只是**插件版本**，**不代表 DSH 0.4.0**——DSH 兼容面与 `engines.dsh` 都不变。6 个可发布包的
 `engines.dsh` 均为 `>=0.2.2-rc.1 <0.3.0`（根 `package.json` 是 private 包，不声明
 `engines.dsh`，只声明 `engines.node`），所有
 `@deepseek-ai/dsh-*` peer 使用同一范围；本地 devDependencies 仍固定 rc.1，用最旧 API 做
@@ -247,21 +249,48 @@ fiber 的原地 `ctx.set`；绑定 token 取 `impl.value` 的对象身份，真�
 能检测），重新扫描完成前保持 fail-closed；一旦本进程证明过持久语料，不会退回 live-only 授权。
 plugin dispose 会 abort 进行中的 attempt。
 
-## 0.4.0 Batch 1 breaking changes
+## 0.4.0-rc.1 breaking changes（Batch 1 + Batch 2）
 
-- 当前 record `version:2`；v1 与无 `answerSeq` 的旧 answer 忽略并一次性 warning，旧 Session 的
-  DevLead 状态失效，不冻结；当前版本损坏仍冻结并可 `/devlead reset`。stateVersion 为 7/3/3。
-- `OUTBOX_SPEC` v3 无 `compatibleVersions`，`origin` 必填。旧 v1/v2 outbox、无 origin pending row、
-  旧 answer-discard 队列数据全部丢弃；旧 domain 无法打开时 warn + 禁用 durable domain，不 crash、
-  不静默写坏。`answer_discards` 30 天 retention 保留。
-- 非 answer 幂等改用独立 `devlead_idempotency` v1 domain，7 天 TTL；不再承诺重启后 memory window。
-  composed storageDomain 打不开或 receipt corrupt/unreadable 时 fail closed；只有 Host 未组合
-  storageDomain 时才在进程内兜底并显式 warning。
-- 新增 `DEVLEAD_FOREIGN_SUPERVISOR` / `DEVLEAD_MULTIPLE_SUPERVISORS` 硬拒绝；无 cache、capped
-  unknown、stale-negative 或读取失败使 supervisor 集合不可证明时，prompt 以
-  `DEVLEAD_SESSION_UNAVAILABLE` fail closed。`questionTtlMs`
-  （默认 24h，0 禁用）、cold open-question replay（每进程一次）、correction/background 每
-  child-turn 4/8 上限。`DevLeadProjectionReport.repairPending` 是 runtime 可选投影字段。
+0.4.0-rc.1 按「正确性 > 兼容性」执行，以下变更是**有意的**、不提供自动迁移。Batch 1 实现
+breaking 兼容性清理与正确性收口；Batch 2 只把根 `package.json` 与 6 个可发布包统一 bump 到
+`0.4.0-rc.1` 并同步文档/证据/门禁，**不改变运行时行为**，其最终门禁的真实输出见
+[`docs/e2e-evidence/batch2-release-prep.md`](e2e-evidence/batch2-release-prep.md)。发布说明正文见
+[`docs/releases/v0.4.0-rc.1.md`](releases/v0.4.0-rc.1.md)。
+
+- 7 类 `plugin:devlead/*` record 统一为 `version:2`；v1 record 与缺少必填 `answerSeq` 的旧
+  answer 显式忽略并丢弃（每进程一次 warning），**不冻结** projection。旧 Session 的 DevLead
+  模式/关注集/digest/answer 状态因此失效，需按下方升级说明处理。
+- 当前 `version:2` payload 的字段/类型损坏仍设置 `failure` 冻结 projection，由人类命令
+  `/devlead reset` 恢复；坏 reset 不能解冻。projection stateVersion 为 `devLead` **7** /
+  `devLeadMode` **3** / `devLeadWatch` **3**，旧缓存行整体失效并从 durable log 重新 fold。
+- `devlead_report_outbox` 升级为 `OUTBOX_SPEC` **v3，无 `compatibleVersions`**，pending
+  report 的 `origin: 'live' | 'cold'` 必填。旧 v1/v2 outbox、无 origin 的 pending row、旧
+  answer-discard 队列数据全部丢弃；旧 domain 无法打开时 warn 并禁用该 durable domain
+  （不 crash、不静默写入坏数据）。`answer_discards` 单独保留 **30 天** retention。
+- 非 answer 幂等改为 durable：receipt 持久在独立 `devlead_idempotency` **v1** domain 的
+  `receipts` 表（**7 天 TTL** + 启动清理），不再承诺重启后 memory window。receipt
+  corrupt/unreadable 与 composed storageDomain 打不开时 fail closed；只有 Host 未组合
+  storageDomain 时才在进程内兜底，并显式 warning。
+- 新增 `DEVLEAD_FOREIGN_SUPERVISOR` / `DEVLEAD_MULTIPLE_SUPERVISORS` 硬拒绝（在任何
+  watch/resume/admission 副作用之前）；supervisor 集合不可证明（无 cache、capped unknown、
+  stale-negative 或读取失败）时，prompt 以 `DEVLEAD_SESSION_UNAVAILABLE` fail closed。
+- `questionTtlMs` 默认 `86400000`（24h），`0` 禁用；只让当前仍 open 的 question lazy 过期，
+  answered 不 retroactive 过期，过期 answer 返回 `DEVLEAD_QUESTION_NOT_FOUND`。cold
+  open-question replay 每进程最多一次，与普通 action report 共用 16/pair 容量上限。
+- correction/background 背压：每个 lead-child pair 的每个 child turn 最多 4 条 correction /
+  8 条 background，超出返回 `DEVLEAD_DELIVERY_RATE_LIMITED`。
+- `DevLeadProjectionReport.repairPending` 是 runtime 可选投影字段（whole-value
+  `plugin:devlead/repair` 记录驱动，mark/clear 双向发布）；它不替代 answer 的 durable 完成证据。
+- 生产代码中 deprecated 的 `Session.snapshotEvents()` / `eventAt()` / `ownEvents()` 调用为
+  **0**（测试 fixture 不计）：inbox 入队时间、turn source 与 child answer survival 改由有界
+  projection 承载，cold 侧只读 `observeSession()` projection（取代原同步全日志扫描，见上节）。
+- 配置新增 `questionTtlMs`（默认 86400000，0 禁用）与 `actionRequiredBatchMs`（0–400ms，
+  默认 0）；UI 新增三 lane header / lane 着色 / question 状态与 `provisional` 标记。
+- **旧 DevLead Session state 有意不迁移**：升级后受影响的 Session 需要人类命令
+  `/devlead reset`（或 `/devlead off`，它可重置冻结折叠）恢复；reset 是唯一在冻结检查之前
+  应用的 record。冷 Session 先 resume/open 再 reset。
+- **回滚同样隐含 reset**：回滚到 `0.3.0-rc.2` 或更旧版本后，旧 fold 对已知类型的 v2 payload
+  会 freeze，因此降级也需要 `/devlead reset`；不能宣称“回滚不会因新记录损坏日志”。
 
 ## 升级门禁
 
@@ -285,14 +314,28 @@ plugin dispose 会 abort 进行中的 attempt。
    完整组合；另跑 record facade 的正常/降级测试，验证实际加载的导出与首写/首读路径。临时安装、
    目标 typings 编译、三条命令与证据留存按下方[可执行 recipe](#逐-rc-可执行-recipe) 执行。
 5. 对旧日志做 record schema / migration 核对：七类 `plugin:devlead/*` 的 `kind` / `version` /
-   字段集、reset 解冻规则、strict decoder 与 projection stateVersion 必须一致。0.4.0 的既定策略是
-   v1 record、无 seq answer 与 v1/v2 outbox **显式丢弃**，不要误判为当前 schema 损坏而冻结；
-   当前 v2 损坏仍按**可能不可恢复**处理：先备份原始日志、冻结并提供 `/devlead reset`，不得把
-   读取失败当作空日志，也不得用静默 reset 丢弃当前状态。
+   字段集、reset 解冻规则、strict decoder 与 projection stateVersion 必须一致。`0.4.0-rc.1` 的
+   既定策略是 v1 record、无 `answerSeq` 的 answer 与 v1/v2 outbox **显式丢弃**，不要误判为当前
+   schema 损坏而冻结；当前 v2 损坏仍按**可能不可恢复**处理：先备份原始日志、冻结并提供
+   `/devlead reset`，不得把读取失败当作空日志，也不得用静默 reset 丢弃当前状态。
 6. 核对能力矩阵依赖的 Host API（Team / worktree / inbox / stop / question routing）与
    projection / summary 契约仍存在。
 7. 发布前的完整重跑与三门真实 E2E 仍按 [PUBLISHING](PUBLISHING.md)；证据日志必须来自冻结的
    最终树并保留真实退出码。
+
+升级到 `0.4.0-rc.1`（插件升级，不是 DSH 升级）后还需要同时注意：
+
+- **旧 devlead state 被显式丢弃、不迁移**：受影响的 Session 打开后运行人类命令
+  `/devlead reset`（`/devlead off` 也可重置冻结折叠；冷 Session 先 resume/open），之后重新
+  `/devlead on` 并按需重建关注集。不要把它当数据丢失 bug 处理。
+- **新配置**：`questionTtlMs`（默认 `86400000`，`0` 禁用）与 `actionRequiredBatchMs`
+  （0–400ms，默认 0）通过 loader row `devlead` 的 `config` 覆盖，不要用 deployment 默认值
+  推断运行行为。
+- **multi-lead 仍是 Host 级硬门禁**：已有一个 active lead 时，第二个 lead 必须先
+  `/devlead off`；否则 prompt 会以 `DEVLEAD_MULTIPLE_SUPERVISORS` /
+  `DEVLEAD_SESSION_UNAVAILABLE` fail closed。
+- **projection cache 自愈**：stateVersion 小于 7 的 projection cache 行整体失效，从 durable log
+  重新 fold（stateVersion 7/3/3），不需要手工删除缓存。
 
 任一项失败或上游 API 语义变化时，不得宣称兼容；应修复、显式降级并在本页与 README 记录。
 
@@ -410,8 +453,9 @@ TMPDIR="$BASE/tmp" DSH_BIN="$DSH_BIN" node scripts/e2e-smoke.mjs \
 | `0.2.2-rc.5` | installed / patch 完整（Phase 1d answer routing，pin 总数） | **188/188** 各（185 PASS + 3 SKIP；phase 3 126，含真实 answer steer + 幂等 + clear-own/clear-all） |
 | `0.2.2-rc.5` | installed / patch 完整（Phase 1e message lanes，pin 总数） | **221/221** 各（218 PASS + 3 SKIP；phase 3 128 + phase 1e 31：background 不唤醒、action/review steer、T1/T2 分流、合并抑制、显式 16-pending action 上限、低基数指标） |
 
-rc.1–rc.4 的行是各自发布时的 harness 计数；0.3.0 的 prerelease 候选（0.3.0-rc.1 / rc.2，尚未 promote
-为稳定版）含 question 路由与排队 inbox 输入，当前 harness 的 phase 3 含这些 checks。0.2.6+ 审计轮（[AUDIT](AUDIT.md) §12）已按当前 harness 重跑 rc.5
+rc.1–rc.4 的行是各自发布时的 harness 计数；0.3.0 的 prerelease 候选（0.3.0-rc.1 / rc.2；稳定版
+0.3.0 未发布，规划内容合入 0.4.0）含 question 路由与排队 inbox 输入，这些 checks 已并入当前
+harness 的 phase 3 / 1e。0.2.6+ 审计轮（[AUDIT](AUDIT.md) §12）已按当前 harness 重跑 rc.5
 `--no-worktree`（123/123）与 installed/patch 完整（各 146/146，安装版 rc.5）；排队输入轮再增
 4 条 inbox checks 后重跑 rc.5 installed/patch 完整（各 **150/150**）与 `--no-worktree`（**127/127**）；
 Phase 1c 证据轮（真实 scripted child turn）pin 总数 **174/174**；Phase 1d answer routing 轮再增
@@ -419,8 +463,14 @@ Phase 1c 证据轮（真实 scripted child turn）pin 总数 **174/174**；Phase
 **188/188**（phase 3 126）；Phase 1e message-lane 轮把 progress check 改写为 2 条 background
 lane pins（phase 3 128）并新增独立 phase 1e 实例（31 条：background 不唤醒 + 读工具
 lane/deliveryState、blocked/decision action steer、真实 T1 followup / T2 review steer、合并抑制
-字段、17 接受/第 18 条显式 `DEVLEAD_DELIVERY_RATE_LIMITED`、指标低基数），installed/patch 双流各
-**221/221**（`--no-worktree` **198/198**）。发布前需按 [PUBLISHING](PUBLISHING.md) 重跑完整组合。
+字段、17 接受/第 18 条显式 `DEVLEAD_DELIVERY_RATE_LIMITED`、指标低基数）。
+
+上表 Phase 1e 行即 **Batch 1 最终树**的 pin 实测：installed / patch 完整流各 **221/221**
+（218 PASS + 3 SKIP；phase 1 27 + 1b 12 + 2 23 + 3 128 + 1e 31），`--no-worktree` **198/198**
+（phase 2 skipped）。当前发布候选是插件 **`0.4.0-rc.1`**（prerelease，dist-tag `next`；DSH 兼容面
+仍为 rc.1–rc.5）；它在 0.4.0-rc.1 冻结树上的三条真实 E2E 重跑（含真实 `*_EXIT=0` 与总计行）
+记录在 [`docs/e2e-evidence/batch2-release-prep.md`](e2e-evidence/batch2-release-prep.md)，本页不
+预填 Batch 2 数字。发布前仍需按 [PUBLISHING](PUBLISHING.md) 在冻结树重跑完整组合。
 
 每条 flow 有 3 条正向模型选择检查因无 provider 凭据 SKIP（打印真实原因）；负向
 `DEVLEAD_MODEL_UNAVAILABLE`、`devlead_list_models`、preset roster 与 watched-child
@@ -436,9 +486,11 @@ lane/deliveryState、blocked/decision action steer、真实 T1 followup / T2 rev
   `devLead` / `devLeadMode` / `devLeadWatch` projection 均存在，summary 携带
   `devLeadMode` 与 `devLeadWatch`，且不携带 digest。DevLeadBar 读取的 `devLead` projection
   含 enabled / sessions / notifications / reports；组件级渲染断言由 `pnpm test` 覆盖。
-- rc.5 Web UI 的视觉行为未在本轮用截图工具重跑（浏览器扩展不可用）；判定依据是
-  slot/DOM 源码未变、boot graph 加载成功、projection 数据与渲染测试通过。此项不替代完整
-  人工视觉验收。
+- rc.5 Web UI 的视觉行为本轮没有截图工具证据；自动化侧的判定依据是 slot/DOM 源码未变、boot
+  graph 加载成功、projection 数据与渲染测试通过。视觉部分（composer 开关、DevLeadBar、lane
+  着色、question 状态、`provisional` 标记、侧栏 active ring / watched 准星）按
+  [UI-VERIFICATION](UI-VERIFICATION.md) 在隔离 profile 里做**人工验收**，以该 checklist 的记录
+  为准。此项是发布前的人工验收项，不由 e2e 或渲染断言替代，也不以本轮的无截图状态视为已通过。
 
 ## 维护注意
 

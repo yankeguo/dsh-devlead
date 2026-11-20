@@ -1,0 +1,29 @@
+$ pnpm build && node scripts/stage-release.mjs --dry-run
+$ node scripts/build.mjs
+built packages/protocol/lib/index.js
+built packages/protocol/lib/client.js
+built packages/devlead/lib/index.js
+built packages/tool/lib/index.js
+built packages/command/lib/index.js
+built packages/client-ui/lib/index.js
+built packages/client-ui/lib/client.js
+validated bundle (patch-only)
+build complete (6 targets)
+
+stage-release failed: version 0.4.0-rc.1 is a prerelease; staging it with --dist-tag latest would make it the default install once approved. Use --dist-tag next (or another non-latest tag) for prereleases.
+
+No package was staged by this run.
+
+Repair hints:
+  - inspect the registry state:  npm stage list <package> --json
+  - inspect an existing stage:   npm stage view <stage-id> --json
+  - reject a stale/duplicate stage id (irreversible, removes the staged tarball):
+      npm stage reject <stage-id>
+  - if the version is already fully staged, do NOT re-run staging; approve it with
+      node scripts/promote-release.mjs --version 0.4.0-rc.1
+  - to retry CI after a fix, re-run the publish workflow with workflow_dispatch and
+    the SAME existing release_tag (never move or recreate the tag).
+  - a version that is already published cannot be staged again: bump every workspace
+    package together and push a new tag instead.
+[ELIFECYCLE] Command failed with exit code 1.
+RELEASE_DRY_LATEST_GUARD_EXIT=1

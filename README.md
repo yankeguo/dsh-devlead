@@ -47,10 +47,13 @@ Documentation: [Design notes (中文)](docs/DESIGN.md) · [Publishing guide (中
 [tool](packages/tool/README.md) · [command](packages/command/README.md) ·
 [client-ui](packages/client-ui/README.md)
 
-## 0.4.0 Batch 1 breaking changes (current tree)
+## 0.4.0-rc.1 breaking changes (Batch 1 + Batch 2)
 
-This tree implements the planned 0.4.0 compatibility break; it deliberately does **not** change the
-package version or create a tag/release.
+This tree is the **0.4.0-rc.1 release candidate**: all 7 manifests (the root plus the 6 publishable
+packages) are `0.4.0-rc.1`. Batch 1 implemented the planned 0.4.0 compatibility break; Batch 2 only
+bumped the version, updated the docs/evidence and reran the release gates, so runtime behavior is
+unchanged since `a35fc1d`. No tag, GitHub Release, or npm publish has happened yet — those await
+explicit human approval.
 
 - Durable records now use **version 2**. Version-1 records and answers without the now-required
   `answerSeq` are ignored and discarded with one warning, not frozen; a malformed version-2 payload
@@ -68,9 +71,9 @@ package version or create a tag/release.
   `DEVLEAD_MULTIPLE_SUPERVISORS` reject cross-lead/conflicting writes. If cold rehydration, projection
   cache recovery, or the bounded scan cannot prove the supervisor set complete, prompt fails closed
   with `DEVLEAD_SESSION_UNAVAILABLE` instead of delivering. Non-answer idempotency receipts
-  persist in `devlead_idempotency` for 7 days (same key + text replays the original receipt; different
+  persist in `devlead_idempotency` v1 for 7 days (same key + text replays the original receipt; different
   text conflicts). Corrupt/unreadable receipts and composed-storage open failures fail closed before
-  delivery; only a Host without storage uses the explicit process-local fallback warning.
+  delivery; only a Host that composes no `storageDomain` uses the explicit process-local fallback warning.
 - `questionTtlMs` defaults to 24 hours (`0` disables it). Only still-open questions expire, lazily;
   answers to expired questions are rejected. Cold recovery replays each unexpired open question once
   per process, sharing the normal 16/pair action cap and retaining overflow for later capacity;
@@ -79,6 +82,9 @@ package version or create a tag/release.
   per-child single-flight, and a 64-read concurrency cap, so retries cannot accumulate hung queries.
 - Question projection rows may carry runtime-derived `repairPending: true`; DevLeadBar renders the
   lifecycle as provisional (for example `open · provisional`) without changing tool output fields.
+
+After upgrading, old DevLead Sessions lose their prior mode/watch/digest/answer state; recover affected
+Sessions with the human-only `/devlead reset`.
 
 ## Features
 
@@ -361,9 +367,16 @@ requires Node ≥ 24.9):
 | `0.2.2-rc.5` | `node scripts/e2e-smoke.mjs --flow installed --no-build` (record-API hardening) | **221/221** (218 PASS + 3 SKIP) |
 | `0.2.2-rc.5` | `node scripts/e2e-smoke.mjs --flow patch --no-build` (record-API hardening) | **221/221** (same round) |
 | `0.2.2-rc.5` | `node scripts/e2e-smoke.mjs --no-worktree --no-build` (record-API hardening) | **198/198** (same round, phase 2 skipped) |
+| `0.2.2-rc.5` | `pnpm e2e --no-build` (0.4.0-rc.1 release candidate, Batch 1 final tree) | **221/221** (218 PASS + 3 credential-less SKIP) |
+| `0.2.2-rc.5` | `pnpm e2e --flow installed --no-build` (0.4.0-rc.1 release candidate, Batch 1 final tree) | **221/221** (218 PASS + 3 credential-less SKIP) |
+| `0.2.2-rc.5` | `pnpm e2e --no-worktree --no-build` (0.4.0-rc.1 release candidate, Batch 1 final tree) | **198/198** (195 PASS + 3 credential-less SKIP; phase 2 skipped) |
 
-The 0.3.0 prerelease candidates (0.3.0-rc.1 / 0.3.0-rc.2, not yet promoted as stable) include question routing
-and queued inbox inputs. The Phase 1c harness rounds add the question-gate and `devlead_report` question
+The current prerelease candidate is **0.4.0-rc.1** (not yet promoted as stable); it includes question
+routing and queued inbox inputs, Phase 1d answer routing, Phase 1e message lanes, the cold-discard
+durable/repair closure (OUTBOX spec v3), and the A hardening (plugin-record probe/degrade with an
+explicit memory-only status, privacy disclosure, upgrade-gate docs, and the completed
+`snapshotEvents()` / `eventAt()` / `ownEvents()` migration). The capability history shipped by this
+candidate is unchanged: the Phase 1c harness rounds add the question-gate and `devlead_report` question
 checks (structured multi-question payload deep-compare, full wake-payload deep-compare, action-required
 wake admission, conclude/durable/memory-only paths, and a writability-recovery report with no replay claim)
 plus two **real prompted child turns** driven by a scripted `llm/stream` script (real agent-loop
@@ -398,12 +411,13 @@ fix round (cold-observed background receipts stay digest-only across outbox repl
 [cold-origin evidence](docs/e2e-evidence/phase1e-cold-origin.md)). The cold-origin replay-closure
 round (cold-queued origin marker, cold outbox replay receipt retry, 30 test files / 1351 tests)
 reran the same gates with the same totals (see
-[replay-closure evidence](docs/e2e-evidence/phase1e-cold-origin-final.md)). The record-API hardening
-round currently reports 31 test files / 1362 tests, installed/patch **221/221** each, and
-`--no-worktree` **198/198**; its test/docs-only review amendment adds writer-only, late-reader, and
-boot-warning mutation coverage without changing the runtime build (see
-[record-API hardening evidence](docs/e2e-evidence/phase1e-record-api-hardening.md)). A pre-release
-rerun of the full combination is still required by the publishing guide.
+[replay-closure evidence](docs/e2e-evidence/phase1e-cold-origin-final.md)). Batch 1's record-API
+hardening and the follow-up cold-supervision fixes close the batch: the final tree reports 34 test
+files / **1464 tests**, installed/patch **221/221** each and `--no-worktree` **198/198**; Batch 1
+was accepted by an independent DeepSeek review round 7 with verdict **FINAL SAFE** (see
+[Batch 1 evidence](docs/e2e-evidence/batch1-breaking-correctness.md)). Batch 2 reran the full gates on
+this release tree; the version list, raw outputs and release checks are recorded in
+[Batch 2 release-prep evidence](docs/e2e-evidence/batch2-release-prep.md).
 
 Three positive model-selection checks per flow are reported as SKIP on this credential-less
 Host (the real reason is printed); the negative model path and `devlead_list_models` run on every
@@ -417,12 +431,12 @@ with the oldest supported release.
 dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 ```
 
-`latest` remains **0.2.6** until the 0.3.0 candidate is promoted. To install the current
-prerelease candidate, pin the exact version (staged versions are not public until a maintainer
-approves them):
+`latest` remains **0.2.6**; npm's `next` dist-tag currently points at `0.3.0-rc.2`. The current
+release candidate is **0.4.0-rc.1**; pin the exact version because staged versions are not public
+until a maintainer approves them:
 
 ```sh
-dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.3.0-rc.2
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.0-rc.1
 ```
 
 Do not use `@next` within 24 hours of staging: pnpm's `minimumReleaseAge` can fall back to the
@@ -1403,8 +1417,8 @@ the GitHub Release from `docs/releases/v<version>.md`:
 
 ```sh
 npm login
-node scripts/promote-release.mjs --version 0.3.0-rc.2 --list-only   # inspect the staged versions
-node scripts/promote-release.mjs --version 0.3.0-rc.2                # approve (2FA prompt) + gh release
+node scripts/promote-release.mjs --version 0.4.0-rc.1 --list-only   # inspect the staged versions
+node scripts/promote-release.mjs --version 0.4.0-rc.1                # approve (2FA prompt) + gh release
 ```
 
 The setup and the full release flow (version bump, pre-flight, tag push, re-staging an existing

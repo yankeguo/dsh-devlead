@@ -12,10 +12,15 @@
 `dsh-infini-goal`——只算线索，不作为依据；每条 DSH API 行为都以官方源码或已安装的
 `@deepseek-ai/*` 声明为准。
 
-## 0.4.0 Batch 1 当前契约（覆盖后文 Phase 1/2 的 Proposed 口径）
+## 0.4.0-rc.1 当前契约（Batch 1 实现 + Batch 2 发布准备；覆盖后文 Phase 1/2 的 Proposed 口径）
 
 本批按「正确性 > 兼容性」执行，后文早期 Phase 1 memory-only、legacy fallback、Phase 2 Proposed
-仅作历史设计背景；当前实现以本节为准。版本号、tag 与发布不属于本批。
+仅作历史设计背景；当前实现以本节为准。**Batch 1**（本地 `a21c7b7..a35fc1d`，7 个 commit）落地
+下列契约；**Batch 2** 把 7 个 manifest 统一 bump 到 `0.4.0-rc.1`、同步文档/证据/决策记录并在
+冻结树上重跑最终门禁，**运行时行为与 Batch 1 相同**。两次提交都是**本地 commit：未 push、
+未打 tag、未 publish**；发布需人类另行批准（见 [PUBLISHING](PUBLISHING.md)）。release notes
+见 [`releases/v0.4.0-rc.1.md`](releases/v0.4.0-rc.1.md)，Batch 2 门禁证据见
+[`e2e-evidence/batch2-release-prep.md`](e2e-evidence/batch2-release-prep.md)。
 
 1. **record / storage breaking**：所有 `plugin:devlead/*` 当前 record 都是 `version:2`。
    v1 record 与无 `answerSeq` 的 answer 明确忽略并丢弃，进程级一次性 warning 说明旧 Session 的
@@ -187,7 +192,7 @@ DSH 的所有读取路径会保留并重放这些记录，但不会把它们投�
 | `plugin:devlead/repair` | `DevLeadRepairRecord` | runtime repair-pending question 的 whole-value 集合，驱动 UI projection 双向发布 |
 
 - 记录 payload 必须 JSON-safe、带 `kind` + `version`；fold 对未知 `kind`、当前版本的
-  多余/缺失字段一律拒绝（严格字段集解码，见 `domain.ts`）。v1 等旧版本 record 是 §0.4.0
+  多余/缺失字段一律拒绝（严格字段集解码，见 `domain.ts`）。v1 等旧版本 record 是 §0.4.0-rc.1
   规定的显式丢弃例外，不冻结；当前 v2 的手工损坏 / 迁移错误必须让 replay 失败（`failure`），
   而不是被静默强制转换。
 - **`reset` 是唯一在冻结检查之前应用的记录**：合法 reset 让三个 projection（`devLead`、
@@ -1001,10 +1006,13 @@ Session 的工作目录切到独立分支/检出，DevLead 用它**可选地**�
 判断当前 profile 是否具备该能力。系统提示只在能力存在时教模型使用 `isolation: "worktree"`，
 缺失时改为要求"同一 checkout 的写入型 Session 必须串行派发"，不会无条件声称支持。
 
-### 4.4 消息传递模型（Proposed，未实现）
+### 4.4 消息传递模型（已实现，0.4.0-rc.1）
 
-> **状态：Phase 1a/1b/1c/1d/1e 已实现；Phase 2 起仍为 Proposed。** 本节描述完整目标模型；尚未落地的
-> 阶段仍以 §4.1.2（中途汇报）、§4.1.3（问题路由）与 §5（模型工具）的现有行为为准。本节描述把 lead ↔ watched Session 的通信从
+> **状态：已实现并进入 0.4.0-rc.1（Phase 1a/1b/1c/1d/1e 全部落地；Batch 1 补齐 Phase 2 的
+> durable 幂等/cold replay/multi-lead 硬门禁/answer TTL/背压）。** 本节描述完整目标模型；
+> Phase 3 条件性项（blocking bridge 指标评估）与明确不做的 `possibleQuestion` 见 §4.4.12 与
+> §12 决策记录。当前实现以 §0.4.0-rc.1 契约、§4.1.2（中途汇报）、§4.1.3（问题路由）与 §5
+> （模型工具）为准。本节描述把 lead ↔ watched Session 的通信从
 > 「所有方向、所有 kind 都走 `followup`」升级为「按消息类别与目标状态选择投递机制」的设计、
 > 取舍、API 提案、状态机、测试计划与分阶段落地。所有 DSH API 行为已按
 > `0.2.2-rc.1` – `0.2.2-rc.5` 源码核对（兼容性检查见 §4.4.11，Phase 门禁见 §4.4.12）。
@@ -2250,7 +2258,7 @@ question 路由。
 | Phase 1e 复核修复（background retry，已完成） | 1e 首次独立审 major：live lead 的 background report receipt append 失败后被静默搁置（无 retry/inject，误记 digest-only）。修复：`queueUnsavedReport` 区分 live/cold，live 失败保留 lane（deliveryState pending、metric queued），独立 background retry timer（1s × 8）重试 append 成功后经 `deliverBackground` **恰好一次** inject，超限降级 digest-only + warning；service 增加有界 outbox replay timer（1s × 5，仅 live lead 行），失败不再等无关事件；`dropUnsavedReport` + durable `known` 去重防重复 inject；dispose 清两个 timer；cold-observed digest-only metric 只计一次。附带：`repairLifecycle` answer/question counters、`renderDevLeadReviewNotice` 复用 `boundWake`（8k）；当时未投影 `repairPending`，Batch 1 已通过 whole-value repair record 补齐 | 否 | 新增 live retry（有/无 outbox）、cold digest-only 单次计数、retry cap、dispose timer、repair counters、review wake bound 测试；negative control 在回退修复后 8 条相关测试失败；`pnpm verify`（30 文件 / 1339 tests）+ `pnpm check:packages` + rc.5 installed/patch 各 221/221、`--no-worktree` 198/198 |
 | Phase 1e delta 复核修复（cold origin，已完成） | 修复 2 个 cold 语义 major：A1 cold-observed background 经 outbox/persistReport replay 会被 inject——outbox row 增加可选 `origin:'live'|'cold'` 并跨重启传给 `persistReport`，cold-origin background 只 append receipt + digest-only，绝不 route；`report()`/`persistReport()` 的 live 判定改为 Agent 是否存在（不再以 attached Session 代替）；缺省 origin 的旧 background row 按 cold 处理。A2 cold-observed background receipt append 失败无 retry——新增 `coldReportFailures` 并入同一个 1s × 8 有界 retry，重试只补 durable receipt + digest-only，cap 后 warning；action-required cold wake 语义不变。附带：`backgroundRetryAttempts` 在成功/无工作/drop/agent-undefined 时 reset（新 burst 完整 8 次）、background timer `unref()`。 | 否 | 新增 attach-only cold、cold receipt retry、cold cap、outbox origin、跨重启 replay 不 inject、attempts reset 测试；negative control 回退 source 后 5 条新测试失败；`pnpm verify`（30 文件 / 1345 tests）+ `pnpm check:packages` + rc.5 installed/patch 各 221/221、`--no-worktree` 198/198；时间线见 `docs/e2e-evidence/phase1e-cold-origin.md` |
 | Phase 1e cold-origin replay 收口（已完成） | 修复 delta 复审残留：A1 hub 侧新增 `coldQueuedReports` marker——cold queue 的 background report 即使 Agent 变 live，无 origin 的 hub-direct `persistReport` 仍按 cold 处理（只 append + digest-only，绝不 route）；marker 在 settle/drop/dedupe/degrade/watch 变化时清除、不 arm timer；`origin:'live'` 在 attach-only cold 时只补 receipt + digest-only。A2 `persistReport` 的 cold append catch 转入 `queueColdReportFailure`（1s × 8，只补 receipt），service `replayOutbox` 失败分支 arm 有界 delayed replay 并最终清 outbox row。Nit：新失败入队 reset burst（同 burst 新失败完整 8 次）；`outbox.put` 省略 origin 时保留 existing origin；README/DESIGN 记录 legacy/回滚口径。 | 否 | 新增 attach-only 无 origin persist、cold receipt retry、live-origin cold、same-burst budget、outbox same-key origin、service replay failure 测试；negative control 回退 source 后 5 条失败；`pnpm verify`（30 文件 / 1351 tests）+ `pnpm check:packages` + rc.5 installed/patch 各 221/221、`--no-worktree` 198/198；时间线见 `docs/e2e-evidence/phase1e-cold-origin-final.md` |
-| Phase 2 | `idempotency_key` durable、claimed/presented/discarded 的 durable replay/backfill、replay open question、multi-lead 硬门禁、answer TTL、background 背压、`possibleQuestion`、blocking bridge 指标评估（不写原型） | 否 | 全量 + 兼容性 + 指标复盘 |
+| Phase 2（Batch 1 已完成主体；两项明确不做/条件性） | **已实现**：非 answer `idempotency_key` durable（独立 `devlead_idempotency` v1 domain、7 天 TTL、fail closed）、`answerSeq`/latest 选择与 claimed/presented survival 的 durable repair fact、durable discard 队列（`answer_discards`，30 天 retention）与 cold replay、replay open question（每进程一次，与 action report 共用 16/pair 容量）、multi-lead 硬门禁（foreign/multiple supervisor 直接拒绝，不可证明时 `DEVLEAD_SESSION_UNAVAILABLE`）、answer TTL（`questionTtlMs` 默认 24h）、correction/background 背压（4/8 每 child-turn、16/pair、超限 digest-only）。**不做**：`possibleQuestion`（自然语言提问启发式，误判会改变 transport；理由见 §12 决策记录）。**条件性**：blocking bridge 只记录指标评估结论，不在 0.4.0-rc.1 实现（Phase 3，见 §4.4.13 #6） | 否 | 全量 + 兼容性 + metrics 复盘（Batch 1 最终 34 文件 / 1464 tests；e2e installed/patch 221/221、`--no-worktree` 198/198） |
 | Phase 3（条件性，仅插件内） | 仅当 Phase 2 指标支持时：**插件内** blocking bridge 原型（capability flag；不涉及 DSH 上游改动）。原列的 DSH 上游通用 ordinary-Session mailbox / ephemeral context / blocking question primitive / turn-boundary hooks 是**历史提案、非本仓库目标（2026-11-20 用户明确约束，out of scope）** | 否 | blocking bridge 指标评估（条件性计划）；不启动上游设计 review，不修改/不 patch DSH |
 
 **Phase 3 上游提案（历史，out of scope）**：上表 Phase 3 行原先列入的 DSH 上游通用
@@ -2313,9 +2321,9 @@ DSH peer 依赖。最小可交付闭环是 1b + 1c + 1d：question 快、answer 
 | 2 | `intent` 的四个值和命名是否最容易被真实模型正确使用？ | 先用 instruction/answer/correction/background；用真实模型行为测试，不要凭直觉加值 | 人类 |
 | 3 | `devlead_report` question 直接设置 `turnEndRequested`，还是新增专用 ask 工具？ | 直接设置；不新增工具。若模型经常误用 question 结束 turn，再评估 | 人类 |
 | 4 | `progress`/`fyi` 不再唤醒是否可接受？ | 可接受；只用于非紧急背景，需要行动用 blocked/decision。README/policy 要写清 | 人类 |
-| 5 | prompt 侧 foreign/multiple supervisor 是 Phase 1 warning 还是直接硬拒绝？ | Phase 1 只日志 warning，不新增字段；Phase 2 默认硬拒绝，可配置回退 | 人类 |
-| 6 | blocking bridge 是否值得做？ | 先不做；Phase 2 末用指标判断 turn boundary 是否仍是主因。只有指标支持才进 Phase 3 的插件内原型，且必须带 timeout、取消、fallback；不涉及 DSH 上游改动 | 人类 |
-| 7 | 自然语言 question 是否加 `possibleQuestion` 启发式？ | Phase 2 加标记但不改变 transport；避免误判打断 | 人类 |
+| 5 | prompt 侧 foreign/multiple supervisor 是 Phase 1 warning 还是直接硬拒绝？ | **已定（Batch 1）**：直接硬拒绝（`DEVLEAD_FOREIGN_SUPERVISOR` / `DEVLEAD_MULTIPLE_SUPERVISORS`），且在任何 watch/resume/admission 副作用之前；不可证明时 fail closed。Phase 1 的 warning 口径作废 | 已实现 |
+| 6 | blocking bridge 是否值得做？ | **已定（0.4.0-rc.1）**：本 RC 不做，只记录指标评估结论；保留 Phase 3 **条件性**插件内原型计划（capability flag、timeout、取消、fallback；不涉及 DSH 上游改动）。是否值得做由 `metricsSnapshot()` 的 turn-boundary/延迟指标复盘决定，不作为本版发布承诺 | 已记录，条件性 |
+| 7 | 自然语言 question 是否加 `possibleQuestion` 启发式？ | **已定（0.4.0-rc.1）**：不做，进 backlog。理由：启发式会把普通文本误判为 question 并改变 transport（错误 lane/打断），而真实 `ask_user_question` 已被 gate 覆盖；仅当真实模型行为证明需要时重新评估，且不得改变现有 question 语义 | 已记录，不做 |
 | 8 | 结构化 questions 是否也进 `devlead_report` 的 tool schema？ | 不进；gate 内部结构化，`devlead_report` 保持文本，避免 schema 膨胀 | 人类 |
 | 9 | `action-required` pending 上限（16/pair）和 background 上限（8/turn、16/pair）是否合适？ | 先用保守默认，E2E/真实使用后调；question 溢出必须显式报错 | 人类 |
 | 10 | `clear-own` 是否保留 answer？ | 保留；`clear-all` 才是显式破坏。answer 被 clear 时要 reopen question | 人类 |
@@ -2813,6 +2821,35 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   （27 + 12 + 23 + 128 + 31；218 PASS + 3 SKIP），`--no-worktree` **198/198**；negative control
   实测 5 条新测试失败；source/lib/log/commit 时间线见
   [`phase1e-cold-origin-final.md`](e2e-evidence/phase1e-cold-origin-final.md)。
+- record-API 加固轮最终验证数字（主 checkout `main`）：`pnpm verify` = typecheck 通过 +
+  **31 文件 / 1362 tests** + 构建产物；`pnpm check:packages` → `OK (6 packages)`；E2E 在安装版
+  rc.5 实跑 installed 与 patch **完整双流各 221/221**（218 PASS + 3 SKIP）、`--no-worktree`
+  **198/198**；实现、三条真实 E2E 与 test/docs-only amend 见
+  [`phase1e-record-api-hardening.md`](e2e-evidence/phase1e-record-api-hardening.md)。
+- **Batch 1（breaking 兼容性清理 + 正确性收口）最终验证数字**（主 checkout `main`，7 个本地
+  commit `a21c7b7..a35fc1d`，43 files +8974/−834）：`pnpm verify` = typecheck 通过 +
+  **34 文件 / 1464 tests** + 6 个构建目标；`pnpm check:packages` → `OK (6 packages)`；E2E 在
+  安装版 rc.5 实跑 installed 与 patch **完整双流各 221/221**（phase 1 27 + 1b 12 + 2 23 + 3 128
+  + 1e 31；218 PASS + 3 SKIP；client revision `4098223abe00`），`--no-worktree` **198/198**；
+  `git diff --check` 通过。Batch 1 通过独立 DeepSeek 审查第七轮 delta 复核，判定 **FINAL:
+  SAFE**；冻结树 sha256、6 项 mutation negative control（全部 `MUTATION_TEST_EXIT=1`）、逐轮
+  修复时间线与残余风险见 [`batch1-breaking-correctness.md`](e2e-evidence/batch1-breaking-correctness.md)。
+- **Batch 2（0.4.0-rc.1 发布准备）最终验证数字**（主 checkout `main`，HEAD `a35fc1d` +
+  未提交 Batch 2 改动；`packages/` 与 Batch 1 最终树差异仅 version 行）：`pnpm verify` =
+  typecheck 通过 + **34 文件 / 1464 tests** + 6 个构建目标（`VERIFY_EXIT=0`）；
+  `pnpm check:packages` → `OK (6 packages)`（`CHECK_PACKAGES_EXIT=0`）；三条真实 E2E 在安装版
+  rc.5：patch **221/221**（218 PASS + 3 SKIP，`PATCH_EXIT=0`）、installed **221/221**
+  （218 PASS + 3 SKIP，`INSTALLED_EXIT=0`）、`--no-worktree` **198/198**（195 PASS + 3 SKIP，
+  `NOWORKTREE_EXIT=0`）；prerelease dry-run：`pnpm release:dry` 的 latest guard 预期拒绝
+  （`RELEASE_DRY_LATEST_GUARD_EXIT=1`），`stage-release.mjs --dry-run --dist-tag next` 输出
+  `DRY RUN OK`（`RELEASE_DRY_EXIT=0`）；`pnpm pack` 6 包内容/版本/workspace 改写核对通过
+  （`PACK_INSPECT_EXIT=0`）。真实日志与发布检查见
+  [`batch2-release-prep.md`](e2e-evidence/batch2-release-prep.md)。
+- **证据修正（Phase 1d installed/退出码）**：Phase 1d r7 轮的三条 E2E 日志只记录到
+  `E2E SMOKE PASS` + 188/188（installed/patch）与 165/165（no-worktree），runner 当轮未把
+  shell exit code 写入日志；真实退出码由同一代码线的 r8/r9 重跑日志补齐（末尾
+  `PATCH_EXIT=0` / `INSTALLED_EXIT=0` / `NOWORKTREE_EXIT=0`）。因此 r7 的 installed 证据以
+  日志内 PASS 与计数为准，**不得**把它未记录的退出码写成 `*_EXIT=0`；r7 证据文件已按此修正。
 - **DSH 版本兼容矩阵（本轮真实 E2E，npm 临时安装 CLI + `DSH_BIN`）**：
 
   | DSH | flow | checks | Team 分支 / 其他 |
@@ -2823,17 +2860,19 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   | 0.2.2-rc.4 | installed（完整） | **143/143** | 成功；含实验 worktree 阶段 23/23 |
   | 0.2.2-rc.4 | patch（完整） | **143/143** | 成功；含实验 worktree 阶段 23/23 |
   | 0.2.2-rc.5 | installed（`--no-worktree`） | **120/120** | 成功；phase 1 27 + 1b 12 + 3 81 |
-  | 0.2.2-rc.5 | installed（`--no-worktree`，0.3.0 的问题路由 harness） | **123/123** | 成功；phase 3 84，含真实 `ask_user_question` gate + question report |
+  | 0.2.2-rc.5 | installed（`--no-worktree`，0.3.0 开发线的问题路由 harness） | **123/123** | 成功；phase 3 84，含真实 `ask_user_question` gate + question report |
   | 0.2.2-rc.5 | installed（完整，0.2.6+ 审计轮重跑） | **146/146** | 成功；含实验 worktree 阶段 23/23 与 question gate |
   | 0.2.2-rc.5 | patch（完整，0.2.6+ 审计轮重跑） | **146/146** | 成功；含实验 worktree 阶段 23/23 与 question gate |
   | 0.2.2-rc.5 | installed（完整，排队输入轮重跑） | **150/150** | 成功；另含 4 条排队 inbox checks |
   | 0.2.2-rc.5 | patch（完整，排队输入轮重跑） | **150/150** | 成功；同上 |
   | 0.2.2-rc.5 | installed（`--no-worktree`，排队输入轮重跑） | **127/127** | 成功；phase 3 88 |
 
-  表中 rc.1–rc.4 与 rc.5 的 120/143/146/123 行是各自发布或审计时点的 harness 计数。下一版
-  （0.3.0，未发布，含 question 路由与排队 inbox 输入）给 phase 3 新增 3 条 question gate checks；排队输入轮再增
-  4 条 inbox checks（当前 harness 150/150、`--no-worktree` 127/127），已按当前 harness 重跑 rc.5
-  installed/patch 完整与 `--no-worktree`。发布前仍需按 PUBLISHING 重跑完整组合。
+  表中 rc.1–rc.4 与 rc.5 的 120/143/146/123 行是各自发布或审计时点的 harness 计数。0.3.0 开发线
+  引入 question 路由/排队 inbox 后，harness 继续扩充：Phase 1d answer routing 把 full flow
+  推到 188/188，Phase 1e message lanes 再加独立 phase 1e 31 条，使当前 harness 为 installed/
+  patch 完整 **221/221**、`--no-worktree` **198/198**（phase 1 27 + 1b 12 + 2 23 + 3 128 +
+  1e 31；218 PASS + 3 无凭据 SKIP）。0.4.0-rc.1 的冻结树已按 PUBLISHING 重跑三条真实 E2E，
+  真实输出见 [`e2e-evidence/batch2-release-prep.md`](e2e-evidence/batch2-release-prep.md)。
 
   每条版本使用独立 throwaway `DSH_HOME`，结束后清理；rc.1–rc.3 跳过 phase 2（实验组合不与
   内置 worktree bundle 绑定，阶段 1/1b/3 全跑），rc.4 / rc.5 两条加载流都跑完整四个阶段。所有版本
@@ -2910,3 +2949,78 @@ mutation negative control；运行时代码和既有 E2E 对应的构建未变�
 （`dsh-0af20aa2-d0de @ a7009b9`）判定 no-go，6 个实质反例与重估条件见 §4.4.12；按用户决定
 丢弃 spike worktree/分支及全部一次性产物，结论同步记录在 [COMPATIBILITY](COMPATIBILITY.md)。
 本轮只改文档，`pnpm verify` 通过；未改 `packages/`、版本/tag、DSH，未 push。
+
+**2026-11-20 Batch 1（breaking 兼容性清理 + 正确性收口）— FINAL SAFE**：本地 7 个 commit
+（`a21c7b7..a35fc1d`，43 files +8974/−834）实现 §0.4.0-rc.1 契约：旧 DevLead 状态显式丢弃、
+OUTBOX v3 / `answerSeq` / `origin`、durable 幂等、multi-lead 硬门禁、question TTL、cold replay、
+repair barrier、multi-batch cold supervision rehydration 与 A 加固（record API 探测/降级、隐私
+披露、升级门禁、deprecated reader 清零）。最终门禁：34 文件 / 1464 tests、`check:packages` OK、
+installed/patch 各 221/221（218 PASS + 3 SKIP）、`--no-worktree` 198/198；6 项 mutation 全部
+`MUTATION_TEST_EXIT=1`。独立 DeepSeek 审查第七轮 delta 复核判定 **FINAL: SAFE**。逐轮时间线、
+冻结树 sha256、mutation 与残余风险见
+[`e2e-evidence/batch1-breaking-correctness.md`](e2e-evidence/batch1-breaking-correctness.md)。
+本批未 push、未 bump version（当时仍 0.3.0-rc.2）、未打 tag。
+
+**2026-11-21 Batch 2（0.4.0-rc.1 发布准备）**：见下节「Batch 2 发布准备记录」。
+
+### Batch 2 发布准备记录（0.4.0-rc.1）
+
+**2026-11-21 Batch 2（0.4.0-rc.1 发布准备）**：把 7 个 manifest（根 + 6 个可发布包）统一
+bump 到 `0.4.0-rc.1`；`pnpm-lock.yaml` 不记录本仓库自身版本，`pnpm install --frozen-lockfile`
+通过且未手改 lockfile。新增 [`releases/v0.4.0-rc.1.md`](releases/v0.4.0-rc.1.md) 作为 GitHub
+Release 正文；README / README.zh、[COMPATIBILITY](COMPATIBILITY.md)、
+[PUBLISHING](PUBLISHING.md) 与本节同步 breaking / 升级 / 发布说明；修正 Phase 1d r7 未被
+记录的 `*_EXIT` 矛盾与 installed 退出码证据缺口（见 §10 证据修正）。本批**不改运行时行为**
+（`packages/` 与 Batch 1 最终树差异仅为 6 处 `version` 行）。冻结树最终门禁：`pnpm verify` =
+34 文件 / **1464 tests** + 6 targets；`check:packages` → `OK (6 packages)`；三条真实 E2E 在
+安装版 rc.5 上 patch / installed 各 **221/221**（218 PASS + 3 SKIP）、`--no-worktree`
+**198/198**（195 PASS + 3 SKIP）；prerelease staged-publish dry-run 先经 `pnpm release:dry` 的
+`latest` guard 预期拒绝，再以 `stage-release.mjs --dry-run --dist-tag next` 得到 `DRY RUN OK`
+（6 包，7/7/6/6/6/7 files，无上传/无 stage id）；`pnpm pack` 内容与 expected files 一致。
+本批只做**本地 commit：未 push、未打 tag、未 publish/stage**；真实输出、版本清单与发布检查见
+[`e2e-evidence/batch2-release-prep.md`](e2e-evidence/batch2-release-prep.md)。
+
+### 决策记录（0.4.0-rc.1）
+
+1. **发布形态：0.3.0 线并入 0.4.0-rc.1，先出 prerelease。** 0.3.0 稳定版没有发布；计划中的
+   0.4.0 breaking 兼容性清理（record v2、outbox v3、answerSeq、stateVersion 7/3/3、multi-lead
+   硬门禁、question TTL）与 0.3.0 线的消息传递/cold-discard 正确性工作合并为 0.4.0-rc.1，
+   以 `next` dist-tag 先发候选、`latest` 保持 0.2.6。理由：breaking 变更不能以稳定版直接推给
+   用户，RC 先收集安装/升级反馈。发布需人类明确批准（tag → CI stage → 人工 approve → GitHub
+   Release），本轮只做本地 commit。
+2. **`possibleQuestion`（自然语言提问识别）不做，进 backlog。** 当前 question 路由由真实
+   `ask_user_question` 的 tool gate 触发（durable `kind:question` report + lead answer
+   steering）。`possibleQuestion` 是启发式，会在普通文本上误判并改变 transport（错误 lane、
+   打断或额外的行动请求），收益不明确且没有可靠 ground truth；加入它还会扩大“模型可以间接
+   改变投递类别”的语义面。只有在真实模型行为（例如大量 child 用自然语言提问但从不调用
+   `ask_user_question`）证明需要时，才以“只加标记、不改变 transport”为前提重新评估。
+3. **blocking bridge 只记录指标评估结论，不在本 RC 实现。** D7/§4.4.12 的结论不变：`steer`
+   是 next-step primitive，不能解开正在等待的 tool call；插件内 blocking bridge 需要
+   out-of-band mailbox、timeout、取消、死锁与持久化处理，收益主要是 turn 边界而模型请求数
+   并不减少。Phase 1e 已提供 `metricsSnapshot()`（delivery/suppression/guard/answer/question
+   低基数计数）用于复盘 turn-boundary 占比；只有指标支持时才进入 Phase 3 条件性原型
+   （capability flag，不涉及 DSH 上游改动）。本 RC 不写原型、不作为发布承诺。
+4. **浏览器视觉验收 = release checklist 人工项。** 自动化 e2e 只证明 boot graph、projection、
+   DOM/渲染与数据流；composer 开关、DevLeadBar 三 lane 配色、question 状态/`provisional`
+   标记、侧栏 active ring/watched 准星属于视觉与交互判断，必须按
+   [`UI-VERIFICATION.md`](UI-VERIFICATION.md) 在隔离 profile 中由人类验收（列在
+   [PUBLISHING](PUBLISHING.md) 的发布检查中）。本轮无截图工具，不伪造视觉结论。
+5. **版本引用口径。** 当前候选版本是 `0.4.0-rc.1`（7 个 manifest lockstep）；历史发布记录
+   （`docs/releases/v0.3.0-rc.1.md` / `v0.3.0-rc.2.md`、PUBLISHING 的历史小节）保留原版本号，
+   不作为“当前版本”引用。`engines.dsh` 与 peer 范围不因插件版本 bump 而变化。
+
+### 证据索引（`docs/e2e-evidence/`）
+
+- **Batch 2（本版）**：`batch2-release-prep.md`（版本清单、`pnpm verify` / `check:packages` /
+  三条真实 E2E / staged-publish dry-run 的真实输出与 release 检查）及其 `batch2-*.log` 原始
+  日志。
+- **Batch 1**：`batch1-breaking-correctness.md`（7 个 commit 的逐轮修复、冻结树 hash、mutation
+  negative control、最终 34 文件 / 1464 tests 与 221/221/198 门禁）。
+- **Phase 1e lanes / 合并 / 复核**：`phase1e-merge.md`、`phase1e-bg-retry.md`、
+  `phase1e-cold-origin.md`、`phase1e-cold-origin-final.md`、
+  `phase1e-record-api-hardening.md`（各含 patch/installed/no-worktree 原始日志）。
+- **Phase 1d answer routing**：`phase1d-fix-round.md`（fix-round patch 日志）。
+- **Phase 1d cold-discard**：`phase1d-cold-discard-round.md` 与 `phase1d-cold-discard-r3.md` –
+  `r9.md`（durable 队列、survival 证明、repair barrier 逐轮收口；每轮 patch/installed/
+  no-worktree 日志）。**退出码注意**：r7 轮日志没有 shell exit code，真实退出码以 r8/r9 重跑
+  日志为准（见 §10 证据修正）。

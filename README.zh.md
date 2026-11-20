@@ -35,16 +35,21 @@
 [devlead](packages/devlead/README.md) · [tool](packages/tool/README.md) ·
 [command](packages/command/README.md) · [client-ui](packages/client-ui/README.md)
 
-## 0.4.0 Batch 1 breaking changes（当前工作树）
+## 0.4.0-rc.1 breaking changes（Batch 1 + Batch 2）
 
-当前树实现计划中的 0.4.0 兼容性断裂；本批**不改包版本、不打 tag、不发布**。
+当前树是 **0.4.0-rc.1 release candidate**：全部 7 个 manifest（根包 + 6 个可发布包）均为
+`0.4.0-rc.1`。Batch 1 实现了计划中的 0.4.0 兼容性断裂；Batch 2 只做版本升级、文档/证据更新与
+发布门禁重跑，运行时行为自 `a35fc1d` 起未变。尚未打 tag、未创建 GitHub Release、未 npm publish
+——这些都要等人类明确批准。
 
 - durable record 升为 **version 2**。version-1 record 与缺少必填 `answerSeq` 的旧 answer 会被忽略并丢弃，只 warning 一次，不冻结 projection；version-2 当前 schema 的损坏 payload 仍冻结，仍用 `/devlead reset` 恢复。三个 stateVersion 分别为 `devLead` 7、`devLeadMode` 3、`devLeadWatch` 3。旧 Session 的 DevLead 模式、关注集合、digest 与 answer 状态因此明确失效，不做 best-effort 迁移。
 - `devlead_report_outbox` 升为 **spec v3，无 compatibleVersions**，pending report 的 `origin` 必填。旧 v1/v2 domain、无 origin 行和旧 discard 队列数据全部丢弃；旧 domain 打不开时 warning 并禁用该 durable domain，不 crash、不继续写入。`answer_discards` 的 30 天 retention 不变。
 - 生产代码已全部移除 deprecated `Session.snapshotEvents()` / `eventAt()` / `ownEvents()`。inbox 入队时间、当前 turn 来源、child answer survival 都改为有界 Session projection；cold 恢复用 `observeSession()` 读取 answer projection，不读取原始事件。
-- prompt 监督关系改为硬门禁：跨 lead 写入返回 `DEVLEAD_FOREIGN_SUPERVISOR`，冲突多 lead 返回 `DEVLEAD_MULTIPLE_SUPERVISORS`。cold rehydration、projection cache 恢复或有界扫描无法证明 supervisor 集合完整时，prompt 以 `DEVLEAD_SESSION_UNAVAILABLE` fail closed，不投递。非 answer 的幂等 receipt 在 `devlead_idempotency` 持久保存 7 天（同 key 同文本返回原 receipt，不同文本冲突）；corrupt/unreadable receipt 与 composed storage 打开失败在投递前 fail closed，只有 Host 未组合 storage 时才显式 warning 并用进程内窗口兜底。
+- prompt 监督关系改为硬门禁：跨 lead 写入返回 `DEVLEAD_FOREIGN_SUPERVISOR`，冲突多 lead 返回 `DEVLEAD_MULTIPLE_SUPERVISORS`。cold rehydration、projection cache 恢复或有界扫描无法证明 supervisor 集合完整时，prompt 以 `DEVLEAD_SESSION_UNAVAILABLE` fail closed，不投递。非 answer 的幂等 receipt 在 `devlead_idempotency` v1 中持久保存 7 天（同 key 同文本返回原 receipt，不同文本冲突）；corrupt/unreadable receipt 与 composed storage 打开失败在投递前 fail closed，只有 Host 未组合 `storageDomain` 时才显式 warning 并用进程内窗口兜底。
 - `questionTtlMs` 默认 24 小时，`0` 禁用。只有仍为 open 的 question 会 lazy 过期，过期后拒绝 answer。cold 恢复时每进程对每条未过期 open question 最多 replay 一次 action-required wake，与普通 action report 共用 16/pair 容量，溢出保留到容量释放后续投；等待期间已 answered 的问题不再 replay。每个 lead/child pair 在每个 child turn 最多投递 4 条 correction、8 条 background，超限返回 `DEVLEAD_DELIVERY_RATE_LIMITED`。cold answer projection 读取有 30 秒放弃上限、每 child single-flight、64 并发上限，重试不会累积永久挂起的查询。
 - question projection 行可增加 runtime 派生的 `repairPending: true`；DevLeadBar 用 `open · provisional` 等文案标明暂定状态，tool 输出既有字段不变。
+
+升级后，旧 DevLead Session 会丢失原有的模式/关注/digest/answer 状态；受影响的 Session 应由人类执行 `/devlead reset` 恢复。
 
 ## 特性
 
@@ -304,8 +309,11 @@ durable `team/mode`）。模型 API（`modelCatalog`、`Agent.model.select`、`m
 | `0.2.2-rc.5` | `node scripts/e2e-smoke.mjs --flow installed --no-build`（record-API 加固） | **221/221**（218 PASS + 3 SKIP） |
 | `0.2.2-rc.5` | `node scripts/e2e-smoke.mjs --flow patch --no-build`（record-API 加固） | **221/221**（同轮） |
 | `0.2.2-rc.5` | `node scripts/e2e-smoke.mjs --no-worktree --no-build`（record-API 加固） | **198/198**（同轮，跳过 phase 2） |
+| `0.2.2-rc.5` | `pnpm e2e --no-build`（0.4.0-rc.1 release candidate，Batch 1 final tree） | **221/221**（218 PASS + 3 条无凭据 SKIP） |
+| `0.2.2-rc.5` | `pnpm e2e --flow installed --no-build`（0.4.0-rc.1 release candidate，Batch 1 final tree） | **221/221**（218 PASS + 3 条无凭据 SKIP） |
+| `0.2.2-rc.5` | `pnpm e2e --no-worktree --no-build`（0.4.0-rc.1 release candidate，Batch 1 final tree） | **198/198**（195 PASS + 3 条无凭据 SKIP；跳过 phase 2） |
 
-0.3.0 的 prerelease 候选（0.3.0-rc.1 / rc.2，尚未 promote 为稳定版）含 question 路由与排队 inbox 输入。Phase 1c 的 harness 轮新增 question-gate 与 `devlead_report` question checks（结构化多问题 payload 深比对、完整 wake payload 深比对、action-required wake admission、conclude/durable/memory-only 路径，以及只证明恢复可写性、不宣称自动 replay 的 recovery report），并新增两条**真实 prompted child turn**：用 scripted `llm/stream` 脚本驱动真实 agent-loop turn/step/tool 事件（无需 provider 凭据）——conclude 的 question batch 之后，已提交的 next-step marker 仍会在后续真实 step 中执行、先于唯一 completed `turn/end`；被 gate deny 的 `ask_user_question` 不会阻止模型继续运行（用例 33）。Phase 1d 轮新增一条真实 scripted child turn：lead 在 glob dispatch 期间用 `intent:"answer"` **steer 回答运行中的 child**（答案在后续真实 step 中 presented、先于唯一 completed `turn/end`；同键/同文本重试返回原 receipt；不同答案冲突；durable answer record 与派生视图报 answered/presented），以及 answer inbox 生命周期（queuedInputs 的 intent/questionId/wakeRequested/deliveryState、retract 拒绝 answer 但接受 background/instruction、运行中 child interrupt `clear-own` 保留 pending answer 而 `clear-all` 丢弃并重新 open question，经真实 `workspace/session-stop` fan-out）。Phase 1e 轮新增独立的 lane 实例：progress/fyi background inject 让 idle lead 保持 idle（不唤醒、不开新 turn），读工具输出带 `lane`/`deliveryState`；blocked/decision 以 `[DEV LEAD ACTION REQUIRED]` steer 携带完整 message；真实 completed turn 走 `[DEV LEAD NOTIFICATION]` followup，真实 adapter 失败 turn 走 `[DEV LEAD REVIEW REQUIRED]` steer；question+turn-end 合并抑制字段；共享 16-pending action 上限溢出显式返回 `DEVLEAD_DELIVERY_RATE_LIMITED`；低基数指标快照。每阶段 check 总数已 pin（27 / 12 / 23 / 128 / 31，基线 DSH 0.2.2-rc.5；删 check 会使该阶段失败），PASS 与 SKIP 分开输出；rc.5 的 installed/patch 完整双流各报 **221/221**（218 PASS + 3 条无凭据 SKIP；`--no-worktree`：**198/198**）。Phase 1e × cold-discard r3–r9 合并轮在合并树上重跑全部门禁并保持同一组 pin（30 个测试文件 / 1330 tests；installed/patch 各 **221/221**，`--no-worktree` **198/198**；见[合并证据](docs/e2e-evidence/phase1e-merge.md)）。Phase 1e 复核修复轮（live lead 的 background receipt append 失败有界重试，30 个测试文件 / 1339 tests）重跑同一组门禁：installed/patch 各 **221/221**、`--no-worktree` **198/198**（见[background-retry 证据](docs/e2e-evidence/phase1e-bg-retry.md)）。Phase 1e cold-origin 修复轮（cold-observed background receipt 跨 outbox replay/重启保持 digest-only，30 个测试文件 / 1345 tests）以相同总数重跑同一组门禁（见[cold-origin 证据](docs/e2e-evidence/phase1e-cold-origin.md)）。cold-origin replay 收口轮（cold-queued origin marker、cold outbox replay receipt retry，30 个测试文件 / 1351 tests）以相同总数重跑同一组门禁（见[replay-closure 证据](docs/e2e-evidence/phase1e-cold-origin-final.md)）。发布前仍需按发布指南重跑完整组合。
+当前 prerelease 候选是 **0.4.0-rc.1**（尚未 promote 为稳定版），包含 question 路由与排队 inbox 输入、Phase 1d answer routing、Phase 1e message lanes、cold-discard durable/repair 收口（OUTBOX spec v3），以及 A 加固（plugin-record 探测/降级与显式 memory-only 状态、隐私披露、升级门禁文档，以及已完成的 `snapshotEvents()` / `eventAt()` / `ownEvents()` 迁移）。该候选包含的能力历史不变：Phase 1c 的 harness 轮新增 question-gate 与 `devlead_report` question checks（结构化多问题 payload 深比对、完整 wake payload 深比对、action-required wake admission、conclude/durable/memory-only 路径，以及只证明恢复可写性、不宣称自动 replay 的 recovery report），并新增两条**真实 prompted child turn**：用 scripted `llm/stream` 脚本驱动真实 agent-loop turn/step/tool 事件（无需 provider 凭据）——conclude 的 question batch 之后，已提交的 next-step marker 仍会在后续真实 step 中执行、先于唯一 completed `turn/end`；被 gate deny 的 `ask_user_question` 不会阻止模型继续运行（用例 33）。Phase 1d 轮新增一条真实 scripted child turn：lead 在 glob dispatch 期间用 `intent:"answer"` **steer 回答运行中的 child**（答案在后续真实 step 中 presented、先于唯一 completed `turn/end`；同键/同文本重试返回原 receipt；不同答案冲突；durable answer record 与派生视图报 answered/presented），以及 answer inbox 生命周期（queuedInputs 的 intent/questionId/wakeRequested/deliveryState、retract 拒绝 answer 但接受 background/instruction、运行中 child interrupt `clear-own` 保留 pending answer 而 `clear-all` 丢弃并重新 open question，经真实 `workspace/session-stop` fan-out）。Phase 1e 轮新增独立的 lane 实例：progress/fyi background inject 让 idle lead 保持 idle（不唤醒、不开新 turn），读工具输出带 `lane`/`deliveryState`；blocked/decision 以 `[DEV LEAD ACTION REQUIRED]` steer 携带完整 message；真实 completed turn 走 `[DEV LEAD NOTIFICATION]` followup，真实 adapter 失败 turn 走 `[DEV LEAD REVIEW REQUIRED]` steer；question+turn-end 合并抑制字段；共享 16-pending action 上限溢出显式返回 `DEVLEAD_DELIVERY_RATE_LIMITED`；低基数指标快照。每阶段 check 总数已 pin（27 / 12 / 23 / 128 / 31，基线 DSH 0.2.2-rc.5；删 check 会使该阶段失败），PASS 与 SKIP 分开输出；rc.5 的 installed/patch 完整双流各报 **221/221**（218 PASS + 3 条无凭据 SKIP；`--no-worktree`：**198/198**）。Phase 1e × cold-discard r3–r9 合并轮在合并树上重跑全部门禁并保持同一组 pin（30 个测试文件 / 1330 tests；installed/patch 各 **221/221**，`--no-worktree` **198/198**；见[合并证据](docs/e2e-evidence/phase1e-merge.md)）。Phase 1e 复核修复轮（live lead 的 background receipt append 失败有界重试，30 个测试文件 / 1339 tests）重跑同一组门禁：installed/patch 各 **221/221**、`--no-worktree` **198/198**（见[background-retry 证据](docs/e2e-evidence/phase1e-bg-retry.md)）。Phase 1e cold-origin 修复轮（cold-observed background receipt 跨 outbox replay/重启保持 digest-only，30 个测试文件 / 1345 tests）以相同总数重跑同一组门禁（见[cold-origin 证据](docs/e2e-evidence/phase1e-cold-origin.md)）。cold-origin replay 收口轮（cold-queued origin marker、cold outbox replay receipt retry，30 个测试文件 / 1351 tests）以相同总数重跑同一组门禁（见[replay-closure 证据](docs/e2e-evidence/phase1e-cold-origin-final.md)）。Batch 2 在本 release candidate 树上重跑了全部门禁；版本清单、原始输出与发布检查记录在[Batch 2 release-prep 证据](docs/e2e-evidence/batch2-release-prep.md)。
 
 每条 flow 有 3 条正向模型选择检查因本机无 provider 凭据记为 SKIP（打印真实原因）；负向
 model 路径与 `devlead_list_models` 在每个版本都真实运行。单元测试使用 rc.1 devDependencies，
@@ -318,11 +326,11 @@ model 路径与 `devlead_list_models` 在每个版本都真实运行。单元测
 dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 ```
 
-`latest` 在 0.3.0 候选被 promote 前仍是 **0.2.6**。安装当前 prerelease 候选必须写精确版本
-（stage 不等于公开，维护者 approve 后才会在 registry 可见）：
+`latest` 仍是 **0.2.6**；npm 的 `next` dist-tag 当前指向 `0.3.0-rc.2`。当前 release candidate 是
+**0.4.0-rc.1**。安装时必须写精确版本（stage 不等于公开，维护者 approve 后才会在 registry 可见）：
 
 ```sh
-dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.3.0-rc.2
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.0-rc.1
 ```
 
 发布后 24 小时内不要用 `@next` 安装：pnpm 的 `minimumReleaseAge` 可能回退到
@@ -1061,7 +1069,7 @@ Session），rc.2–rc.5 走 Team 成功路径；rc.4 / rc.5 的 installed 与 p
 排队输入轮按其 harness 重跑 rc.5：`--no-worktree` **127/127**，installed/patch 完整双流各
 **150/150**；Phase 1c 证据轮 pin **174/174**，Phase 1d answer routing 轮 pin **188/188**，
 Phase 1e message-lane 轮 pin **221/221**（installed/patch 完整双流各）；Phase 1e × cold-discard
-r3–r9 合并轮在合并树上重跑同一组 pin：两条完整流各 **221/221**、`--no-worktree` **198/198**；Phase 1e 复核修复轮、cold-origin 修复轮与 replay 收口轮再跑，数字相同。record-API 加固轮当前为 31 个测试文件 / 1362 tests，installed/patch 各 **221/221**、`--no-worktree` **198/198**；其 test/docs-only 复核 amend 新增 writer-only、reader 晚失败与 boot warning mutation 覆盖，运行时构建未变（见[record-API 加固证据](docs/e2e-evidence/phase1e-record-api-hardening.md)）。probe 是
+r3–r9 合并轮在合并树上重跑同一组 pin：两条完整流各 **221/221**、`--no-worktree` **198/198**；Phase 1e 复核修复轮、cold-origin 修复轮与 replay 收口轮再跑，数字相同。record-API 加固轮与后续 cold-supervision 修复收尾后，Batch 1 最终树为 34 个测试文件 / 1464 tests，installed/patch 各 **221/221**、`--no-worktree` **198/198**；Batch 1 由独立 DeepSeek 复核第 7 轮判定 **FINAL SAFE**（见[Batch 1 证据](docs/e2e-evidence/batch1-breaking-correctness.md)）。probe 是
 `scripts/e2e-probe/` 下的私有测试包，不发布、不属于 workspace 包；profile 变更只发生在
 `os.tmpdir()` 下的一次性 profile，不涉及 pnpm install / 网络 / lockfile。
 
@@ -1118,8 +1126,8 @@ GitHub Release：
 
 ```sh
 npm login
-node scripts/promote-release.mjs --version 0.3.0-rc.2 --list-only   # 查看已暂存的版本
-node scripts/promote-release.mjs --version 0.3.0-rc.2               # approve（交互式 2FA）+ gh release
+node scripts/promote-release.mjs --version 0.4.0-rc.1 --list-only   # 查看已暂存的版本
+node scripts/promote-release.mjs --version 0.4.0-rc.1               # approve（交互式 2FA）+ gh release
 ```
 
 完整流程（一次性配置、版本升级、预检、tag 推送、已存在 tag 的重新 stage、approve、
