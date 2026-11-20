@@ -478,7 +478,7 @@ binding token 对真实 cordis Service 恒 `undefined`）与 7 项 medium/minor�
 | --- | --- |
 | R1（major） | 新增 `rehydrationScanHighWater`：扫描结束把“本次 attempt 结束时游标”记为高水位，只有下一次 attempt 的游标**严格越过**该点才算 progress；仅重读同一批前缀（0→64）不算。`rehydrateFromPersistence` 的 finally 不再因 progress 清除 sticky cap（`rehydrationRetryCapped` 只由完整扫描成功 finalize、reset、语料重组合清除），probe 的批次推进也不清。retry-cap 探针**保留 coldScan 游标**（corrupt/live-failure 探针才丢弃终止态快照），失败点位于第一读批之后时探针从失败点重试，而不是每 30s 重读前 64 行；probe 再次失败继续 arm 30s probe，不再 restart 12 次 fast backoff。新增失败点在第 65 行（>64 行 corpus）的生产路径负控：cap 后 30s probe 只重读失败行（成功读取数不增长）、capped 保持、10s 内无 fast timer；原因移除后下一次 probe 从保留游标完成并 finalize。 |
 | R2（major） | not-found re-list 后**不再无条件 `coldScan = undefined` 重置 cursor**：`verifyCorpusListingNow` 先用 persistence 真值复核新 listing；若该 id **仍在列**，则不是“会话消失”而是这一行的读取失败——保留快照/游标，对该行在同一 attempt 内**重试一次**（一次性 transient not-found 可在本 attempt 恢复）；同一 attempt 内再次 not-found 进入顶部失败分支，`readFailed` 计预算、游标不动，12 次后进入 sticky cap + 30s probe。只有该 id 真的从新校验 listing 消失时才丢弃陈旧快照、从新 listing 重扫（此时才宽恕预算）。新增 100 行 corpus、第 90 行恒 not-found 的负控：不重置 cursor（cursor 稳定在 89，而非 64）、cap 后 3s 窗口内无 list/read、complete=false；原因移除后 probe 从 ghost 行继续完成。 |
-| R3（major，生产路径 fail-open） | `corpusBinding` 的 token 改为 **`ctx.reflect._getImpl(name).value` 的对象身份**；只有当该 provision 值本身是 traceable proxy（同时带 `Symbol.for('cordis.tracker')` 与 `Symbol.for('cordis.original')`）时才解包 `original`。真实 `extends Service` 的实例自带 tracker symbol 但没有 `original`（后者只是读代理 getter），旧实现返回 `token: undefined`，同 uid 的原地 `ctx.set` 替换被 `bindingEqual` 判为未变化。`impl.value === undefined` 现在返回 `undefined` binding（移除），`ctx.set(name, undefined)` 因此作废授权；`bindingEqual` 对 undefined 保持 `left === right`。新增真实 cordis Service 负控：真实实例 token 必须等于该实例（不再 undefined）、原地替换后 prompt 立即 `DEVLEAD_SESSION_UNAVAILABLE` 并最终以新语料重证出 `DEVLEAD_FOREIGN_SUPERVISOR`、`ctx.set(undefined)` 移除后持续 fail-closed（恢复同实例 + lifecycle wake 后可重新证明）。真实 Host 的 patch/installed e2e（真实 `SessionQueryEngine` 等 Service）无 false recomposition。 |
+| R3（major，生产路径 fail-open） | `corpusBinding` 的 token 改为 **`ctx.reflect._getImpl(name).value` 的对象身份**；只有当该 provision 值本身是 traceable proxy（同时带 `Symbol.for('cordis.tracker')` 与 `Symbol.for('cordis.original')`）时才解包 `original`。真实 `extends Service` 的实例自带 tracker symbol 但没有 `original`（后者只是读代理 getter），旧实现返回 `token: undefined`，同 uid 的原地 `ctx.set` 替换被 `bindingEqual` 判为未变化。`impl.value === undefined` 现在返回 `undefined` binding（移除），`ctx.set(name, undefined)` 因此作废授权；`bindingEqual` 对 undefined 保持 `left === right`。新增真实 cordis Service 负控：真实实例 token 必须等于该实例（不再 undefined）、原地替换后 prompt 立即 `DEVLEAD_SESSION_UNAVAILABLE` 并最终以新语料重证出 `DEVLEAD_FOREIGN_SUPERVISOR`、`ctx.set(undefined)` 移除后持续 fail-closed（恢复同实例 + lifecycle wake 后可重新证明）。**证据边界（第六轮修正）**：patch/installed e2e 使用真实 Host 的 `SessionQueryEngine` 等 Service，但 e2e 不观测 corpus binding/token、也没有制造替换事件，所以它只能证明真实 Host 上冷重建与 prompt 行为**无功能回归**，不能作为“生产路径无 false recomposition”的证明；该结论由生产形状测试（真实 `extends Service` fake + 原地 `ctx.set`）与第 4.1.1 节的代码路径支撑。 |
 | medium/minor 1 abort vs change | 新 `CorpusVerification` 判别联合（`ok`/`aborted`/`unverifiable`/`changed`），abort 与“读到但不一致”分离：finalize 复核 abort 时保留 trusted 快照/游标、按失败计费（`rehydrationValidationTimedOut`），不再 `trusted=false` + 丢弃 cursor；not-found re-list 的 abort 同样保留快照/游标。finalize 复核有独立预算（`REHYDRATION_FINALIZE_TIMEOUT_MS=5s`）并在其前停掉 attempt deadline（`attempt.stop()`），慢而可用的 listing 之后从保留游标只重做复核；若复核追加了新行（`attempt.extend()` 重新 arm 有界窗口）后继续扫描。负控：listing 第 2 次起耗时 6s（>独立预算）时，首次 attempt 保留完整快照/cursor（index=5）并按失败计费，修复 listing 后下一次 attempt 不再读任何日志即 finalize。 |
 | medium/minor 2 finalize refresh 预算 | 刷新预算耗尽而仍存在“未被扫描的新 persisted id”时**不 finalize**：保留游标、标记 `rehydrationFinalizeBlocked` 并计入失败（避免热循环），下一次有界 attempt 先 append+扫描新行再复核。新增负控：每次 finalize 复核都多出一行时，首轮 boot 与后续重试都保持 `rehydrated=false`/fail-closed；停止增长后才 append+扫描并 finalize。 |
 | medium/minor 3 probe 文案 | 三处（`REHYDRATION_PROBE_MESSAGES`、`scheduleRehydrationProbe` JSDoc、prompt-gate 错误文案）改为“探针每 30s 重试一次，原因移除后恢复（recovers once the cause is removed）”，不再暗示探针只在原因移除后才开始 retry。README/README.zh/COMPATIBILITY/DESIGN 同步。 |
@@ -599,3 +599,161 @@ client revision `2774836314bb`；日志（本机）：
   mock/未来版本变化由测试固定）。
 - 载荷/日志行为不变：本轮只改 cold-supervision 状态机与文档；未 push、未 bump version、未打 tag。
 - mutation / e2e 日志保存在本机 `/tmp`，不随仓库提交。
+
+## 六次修复：unverifiable 计费/保留游标 + delivery-time proof（对 `7bf4b95` 的第六轮 delta）
+
+输入：第六轮 delta 复核对 `7bf4b95` 的 FINAL ISSUES——唯一阻断 SAFE 的 major U1
+（`CorpusVerification` 的 `unverifiable` 被当作 corpus changed / barrier 不计费，间歇 listing
+失败时无界快速重扫）与 3 项 medium（gate→delivery TOCTOU、dispose 不能 abort finalize
+validation、文档 5s 措辞）及 5 项 minor。本轮从 clean tree（HEAD `7bf4b95`，origin/main 仍
+`a21c7b7`）修复，**未 push、未 bump version、未打 tag**。冻结工作树（提交前最终树，
+`pnpm verify`/`check:packages`/三条 e2e 与全部 mutation 均在该树上运行）：
+
+- `packages/devlead/src/index.ts` sha256 `104aa4d313a58a80a4235134589f93f1d1ef4eab0a24c77238e99295e6647506`
+- `packages/devlead/tests/phase2.spec.ts` sha256 `8fe1a7038d928ad26b02a4ecd61d4d1a36b644dec4e668f08f1d23c2b7e66edd`
+- 代码树与最终本地 commit 相同（本证据随该 commit 一起提交；未 push）。
+
+### 修复前复现（与审查者数字一致；scratch spec 已删除、不随仓库提交）
+
+在未修复的 `7bf4b95` 树上用临时 scratch spec（fake timer、100 行 corpus）复现：
+
+| 场景 | 90s / 120s fake 后实测 |
+| --- | --- |
+| natural：`persistence.list` 每第 2 次抛错 | 90s：`attempts=0`、`capped=false`、`probe=false`、`cursor=highWater=64`、`reads=12,064`、`lists=241`、`persistence lists=481`（审查者：reads 764→12,064、lists 15→241） |
+| staged：`verifyCorpusListingNow` 恒返回 unverifiable | 120s：`attempts` 在 0/1 间振荡、`capped=false`、`probe=false`、`reads=16,128`、`lists=322`（审查者：reads 16,128、lists 322） |
+
+修复后同一负控（已作为正式测试提交）：
+
+| 场景 | 实测 |
+| --- | --- |
+| natural（每 2 次 listing 失败） | 约 40s fake 内 `attempts≥12`、`capped=true`、`probe=true`、`cursor=highWater=100`、`reads=100`（每个 row 恰读一次）、list 调用有界；原因移除后下一次 30s probe 用保留游标 finalize，**新增读取 0** |
+| staged（恒 unverifiable） | 约 40s fake 内 `attempts≥12`、`capped=true`、`probe=true`、`cursor=highWater=100`、`reads=164`（boot 空语料 64 读 + 重证 100 读）；原因移除后 0 新增读取 finalize |
+
+### 逐项修复
+
+| 项 | 实现 |
+| --- | --- |
+| U1（major） | `unverifiable` 与 `changed` 彻底分离，并和 abort 一样保留 trusted 状态、按失败计费：① finalize 复核 split 为 aborted（`rehydrationValidationTimedOut`）/unverifiable（新增 `rehydrationValidationUnverifiable`）/changed：aborted 与 unverifiable 都保留快照/游标/高水位并计一次失败，只有 `changed`（可读但 persistence 真值不被 listing 包含，或复核 listing 丢了快照行）丢弃并重扫；② not-found re-list 同样 split：aborted/ unverifiable 保留，`changed` 才丢弃；③ 就绪屏障返回 `{ listing, unverifiable }`，unverifiable（contains 不一致或 persistence 读不出到 2s 界限）由 `runRehydrationAttempt` 记入 charge 标志，同一 attempt 内后续成功的扫描入口复核会清除它；④ `rehydrateFromPersistence` 的 `chargedFailure` 纳入新标志 → `progressed=false`，失败 attempt 计 `attempts`、高水位前进但不因 batch 填充清零；12 次后进入 sticky cap + 30s probe，probe 保留游标，原因移除后从断点 finalize（不重读已扫行）。负控：natural 与 staged 两个（见上表），均断言 cap/probe、cursor/highWater、reads 上界与恢复零重读；另有 barrier unverifiable 计费负控。 |
+| medium 1 gate→delivery TOCTOU | `assertPromptSupervision` 现在返回 `SupervisionProof { bindings, corpusBacked }`；新增 `assertSupervisionProofHeld(proof, targetId)`：`!disposed && supervisionIndexComplete && bindingsEqual(proof.bindings, currentCorpusBindings()) && (!corpusBacked || rehydrated)`，失败时 `invalidateSupervision` + 重扫并抛 `DEVLEAD_SESSION_UNAVAILABLE`。复核点：drain/repair barrier 之后、watch 写入之前；`admitPrompt` 入口（resume/interrupt 副作用之前）；真正 `followup/steer/inject` 之前（检查与同步投递之间没有 await，无可插入的替换窗口）。若 interrupt 已提交 stop 后 proof 才失败，按既有 `DevLeadInterruptedAdmissionError` 语义保留 watch（stop 不可回滚，错误要求重试），与既有中断语义一致。负控：冷 Session resume gate 卡住 admission，窗口内 `ctx.set('sessionQuery', replacement)` → 拒绝且 0 followup；新 proof 重证后投递成功；另有 finalize 复核窗口内替换/移除两个负控。 |
+| medium 2 dispose | 新增服务生命周期 `rehydrationLifetime` AbortController，plugin dispose effect 里 abort；`verifyCorpusListingNow`（含独立预算的 finalize validation）把内部 controller 接在该 lifetime 上，dispose 立即 abort 已脱离 attempt deadline 的验证读取；`startRehydrationAttempt().extend()` 在 disposed 时 no-op（不再重新 arm deadline）；扫描 outer loop 与 read loop 检查 `this.disposed`。负控：finalize validation listing 挂起时 dispose，attempt 立即 settle（旧行为 test 30s timeout）；direct 负控断言 dispose 后 `extend()` 不会把 controller 加回 `rehydrationAttempts`。 |
+| medium 3 文档 | DESIGN §4.1.1 改为“attempt 的 deadline 是分段独立的，不是整次 attempt 只有一个 5s”：扫描阶段 5s、finalize 复核独立 5s、每次 append 批次经 `attempt.extend()` 重新 arm 5s；单次有界 attempt 理论最坏 `5s + ≤3×5s 复核 + ≤2×5s append 批次 ≈ 30s`（append 受 `MAX_FINALIZE_LISTING_REFRESHES=2` 限制），并写明 unverifiable 语义与 dispose/extend 行为。AUDIT §10.2 现状更新、COMPATIBILITY “persistence 就绪信号”假设 1、README/README.zh 冷重建段、OPTIONAL-DEPENDENCIES 同步同一措辞；DESIGN §4.1.1 的 dead 签名 `persistedLeadRecords(scanPersisted, corpusReady)` 改为 `persistedLeadRecords(listing?, signal?, attempt?)`。 |
+| minor 1 | `listPersistedSessionsWithin` 的 `Promise.race` loser 挂 `void work.catch(() => undefined)`（与 `awaitScan` 一致），abort 后后端拒绝不会成为 unhandled rejection。 |
+| minor 2 | `relistedAfterNotFound`（per attempt 布尔）改为 `relistedFor?: string`（per row/sessionId）：只有**同一** row 的第二次 not-found 才直接计读取失败；行真的消失/新快照重启时清零。负控：30 行 corpus、第 10/20 行各首次 not-found 后成功——per-row 语义下第一个 attempt 内两次 re-list+retry 后即 finalize（旧布尔在第二个 row 会失败并多付一轮重试）。 |
+| minor 3 | DESIGN dead 签名已更新（见 medium 3）。 |
+| minor 4 | 补 extend 负控：finalize 复核发现 append 行、该行 read 永不 settle——`attempt.extend()` 重新 arm 的 5s 窗口把读取放弃、boot 正常 settle（mutation 删 extend → `bootService did not settle within 60s` 失败）；另有 dispose 后 extend no-op 直接负控。ghost 多位置：新增第 5 行（第一批内）ghost 负控（既有第 90 行覆盖第一批外）。finalize 期间替换（隐藏 foreign supervisor 的新 query Service）与移除（query 在 ground-truth 读取与 listing 读取之间被移除 → unverifiable 保留游标）各一个负控。 |
+| minor 5 | 证据修正（见下）：R3 的 e2e “无 false recomposition” 改为证据边界；所有 221/221/198/198 注明含 3 条 SKIP 且 SKIP≠PASS；第四/五轮冻结 commit（仅 reflog 可达）用本地 ref 固定并记录 tree SHA；mutation 表披露 U1-natural mutation 下 staged spy 测试不受该 mutation 影响、由独立 U1-staged mutation 覆盖。 |
+
+新增测试集中在 `packages/devlead/tests/phase2.spec.ts`（60 → **71** 例，+11），全仓 **34 files /
+1464 tests**（+11）。新增负控：自然/间歇 listing 失败、staged 恒 unverifiable、barrier
+unverifiable 计费、delivery-time proof 复核、finalize validation dispose abort、append 批次
+extended deadline / hung read、dispose 后 extend no-op、finalize 窗口内替换、finalize 窗口内
+移除、per-row not-found re-list、第一批内 ghost 游标保留。
+
+### 真实时间线
+
+| 时间 | 事实 |
+| --- | --- |
+| 22:39 | 起点复核：HEAD `7bf4b95`、origin/main `a21c7b7`、工作区干净；读码定位 U1/TOCTOU/dispose/minors |
+| 22:42:22 | 未修复树 scratch 复现完成：natural 90s reads 12,064 / lists 241 / attempts 0 / cursor 64；staged 120s reads 16,128 / lists 322 / attempts 0/1（scratch 文件随后删除） |
+| 22:43–22:46 | 实现 U1（unverifiable split/retain/charge）、delivery-time proof、dispose lifetime、minor 1/2；scratch 复测：约 40s 内 cap+probe、reads 100/164、原因移除后 0 新增读取恢复 |
+| 22:46–22:48 | 写入 11 个正式负控；`npx vitest run packages/devlead/tests/phase2.spec.ts` 71/71；devlead 全包 892/892 |
+| 22:48–22:49 | 同步 DESIGN/AUDIT/COMPATIBILITY/README×2/OPTIONAL-DEPENDENCIES 措辞 |
+| 22:49:48–22:50:20 | 首轮 `pnpm verify`（含 scratch）35 files / 1465 tests 全过、build 6 targets；`check:packages` OK |
+| 22:50:34–22:51:35 | 候选树三条 e2e 全过（该轮 client revision `dcda03c54efd`）；后续最终 verify 重 build 后 rev 变化，故不使用该轮作为最终门禁引用 |
+| 22:52:15–22:53:41 | 6 项 mutation 在冻结树重跑：全部 `MUTATION_TEST_EXIT=1`、`RESTORE_CLEAN=true`、`FROZEN_DIFFSTAT_UNCHANGED=true` |
+| 22:54:14–22:54:35 | 删除 scratch、新增 finalize-removal 负控后 `pnpm verify`：**34 files / 1464 tests** 全过、build 6 targets；`check:packages` OK |
+| 22:54:47–22:56:04 | 该中间树三条 e2e 全过（client revision `95381841504e`）；随后自查补一处一致性：interrupt 已提交 stop 后若 delivery-time proof 复核失败，按既有 `DevLeadInterruptedAdmissionError` 语义保留 watch（生产代码小改动） |
+| 22:56–22:57 | 因上述生产代码改动，在最终冻结树（`104aa4d…`）上重跑全部门禁与 mutation |
+| 22:57:43–22:58:03 | **最终树** `pnpm verify`：**34 files / 1464 tests** 全过、build 6 targets；`check:packages` OK；`git diff --check` EXIT=0 |
+| 22:58:03–22:59:10 | **最终树** 6 项 mutation 全部重跑：全部 `MUTATION_TEST_EXIT=1`、`RESTORE_CLEAN=true` |
+| 22:59:14–23:00:31 | **最终树** 三条 e2e：patch **221/221**、installed **221/221**、no-worktree **198/198**；client revision `4098223abe00`；EXIT 全 0 |
+| 23:00–23:05 | 以最终树输出更新本证据并本地 commit（未 push、未 bump version、未打 tag） |
+
+### 门禁真实输出（冻结树：`src/index.ts` sha256 `104aa4d…`，代码树与本 commit 相同）
+
+```text
+$ pnpm verify
+Test Files  34 passed (34)
+Tests       1464 passed (1464)
+build complete (6 targets)
+VERIFY_EXIT=0
+
+$ pnpm check:packages
+check-packages: OK (6 packages)
+CHECK_PACKAGES_EXIT=0
+
+$ pnpm e2e --no-build
+E2E SMOKE PASS (patch, DeepSeek Harness 0.2.2-rc.5)
+  phase 1: 27/27; phase 1b: 12/12; phase 2: 23/23; phase 3: 125 PASS + 3 SKIP = 128/128; phase 1e: 31/31
+  total: 221/221 checks (PASS + SKIP; see per-phase lines)
+PATCH_EXIT=0
+
+$ pnpm e2e --flow installed --no-build
+E2E SMOKE PASS (installed, DeepSeek Harness 0.2.2-rc.5)
+  total: 221/221 checks (PASS + SKIP; see per-phase lines)
+INSTALLED_EXIT=0
+
+$ pnpm e2e --no-worktree --no-build
+E2E SMOKE PASS (patch, DeepSeek Harness 0.2.2-rc.5)
+  total: 198/198 checks (PASS + SKIP; see per-phase lines); phase 2 skipped (--no-worktree)
+NO_WORKTREE_EXIT=0
+```
+
+日志（本机，最终冻结树）：`/tmp/dsh-batch1-r6/final4/{e2e-patch,e2e-installed,e2e-no-worktree}.log`；
+verify/check/diff-check 日志：`/tmp/dsh-batch1-r6/final4/{verify,check-packages,diff-check}.log`。
+最终 e2e client revision `4098223abe00`。更早的 `/tmp/dsh-batch1-r6/final{,-2,-3}/` 与首轮候选树
+（client revision `dcda03c54efd`）均被最终树重跑取代，本证据只引用最终树输出。
+**SKIP 披露**：三条 e2e 的 3 条 SKIP 都是 phase 3 的 model-selection 检查，原因是本机
+provider 的 available model list 不含所请求的 `deepseek-official/deepseek-flash`（无凭据/路由
+不可用，SKIP 输出带真实拒绝文案）；`total: 221/221` 是 **PASS + SKIP** 合计，3 条 SKIP 未执行
+也不能算通过。此前各轮的 221/221 / 198/198 同样包含这 3 条 SKIP。
+
+### Mutation 负控（冻结树，全部重跑；均 `MUTATION_TEST_EXIT=1`、`RESTORE_CLEAN=true`）
+
+| 场景 | mutation | 目标测试 | 实际失败输出 |
+| --- | --- | --- | --- |
+| U1-natural | `verifyCorpusListingNow` 的 ground-truth probe 分支把 `{ status: 'unverifiable' }` 改回 `{ status: 'changed' }`（预修复行为：unverifiable 当语料变化） | `charges an intermittently unreadable persistence listing…`（`-t "unverifiable finalize validation|intermittently unreadable"`） | `condition "retry-cap with an intermittently unreadable ground truth" did not settle within 150000ms of advanced time`（始终 cap 不了 = 无界重扫）。同命令下 staged-spy 用例通过：该 mutation 在被 spy 覆盖的方法内部，staged 用例在方法之上打桩，故另设 U1-staged mutation |
+| U1-staged | 删除 finalize 复核的 `unverifiable` 保留分支（回落到 changed/丢弃路径） | `charges an always-unverifiable finalize validation…` | `condition "retry-cap with an always-unverifiable validation" did not settle within 100000ms of advanced time`；同时 vitest 报 1 个 unhandled `RangeError: Maximum call stack size exceeded`（未修复语义在 100s fake 内重扫约 1.6 万次触发 cordis 代理递归）——两者都只出现在 mutation 树 |
+| TOCTOU | 删除真正投递前的 `assertSupervisionProofHeld(options.proof, targetId)` | `re-checks the corpus binding at delivery time…` | `expected DEVLEAD_SESSION_UNAVAILABLE, but the call succeeded`（prompt 在旧证明下被投递） |
+| DISPOSE | 删除 `verifyCorpusListingNow` 的 `lifetime.addEventListener('abort', …)` 接线 | `aborts the finalize validation when the plugin is disposed` | `Error: Test timed out in 30000ms.`（dispose 后验证读取永不返回） |
+| RELISTED | `if (relistedFor === sessionId)` 改回 `if (relistedFor !== undefined)`（per-attempt 布尔） | `re-lists each ghost row once…` | `AssertionError: expected false to be true`（首个 attempt 未 finalize） |
+| EXTEND | 删除 `attempt?.extend()` | `arms an extended deadline for appended finalize rows…` | `Error: bootService did not settle within 60s of advanced fake time`（append 读取在已停止的 scan deadline 后永远挂着） |
+
+每次 mutation 的完整日志（含 `FROZEN_HEAD=7bf4b95`、冻结树 sha256 `104aa4d…`、mutation diff、
+测试输出与 `MUTATION_TEST_EXIT`、恢复后 sha256 与 `RESTORE_CLEAN`）：`/tmp/dsh-batch1-r6/mut/`
+（`U1.log`、`U1-STAGED.log`、`TOCTOU.log`、`DISPOSE.log`、`RELISTED.log`、`EXTEND.log`）。
+全部 mutation 在最终冻结树（`104aa4d…`）上重跑，恢复后逐项 `RESTORE_CLEAN=true`；未沿用早于冻结树
+的日志。
+
+### 证据修正（本轮）
+
+- **R3 的 e2e 结论降级为证据边界**：第五轮 R3 曾写“真实 Host 的 patch/installed e2e 无 false
+  recomposition”。e2e 不观测 corpus binding/token、也没有制造替换事件，它只能证明真实 Host 上
+  冷重建/prompt 行为无功能回归；生产路径的 binding 语义由生产形状测试（真实 `extends Service`
+  fake + 原地 `ctx.set`）与代码路径支撑。已在该行改写并标注“证据边界（第六轮修正）”。
+- **SKIP 披露**：见门禁一节的 SKIP 说明；本条适用于本文件此前所有 `221/221` / `198/198` 表述。
+- **冻结 commit 可复现性**：第四轮冻结 `d12d9bb`（tree `f43a8621d9c4ba3661159591019ecc7a8d79f63e`）
+  与第五轮冻结 `d282f62`（tree `b3ac2b33556edc78b960f8ddf7cb2740c0065d48`）在本轮起点都只经
+  reflog 可达（均不是 HEAD 祖先）。已用**本地 ref** 固定：`refs/devlead-evidence/r4-freeze` →
+  `d12d9bb`、`refs/devlead-evidence/r5-freeze` → `d282f62`（不 push，不属于 branch/tag）。第五轮
+  证据所称“最终 HEAD 的代码树与 d282f62 相同”在本轮起点复核为真：`git diff d282f62 7bf4b95 --
+  packages` 为空；本轮不得再引用“仅 reflog 可达”的裸 hash 作为唯一证据。
+- 本轮“修复前数字”来自临时 scratch spec（fake timer、100 行 corpus，复现后删除，不作为提交
+  内容）；修复后数字全部来自已提交的正式测试断言。候选树与中间树的 e2e（client revision `dcda03c54efd` / `95381841504e`）均被最终冻结树重跑取代，
+  本证据只引用最终树输出。
+
+### 残余风险（本轮，非未完成项）
+
+- `unverifiable` 保留游标意味着：若语料真实变化而每一次验证都恰好不可读，DevLead 会保留旧快照
+  并持续 fail-closed，直到某次验证成功才发现新增/删除行。这是安全方向（期间 prompt 不授权），
+  代价是恢复延迟；12 次 cap + 30s 探针保证它不会退化成热循环，探针也会保留游标继续验证。
+- delivery-time 复核与同步投递之间没有 `await`，因此不存在可插入的替换窗口；但若未来把投递改成
+  异步/分批，需要把 proof 校验一起带入异步边界。interrupt 已在 stop providers 之后才检查 proof：
+  该路径仍可能先请求 stop 再拒绝投递（watch 保留的补偿语义不变，错误文案要求重试），这是既有的
+  “stop 不可回滚”取舍，不是新增 fail-open。
+- dispose 通过服务 lifetime abort 覆盖 finalize 复核，通过 attempt controllers 覆盖扫描阶段；
+  两者之外的第三方后端 promise 若完全忽略 signal，仍会被 `Promise.race` 放弃而不阻塞 Host。
+- e2e 不观测 binding 计数/替换（证据边界见上）；真实安装版只覆盖“无替换”的正常组合。
+- 本轮的“单次 attempt 最坏约 30s”是理论上界（5s 扫描 + ≤3 次独立复核 + ≤2 次 append 批次），
+  实际启动通常只需一次扫描 + 一次复核；持续慢后端会在每个窗口被放弃并计失败，不会永久挂起。
+- mutation 与 e2e/verify 日志保存在本机 `/tmp`，不随仓库提交；本地证据 ref 不 push。

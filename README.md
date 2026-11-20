@@ -973,12 +973,25 @@ composed — the plugin never depends on it.
   attempt resumes from the saved cursor; a freshly validated listing that only adds persisted
   rows is appended to the snapshot, while a vanished/replaced row restarts from the fresh
   snapshot. Cursor progress beyond the recorded failure high-water — not merely re-reading the
-  same prefix — does not consume the retry budget. Every attempt is also bounded as a whole
-  (5 s): a backend promise that never settles is abandoned, its epoch is invalidated and the
-  attempt counts as a failure, so `[Service.init]` and later retries can never hang. A completed
-  snapshot validates under an independent 5 s finalize budget, so a slow but usable listing
-  backend keeps its trusted snapshot and cursor (the attempt is charged one failure) and the
-  next attempt only re-validates from the retained cursor instead of rescanning. A corrupt
+  same prefix — does not consume the retry budget. The bounds are per phase, not one 5 s window
+  for the whole attempt: the scan phase (readiness barrier + listing validation + bounded reads)
+  runs under the 5 s attempt deadline, a completed snapshot validates under an independent 5 s
+  finalize budget, and each appended-row batch re-arms its own 5 s window via
+  `attempt.extend()`. One bounded attempt can therefore take up to about 30 s in the pathological
+  case (5 s scan + up to 3×5 s validations + up to 2×5 s appended batches; appends are capped by
+  `MAX_FINALIZE_LISTING_REFRESHES=2`), but every step has its own bound, so `[Service.init]` and
+  later retries can never hang: a backend promise that never settles is abandoned at its phase's
+  deadline, its epoch is invalidated and the attempt counts as a failure. The finalize validation
+  keeps the trusted snapshot and cursor on abort/timeout **and when the corpus is merely
+  unverifiable** (the listing or ground truth is not readable right now); only a readable
+  inconsistency is a corpus change that discards and rescans. A slow but usable listing backend
+  therefore keeps its trusted snapshot and cursor (the attempt is charged one failure) and the
+  next attempt only re-validates from the retained cursor instead of rescanning. The same
+  unverifiable-is-not-a-change rule covers the not-found re-list, the scan entry validation and
+  the readiness barrier: an unverifiable attempt is charged against the bounded budget (and
+  `changed` is the only readable inconsistency that resets the cursor), so an intermittently
+  failing listing backend reaches the 12-attempt cap and the slow probe instead of rescanning
+  forever — the successful batch fill no longer clears the budget every round. A corrupt
   candidate advances the cursor and marks the index degraded without stopping the scan; a read
   failure keeps the cursor and is retried on a bounded exponential backoff (250 ms → 5 s, at most
   12 attempts), after which only a slow 30 s degraded recovery probe retries — never a hot loop.
@@ -989,13 +1002,18 @@ composed — the plugin never depends on it.
   disappeared mid-scan triggers one re-list, validated the same way: if the id is really gone,
   the snapshot restarts from the fresh listing; if it is still listed, the row is retried once
   and then counted as a read failure with the cursor kept (the re-list never resets a
-  still-listed cursor). A snapshot may only finalize when it is still a subset of the freshly
+  still-listed cursor), and that one retry is tracked per row so a later row's first not-found is
+  not charged as a failure. A snapshot may only finalize when it is still a subset of the freshly
   validated corpus and every newer persisted row was appended and scanned under a bounded
   refresh budget; an exhausted refresh budget blocks finalization. Any other change restarts
   from a fresh validated listing while prompt authorization stays fail-closed. A corpus with no
   projection cache still scans cold candidates with bounded exact folds (warning once); it does
   not degrade to live Sessions only. Replacing (including in place) or unloading a corpus
-  service invalidates the proven index, and a Host that once proved a persisted corpus never
+  service invalidates the proven index; the prompt gate additionally captures a proof token for
+  the corpus bindings it validated, and re-checks it before the admission resumes/interrupts and
+  immediately before writing the child inbox, so an in-place replacement during the admission
+  window fails closed instead of delivering under a stale proof. A Host that once proved a
+  persisted corpus never
   falls back to live-only authorization. When a persisted corpus exists, prompt authorization
   stays fail-closed (`DEVLEAD_SESSION_UNAVAILABLE`; the error names the cause and the recovery
   options) until a scan proves the complete supervisor set against the current corpus services.

@@ -381,6 +381,22 @@ interface CorpusBindingSnapshot {
   readonly cache: CorpusBinding | undefined
 }
 
+/**
+ * Supervision authorization captured by the prompt gate. Admission may await a
+ * discard drain, repair barriers, a cold resume or an interrupt stop before the
+ * message is actually delivered; the corpus services can be replaced in place
+ * (or removed) in that window without any inject-hook notification reaching a
+ * synchronous check. The proof records the exact corpus bindings the gate
+ * validated, so the delivery step can re-check that the proven index still
+ * describes the corpus it is about to admit the prompt against.
+ */
+interface SupervisionProof {
+  /** Corpus service identities the supervisor index was proven with. */
+  readonly bindings: CorpusBindingSnapshot
+  /** Whether the gate covered a proven persisted corpus (as opposed to a live-only Host). */
+  readonly corpusBacked: boolean
+}
+
 /** Deadline/signal of one bounded rehydration attempt. */
 interface RehydrationAttempt {
   /** Aborted at the attempt deadline. */
@@ -986,6 +1002,16 @@ export class DevLeadService extends Service {
    */
   private rehydrationFinalizeBlocked = false
   /**
+   * Whether the attempt failed only because a corpus listing or persistence
+   * ground truth was not readable right now (no readable inconsistency was
+   * proven). Like a slow validation it is charged against the retry budget, but
+   * it must keep the trusted snapshot, cursor and high-water: the corpus may be
+   * perfectly usable and merely unreadable for a moment, so discarding the
+   * cursor would turn an intermittent listing failure into an unbounded rescan
+   * (the successful batch fill would clear the budget every round).
+   */
+  private rehydrationValidationUnverifiable = false
+  /**
    * Sticky terminal for the bounded fast-retry budget: once the 12-attempt cap
    * is hit, only the single slow degraded probe may retry. Cursor progress does
    * NOT clear it (a cap-paused batch or a probe advancing within the same
@@ -1243,6 +1269,13 @@ export class DevLeadService extends Service {
   private rehydrationRetryProbe = false
   /** Abort controllers of the attempts currently in flight, so disposal can cancel their backend waits. */
   private readonly rehydrationAttempts = new Set<AbortController>()
+  /**
+   * Service-lifetime abort, fired once when the plugin is disposed. It covers
+   * backend waits that are no longer bound to an attempt signal (the finalize
+   * validation runs under its own budget after the attempt deadline stopped),
+   * so a dispose always cancels every corpus read in flight.
+   */
+  private readonly rehydrationLifetime = new AbortController()
   private rehydrationRetryDelayMs = 250
   private rehydrationRetryAttempts = 0
   private readonly rehydrationWarnings = new Set<string>()
@@ -1287,6 +1320,7 @@ export class DevLeadService extends Service {
     this.ctx.effect(function* (this: DevLeadService) {
       yield () => {
         this.disposed = true
+        this.rehydrationLifetime.abort()
         this.abortRehydrationAttempts()
         this.wakeReadiness()
         this.disposeRehydrationRetry()
@@ -1469,6 +1503,7 @@ export class DevLeadService extends Service {
         this.rehydrationProgress = false
         this.rehydrationValidationTimedOut = false
         this.rehydrationFinalizeBlocked = false
+        this.rehydrationValidationUnverifiable = false
         if (!this.disposed) {
           if (this.rehydrationFreshRequested) {
             this.rehydrationFreshRequested = false
@@ -1495,8 +1530,13 @@ export class DevLeadService extends Service {
         // proven, and a batch advance inside the still-unvalidated snapshot is
         // not progress beyond the failure point. The same holds when the
         // finalize refresh budget was exhausted with newer persisted rows still
-        // unscanned: the attempt failed closed.
-        const chargedFailure = this.rehydrationValidationTimedOut || this.rehydrationFinalizeBlocked
+        // unscanned, and when a listing/ground-truth read was unverifiable: the
+        // attempt failed closed, so it must consume the bounded budget (and
+        // retain the trusted cursor) instead of letting a successful batch fill
+        // reset the budget every round.
+        const chargedFailure = this.rehydrationValidationTimedOut
+          || this.rehydrationFinalizeBlocked
+          || this.rehydrationValidationUnverifiable
         const progressed = !chargedFailure
           && (this.rehydrationProgress || nextIndex > this.rehydrationScanHighWater)
         if (progressed) {
@@ -1519,6 +1559,7 @@ export class DevLeadService extends Service {
         this.rehydrationProgress = false
         this.rehydrationValidationTimedOut = false
         this.rehydrationFinalizeBlocked = false
+        this.rehydrationValidationUnverifiable = false
         // Never re-enter through optional-service injection synchronously:
         // the next attempt is always driven by the single bounded timer.
         this.armRehydrationRetry(this.ctx.get('sessionQuery') !== undefined)
@@ -1527,6 +1568,7 @@ export class DevLeadService extends Service {
         this.rehydrationProgress = false
         this.rehydrationValidationTimedOut = false
         this.rehydrationFinalizeBlocked = false
+        this.rehydrationValidationUnverifiable = false
       }
     }
   }
@@ -1546,6 +1588,7 @@ export class DevLeadService extends Service {
     this.rehydrationScanHighWater = 0
     this.rehydrationValidationTimedOut = false
     this.rehydrationFinalizeBlocked = false
+    this.rehydrationValidationUnverifiable = false
   }
 
   /** Abort every in-flight attempt so a plugin disposal cannot leave backend waits pending. */
@@ -1585,6 +1628,7 @@ export class DevLeadService extends Service {
     this.rehydrationProgress = false
     this.rehydrationValidationTimedOut = false
     this.rehydrationFinalizeBlocked = false
+    this.rehydrationValidationUnverifiable = false
     // The scan result is only trustworthy for the corpus services it was read
     // with. A replacement in place during the attempt (no fiber event, so no
     // inject hook) must not let the mixed result finalize under the new
@@ -1646,8 +1690,18 @@ export class DevLeadService extends Service {
       this.armRehydrationRetry(true)
       return
     }
-    const listing = await this.awaitCorpusReady(attempt.signal)
+    const readiness = await this.awaitCorpusReady(attempt.signal)
     if (this.attemptAbandoned(epoch, attempt)) return
+    const listing = readiness.listing
+    if (readiness.unverifiable) {
+      // The readiness probe could not verify the corpus against the persistence
+      // ground truth (it was unreadable, or still inconsistent, within the
+      // barrier bound). An unverifiable attempt must not look like progress: it
+      // is charged against the bounded retry budget so an intermittently failing
+      // listing backend reaches the 12-attempt cap and the slow probe instead of
+      // keeping the fast retry alive forever.
+      this.rehydrationValidationUnverifiable = true
+    }
     this.rehydrationScanned = true
     let scanComplete = false
     let applied = false
@@ -1716,7 +1770,10 @@ export class DevLeadService extends Service {
       extend: () => {
         if (timer !== undefined) clearTimeout(timer)
         timer = undefined
-        if (timedOut || controller.signal.aborted) return
+        // A disposed plugin must never arm a new deadline: disposal already
+        // aborted every in-flight attempt, and re-arming here would keep the
+        // service's timer machinery alive after unload.
+        if (this.disposed || timedOut || controller.signal.aborted) return
         this.rehydrationAttempts.add(controller)
         armDeadline()
       },
@@ -1794,16 +1851,20 @@ export class DevLeadService extends Service {
    * does not settle within the bound the attempt stays fail-closed and a later
    * bounded attempt retries; it never scans a warmup subset.
    * @param signal - attempt signal.
-   * @returns the validated listing, or undefined when the corpus is not ready.
+   * @returns the validated listing (when ready) and whether the barrier gave up
+   *   without a readable ground truth, which must be charged as a failure.
    */
-  private async awaitCorpusReady(signal: AbortSignal): Promise<ReadyCorpusListing | undefined> {
+  private async awaitCorpusReady(signal: AbortSignal): Promise<{
+    readonly listing?: ReadyCorpusListing
+    readonly unverifiable: boolean
+  }> {
     const deadline = Date.now() + REHYDRATION_READINESS_TIMEOUT_MS
     let probe = await this.probeCorpus(deadline, signal)
     while (!this.disposed && !signal.aborted && probe?.verifiable === true && probe.ids === undefined && Date.now() < deadline) {
       await this.readinessSleep(REHYDRATION_READINESS_POLL_MS)
       probe = await this.probeCorpus(deadline, signal)
     }
-    if (this.disposed || signal.aborted) return undefined
+    if (this.disposed || signal.aborted) return { unverifiable: false }
     const expectedIds = probe?.ids
     if (expectedIds === undefined) {
       if (probe?.verifiable === true) {
@@ -1813,7 +1874,7 @@ export class DevLeadService extends Service {
           + `${REHYDRATION_READINESS_TIMEOUT_MS}ms; prompt authorization stays fail-closed until a later attempt proves the corpus`,
         )
       }
-      return undefined
+      return { unverifiable: true }
     }
     let listing: ReadyCorpusListing | undefined
     while (!this.disposed && !signal.aborted && Date.now() < deadline) {
@@ -1826,14 +1887,16 @@ export class DevLeadService extends Service {
       // poll's wait.
       listing = await this.validatedCorpusListing(expectedIds, deadline, signal)
     }
-    if (listing === undefined && !this.disposed && !signal.aborted) {
+    if (listing === undefined) {
+      if (this.disposed || signal.aborted) return { unverifiable: false }
       this.warnRehydration(
         'list',
         'devlead: the persisted Session corpus is still warming up; prompt authorization stays fail-closed '
         + 'until a later attempt scans a complete validated listing',
       )
+      return { unverifiable: true }
     }
-    return listing
+    return { listing, unverifiable: false }
   }
 
   /**
@@ -1867,8 +1930,14 @@ export class DevLeadService extends Service {
    * The result distinguishes an abort from a corpus change: an aborted
    * validation (attempt deadline, verification budget or disposal) must never
    * discard a trusted snapshot or its cursor, because the corpus may be
-   * perfectly usable and merely slow. Only a readable inconsistency
-   * ({@link CorpusVerification} `changed`/`unverifiable`) may do that.
+   * perfectly usable and merely slow. An `unverifiable` result (the ground
+   * truth or the listing was not readable) must keep the snapshot too: it is not
+   * evidence of a change, only of a transiently unreadable backend. Only a
+   * readable inconsistency ({@link CorpusVerification} `changed`) may discard.
+   *
+   * The read is additionally bound to the service lifetime, so disposing the
+   * plugin aborts a finalize validation that runs after the attempt deadline was
+   * stopped.
    * @param signal - attempt signal; undefined runs without the attempt deadline.
    * @param options - verification budget override.
    * @returns the verification outcome.
@@ -1877,13 +1946,15 @@ export class DevLeadService extends Service {
     signal: AbortSignal | undefined,
     options: { readonly independentBudgetMs?: number } = {},
   ): Promise<CorpusVerification> {
-    if (this.disposed || signal?.aborted === true) return { status: 'aborted' }
+    const lifetime = this.rehydrationLifetime.signal
+    if (this.disposed || lifetime.aborted || signal?.aborted === true) return { status: 'aborted' }
     const controller = new AbortController()
     const budget = options.independentBudgetMs ?? REHYDRATION_ATTEMPT_TIMEOUT_MS
     const timer = setTimeout(() => controller.abort(), budget)
     timer.unref?.()
     const onAttemptAbort = (): void => controller.abort()
     if (options.independentBudgetMs === undefined) signal?.addEventListener('abort', onAttemptAbort, { once: true })
+    lifetime.addEventListener('abort', onAttemptAbort, { once: true })
     try {
       const probe = await this.awaitScan(persistedSessionsOf(this.ctx, controller.signal), controller.signal)
       if (probe === SCAN_ABORTED || controller.signal.aborted) return { status: 'aborted' }
@@ -1905,6 +1976,7 @@ export class DevLeadService extends Service {
     } finally {
       clearTimeout(timer)
       signal?.removeEventListener('abort', onAttemptAbort)
+      lifetime.removeEventListener('abort', onAttemptAbort)
     }
   }
 
@@ -1970,7 +2042,12 @@ export class DevLeadService extends Service {
       const aborted = new Promise<undefined>((resolve) => {
         controller.signal.addEventListener('abort', () => resolve(undefined), { once: true })
       })
-      const records = await Promise.race([query.listSessions(controller.signal), aborted])
+      // The race may settle on the abort first; keep the abandoned listing's
+      // eventual rejection handled so a failing backend never surfaces as an
+      // unhandled rejection.
+      const work = query.listSessions(controller.signal)
+      void work.catch(() => undefined)
+      const records = await Promise.race([work, aborted])
       if (records === undefined) return undefined
       return this.listingOf(records)
     } catch (error: unknown) {
@@ -2136,6 +2213,7 @@ export class DevLeadService extends Service {
     this.rehydrationScanHighWater = 0
     this.rehydrationValidationTimedOut = false
     this.rehydrationFinalizeBlocked = false
+    this.rehydrationValidationUnverifiable = false
   }
 
   /**
@@ -2736,6 +2814,7 @@ export class DevLeadService extends Service {
     this.rehydrationScanHighWater = 0
     this.rehydrationValidationTimedOut = false
     this.rehydrationFinalizeBlocked = false
+    this.rehydrationValidationUnverifiable = false
     void this.rehydrateFromPersistence()
     await this.outbox?.dropForLead(sessionId)
     await this.outbox?.dropAnswerDiscardsForLead(sessionId)
@@ -3339,7 +3418,11 @@ export class DevLeadService extends Service {
     return await this.withTargetAdmission(targetId, async () => {
       signal?.throwIfAborted()
       const leadId = String(agent.id)
-      this.assertPromptSupervision(agent, targetId)
+      // The gate also returns the proof token re-checked at delivery, because
+      // admission can await a drain, repair barrier, resume or interrupt after
+      // this point and an in-place corpus-service replacement has no other
+      // synchronous observer.
+      const proof = this.assertPromptSupervision(agent, targetId)
       // An ANSWER admission always waits for any queued or in-flight discard
       // drain: the question guards below must see the reopened state, and an
       // older discard must reach the durable audit before a newer answer record
@@ -3517,6 +3600,12 @@ export class DevLeadService extends Service {
           'DEVLEAD_SESSION_UNAVAILABLE',
         )
       }
+      // The gate above ran before the discard drain / repair barrier could wait
+      // up to 30s. Re-check the supervision proof after every awaited stage and
+      // before the watch mutation: a corpus service replaced or removed in that
+      // window must fail this admission instead of delivering under a stale
+      // supervisor proof.
+      this.assertSupervisionProofHeld(proof, targetId)
       const watch = options.watch ?? true
       // Watch before admission: a very fast child turn/end must not settle before
       // the watch commits, or the first wake is lost. The trade-off is that a
@@ -3534,6 +3623,7 @@ export class DevLeadService extends Service {
           signal,
           plan,
           intent,
+          proof,
           ...(questionId === undefined ? {} : { questionId }),
           ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
         })
@@ -3999,8 +4089,33 @@ export class DevLeadService extends Service {
       : undefined
   }
 
-  /** Hard prompt-side supervision gate; report routing deliberately stays unchanged. */
-  private assertPromptSupervision(agent: Agent, targetId: string): void {
+  /** Fail-closed error for an unproven or no-longer-proven supervisor index. */
+  private supervisionUnavailable(targetId: string): DevLeadError {
+    return new DevLeadError(
+      `cannot prove the complete DevLead supervisor set for Session "${targetId}" yet; `
+      + `no prompt was delivered — ${this.supervisionDegradedReason}. `
+      + 'Recovery: open (resume) the affected DevLead Session and run /devlead reset there, or repair/delete '
+      + 'the corrupt or unreadable Session log; the slow recovery probe retries '
+      + `every ${String(DEGRADED_REHYDRATION_PROBE_MS / 1_000)}s and recovers once the cause is removed, and a Host `
+      + 'restart also rebuilds the index',
+      'DEVLEAD_SESSION_UNAVAILABLE',
+    )
+  }
+
+  /**
+   * Hard prompt-side supervision gate; report routing deliberately stays
+   * unchanged.
+   *
+   * The gate validates the corpus bindings synchronously and returns the proof
+   * token the delivery step re-checks: admission can await drains, repairs,
+   * resume and interrupt for up to tens of seconds, and a corpus service
+   * replaced in place in that window would otherwise authorize a prompt against
+   * a corpus the proven index never covered.
+   * @param agent - lead Agent admitting the prompt.
+   * @param targetId - Session the prompt is addressed to.
+   * @returns the supervision proof to re-check immediately before delivery.
+   */
+  private assertPromptSupervision(agent: Agent, targetId: string): SupervisionProof {
     // A proven authorization is bound to the exact corpus services it was
     // proven with. A service replaced in place (no fiber unload, so no inject
     // hook) must invalidate it before this prompt can be admitted; the rescan
@@ -4009,23 +4124,19 @@ export class DevLeadService extends Service {
       this.invalidateSupervision('the Session corpus services were recomposed; the supervisor index is being re-proven')
     }
     if (!this.supervisionIndexComplete) {
-      throw new DevLeadError(
-        `cannot prove the complete DevLead supervisor set for Session "${targetId}" yet; `
-        + `no prompt was delivered — ${this.supervisionDegradedReason}. `
-        + 'Recovery: open (resume) the affected DevLead Session and run /devlead reset there, or repair/delete '
-        + 'the corrupt or unreadable Session log; the slow recovery probe retries '
-        + `every ${String(DEGRADED_REHYDRATION_PROBE_MS / 1_000)}s and recovers once the cause is removed, and a Host `
-        + 'restart also rebuilds the index',
-        'DEVLEAD_SESSION_UNAVAILABLE',
-      )
+      throw this.supervisionUnavailable(targetId)
     }
-    if (this.hub === undefined) return
+    const proof: SupervisionProof = {
+      bindings: this.currentCorpusBindings(),
+      corpusBacked: this.rehydrated,
+    }
+    if (this.hub === undefined) return proof
     const archived = new Set(
       (this.ctx.get('workspaceRegistry')?.archivedSessionIds ?? []).map(id => String(id)),
     )
     const callersId = String(agent.id)
     const watchers = this.hub.supervisorsOf(targetId).filter(id => !archived.has(id))
-    if (watchers.length === 0 || (watchers.length === 1 && watchers[0] === callersId)) return
+    if (watchers.length === 0 || (watchers.length === 1 && watchers[0] === callersId)) return proof
     if (watchers.length > 1) {
       throw new DevLeadError(
         `Session "${targetId}" has conflicting DevLead supervisors (${watchers.join(', ')}); `
@@ -4038,6 +4149,29 @@ export class DevLeadService extends Service {
       + 'continue it from that lead or remove its watch first',
       'DEVLEAD_FOREIGN_SUPERVISOR',
     )
+  }
+
+  /**
+   * Re-check the gate's supervision proof at (or just before) delivery.
+   *
+   * A prompt admission may yield for a discard drain, a repair barrier, a cold
+   * Session resume or an interrupt stop. A corpus service replaced in place or
+   * removed during that window invalidates the proven supervisor index without
+   * an inject-hook event; delivering anyway could hand a prompt into a Session
+   * whose true supervisor is a different (hidden) DevLead. Fail closed, trigger
+   * the re-proof and refuse delivery.
+   * @param proof - proof token captured by {@link assertPromptSupervision}.
+   * @param targetId - Session the prompt is addressed to.
+   */
+  private assertSupervisionProofHeld(proof: SupervisionProof | undefined, targetId: string): void {
+    if (proof === undefined) return
+    const held = !this.disposed
+      && this.supervisionIndexComplete
+      && this.bindingsEqual(proof.bindings, this.currentCorpusBindings())
+      && (!proof.corpusBacked || this.rehydrated)
+    if (held) return
+    this.invalidateSupervision('the Session corpus services were recomposed during prompt admission; the supervisor index is being re-proven')
+    throw this.supervisionUnavailable(targetId)
   }
 
   /**
@@ -4894,7 +5028,11 @@ export class DevLeadService extends Service {
         if (signal?.aborted !== true) this.rehydrationValidationTimedOut = true
         return result(attached, [], false)
       }
-      if (verification.status !== 'ok') {
+      if (verification.status === 'unverifiable') {
+        // The corpus is temporarily unreadable, not changed. Keep the retained
+        // snapshot/cursor (if any) and charge the attempt so the bounded retry
+        // budget owns recovery instead of a fast rescan loop.
+        this.rehydrationValidationUnverifiable = true
         this.warnRehydration(
           'corpus',
           'devlead: the persisted Session corpus could not be verified against the Session persistence listing; '
@@ -4902,6 +5040,18 @@ export class DevLeadService extends Service {
         )
         return result(attached, [], false)
       }
+      if (verification.status === 'changed') {
+        this.warnRehydration(
+          'corpus',
+          'devlead: the persisted Session corpus changed while it was being verified; '
+          + 'cold lead rehydration stays fail-closed until a later validated scan',
+        )
+        return result(attached, [], false)
+      }
+      // A successful verification supersedes an unreadable readiness probe from
+      // this same attempt: the corpus is readable now, so the attempt is not a
+      // charged unverifiable failure.
+      this.rehydrationValidationUnverifiable = false
       pending = verification.listing
     }
     let state = this.coldScan
@@ -4916,9 +5066,13 @@ export class DevLeadService extends Service {
     // explicit reset, the slow probe or a service recomposition clears them.
     let carriedCorrupt = state?.corrupt ?? false
     let carriedLiveFailure = state?.liveFailure ?? false
-    let relistedAfterNotFound = false
+    // The one row that already consumed its single in-attempt not-found retry.
+    // Per row, never per attempt: a ghost row must not make every later row's
+    // first not-found count as a failure without a validated re-list.
+    let relistedFor: string | undefined
     let listingRefreshes = 0
     outer: for (;;) {
+      if (this.disposed) return result([...attached], [], false)
       if (state === undefined) {
         const snapshotListing = pending
         if (snapshotListing === undefined) {
@@ -4990,7 +5144,7 @@ export class DevLeadService extends Service {
       let reads = 0
       let readFailed = false
       while (state.index < state.records.length && reads < MAX_COLD_LEAD_LOG_READS) {
-        if (signal?.aborted === true) {
+        if (this.disposed || signal?.aborted === true) {
           state.complete = false
           return result([...state.leads.values()], state.active, false)
         }
@@ -5019,10 +5173,10 @@ export class DevLeadService extends Service {
             return result([...state.leads.values()], state.active, false)
           }
           if (isSessionNotFoundError(error)) {
-            if (relistedAfterNotFound) {
-              // The id stayed not-found across a validated re-list: that is a
-              // read failure, not progress. Keep the cursor and let the bounded
-              // retry budget (then the slow probe) own recovery.
+            if (relistedFor === sessionId) {
+              // This exact id stayed not-found across its one validated re-list:
+              // that is a read failure, not progress. Keep the cursor and let
+              // the bounded retry budget (then the slow probe) own recovery.
               state.complete = false
               readFailed = true
               this.warnRehydration(
@@ -5041,9 +5195,25 @@ export class DevLeadService extends Service {
               if (!signal?.aborted) this.rehydrationValidationTimedOut = true
               return result([...state.leads.values()], state.active, false)
             }
-            if (verification.status !== 'ok') {
-              // A readable but inconsistent/unverifiable re-list is not
-              // authorization evidence: fail closed and re-validate later.
+            if (verification.status === 'unverifiable') {
+              // A transiently unreadable re-list is not evidence that the row
+              // vanished. Never discard the trusted snapshot/cursor here: a
+              // successful batch fill would otherwise clear the retry budget
+              // every round and keep rescanning the prefix forever. Charge the
+              // attempt and retry this row on the next bounded attempt.
+              state.complete = false
+              this.rehydrationValidationUnverifiable = true
+              this.warnRehydration(
+                'read',
+                `devlead: could not re-verify the Session corpus after a not-found read; keeping the trusted cursor `
+                + `for a bounded retry: ${thrownMessage(error)}`,
+              )
+              return result([...state.leads.values()], state.active, false)
+            }
+            if (verification.status === 'changed') {
+              // A readable inconsistency: the re-list is not authorization
+              // evidence, so fail closed and restart from a fresh validated
+              // listing on a later attempt.
               state.complete = false
               state.trusted = false
               this.coldScan = undefined
@@ -5065,7 +5235,7 @@ export class DevLeadService extends Service {
               // cursor, consumes the bounded retry budget and lets the sticky
               // cap/slow probe own recovery. This also keeps a one-off transient
               // not-found recoverable inside the same attempt.
-              relistedAfterNotFound = true
+              relistedFor = sessionId
               continue
             }
             // The row really vanished from the validated corpus: the snapshot
@@ -5078,7 +5248,7 @@ export class DevLeadService extends Service {
             this.rehydrationScanHighWater = 0
             state = undefined
             pending = fresh
-            relistedAfterNotFound = true
+            relistedFor = undefined
             continue outer
           }
           state.complete = false
@@ -5147,8 +5317,10 @@ export class DevLeadService extends Service {
         // This validation deliberately has its own budget and stops the attempt
         // deadline: a scan that already read the corpus must not be discarded
         // only because re-validating it was slow (a slow but usable backend
-        // would fail closed forever). An abort keeps the trusted snapshot and
-        // its cursor and simply charges this attempt as a failure.
+        // would fail closed forever). An abort or an unverifiable read keeps the
+        // trusted snapshot and its cursor and simply charges this attempt as a
+        // failure; only a readable inconsistency (a proven corpus change)
+        // discards the cursor.
         const verification = attempt === undefined
           ? await this.verifyCorpusListingNow(signal)
           : await this.verifyFinalCorpusListing(attempt)
@@ -5157,9 +5329,25 @@ export class DevLeadService extends Service {
           this.rehydrationValidationTimedOut = true
           return result([...state.leads.values()], state.active, false)
         }
+        if (verification.status === 'unverifiable') {
+          state.complete = false
+          this.rehydrationValidationUnverifiable = true
+          this.warnRehydration(
+            'corpus',
+            'devlead: the persisted Session corpus could not be re-verified before finalizing; keeping the trusted '
+            + 'snapshot and cursor and charging this attempt (the corpus may be usable and merely unreadable right now)',
+          )
+          return result([...state.leads.values()], state.active, false)
+        }
+        // Only a readable inconsistency discards the cursor: either the
+        // persistence ground truth is no longer contained in the corpus
+        // (`changed`), or the recheck listing lost a row of the snapshot.
         const recheck = verification.status === 'ok' ? verification.listing : undefined
         const contained = recheck !== undefined && this.containsAllSessionIds(recheck.listedIds, state.listedIds)
         if (!contained) {
+          // A readable listing that lost a snapshot row proves a corpus change:
+          // the snapshot may hide a different supervisor set. Only this proven
+          // change discards the cursor.
           state.trusted = false
           this.coldScan = undefined
           this.rehydrationScanHighWater = 0
@@ -5550,7 +5738,8 @@ export class DevLeadService extends Service {
    * @param sessionId - target Session identity.
    * @param text - non-empty prompt text.
    * @param options - resume/interrupt policy, the policy plan, the intent and
-   *   answer/idempotency metadata, and cancellation checked before each stage.
+   *   answer/idempotency metadata, the supervision proof captured by the prompt
+   *   gate (re-checked at delivery), and cancellation checked before each stage.
    * @returns the admission outcome including the delivery receipt.
    */
   private async admitPrompt(
@@ -5564,12 +5753,17 @@ export class DevLeadService extends Service {
       signal: AbortSignal | undefined
       plan: PlannedDelivery
       intent: DevLeadPromptIntent
+      proof?: SupervisionProof
       questionId?: string
       idempotencyKey?: string
     },
   ): Promise<PromptAdmission> {
     const signal = options.signal
     signal?.throwIfAborted()
+    // Resume and interrupt below await Host work; re-check the gate's proof
+    // before starting those side effects, and again immediately before the
+    // message is admitted into the target inbox.
+    this.assertSupervisionProofHeld(options.proof, String(sessionId))
     let target = this.ctx.agents.get(sessionId)
     let resumed = false
     if (target === undefined) {
@@ -5685,6 +5879,21 @@ export class DevLeadService extends Service {
           ...(options.idempotencyKey === undefined ? {} : { idempotencyKey: options.idempotencyKey }),
         },
       )
+    // Last-cancellation-point-equivalent supervision check: resume, interrupt
+    // and inbox mutations above all awaited Host work. Deliver only while the
+    // exact corpus bindings the gate proved are still the composed ones. A stop
+    // already committed by interrupt must keep its watch (the stop cannot be
+    // rolled back), exactly like an admission failure after the stop.
+    try {
+      this.assertSupervisionProofHeld(options.proof, targetId)
+    } catch (error: unknown) {
+      if (interrupted && error instanceof DevLeadError) {
+        throw new DevLeadInterruptedAdmissionError(
+          `${error.message}; the running work was already asked to stop, so the Session keeps its watch — retry the prompt`,
+        )
+      }
+      throw error
+    }
     try {
       switch (options.plan.primitive) {
         case 'steer':

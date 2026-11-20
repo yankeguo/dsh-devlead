@@ -591,7 +591,7 @@ title 是展示元数据，DSH 0.2.2-rc.1–rc.5 的 WorkspaceRegistry 明确允
 
 `hub.rehydrate(leads)` 对每条 `DevLeadPersistedLead`（`{ sessionId, watched: string[] }`）执行
 `ensureLead` + `setWatched`；可重复调用（幂等），不要求 Agent / Session live。service 的私有
-`persistedLeadRecords(scanPersisted, corpusReady)` 用可选服务重建这份列表（全部 `ctx.get`，
+`persistedLeadRecords(listing?, signal?, attempt?)` 用可选服务重建这份列表（全部 `ctx.get`，
 缺席即降级）：
 
 - **live 会话兜底**：`ctx.sessions.list()` 里没有 Agent 的 live Session 直接
@@ -621,16 +621,24 @@ title 是展示元数据，DSH 0.2.2-rc.1–rc.5 的 WorkspaceRegistry 明确允
   它们必须恢复）；到达上限时保留游标并 warning，下一次有界尝试从断点续扫。游标推进（index
   增加并越过 `rehydrationScanHighWater`，即此前失败/卡住的点）是进展而不是失败，不消耗失败
   重试预算；仅仅把同一批前缀重读一遍（例如探针重置游标后只推进了前 64 行）不算进展。
-- **整次 attempt 的 deadline**：一次 attempt = live-attach 回退 + 就绪屏障 + listing 校验 +
-  有界读取，整体受 `REHYDRATION_ATTEMPT_TIMEOUT_MS=5s` 的 `AbortSignal` 约束；`listSessions` /
-  `readSession` / `persistence.list` 都用 race 与 signal 绑定（后端忽略 signal 也不会挂住）。
-  deadline 触发时该 attempt 被放弃、epoch `+1`（旧 run 的后续结果一律作废）、按失败计入预算，
-  由下一个有界 attempt（或慢速探针）接管；`[Service.init]` 因此永远不会被一个永不 settle 的
-  后端 promise 挂死。读到完整快照后的 **finalize 复核使用独立的 5s 预算**
-  （`REHYDRATION_FINALIZE_TIMEOUT_MS`）并先停掉 attempt deadline：复核被慢 listing 拖住时不是
-  "语料变化"，而是保留 trusted 快照与游标、按一次失败计费，下一次 attempt 从保留的游标只重做
-  复核（不会从 0 重扫），慢但可用的后端因此不会永久 fail-closed。plugin dispose 会 abort 所有
-  进行中的 attempt，挂起的后端等待不会拖住 Host 卸载。
+- **attempt 的 deadline 是分段独立的，不是"整次 attempt 只有一个 5s"**：一次 attempt =
+  live-attach 回退 + 就绪屏障 + listing 校验 + 有界读取，这一扫描阶段受
+  `REHYDRATION_ATTEMPT_TIMEOUT_MS=5s` 的 `AbortSignal` 约束；`listSessions` / `readSession` /
+  `persistence.list` 都用 race 与 signal 绑定（后端忽略 signal 也不会挂住）。扫描读到完整快照
+  后先停掉该 deadline，**finalize 复核改用独立的 5s 预算**（`REHYDRATION_FINALIZE_TIMEOUT_MS`）；
+  若复核发现扫描期间新增了持久行，append 后的读取批次由 `attempt.extend()` 重新 arm 一个有界
+  5s 窗口，之后再复核时再次用独立 5s 预算。因此单次有界 attempt 的理论最坏耗时约为
+  `5s（扫描窗口）+ 至多 3×5s（逐次 finalize 复核）+ 至多 2×5s（append 批次窗口）≈ 30s`
+  （append 次数受 `MAX_FINALIZE_LISTING_REFRESHES=2` 限制），每一步都有自己的上限，
+  `[Service.init]` 不会被无限挂起；插件启动通常远低于该最坏值（空/稳定语料只走一次快速扫描与
+  一次复核）。deadline 触发时该 attempt 被放弃、epoch `+1`（旧 run 的后续结果一律作废）、按
+  失败计入预算，由下一个有界 attempt（或慢速探针）接管。finalize 复核被 abort/超时或读到
+  **不可验证**（persistence 真值/listing 暂时读不出来，不是读到不一致）时同样保留 trusted
+  快照与游标、按一次失败计费，下一次 attempt 从保留的游标只重做复核（不会从 0 重扫），慢但
+  可用的后端因此不会永久 fail-closed。plugin dispose 会 abort 所有进行中的 attempt，并通过
+  服务生命周期 signal 同时 abort 已经脱离 attempt deadline 的 finalize 复核读取；dispose 之后
+  `attempt.extend()` 是 no-op，不会给已卸载的插件重新 arm deadline，挂起的后端等待也不会拖住
+  Host 卸载。
 - **失败与重试**：读取失败保留游标（下一轮重试同一行），按指数退避 250ms→5s、最多 12 次重试；
   达到上限后只保留一条 30s 慢速降级恢复探针，不形成热循环。该 cap 是 **sticky** 的：cap 之后
   每次探针失败只会再排同一条探针，不会重新进入 12 次快速退避；只有**完整扫描成功 finalize**、
@@ -643,28 +651,44 @@ title 是展示元数据，DSH 0.2.2-rc.1–rc.5 的 WorkspaceRegistry 明确允
   确实过期，丢弃它并从新校验 listing 重扫（宽恕本轮预算）；如果该 id **仍在列**，则不是
   "会话消失"，而是这一行的读取失败：**保留快照与游标**，对该行立即重试一次，同一 attempt 内
   再次 not-found 即按读取失败计（有界退避/慢速探针恢复）。绝不为"仍在列"的 not-found 重置
-  游标——对第一批 64 行之外的行，那会造成无止境的 re-list/第一批重读循环。cap warning 与 read
-  warning 分开（读取失败不会落进 cap 文案）。corrupt 候选或 `liveAttachFailure` 同样进入
-  degraded 并走慢速探针。
+  游标——对第一批 64 行之外的行，那会造成无止境的 re-list/第一批重读循环。该"一次重试"按行
+  记录（`relistedFor`），一行用掉重试机会不会让后续另一行的首次 not-found 被直接算成失败。
+  **不可验证 ≠ 语料变化**：not-found re-list、扫描入口与 finalize 复核拿到的 `unverifiable`
+  （persistence 真值或 query listing 暂时读不出来，而不是读到不一致）不丢弃 trusted 快照 /
+  游标 / 高水位，只按一次失败计费——否则随后一次成功的 64 行 batch 填充会把失败预算清零，
+  间歇性 listing 故障就退化成无界快速重扫（实测未修复时每 90s 重读约 1.2 万行且永不 cap）。
+  只有 `changed`（读到一份不再包含 persistence 真值的 listing，或复核 listing 丢了快照里
+  的行）才丢弃快照/游标并重扫。就绪屏障不可验证（persistence listing 到 2s 有界期仍读不出）
+  同样计一次失败；12 次后进入同一条 sticky 30s 探针，探针保留游标，原因移除后从断点完成。
+  cap warning 与 read warning 分开（读取失败不会落进 cap 文案）。corrupt 候选或
+  `liveAttachFailure` 同样进入 degraded 并走慢速探针。
 - **finalize 复核与授权绑定**：完整扫描收尾时再取一份校验 listing。快照必须仍是当前语料的
   **subset**（快照里的每个 id 都还在列；有行消失可能藏着新的 foreign supervisor，此时不
   finalize、丢弃快照并从新的校验 listing 重扫，期间 prompt 保持 fail-closed）。当新 listing
   是快照的 superset（扫描期间新持久化了 Session）时，新行被 append 进快照并继续扫描；最多做
   `MAX_FINALIZE_LISTING_REFRESHES=2` 次这样的有界刷新，**刷新预算耗尽而仍有未扫描的新持久行时
   绝不 finalize**（fail closed，保留游标，下一次有界 attempt 先 append+扫描这些行再复核），
-  而不是拿一个缺行的快照授权。复核被 abort/超时与"语料被读到但不一致"是两种不同结果：只有
-  后者丢弃 trusted 快照；前者保留快照/游标并按超时计费（见上）。`finalizeRehydration` 记录当时
-  的 `sessionQuery` / `sessionPersistence` / `sessionProjectionCache` 服务身份快照：
+  而不是拿一个缺行的快照授权。复核被 abort/超时或读到不可验证与"语料被读到但不一致"是不同
+  结果：只有后者（`changed`：persistence 真值不被 listing 包含，或复核 listing 丢了快照里的
+  行）丢弃 trusted 快照并从新校验 listing 重扫；abort/超时与 `unverifiable` 都保留快照/游标并
+  按一次失败计费（见上），不会把可用的后续验证机会烧在一次瞬时不可读上。`finalizeRehydration`
+  记录当时的 `sessionQuery` / `sessionPersistence` / `sessionProjectionCache` 服务身份快照：
   `ctx.reflect._getImpl(name).value` 的对象身份 + provision `uid`。真实 `extends Service` 的
   cordis 服务实例带有 `Symbol.for('cordis.tracker')` 自身、但没有 `Symbol.for('cordis.original')`
   （后者只是读代理 getter）；所以 token 直接取 provision 值的对象身份，只有该值本身是 traceable
   proxy（带 original）时才解包——这样对真实 Service 也能检测不走 fiber unload 的原地
   `ctx.set` 替换；`ctx.set(name, undefined)` 是移除（binding 变 undefined），不是同 uid 的
-  `{token: undefined}`。attempt 入口、attempt 结束（finalize 前）与 prompt gate 三处都比对；
-  替换/卸载时同步作废证明并触发重扫，调用方仍拿到 `DEVLEAD_SESSION_UNAVAILABLE`。可选服务通过
-  `ctx.inject` 观察 arrival/replacement/unload：每次依赖变化（不只是首次 arrival）都 bump epoch
-  并要求 fresh scan；disposer 在有意销毁重试 hook 时被标记为 retire，不会被误判成服务卸载。
-  一次证明过持久语料的 Host 不会因 persistence 绑定消失而退回 live-only 授权。
+  `{token: undefined}`。比对发生在四处：attempt 入口、attempt 结束（finalize 前）、prompt gate，
+  以及 **真正写入 child inbox 前的 delivery 复核**。前两处保证扫描结果不会在混合语料上
+  finalize；prompt gate 捕获当时的服务身份快照（proof token），admission 期间可能还要 await
+  discard drain（≤30s）、repair barrier（≤30s）、冷 Session resume 或 interrupt stop，原地
+  `ctx.set` 替换不会触发 inject 事件，所以 gate 通过后必须在 resume/interrupt 之前与真正
+  `followup/steer/inject` 之前再比对一次 proof：服务已被替换/移除就 fail closed 并触发重扫，
+  绝不在未覆盖当前语料的旧证明下投递。替换/卸载时同步作废证明并触发重扫，调用方仍拿到
+  `DEVLEAD_SESSION_UNAVAILABLE`。可选服务通过 `ctx.inject` 观察 arrival/replacement/unload：
+  每次依赖变化（不只是首次 arrival）都 bump epoch 并要求 fresh scan；disposer 在有意销毁重试
+  hook 时被标记为 retire，不会被误判成服务卸载。一次证明过持久语料的 Host 不会因 persistence
+  绑定消失而退回 live-only 授权。
 - **没有 projection cache 服务时**：仍处理 live 会话；cold 候选全部按 unknown 走上述有界精确
   fold（warning 一次），不存在“只恢复 live 会话”的退化；只有语料服务本身缺席（没有
   `sessionPersistence` / `sessionQuery`）时，才只剩 live 会话可索引。
@@ -2629,9 +2653,13 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   刷新（预算耗尽不 finalize）、not-found re-list 也必须校验、仍在列的 not-found 保留游标并计
   读取失败、query engine 晚到、无 projection cache 走有界精确折叠（不再只恢复 live）、多批
   游标续扫与 250ms→5s 有界退避、12 次后每 30s 一次的 sticky 降级探针（retry-cap 保留游标）、
-  整次 attempt 的 deadline、finalize 复核的独立预算与挂起后端负控、dispose abort 进行中
-  attempt、服务替换（含真实 cordis Service 原地 ctx.set）/卸载作废授权、reset 重置扫描 epoch、
-  persisted scan 抛错不阻加载）、
+  分段独立的有界窗口（扫描 5s、finalize 复核独立 5s、每次 append 批次重新 arm 5s，单次
+  attempt 最坏约 30s）、unverifiable listing/真值读取保留快照与游标并计费（含就绪屏障；
+  间歇故障因此会进入 12 次 cap 而非无界重扫）、finalize 复核的独立预算与挂起后端负控、
+  dispose 同时 abort 进行中 attempt 与已脱离 attempt deadline 的 finalize 复核（extend 在
+  dispose 后 no-op）、服务替换（含真实 cordis Service 原地 ctx.set）/卸载作废授权、
+  gate 后至 delivery 前再次校验 proof token（admission 窗口内原地替换被拒）、reset 重置扫描
+  epoch、persisted scan 抛错不阻加载）、
   Workspace 与 Session 编排、
   列表排序与截断、列表窗口外的身份解析、**截断 Session 引用解析**（完整 id / `session-` 前缀
   部分 id / 裸 uuid 第一段 / 裸完整 uuid / 首尾空白；同第一段歧义列候选且不猜、零命中给出

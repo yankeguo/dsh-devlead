@@ -263,17 +263,26 @@ nits 已全部拍板并落地，含 breaking 影响与 file/test 证据。
 > 游标。无 projection cache 时仍做有界精确折叠（不是不读日志、也不是只恢复 live）。就绪屏障
 > 返回其校验过的 listing 并直接交给权威扫描（不再二次 list 未校验语料），finalize 复核要求
 > 快照仍是当前校验语料的 subset，扫描期间新增的持久行在至多 2 次有界刷新里 append+扫描，刷新
-> 预算耗尽而仍有未扫描新行时不 finalize（fail closed）。整次 attempt 有 5s deadline（挂起后端
-> promise 被放弃、epoch 作废并计失败），读到完整快照后的 finalize 复核改用独立 5s 预算并先停
-> attempt deadline（慢而可用的后端保留 trusted 快照/游标，下次只重做复核，不会永久
-> fail-closed）；`[Service.init]` 不再等完整重建（首次有界尝试后即可报告 application-ready，
-> 期间 prompt 授权 fail closed）。语料服务替换/卸载会作废已证明的索引（含不换 fiber 的原地
+> 预算耗尽而仍有未扫描新行时不 finalize（fail closed）。**有界窗口是分段独立的，不是"整次
+> attempt 只有 5s"**：扫描阶段（就绪屏障 + listing 校验 + 有界读取）5s、finalize 复核独立 5s、
+> 每次 append 批次经 `attempt.extend()` 重新 arm 5s；单次有界 attempt 最坏约 30s
+> （5s + ≤3×5s 复核 + ≤2×5s append 批次），每一步都有独立上限，`[Service.init]` 不会被挂死。
+> 复核 abort/超时以及**不可验证**（listing/真值暂时读不出，不是读到不一致）都保留 trusted
+> 快照/游标并计一次失败，只有可读的不一致（`changed`）才丢弃重扫；慢而可用的后端下次只重做
+> 复核，不会永久 fail-closed。not-found re-list、扫描入口与 finalize 的 `unverifiable` 同样
+> 保留快照/游标/高水位并计费（否则一次成功的 batch 填充会清零预算、间歇 listing 故障退化为
+> 无界重扫），就绪屏障不可验证也计一次失败，因此 12 次 cap 与 30s 探针真正生效。
+> `[Service.init]` 不再等完整重建（首次有界尝试后即可报告 application-ready，期间 prompt
+> 授权 fail closed）。语料服务替换/卸载会作废已证明的索引（含不换 fiber 的原地
 > `ctx.set`；token 取 `impl.value` 的对象身份，真实 `extends Service` 实例同样可检测；
-> `ctx.set(name, undefined)` 视为移除），一次证明过持久语料的 Host 不退回 live-only 授权。
-> plugin dispose 会 abort 进行中的 attempt。终态（corrupt at-rest replay / live projection
-> failure / 12 次退避耗尽）的恢复路径：先打开（resume）受影响 lead Session 再执行
-> `/devlead reset`（reset 要求 live Agent）、删除/修复损坏或不可读的 Session 日志、或重启
-> Host；30s 慢速探针每 30s 重试一次，原因移除后才恢复。期间 prompt 以
+> `ctx.set(name, undefined)` 视为移除），一次证明过持久语料的 Host 不退回 live-only 授权；
+> prompt gate 捕获 proof token，并在 resume/interrupt 之前与真正写入 child inbox 之前再次
+> 校验（admission 窗口内的原地替换/移除 fail closed，不投递）。plugin dispose 会 abort
+> 进行中的 attempt，并通过服务生命周期 signal abort 已脱离 attempt deadline 的 finalize
+> 复核；dispose 后 `extend()` no-op，不会重新 arm deadline。终态（corrupt at-rest replay /
+> live projection failure / 12 次退避耗尽）的恢复路径：先打开（resume）受影响 lead Session
+> 再执行 `/devlead reset`（reset 要求 live Agent）、删除/修复损坏或不可读的 Session 日志、
+> 或重启 Host；30s 慢速探针每 30s 重试一次，原因移除后才恢复。期间 prompt 以
 > `DEVLEAD_SESSION_UNAVAILABLE` fail closed，错误文案同时给出原因与恢复提示。当前语义以
 > [DESIGN §4.1.1](DESIGN.md) 为准。
 

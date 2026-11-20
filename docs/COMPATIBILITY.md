@@ -198,18 +198,26 @@ wire projection 的 questionStatus/answerStatus 都是可选 additive 字段，�
    包含全部 stored id 的 listing 作为授权证据；屏障返回它校验通过的 listing，权威扫描直接
    消费该 listing（不会在屏障后再 list 一份未校验语料）。屏障超时/持续不一致时**不扫描**
    该 listing 并保持 prompt fail-closed，由后续有界 attempt 或 30s 慢速探针恢复——不再有
-   "warning + best-effort 继续扫描"的路径。之后冷扫描按可续扫的多批游标推进，每次 attempt
-   整体有 5s deadline（挂起的后端 promise 会被放弃、epoch 作废并计一次失败），每次尝试对有界
-   数量的非 active 候选做精确 fold，失败按有界指数退避重试（250ms→5s、最多 12 次），超限后
-   只保留一条 30s 慢速降级探针；该 cap 是 sticky 的：探针失败只重排探针，不重启快速退避，
-   且只有完整扫描成功 finalize、reset 或语料服务重新组合才清除（探针的批次推进不清除）；
-   retry-cap 探针保留游标，失败点在第一读批之外时也能从失败点重试。读到完整快照后 finalize
-   复核使用独立 5s 预算并先停 attempt deadline：慢而可用的 listing 只让本次 attempt 计一次
-   失败并保留 trusted 快照/游标，下一次 attempt 从保留游标重做复核，不会永久 fail-closed。
+   "warning + best-effort 继续扫描"的路径。之后冷扫描按可续扫的多批游标推进，有界窗口按阶段
+   独立：扫描阶段（屏障 + listing 校验 + 有界读取）5s，finalize 复核用独立 5s 预算并先停
+   attempt deadline，每次 append 批次经 `attempt.extend()` 重新 arm 5s——单次有界 attempt
+   理论最坏约 30s（5s + ≤3×5s 复核 + ≤2×5s append 批次），不是"整次 attempt 只有一个 5s"；
+   挂起的后端 promise 会被放弃、epoch 作废并计一次失败。每次尝试对有界数量的非 active 候选
+   做精确 fold，失败按有界指数退避重试（250ms→5s、最多 12 次），超限后只保留一条 30s 慢速
+   降级探针；该 cap 是 sticky 的：探针失败只重排探针，不重启快速退避，且只有完整扫描成功
+   finalize、reset 或语料服务重新组合才清除（探针的批次推进不清除）；retry-cap 探针保留游标，
+   失败点在第一读批之外时也能从失败点重试。finalize 复核 abort/超时与 **不可验证**（listing/
+   真值暂时读不出）都只让本次 attempt 计一次失败并保留 trusted 快照/游标，下一次 attempt 从
+   保留游标重做复核，不会永久 fail-closed；只有可读的不一致（`changed`）才丢弃重扫。
    not-found re-list 也必须用 persistence 真值复核：id 真的消失才丢弃快照重扫；id 仍在列时
-   是读取失败（保留游标、行内重试一次，连续 not-found 计失败），绝不为仍在列的行重置游标。
+   是读取失败（保留游标、行内重试一次，连续 not-found 计失败），绝不为仍在列的行重置游标；
+   该重试按行记录，不会把后续另一行的首次 not-found 直接算成失败。就绪屏障不可验证同样计
+   一次失败，因此间歇性 listing/真值故障会进入 12 次 cap 与 30s 探针，而不是无界快速重扫。
    finalize 要求快照仍是当前语料的 subset；扫描期间新增的持久行在至多 2 次有界刷新里
    append+扫描，刷新预算耗尽而仍有未扫描的新行时不 finalize（fail closed，保留游标）。
+   prompt gate 通过后，admission 仍可能 await drain/repair/resume/interrupt，因此 DevLead 在
+   resume/interrupt 之前与真正写入 child inbox 之前再次校验 gate 的服务身份 proof；窗口内
+   原地 `ctx.set` 替换/移除语料服务会 fail closed 并重扫，不会在旧证明下投递。
    缺少该可选服务时跳过屏障，只有从未证明过持久语料的 Host 才按 live 会话授权。依据：
    `@deepseek-ai/dsh-session-persistence` README（`list()` 返回 one snapshot per visible
    stored session）与 rc.1–rc.5 的 `session-query` optional binding 行为。假设是 `list()`
