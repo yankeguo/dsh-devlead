@@ -1,0 +1,90 @@
+# gate=polish-verify
+RUN_AT=2026-11-20T23:52:09+0800
+VERSION=0.4.0-rc.1
+GIT_HEAD=ddc21137ceb63ac279323aee8bf29b9e5c82feac
+GIT_TREE=ef6096da896fd6e96c2488ec937e5a419dcd2db6
+BRANCH=main
+WORKTREE_DOC_CHANGES=3
+PACKAGES_CHANGED=0
+--- output ---
+$ pnpm verify
+$ pnpm run typecheck && pnpm run test && pnpm run build
+$ tsc -p tsconfig.json --noEmit
+$ vitest run
+
+ RUN  v4.1.12 /Users/guoyk/Workspace/src/dsh-devlead
+
+ ✓ packages/devlead/tests/fold.spec.ts (87 tests) 28ms
+ ✓ packages/client-ui/tests/render.spec.tsx (55 tests) 37ms
+ ✓ packages/devlead/tests/record-api.spec.ts (9 tests) 15ms
+ ✓ packages/devlead/tests/outbox.spec.ts (27 tests) 17ms
+ ✓ packages/devlead/tests/regressions.spec.ts (4 tests) 27ms
+ ✓ packages/devlead/tests/isolation.spec.ts (13 tests) 54ms
+ ✓ packages/devlead/tests/answers.spec.ts (41 tests) 13ms
+ ✓ packages/devlead/tests/message-policy.spec.ts (109 tests) 8ms
+ ✓ packages/devlead/tests/idempotency.spec.ts (10 tests) 10ms
+ ✓ packages/devlead/tests/mode-projection.spec.ts (10 tests) 9ms
+ ✓ packages/command/tests/handler.spec.ts (56 tests) 12ms
+ ✓ packages/devlead/tests/plugin-metadata.spec.ts (22 tests) 5ms
+ ✓ packages/devlead/tests/domain.spec.ts (31 tests) 9ms
+ ✓ packages/devlead/tests/lanes.spec.ts (43 tests) 220ms
+ ✓ packages/client-ui/tests/styles.spec.ts (27 tests) 7ms
+ ✓ packages/devlead/tests/notification.spec.ts (97 tests) 255ms
+ ✓ packages/command/tests/parse.spec.ts (21 tests) 4ms
+ ✓ packages/protocol/tests/format.spec.ts (45 tests) 7ms
+ ✓ packages/command/tests/render.spec.ts (21 tests) 6ms
+ ✓ packages/tool/tests/tools.spec.ts (194 tests) 241ms
+ ✓ packages/client-ui/tests/format.spec.ts (50 tests) 4ms
+ ✓ packages/client-ui/tests/results.spec.ts (23 tests) 4ms
+ ✓ packages/client-ui/tests/locales.spec.ts (15 tests) 6ms
+ ✓ packages/devlead/tests/active.spec.ts (8 tests) 8ms
+ ✓ packages/devlead/tests/metrics.spec.ts (6 tests) 3ms
+ ✓ packages/command/tests/resolve.spec.ts (19 tests) 5ms
+ ✓ packages/protocol/tests/types.spec.ts (8 tests) 2ms
+ ✓ packages/devlead/tests/watch-projection.spec.ts (7 tests) 3ms
+ ✓ packages/client-ui/tests/apply.spec.ts (3 tests) 2ms
+ ✓ packages/devlead/tests/runtime-projections.spec.ts (5 tests) 4ms
+ ✓ packages/client-ui/tests/sessionMark.spec.ts (10 tests) 1ms
+ ✓ packages/tool/tests/errors.spec.ts (16 tests) 2ms
+ ✓ packages/devlead/tests/service.spec.ts (301 tests) 16631ms
+     ✓ keeps an action report queued behind an unclaimed action wake and delivers it when the inbox clears  1108ms
+     ✓ retries a cold outbox replay receipt failure and clears the row without injecting  1310ms
+     ✓ loads and serves live leads when the corpus never becomes consistent  2048ms
+     ✓ bounds the readiness barrier when the persistence listing keeps failing  2046ms
+     ✓ never fails the plugin load when the persisted scan rejects  2282ms
+     ✓ the retry timer drains a queued discard without any activation or prompt  5304ms
+ ✓ packages/devlead/tests/phase2.spec.ts (71 tests) 17862ms
+     ✓ clears live-only authorization before a late corpus read finishes  314ms
+     ✓ recovers prompt authorization after an incomplete scan succeeds on retry  324ms
+     ✓ reschedules after a slow first scan fails without requiring another injection  2567ms
+     ✓ resumes beyond 64 benign rows and mixed missing/legacy cache rows  915ms
+     ✓ recovers a no-cache corpus without a hot retry loop  917ms
+     ✓ bounds failed retries and recovers after the cause clears  1320ms
+     ✓ retains query lifecycle retries when persistence arrives before sessionQuery  311ms
+     ✓ keeps a corrupt first batch closed after later benign batches  468ms
+     ✓ does not start a timer when no corpus service exists  356ms
+     ✓ re-lists after corpus readiness instead of trusting a pre-ready partial snapshot  2567ms
+     ✓ keeps terminal corruption across lifecycle events without resetting the retry budget  569ms
+     ✓ does not count live-only early returns against the retry budget  563ms
+     ✓ refuses delivery when the listing authorized by the barrier changes before finalize  411ms
+     ✓ does not trust a scan re-list that omits a stored foreign supervisor  2572ms
+     ✓ stays fail-closed when the corpus binding is removed after a proof  576ms
+     ✓ stays fail-closed when a real cordis corpus Service is removed with ctx.set(undefined)  571ms
+     ✓ does not finalize while the finalize refresh budget is exhausted and new persisted rows keep appearing  770ms
+
+ Test Files  34 passed (34)
+      Tests  1464 passed (1464)
+   Start at  23:52:10
+   Duration  18.24s (transform 2.04s, setup 0ms, import 4.04s, tests 35.52s, environment 1ms)
+
+$ node scripts/build.mjs
+built packages/protocol/lib/index.js
+built packages/protocol/lib/client.js
+built packages/devlead/lib/index.js
+built packages/tool/lib/index.js
+built packages/command/lib/index.js
+built packages/client-ui/lib/index.js
+built packages/client-ui/lib/client.js
+validated bundle (patch-only)
+build complete (6 targets)
+EXIT=0

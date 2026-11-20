@@ -69,14 +69,14 @@
    最新通知与 question 后缀；长 session 标题/长 question 文案以 ellipsis 截断，不撑高 composer
    dock、不产生横向滚动；关闭态与 subagent Session 不渲染 strip，开关仍留在 composer 工具栏原位。
 
-6. 清理：
+### 清理
 
-   ```sh
-   # 关闭浏览器标签，停止 DSH 进程后：
-   rm -rf "$TMP_DSH_HOME"
-   ```
+```sh
+# 关闭浏览器标签，停止 DSH 进程后：
+rm -rf "$TMP_DSH_HOME"
+```
 
-   `.tmp/` 已在 `.gitignore` 中，overlay 可以保留。
+`.tmp/` 已在 `.gitignore` 中，overlay 可以保留。
 
 ## 常见问题
 

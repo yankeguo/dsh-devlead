@@ -149,6 +149,15 @@ GIT_TREE=0101ba09442b647d0c8b6333d4517aea80f8412a
 | e2e no-worktree | `pnpm e2e --no-worktree --no-build` | **198/198**（195 PASS + 3 SKIP），`EXIT=0` | 23:41:17 |
 | `git diff --check` | 工作区 diff | `DIFF_CHECK_EXIT=0`（未跟踪的新日志不计入） | 23:40:01 |
 
+该修复轮最终提交为 `ddc2113`（`docs(release): fix 0.4.0-rc.1 known limitations and doc
+drift`），**tree SHA = `ef6096da896fd6e96c2488ec937e5a419dcd2db6`**（`git rev-parse
+ddc2113^{tree}`），即上表门禁所对应文档树的最终提交身份。**避免 overstated**：三条 e2e 的
+**运行时工作树含文档改动**（日志头 `WORKTREE_DOC_CHANGES=8`，起点是 `ce1b284` 树
+`0101ba0…`），其运行时代码与 `ce1b284` 相同——`packages/` 相对 `ce1b284` 只有 `fold.ts`
+一处 JSDoc 注释，相对 Batch 1 树另有 6 处 `version` 行，均无运行时行为变化；final
+verify/check-packages 在写入本证据后的最终文档树上复跑（见本节末段），日志中的
+`GIT_HEAD`/`GIT_TREE` 是门禁起点的值而非该 tree。
+
 日志：`batch2-docfix-{verify,check-packages,e2e-patch,e2e-installed,e2e-no-worktree,diff-check}.log`
 与元数据 `batch2-docfix-gates-meta.log`；该轮 e2e 的 client revision 为 `6056fe8a1305`（重
 build 后的 mtime hash，与准备 commit 的 `72a61091babf` 不同，但 `packages/` 代码未变）。
@@ -156,12 +165,41 @@ build 后的 mtime hash，与准备 commit 的 `72a61091babf` 不同，但 `pack
 **raw log 保真说明**：上述三个 e2e 日志各保留 1 行原始输出末尾空格（`PASS notification
 records the provider failure ...`），与准备 commit 的 `batch2-e2e-*.log` 相同；`git diff
 --cached --check` 会对此报 whitespace warning，这是 raw-log fidelity 取舍（日志即原始终端
-输出，CI 不检查 docs 日志），不是格式回归。
+输出，CI 不检查 docs 日志），不是格式回归。**本轮选择保留 raw 原样、不 trim**（trim 会改变
+原始输出）：三个 log 已随 `ddc2113` 提交、内容不再改动，因此后续轮次的 `git diff --check` 为
+0；如需复现该 warning，对引入日志的提交运行 `git diff ddc2113^ ddc2113 --check`（3 条
+trailing whitespace，退出码 2）。
 
 随后在**更新完本证据后的最终文档树**上再跑一次 `pnpm verify` / `pnpm check:packages`
 （23:43:21–23:43:41，`EXIT=0`；日志 `batch2-docfix-final-verify.log` /
 `batch2-docfix-final-check-packages.log` / `batch2-docfix-final-diff-check.log`，同样带
 version/rev echo；结果 34/1464 + 6 targets、`OK (6 packages)`），确认证据更新没有影响门禁。
+
+### 发布前文档 nit 修复后复跑（2026-11-20，polish）
+
+发布前又在 `ddc2113`（tree `ef6096da…`）之上做一轮**纯文档 nit 修复**：release notes 的
+`packages/` 与 `fold.ts` JSDoc 措辞对齐、UI-VERIFICATION 视觉项与编号步骤排版、本证据补
+tree identity 与 e2e 工作树边界说明；不改代码、不改版本、不新增运行时行为。门禁在 polish
+工作树上复跑，wrapper 同样把 `VERSION` / `GIT_HEAD` / `GIT_TREE` / `WORKTREE_DOC_CHANGES` /
+`PACKAGES_CHANGED` echo 进每条日志：
+
+| 门禁 | 命令 | 结果 | 完成时间 |
+| --- | --- | --- | --- |
+| `pnpm verify` | typecheck + test + build | 34 files / **1464 tests** + 6 targets，`EXIT=0` | 23:52:09–23:52:29 |
+| `pnpm check:packages` | 包不变式 | `check-packages: OK (6 packages)`，`EXIT=0` | 23:52:29 |
+| `git diff --check` | 工作区 diff | `EXIT=0`（未跟踪的新日志不计入） | 23:52:29 |
+
+日志：`batch2-polish-{verify,check-packages,diff-check}.log` 与元数据
+`batch2-polish-gates-meta.log`（`GIT_HEAD=ddc2113…`、`GIT_TREE=ef6096da…`、
+`PACKAGES_CHANGED=0`，即 `git diff ddc2113 -- packages` 无输出；版本仍 `0.4.0-rc.1`，
+工作树改动全部在 `docs/`）。**三条 e2e 本轮不重跑**：运行时代码与 `ce1b284` 相同（见上节
+的 e2e 工作树说明），`ddc2113` 轮的三条 e2e 日志继续有效，且本轮未修改这三个 raw log 文件。
+随后在**写入本证据后的最终文档树**上再跑一次 `pnpm verify` / `node scripts/check-packages.mjs`
+（日志 `batch2-polish-final-verify.log` / `batch2-polish-final-check-packages.log` /
+`batch2-polish-final-diff-check.log` 与 `batch2-polish-final-gates-meta.log`；结果同为
+34 files / **1464 tests** + 6 targets、`check-packages: OK (6 packages)`，`EXIT=0`），确认
+证据更新没有影响门禁。polish 轮是 docs-only 本地 commit，其 tree SHA 由交付说明给出
+（提交对象无法在自身 tree 内嵌自己的 tree hash，可用 `git rev-parse <commit>^{tree}` 复核）。
 
 ### `pnpm verify` / `check:packages`
 
