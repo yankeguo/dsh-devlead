@@ -7294,3 +7294,254 @@ describe('cold-discard review round 6 (tool passthrough, barrier closure, unknow
     expect(harness.service.questionAnswerView(harness.lead.agent, questionId)).toMatchObject({ questionStatus: 'answered', answerMessageId: 'm1' })
   })
 })
+
+describe('cold-discard closure round 7 (queued unknown, real barrier chain)', () => {
+  /** Durable answer records of the lead Session, in log order. */
+  function answerRecords(harness: ServiceHarness): DevLeadReportAnswer[] {
+    return harness.leadSession.snapshotEvents().flatMap((event) => {
+      const record = pluginRecordOf(event)
+      return record?.type === DEVLEAD_REPORT_ANSWER_RECORD_TYPE
+        ? [(record.data as { answer: DevLeadReportAnswer }).answer]
+        : []
+    })
+  }
+
+  /** Queued durable discard rows of the shared storage domain. */
+  function discardRows(storage: FakeStorageDomain): DevLeadReportAnswer[] {
+    const table = storage.domains.get('devlead_report_outbox')?.tables.get('answer_discards')
+    if (table === undefined) return []
+    return [...table.records.values()].map(row => (row as { answer: DevLeadReportAnswer }).answer)
+  }
+
+  /** One runtime-stamped answer message with a controlled identity. */
+  function answerMessage(messageId: string, questionId: string, leadId: string) {
+    return queuedMessage(messageId, {
+      kind: 'devlead',
+      form: 'relay',
+      intent: 'answer',
+      questionId,
+      senderSessionId: leadId,
+      wakeRequested: true,
+    }, `[DEV LEAD ANSWER to question ${questionId}]\nuse staging`)
+  }
+
+  /** Pre-seed durable discard rows into the storage domain before a boot/mount. */
+  async function seedQueueRows(storage: FakeStorageDomain, rows: readonly DevLeadReportAnswer[]): Promise<void> {
+    const ctx = new Context()
+    ctx.provide('storageDomain' as never, storage.asService() as never)
+    const outbox = await DevLeadReportOutbox.open(ctx)
+    for (const row of rows) await outbox!.putAnswerDiscard(row)
+    await outbox!.close()
+    await disposeContext(ctx)
+  }
+
+  it('a queued discard with an unreadable child is repairPending: view, health, and prompt refusal', async () => {
+    const storage = new FakeStorageDomain()
+    const leadId = 'r7-queued-unknown-lead'
+    const questionId = devLeadReport({ senderSessionId: 'target', leadSessionId: leadId, turn: 1, kind: 'question', message: 'Which target?', at: T0 }).id
+    await seedQueueRows(storage, [answer({
+      reportId: questionId, leadSessionId: leadId, sessionId: 'target', messageId: 'm1', status: 'discarded', at: T0 + 1, answeredAt: T0, answerSeq: 1,
+    })])
+    // The child Session is NOT attached and no query engine is composed: the
+    // queued discard's survival is UNKNOWN (not a durable-log record yet).
+    const harness = await bootService({
+      leadId,
+      enabled: true,
+      sessionIds: [],
+      watched: ['target'],
+      storageDomain: storage,
+      seedLead: (session) => {
+        const q = devLeadReport({ senderSessionId: 'target', leadSessionId: leadId, turn: 1, kind: 'question', message: 'Which target?', at: T0 })
+        appendPluginRecord(session, DEVLEAD_REPORT_RECORD_TYPE, reportRecord(q))
+        appendPluginRecord(session, DEVLEAD_REPORT_ANSWER_RECORD_TYPE, reportAnswerRecord(answer({
+          reportId: q.id, leadSessionId: leadId, sessionId: 'target', messageId: 'm1', status: 'admitted', at: T0, answerSeq: 1,
+        })))
+      },
+    })
+    await nextTask()
+    // The queued row survives restore (unknown): the question is provisional.
+    expect(discardRows(storage).map(row => row.messageId)).toEqual(['m1'])
+    expect(harness.service.questionAnswerView(harness.lead.agent, questionId)).toMatchObject({ questionStatus: 'open', repairPending: true })
+    expect(harness.service.answerDiscardHealth().pendingRepairs[leadId]).toBeGreaterThanOrEqual(1)
+    // An answer admission is refused with a retryable code; the row stays queued.
+    await expectCodeAsync(
+      () => harness.service.promptSession(harness.lead.agent, 'target', 'use prod', { intent: 'answer', questionId }),
+      'DEVLEAD_SESSION_UNAVAILABLE',
+    )
+    expect(discardRows(storage).map(row => row.messageId)).toEqual(['m1'])
+    // The child becomes readable with the answer still pending: the repair
+    // resolves, the provisional flag clears, and admission works again.
+    const childSession = harness.ctx.sessions.create(SessionId('target'))
+    const message = answerMessage('m1', questionId, leadId)
+    childSession.append('agent/inbox/spliced', { target: 'next-step', start: 0, inserted: [message] })
+    const target = new FakeAgent(childSession)
+    target.inbox.append('next-step', message)
+    harness.agents.add(target)
+    harness.ctx.emit('agent/created', { agent: target.agent, source: 'resume' })
+    await nextTask()
+    expect(harness.service.answerDiscardHealth().pendingRepairs).toEqual({})
+    const view = harness.service.questionAnswerView(harness.lead.agent, questionId)
+    expect(view).toMatchObject({ questionStatus: 'answered', answerMessageId: 'm1' })
+    expect(view?.repairPending).toBeUndefined()
+    expect(discardRows(storage)).toEqual([])
+    // A same-text answer retry now admits normally (idempotent replay), not refused.
+    const retry = await harness.service.promptSession(harness.lead.agent, 'target', 'use staging', { intent: 'answer', questionId })
+    expect(retry.delivery.messageId).toBe('m1')
+  })
+
+  it('an aborted prompt leaves a blocked repair barrier with a retryable error', async () => {
+    const leadId = 'r7-abort-lead'
+    const question = devLeadReport({ senderSessionId: 'target', leadSessionId: leadId, turn: 1, kind: 'question', message: 'Which target?', at: T0 })
+    const harness = await bootService({
+      leadId,
+      enabled: true,
+      sessionIds: ['target'],
+      watched: ['target'],
+      seedLead: (session) => {
+        appendPluginRecord(session, DEVLEAD_REPORT_RECORD_TYPE, reportRecord(question))
+        appendPluginRecord(session, DEVLEAD_REPORT_ANSWER_RECORD_TYPE, reportAnswerRecord(answer({
+          reportId: question.id, leadSessionId: leadId, sessionId: 'target', messageId: 'm1', status: 'admitted', at: T0, answerSeq: 1,
+        })))
+        appendPluginRecord(session, DEVLEAD_REPORT_ANSWER_RECORD_TYPE, reportAnswerRecord(answer({
+          reportId: question.id, leadSessionId: leadId, sessionId: 'target', messageId: 'm1', status: 'discarded', at: T0 + 1, answeredAt: T0, answerSeq: 1,
+        })))
+      },
+    })
+    await nextTask()
+    // Gate the durable repair flush so admission is blocked on the barrier.
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    let gated = true
+    harness.ctx.on('session/flush', async (session) => {
+      if (gated && String(session.id) === leadId) {
+        gated = false
+        await gate
+      }
+    })
+    const target = new FakeAgent(requireSession(harness, 'target'))
+    const message = answerMessage('m1', question.id, leadId)
+    target.inbox.append('next-step', message)
+    target.session.append('agent/inbox/spliced', { target: 'next-step', start: 0, inserted: [message] })
+    harness.agents.add(target)
+    harness.ctx.emit('agent/created', { agent: target.agent, source: 'resume' })
+    await flushMicrotasks()
+    expect(harness.service.questionAnswerView(harness.lead.agent, question.id)?.repairPending).toBe(true)
+    // A caller cancellation must break the barrier wait with a retryable code,
+    // not hang until the 30s deadline nor admit the answer.
+    const controller = new AbortController()
+    const prompt = harness.service.promptSession(harness.lead.agent, 'target', 'use prod', {
+      intent: 'answer',
+      questionId: question.id,
+      signal: controller.signal,
+    })
+    await flushMicrotasks()
+    controller.abort()
+    const error = await expectCodeAsync(() => prompt, 'DEVLEAD_SESSION_UNAVAILABLE')
+    expect(error.message).toContain('cancelled')
+    release()
+    await nextTask()
+    expect(harness.service.questionAnswerView(harness.lead.agent, question.id)).toMatchObject({
+      questionStatus: 'answered',
+      answerMessageId: 'm1',
+    })
+  })
+
+  it('prompt awaits more than eight queued-row repairs spawned through the restore/drop chain', async () => {
+    const storage = new FakeStorageDomain()
+    const leadId = 'r7-many-queued-lead'
+    const questionIds: string[] = []
+    const childIds = Array.from({ length: 10 }, (_unused, index) => `r7-child-${index}`)
+    const rows: DevLeadReportAnswer[] = []
+    for (let index = 0; index < 10; index += 1) {
+      const q = devLeadReport({ senderSessionId: childIds[index]!, leadSessionId: leadId, turn: index + 1, kind: 'question', message: `Question ${index}?`, at: T0 })
+      questionIds.push(q.id)
+      rows.push(answer({
+        reportId: q.id, leadSessionId: leadId, sessionId: childIds[index]!, messageId: `m${index}`, status: 'discarded', at: T0 + 1, answeredAt: T0, answerSeq: 1, text: 'use staging',
+      }))
+    }
+    // Every row is restored while its child is COLD and unreadable: restore keeps
+    // all ten queued and marks each question repairPending.
+    await seedQueueRows(storage, rows)
+    const harness = await bootService({
+      leadId,
+      enabled: true,
+      registerLeadAgent: false,
+      storageDomain: storage,
+      seedLead: (session) => {
+        for (let index = 0; index < 10; index += 1) {
+          const q = devLeadReport({ senderSessionId: childIds[index]!, leadSessionId: leadId, turn: index + 1, kind: 'question', message: `Question ${index}?`, at: T0 })
+          appendPluginRecord(session, DEVLEAD_REPORT_RECORD_TYPE, reportRecord(q))
+          appendPluginRecord(session, DEVLEAD_REPORT_ANSWER_RECORD_TYPE, reportAnswerRecord(answer({
+            reportId: q.id, leadSessionId: leadId, sessionId: childIds[index]!, messageId: `m${index}`, status: 'admitted', at: T0, answerSeq: 1, text: 'use staging',
+          })))
+          appendPluginRecord(session, DEVLEAD_REPORT_ANSWER_RECORD_TYPE, reportAnswerRecord(answer({
+            reportId: q.id, leadSessionId: leadId, sessionId: childIds[index]!, messageId: `m${index}`, status: 'discarded', at: T0 + 1, answeredAt: T0, answerSeq: 1, text: 'use staging',
+          })))
+        }
+      },
+    })
+    await nextTask()
+    // Gate every lead flush. Releasing gate N (with gate N+1 already armed) lets
+    // exactly one repair generation settle while the next one stays in flight.
+    let activation = -1
+    let expectGate = false
+    const gates: Array<() => void> = []
+    harness.ctx.on('session/flush', async (session) => {
+      if (String(session.id) !== leadId || !expectGate) return
+      expectGate = false
+      await new Promise<void>((resolve) => { gates[activation] = resolve })
+    })
+    /** Bring one cold child live with its answer still pending in the inbox. */
+    const activate = (index: number): void => {
+      activation = index
+      expectGate = true
+      const childId = childIds[index]!
+      const childSession = harness.ctx.sessions.create(SessionId(childId))
+      const child = new FakeAgent(childSession)
+      const message = answerMessage(`m${index}`, questionIds[index]!, leadId)
+      child.inbox.append('next-step', message)
+      child.session.append('agent/inbox/spliced', { target: 'next-step', start: 0, inserted: [message] })
+      harness.agents.add(child)
+      harness.ctx.emit('agent/created', { agent: child.agent, source: 'resume' })
+    }
+    /** Wait until the repair flush of one activation is blocked on its gate. */
+    const waitForGate = async (index: number): Promise<void> => {
+      for (let round = 0; round < 64 && gates[index] === undefined; round += 1) await flushMicrotasks(64)
+      expect(gates[index]).toBeDefined()
+    }
+    // Activation 0 spawns the first queued-row repair through
+    // reconcileQueuedDiscardsForChild → dropObsoleteDiscard.
+    activate(0)
+    await waitForGate(0)
+    // The lead is live for the prompt (not announced to the hub, like the other
+    // barrier specs): no supervisor pass may repair the other rows early.
+    harness.agents.add(harness.lead)
+    let settled = false
+    const prompt = harness.service.promptSession(harness.lead.agent, childIds[0]!, 'use prod', { intent: 'answer', questionId: questionIds[0]! })
+      .then((value) => { settled = true; return value }, (error) => { settled = true; throw error })
+    await flushMicrotasks()
+    expect(settled).toBe(false)
+    // Each activation drops ONE restored row (its answer is pending in the child
+    // inbox) and spawns its repair AFTER the current barrier, so the prompt must
+    // await ten generations — a fixed eight-round loop would exit early.
+    for (let index = 0; index < 9; index += 1) {
+      activate(index + 1)
+      await waitForGate(index + 1)
+      gates[index]!()
+      await flushMicrotasks(256)
+      expect(settled).toBe(false)
+    }
+    // All ten repairs settled: the first question is answered and the policy
+    // rejects a different answer, never admitting it against the stale open.
+    gates[9]!()
+    await expectCodeAsync(() => prompt, 'DEVLEAD_QUESTION_ALREADY_ANSWERED')
+    for (const questionId of questionIds) {
+      const view = harness.service.questionAnswerView(harness.lead.agent, questionId)
+      expect(view).toMatchObject({ questionStatus: 'answered' })
+      expect(view?.repairPending).toBeUndefined()
+    }
+    expect(harness.service.answerDiscardHealth().pendingRepairs).toEqual({})
+    expect(discardRows(storage)).toEqual([])
+    expect(answerRecords(harness).filter(record => record.status === 'discarded' && record.at <= T0 + 1)).toHaveLength(10)
+  })
+})

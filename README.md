@@ -270,6 +270,9 @@ requires Node ≥ 24.9):
 | `0.2.2-rc.5` | `node scripts/e2e-smoke.mjs --flow installed` (Phase 1d cold-discard closure round 6, pinned totals) | **188/188** (185 PASS + 3 SKIP; tool repairPending + barrier closure + unknown) |
 | `0.2.2-rc.5` | same, `--flow patch` | **188/188** (same round) |
 | `0.2.2-rc.5` | same, `--no-worktree --flow patch` | **165/165** (same round, phase 2 skipped) |
+| `0.2.2-rc.5` | `node scripts/e2e-smoke.mjs --flow installed` (Phase 1d cold-discard closure round 7, pinned totals) | **188/188** (185 PASS + 3 SKIP; queued-unknown repairPending + real >8-repair barrier chain) |
+| `0.2.2-rc.5` | same, `--flow patch` | **188/188** (same round) |
+| `0.2.2-rc.5` | same, `--no-worktree --flow patch` | **165/165** (same round, phase 2 skipped) |
 
 The 0.3.0 prerelease candidates (0.3.0-rc.1 / 0.3.0-rc.2, not yet promoted as stable) include question routing
 and queued inbox inputs. The Phase 1c harness rounds add the question-gate and `devlead_report` question
@@ -655,9 +658,10 @@ checks the answer still left the inbox before writing. A false discard that an e
 incarnation already wrote into the lead's log is repaired with a durable repair fact once the
 child's log proves the answer survived, so the question stays answered across restarts. A
 deferred repair re-proves survival when it runs and never overwrites a newer genuine discard;
-answer admission awaits the repair barrier until no repair is in flight, then refuses a
-still-pending repair with a retryable error (and the view/tool output flags `repairPending`), so
-a stale `open` — or an unreadable cold child — cannot admit a duplicate answer. Each
+answer admission awaits the repair barrier until no repair is in flight (bounded by a 30s
+deadline and the caller's cancellation), then refuses a still-pending repair with a retryable
+error (and the view/tool output flags `repairPending`), so a stale `open` — or a queued discard
+whose cold child is unreadable — cannot admit a duplicate answer. Each
 answer carries a per-question admission sequence, so a delayed discard of an older answer never
 outranks a newer re-answer. `questionStatus` (`open`/`answered`) and `answerStatus` are separate: answered does not
 mean presented. The result's `delivery` receipt reports the actual primitive/boundary/wake and the

@@ -2836,12 +2836,17 @@ describe('question/answer state exposure (Phase 1d)', () => {
     expect((notifications as { reports: Array<Record<string, unknown>> }).reports[0])
       .toEqual({ ...questionReport, questionStatus: 'open', answerStatus: 'discarded', answerMessageId: 'm1', repairPending: true })
     expectValidOutput(harness, 'devlead_notifications', notifications)
-    const session = await harness.call('devlead_get_session', { session: 'session-1' })
+    // get_session adds reports only when reading the lead itself: point the
+    // session fixture at the agent's own id so the question report is present.
+    harness.devLead.session = { ...SESSION, sessionId: harness.agent.id }
+    const session = await harness.call('devlead_get_session', { session: harness.agent.id })
     const reports = (session as { reports?: Array<Record<string, unknown>> }).reports
-    if (reports !== undefined) {
-      expect(reports[0]).toMatchObject({ repairPending: true })
-      expectValidOutput(harness, 'devlead_get_session', session)
-    }
+    // Assert explicitly the report is present and carries the provisional flag —
+    // never silently skip.
+    expect(reports).toBeDefined()
+    expect(reports!.length).toBeGreaterThan(0)
+    expect(reports![0]).toMatchObject({ repairPending: true })
+    expectValidOutput(harness, 'devlead_get_session', session)
   })
 
   it('passes queuedInput intent/questionId/wakeRequested/deliveryState through devlead_get_session', async () => {

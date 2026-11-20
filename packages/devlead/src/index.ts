@@ -290,6 +290,13 @@ const MAX_PENDING_ANSWER_DISCARDS = 128
 /** Delay between automatic retries of a queued answer discard that could not drain. */
 const ANSWER_DISCARD_RETRY_MS = 5_000
 
+/**
+ * Upper bound on how long answer admission waits for the repair barrier before
+ * giving up with a retryable error. A repair whose survival proof or flush never
+ * resolves must not hang the prompt forever; the caller retries later.
+ */
+const REPAIR_BARRIER_TIMEOUT_MS = 30_000
+
 /** Maximum per-child answer-log observers retained; FIFO eviction bounds them. */
 const MAX_CHILD_ANSWER_OBSERVERS = 512
 
@@ -766,12 +773,14 @@ export class DevLeadService extends Service {
   private lastAnswerDiscardFailure: string | undefined
 
   /**
-   * Durable-discard REPAIR failures (append/flush) keyed by lead+message, tracked
-   * separately from the discard-queue failure so a drop-only drain success — or
-   * a DIFFERENT message's repair success — never clears a still-pending failure.
-   * A message's entry is cleared only by that message's successful repair.
+   * Durable-discard REPAIR failures (append/flush) keyed by lead+message, each
+   * with its failure instant, tracked separately from the discard-queue failure
+   * so a drop-only drain success — or a DIFFERENT message's repair success —
+   * never clears a still-pending failure. A message's entry is cleared by that
+   * message's own resolution (successful repair, genuine settle, or supersede).
+   * Bounded; the newest failures are kept.
    */
-  private readonly repairFailures = new Map<string, string>()
+  private readonly repairFailures = new Map<string, { readonly message: string; readonly at: number }>()
 
   /**
    * Per-lead barrier chaining every in-flight repair pass and repair fact, so
@@ -2085,9 +2094,19 @@ export class DevLeadService extends Service {
       if (this.deferredDiscardRepairs.has(leadId)) {
         this.registerRepairBarrier(leadId, this.processDeferredDiscardRepairs(leadId))
       }
+      // Await until no repair is in flight, bounded by a finite deadline and the
+      // caller's abort signal so a never-resolving repair cannot hang admission.
+      const repairDeadline = Date.now() + REPAIR_BARRIER_TIMEOUT_MS
       let barrier = this.answerRepairBarriers.get(leadId)
       while (barrier !== undefined) {
-        await barrier
+        const remaining = repairDeadline - Date.now()
+        if (remaining <= 0) {
+          throw new DevLeadError(
+            `question "${questionId ?? ''}" answer-discard repair did not settle in time; retry the answer shortly`,
+            'DEVLEAD_SESSION_UNAVAILABLE',
+          )
+        }
+        await this.awaitRepairBarrier(barrier, remaining, signal)
         barrier = this.answerRepairBarriers.get(leadId)
       }
       // After the barrier settles, re-check: a repair still pending (failed and
@@ -4147,11 +4166,12 @@ export class DevLeadService extends Service {
 
   /**
    * Diagnostic health of the answer discard queue and its repairs: per-lead
-   * pending discard counts (`pending`) and deferred durable-repair counts
-   * (`pendingRepairs`), plus the last discard-queue failure (`lastFailure`,
-   * cleared by a successful drain) and the last repair failure
-   * (`lastRepairFailure`, cleared by a successful repair) tracked separately so
-   * a drop-only drain success never masks a still-pending repair failure.
+   * queued discard counts (`pending`) and unresolved repair counts
+   * (`pendingRepairs`: in-flight, deferred, queued, or unknown), plus the last
+   * discard-queue failure (`lastFailure`, cleared by a successful drain) and the
+   * newest repair failure (`lastRepairFailure`, cleared by that message's own
+   * repair/settle/supersede) tracked separately so a drop-only drain success
+   * never masks a still-pending repair failure.
    * @returns the per-lead pending counts and the last failures, when any.
    */
   answerDiscardHealth(): {
@@ -4164,13 +4184,19 @@ export class DevLeadService extends Service {
     for (const [leadId, queue] of this.pendingAnswerDiscards) {
       if (queue.length > 0) pending[leadId] = queue.length
     }
-    // pendingRepairs merges in-flight, deferred, failed-retrying, and unknown
+    // pendingRepairs merges in-flight, deferred, still-queued, and unknown
     // repairs: every question whose stale-discard repair is still unresolved.
     const pendingRepairs: Record<string, number> = {}
-    for (const [leadId, questions] of this.repairingQuestions) {
-      if (questions.size > 0) pendingRepairs[leadId] = questions.size
+    const leads = new Set<string>([
+      ...this.repairingQuestions.keys(),
+      ...this.deferredDiscardRepairs.keys(),
+      ...this.pendingAnswerDiscards.keys(),
+    ])
+    for (const leadId of leads) {
+      const count = this.pendingRepairIds(leadId).size
+      if (count > 0) pendingRepairs[leadId] = count
     }
-    const lastRepairFailure = [...this.repairFailures.values()].at(-1)
+    const lastRepairFailure = this.latestRepairFailure()
     return {
       pending,
       pendingRepairs,
@@ -4454,6 +4480,9 @@ export class DevLeadService extends Service {
           queue.push(discard)
           this.pendingAnswerDiscards.set(leadId, queue)
         }
+        // An unreadable child leaves the reopen provisional: mark the question
+        // repair-pending so the view/prompt refuse a duplicate until it resolves.
+        if (survival?.status === 'unknown') this.markRepairPending(leadId, discard.reportId)
         // The seq-aware, presentation-safe seed never lets a stale queued
         // discard outrank a newer re-answer or rewind a presented answer.
         this.answers.seed(discard)
@@ -4598,16 +4627,48 @@ export class DevLeadService extends Service {
     if (set.size === 0) this.repairingQuestions.delete(leadId)
   }
 
+  /**
+   * Every question of one lead whose stale-discard repair is still unresolved:
+   * marked in-flight, deferred, STILL QUEUED with an unreadable child (a reopen
+   * that survives a drain), or a durable terminal whose child is unreadable. A
+   * queued unknown row counts because the question's reopen is not provable, so
+   * its `open` is provisional and must not admit a duplicate answer.
+   * @param leadId - lead Session identity.
+   * @returns the set of unresolved question report ids.
+   */
+  private pendingRepairIds(leadId: string): Set<string> {
+    const ids = new Set(this.repairingQuestions.get(leadId) ?? [])
+    for (const entry of this.deferredDiscardRepairs.get(leadId) ?? []) ids.add(entry.stale.reportId)
+    // A queued discard whose child is unreadable is an UNKNOWN reopen: provisional
+    // until it resolves. A queued discard with a readable child is provable
+    // (genuine or survived) and the drain resolves it, so it is not flagged here.
+    for (const discard of this.pendingAnswerDiscards.get(leadId) ?? []) {
+      if (this.childUnreadable(discard.sessionId)) ids.add(discard.reportId)
+    }
+    const leadSession = this.ctx.sessions.get(toSessionId(leadId))
+    if (leadSession !== undefined) {
+      const state = this.projectionHandle.stateOf(leadSession)
+      if (state.failure === null) {
+        const latest = new Map<string, DevLeadReportAnswer>()
+        for (const answer of state.answers) {
+          const current = latest.get(answer.reportId)
+          if (current === undefined || (answer.answerSeq ?? 0) >= (current.answerSeq ?? 0)) {
+            latest.set(answer.reportId, answer)
+          }
+        }
+        for (const record of latest.values()) {
+          if ((record.status === 'discarded' || record.status === 'failed') && this.childUnreadable(record.sessionId)) {
+            ids.add(record.reportId)
+          }
+        }
+      }
+    }
+    return ids
+  }
+
   /** Whether one question's stale-discard repair is still unresolved. */
   private questionRepairPending(leadId: string, reportId: string): boolean {
-    if (this.repairingQuestions.get(leadId)?.has(reportId) === true) return true
-    if ((this.deferredDiscardRepairs.get(leadId) ?? []).some(entry => entry.stale.reportId === reportId)) return true
-    const leadSession = this.ctx.sessions.get(toSessionId(leadId))
-    if (leadSession === undefined) return false
-    const latest = latestAnswerOf(this.projectionHandle.stateOf(leadSession).answers, reportId)
-    return latest !== undefined
-      && (latest.status === 'discarded' || latest.status === 'failed')
-      && this.childUnreadable(latest.sessionId)
+    return this.pendingRepairIds(leadId).has(reportId)
   }
 
   /**
@@ -4639,7 +4700,13 @@ export class DevLeadService extends Service {
    */
   private dropObsoleteDiscard(discard: DevLeadReportAnswer, survival?: AnswerSurvivalProof): void {
     void this.outbox?.deleteAnswerDiscard(discard)
-    if (survival === undefined) return
+    if (survival === undefined) {
+      // Superseded/obsolete without a survival proof: the stale repair resolves
+      // (a newer genuine fact wins); clear its pending mark and failure.
+      this.clearRepairFailure(discard)
+      this.clearRepairPending(discard.leadSessionId, discard.reportId)
+      return
+    }
     // The tracker repair happens inside the repair pass, AFTER the latest
     // durable fact is validated: a newer genuine terminal must not be undone,
     // and a failed/rejected repair must not leave the tracker falsely survived.
@@ -4663,16 +4730,69 @@ export class DevLeadService extends Service {
     })
   }
 
+  /**
+   * Await one repair barrier with a finite timeout and abort awareness, so a
+   * repair that never resolves cannot hang answer admission. On timeout/abort it
+   * throws a retryable error; normal settlement is unchanged. Timers/listeners
+   * are always cleaned up.
+   * @param run - the barrier promise to await.
+   * @param ms - remaining milliseconds before giving up.
+   * @param signal - the caller's cancellation signal, when provided.
+   */
+  private async awaitRepairBarrier(run: Promise<void>, ms: number, signal?: AbortSignal): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let onAbort: (() => void) | undefined
+    const retryable = (reason: string): DevLeadError => new DevLeadError(
+      `answer-discard repair did not settle (${reason}); retry the answer shortly`,
+      'DEVLEAD_SESSION_UNAVAILABLE',
+    )
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(retryable('timed out')), ms)
+    })
+    const abort = new Promise<never>((_, reject) => {
+      if (signal === undefined) return
+      if (signal.aborted) {
+        reject(retryable('cancelled'))
+        return
+      }
+      onAbort = () => reject(retryable('cancelled'))
+      signal.addEventListener('abort', onAbort, { once: true })
+    })
+    try {
+      await Promise.race([run, timeout, abort])
+    } finally {
+      if (timer !== undefined) clearTimeout(timer)
+      if (onAbort !== undefined) signal?.removeEventListener('abort', onAbort)
+    }
+  }
+
   /** Record one repair failure keyed by lead+message (never cleared by another's success). */
   private setRepairFailure(stale: DevLeadReportAnswer, detail: string): void {
     const message = `repair ${detail} for answer "${stale.messageId}" (lead "${stale.leadSessionId}") failed`
-    this.repairFailures.set(`${stale.leadSessionId}\u0000${stale.messageId}`, message)
+    const key = `${stale.leadSessionId}\u0000${stale.messageId}`
+    this.repairFailures.set(key, { message, at: Date.now() })
+    // Bounded: evict the oldest failures beyond the cap (newest kept).
+    if (this.repairFailures.size > MAX_PENDING_ANSWER_DISCARDS) {
+      const oldest = [...this.repairFailures.entries()].sort((left, right) => left[1].at - right[1].at)
+      for (const [entryKey] of oldest.slice(0, this.repairFailures.size - MAX_PENDING_ANSWER_DISCARDS)) {
+        this.repairFailures.delete(entryKey)
+      }
+    }
     this.ctx.logger.warn(`devlead: ${message}; deferred`)
   }
 
-  /** Clear one message's repair failure after its own successful repair. */
+  /** Clear one message's repair failure after its own resolution. */
   private clearRepairFailure(stale: DevLeadReportAnswer): void {
     this.repairFailures.delete(`${stale.leadSessionId}\u0000${stale.messageId}`)
+  }
+
+  /** The most recent still-pending repair failure (by failure instant), if any. */
+  private latestRepairFailure(): string | undefined {
+    let newest: { readonly message: string; readonly at: number } | undefined
+    for (const entry of this.repairFailures.values()) {
+      if (newest === undefined || entry.at >= newest.at) newest = entry
+    }
+    return newest?.message
   }
 
   /**
@@ -4708,6 +4828,7 @@ export class DevLeadService extends Service {
     const fresh = await this.survivalProof(stale, new Map())
     if (fresh === undefined) {
       // The child is observable and shows no survival: a genuine discard.
+      this.clearRepairFailure(stale)
       this.clearRepairPending(leadId, stale.reportId)
       return
     }
@@ -4734,6 +4855,8 @@ export class DevLeadService extends Service {
       // or a different status/sequence) is a genuine discard that supersedes.
       const sameStaleTerminal = latest.status === stale.status && sameSeq && latest.at <= stale.at
       if (!sameStaleTerminal) {
+        // A newer genuine terminal supersedes: resolve the stale repair.
+        this.clearRepairFailure(stale)
         this.clearRepairPending(leadId, stale.reportId)
         return
       }
@@ -4792,6 +4915,7 @@ export class DevLeadService extends Service {
     }
     // No stale durable terminal of this message to repair (already answered, or
     // a different answer is latest): apply proven reality and resolve the mark.
+    this.clearRepairFailure(stale)
     this.answers.repairLifecycle(stale.sessionId, stale.messageId, fresh.status, fresh.at)
     this.clearRepairPending(leadId, stale.reportId)
   }
@@ -4956,6 +5080,8 @@ export class DevLeadService extends Service {
         continue
       }
       if (survival?.status === 'unknown') {
+        // Unreadable child: the reopen stays provisional and queued for retry.
+        this.markRepairPending(leadId, discard.reportId)
         failed.push(discard)
         continue
       }
@@ -4992,8 +5118,15 @@ export class DevLeadService extends Service {
       this.lastAnswerDiscardFailure = undefined
     }
     for (const discard of appended) {
-      if (flushed) void this.outbox?.deleteAnswerDiscard(discard)
-      else this.queueAnswerDiscard(discard)
+      if (flushed) {
+        void this.outbox?.deleteAnswerDiscard(discard)
+        // The reopen is now durable: resolve the queued-repair mark. (If the
+        // child is still unreadable, the durable-terminal clause keeps it
+        // provisional until a repair pass resolves it.)
+        this.clearRepairPending(leadId, discard.reportId)
+      } else {
+        this.queueAnswerDiscard(discard)
+      }
     }
     for (const discard of failed) this.queueAnswerDiscard(discard)
   }
