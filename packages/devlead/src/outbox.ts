@@ -276,10 +276,14 @@ export class DevLeadReportOutbox {
     try {
       const table = this.domain.table(OUTBOX_TABLE)
       const existing = table.get(key) as DevLeadOutboxRecord | undefined
+      // A same-key retry may omit the origin (older call sites): keep the row's
+      // recorded origin instead of silently downgrading it to the legacy
+      // default-cold replay path.
+      const effectiveOrigin = origin ?? existing?.origin
       await table.put(key, {
         report,
         enqueuedAt: existing?.enqueuedAt ?? Date.now(),
-        ...(origin === undefined ? {} : { origin }),
+        ...(effectiveOrigin === undefined ? {} : { origin: effectiveOrigin }),
       } satisfies DevLeadOutboxRecord)
       this.lastError = undefined
       return true

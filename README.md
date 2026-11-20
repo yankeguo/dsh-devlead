@@ -294,6 +294,9 @@ requires Node ≥ 24.9):
 | `0.2.2-rc.5` | `pnpm e2e --flow installed --no-build` (Phase 1e cold-origin fix, pinned totals) | **221/221** (218 PASS + 3 SKIP; cold-origin replay fix rerun) |
 | `0.2.2-rc.5` | `pnpm e2e` (patch, cold-origin fix round) | **221/221** (same round) |
 | `0.2.2-rc.5` | `pnpm e2e --no-worktree --no-build` (cold-origin fix round) | **198/198** (same round, phase 2 skipped) |
+| `0.2.2-rc.5` | `pnpm e2e --flow installed --no-build` (Phase 1e cold-origin replay closure, pinned totals) | **221/221** (218 PASS + 3 SKIP; replay-gap closure rerun) |
+| `0.2.2-rc.5` | `pnpm e2e` (patch, cold-origin replay closure) | **221/221** (same round) |
+| `0.2.2-rc.5` | `pnpm e2e --no-worktree --no-build` (cold-origin replay closure) | **198/198** (same round, phase 2 skipped) |
 
 The 0.3.0 prerelease candidates (0.3.0-rc.1 / 0.3.0-rc.2, not yet promoted as stable) include question routing
 and queued inbox inputs. The Phase 1c harness rounds add the question-gate and `devlead_report` question
@@ -328,8 +331,11 @@ same gates: installed/patch **221/221** each and `--no-worktree` **198/198** (se
 [background-retry evidence](docs/e2e-evidence/phase1e-bg-retry.md)). The Phase 1e cold-origin
 fix round (cold-observed background receipts stay digest-only across outbox replay/restart,
 30 test files / 1345 tests) reran the same gates with the same totals (see
-[cold-origin evidence](docs/e2e-evidence/phase1e-cold-origin.md)). A pre-release rerun of the
-full combination is still required by the publishing guide.
+[cold-origin evidence](docs/e2e-evidence/phase1e-cold-origin.md)). The cold-origin replay-closure
+round (cold-queued origin marker, cold outbox replay receipt retry, 30 test files / 1351 tests)
+reran the same gates with the same totals (see
+[replay-closure evidence](docs/e2e-evidence/phase1e-cold-origin-final.md)). A pre-release rerun of
+the full combination is still required by the publishing guide.
 
 Three positive model-selection checks per flow are reported as SKIP on this credential-less
 Host (the real reason is printed); the negative model path and `devlead_list_models` run on every
@@ -619,7 +625,11 @@ makes the append durable and degrades to digest-only with a warning after the ca
 outbox row is replayed on a bounded (1 s, 5 attempts) timer while its lead is live. Reports
 genuinely observed while the lead was cold stay digest-only by policy, including across a durable
 outbox replay/restart: the outbox row records the lead-liveness origin, and a cold-origin
-background report is never injected later (a failed cold receipt is retried to durability only).
+background report is never injected later, and a cold receipt failure retried to durability only.
+A live-origin background row replayed while the Agent is cold keeps its durable receipt but
+degrades to digest-only (no late inject); legacy outbox rows without an origin are treated as
+cold, so an old live background row may only reach the digest. A rollback to a pre-origin build
+can make its strict outbox schema backup-and-skip such rows, which then need manual handling.
 The fallback
 when a Host composes no storage is explicit: the receipt has `durable: false` and a warning, and
 the child can retry after the lead is available. Outbox rows are pruned after 7 days if their lead
@@ -1185,8 +1195,8 @@ installed/patch full flows **150/150** each; the Phase 1c evidence round pinned 
 Phase 1d answer-routing round pinned **188/188**, and the Phase 1e message-lane round pinned
 **221/221** (installed/patch full flows each). The Phase 1e × cold-discard r3–r9 merge round reran
 the same pins on the merged tree: **221/221** each full flow and **198/198** `--no-worktree`; the
-Phase 1e review-fix round and the cold-origin fix round reran them again with the same totals.
-The probe is a private
+Phase 1e review-fix round, the cold-origin fix round, and the replay-closure round reran them
+again with the same totals. The probe is a private
 test-only package under `scripts/e2e-probe/`, not a published or workspace package. The profile
 mutations happen only in the throwaway profile under `os.tmpdir()`; no pnpm install, network, or
 lockfile change is involved.

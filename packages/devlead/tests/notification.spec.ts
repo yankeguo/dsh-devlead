@@ -9,10 +9,11 @@
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { SessionId, appendPluginRecord } from '@deepseek-ai/dsh-session'
+import { SessionId, appendPluginRecord, pluginRecordOf } from '@deepseek-ai/dsh-session'
 import {
   DEVLEAD_DEFAULT_NOTIFICATION_RETENTION,
   DEVLEAD_MODE_RECORD_TYPE,
+  DEVLEAD_REPORT_RECORD_TYPE,
   DEVLEAD_WATCH_RECORD_TYPE,
   notificationId,
 } from '@yankeguo/dsh-devlead-protocol'
@@ -1513,6 +1514,112 @@ describe('Phase 1e background report receipt retry', () => {
     await vi.advanceTimersByTimeAsync(1_000)
     commit.mockRestore()
     expect(lead.agent.injects).toHaveLength(2)
+    expect(harness.hub.deliveryStateOf(String(lead.agent.id), second.id)).toBe('delivered')
+  })
+
+  it('keeps an attach-only cold background report digest-only when persistReport runs without origin', async () => {
+    installFakeTimers()
+    const harness = await bootHub({ batchMs: 400 })
+    const lead = onlyLead(harness)
+    // Cold Agent, attached Session log; the report append fails while cold, so
+    // the row is queued with cold origin (digest-only, no timer).
+    harness.agents.remove(String(lead.agent.id))
+    const commit = vi.spyOn(lead.session as unknown as { commit: (...args: unknown[]) => unknown }, 'commit')
+      .mockImplementationOnce(() => { throw new Error('disk full') })
+    const report = backgroundReport(harness, String(lead.agent.id), 'cold hub-direct')
+    expect(harness.hub.report(report)).toBe(true)
+    commit.mockRestore()
+    expect(harness.hub.deliveryStateOf(String(lead.agent.id), report.id)).toBe('digest-only')
+    // The Agent becomes live, but no agent/created is emitted: a hub-direct
+    // persistReport without an explicit origin must still see the cold origin.
+    harness.agents.add(lead.agent)
+    expect(await harness.hub.persistReport(report)).toBe(true)
+    expect(lead.agent.injects).toHaveLength(0)
+    expect(harness.hub.deliveryStateOf(String(lead.agent.id), report.id)).toBe('digest-only')
+    expect(projectionStateOf(lead.session).reports).toHaveLength(1)
+  })
+
+  it('retries a cold-observed receipt after a failed hub-direct persistReport', async () => {
+    installFakeTimers()
+    const harness = await bootHub({ batchMs: 400 })
+    const lead = onlyLead(harness)
+    harness.agents.remove(String(lead.agent.id))
+    const firstCommit = vi.spyOn(lead.session as unknown as { commit: (...args: unknown[]) => unknown }, 'commit')
+      .mockImplementationOnce(() => { throw new Error('disk full') })
+    const report = backgroundReport(harness, String(lead.agent.id), 'cold direct retry')
+    expect(harness.hub.report(report)).toBe(true)
+    firstCommit.mockRestore()
+    expect(projectionStateOf(lead.session).reports).toHaveLength(0)
+    // The Agent becomes live without agent/created; the direct persistReport
+    // fails once and must arm the cold receipt retry instead of waiting.
+    harness.agents.add(lead.agent)
+    const retryCommit = vi.spyOn(lead.session as unknown as { commit: (...args: unknown[]) => unknown }, 'commit')
+      .mockImplementationOnce(() => { throw new Error('disk full') })
+    expect(await harness.hub.persistReport(report)).toBe(false)
+    retryCommit.mockRestore()
+    expect(lead.agent.injects).toHaveLength(0)
+    expect(projectionStateOf(lead.session).reports).toHaveLength(0)
+    await vi.advanceTimersByTimeAsync(1_000)
+    await flushMicrotasks()
+    expect(projectionStateOf(lead.session).reports).toHaveLength(1)
+    expect(lead.agent.injects).toHaveLength(0)
+    expect(harness.hub.deliveryStateOf(String(lead.agent.id), report.id)).toBe('digest-only')
+  })
+
+  it('keeps an attach-only cold live-origin background receipt digest-only', async () => {
+    installFakeTimers()
+    const harness = await bootHub({ batchMs: 400 })
+    const lead = onlyLead(harness)
+    harness.agents.remove(String(lead.agent.id))
+    const report = devLeadReport({
+      senderSessionId: String(harness.watched.id),
+      leadSessionId: String(lead.agent.id),
+      turn: 1,
+      kind: 'progress',
+      message: 'live origin while cold',
+      at: T0,
+    })
+    // The outbox row says live, but the Agent is cold at replay time: the
+    // receipt is durable and the lane degrades to digest-only (documented).
+    expect(await harness.hub.persistReport(report, 'live')).toBe(true)
+    expect(lead.agent.injects).toHaveLength(0)
+    expect(harness.hub.deliveryStateOf(String(lead.agent.id), report.id)).toBe('digest-only')
+    expect(projectionStateOf(lead.session).reports).toHaveLength(1)
+  })
+
+  it('gives a same-burst new failure the full retry budget', async () => {
+    installFakeTimers()
+    const harness = await bootHub({ batchMs: 400 })
+    const lead = onlyLead(harness)
+    const failures = new Map<string, number>()
+    const sessionWithCommit = lead.session as unknown as { commit: (...args: unknown[]) => unknown }
+    const original = sessionWithCommit.commit.bind(sessionWithCommit)
+    const commit = vi.spyOn(sessionWithCommit, 'commit').mockImplementation((...args: unknown[]) => {
+      const record = pluginRecordOf(args[0] as never)
+      if (record?.type === DEVLEAD_REPORT_RECORD_TYPE) {
+        const report = (record.data as { report: { id: string } }).report
+        const remaining = failures.get(report.id) ?? 0
+        if (remaining > 0) {
+          failures.set(report.id, remaining - 1)
+          throw new Error('disk full')
+        }
+      }
+      return original(...args)
+    })
+    const first = backgroundReport(harness, String(lead.agent.id), 'first pending burst')
+    failures.set(first.id, 100)
+    expect(harness.hub.report(first)).toBe(true)
+    await vi.advanceTimersByTimeAsync(7_000)
+    expect(lead.agent.injects).toHaveLength(0)
+    // A second failure joins the same runtime burst. Without resetting the
+    // attempt counter it would inherit seven attempts and degrade immediately.
+    const second = backgroundReport(harness, String(lead.agent.id), 'second pending burst')
+    failures.set(second.id, 6)
+    expect(harness.hub.report(second)).toBe(true)
+    await vi.advanceTimersByTimeAsync(6_000)
+    commit.mockRestore()
+    expect(lead.agent.injects).toHaveLength(1)
+    expect(messageText(lead.agent.injects[0]!)).toContain('second pending burst')
     expect(harness.hub.deliveryStateOf(String(lead.agent.id), second.id)).toBe('delivered')
   })
 

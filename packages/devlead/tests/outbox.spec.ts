@@ -94,6 +94,19 @@ describe('DevLeadReportOutbox', () => {
     expect(entries.find(entry => entry.report.message === 'legacy update')?.report).not.toHaveProperty('questions')
   })
 
+  it('keeps the recorded origin when a same-key retry omits it', async () => {
+    const storage = new FakeStorageDomain()
+    const outbox = await DevLeadReportOutbox.open(storageContext(storage))
+    const value = report('origin retry')
+    await outbox!.put(value, 'live')
+    // A retry path that omits the origin must not downgrade the row to the
+    // legacy default-cold replay semantics.
+    expect(await outbox!.put(value)).toBe(true)
+    expect(outbox!.entries()[0]?.origin).toBe('live')
+    expect(await outbox!.put(value, 'cold')).toBe(true)
+    expect(outbox!.entries()[0]?.origin).toBe('cold')
+  })
+
   it('keeps the first enqueue instant when the same id is retried', async () => {
     const storage = new FakeStorageDomain()
     const outbox = await DevLeadReportOutbox.open(storageContext(storage))

@@ -1175,6 +1175,62 @@ describe('mid-turn reports', () => {
     expect(second.service.reportDeliveryState(second.lead.agent, receipt.report.id)).toBe('digest-only')
   })
 
+  it('retries a cold outbox replay receipt failure and clears the row without injecting', async () => {
+    const storage = new FakeStorageDomain()
+    const options = {
+      leadId: 'lead-cold-retry',
+      enabled: true,
+      sessionIds: ['child-cold-retry'],
+      watched: ['child-cold-retry'],
+      storageDomain: storage,
+    }
+    const first = await bootService(options)
+    const firstChild = new FakeAgent(requireSession(first, 'child-cold-retry'))
+    first.agents.add(firstChild)
+    first.agents.remove(String(first.lead.id))
+    const firstCommit = vi.spyOn(first.leadSession as unknown as { commit: (...args: unknown[]) => unknown }, 'commit')
+      .mockImplementationOnce(() => { throw new Error('disk full') })
+    const receipt = await first.service.reportProgress(firstChild.agent, { message: 'cold retry restart', kind: 'progress' })
+    firstCommit.mockRestore()
+    expect(receipt).toMatchObject({ durable: true, queued: true })
+    const rows = (): Array<{ report: { message: string }; origin?: string }> => [...storage.table('devlead_report_outbox', 'pending').records.values()] as Array<{
+      report: { message: string }
+      origin?: string
+    }>
+    expect(rows()).toHaveLength(1)
+    expect(rows()[0]?.origin).toBe('cold')
+    await first.dispose()
+
+    // The second boot's replay append fails once. The hub cold retry and the
+    // delayed outbox replay must persist the receipt and clear the row without
+    // ever injecting the cold-observed background report.
+    let reportCommitFailures = 1
+    const second = await bootService({
+      ...options,
+      seedLead: (session) => {
+        const withCommit = session as unknown as { commit: (...args: unknown[]) => unknown }
+        const original = withCommit.commit.bind(withCommit)
+        vi.spyOn(withCommit, 'commit').mockImplementation((...args: unknown[]) => {
+          const record = pluginRecordOf(args[0] as never)
+          if (record?.type === DEVLEAD_REPORT_RECORD_TYPE && reportCommitFailures > 0) {
+            reportCommitFailures -= 1
+            throw new Error('disk full')
+          }
+          return original(...args)
+        })
+      },
+    })
+    expect(rows()).toHaveLength(1)
+    expect(second.lead.injects).toHaveLength(0)
+    expect(second.service.reports(second.lead.agent)).toHaveLength(0)
+    await new Promise(resolve => setTimeout(resolve, 1_300))
+    await flushMicrotasks()
+    expect(rows()).toHaveLength(0)
+    expect(second.lead.injects).toHaveLength(0)
+    expect(second.service.reports(second.lead.agent).map(entry => entry.message)).toContain('cold retry restart')
+    expect(second.service.reportDeliveryState(second.lead.agent, receipt.report.id)).toBe('digest-only')
+  })
+
   it('releases the outbox domain on dispose so a reload opens it durably again', async () => {
     const storage = new FakeStorageDomain()
     const first = await bootReporting({}, { storageDomain: storage })

@@ -2584,8 +2584,14 @@ export class DevLeadService extends Service {
             `devlead: could not replay report "${report.id}": ${thrownMessage(error)}`,
           )
         }
-        if (delivered) await this.outbox.delete(report)
-        else waiting += 1
+        if (delivered) {
+          await this.outbox.delete(report)
+        } else {
+          waiting += 1
+          // A boot replay that failed on a live lead's receipt append must not
+          // wait for an unrelated event; the bounded delayed replay retries it.
+          this.scheduleOutboxReplayRetry(false)
+        }
       }
       if (waiting > 0) {
         this.ctx.logger.warn(

@@ -137,6 +137,13 @@ interface LeadRuntime {
    * digest-only outcome: it must never inject, even after a restart/replay.
    */
   coldReportFailures: Set<string>
+  /**
+   * Background reports queued while the lead Agent was cold. This is the
+   * hub-side origin marker consulted by a later `persistReport` without an
+   * explicit origin: such a report is digest-only even if the Agent became live
+   * by then. It never arms a timer on its own.
+   */
+  coldQueuedReports: Set<string>
   /** Pending turn-notice coalescing/retry timer. */
   timer: ReturnType<typeof setTimeout> | undefined
   /** Whether a zero-delay turn-notice microtask flush is queued (the `batchMs: 0` path). */
@@ -600,8 +607,11 @@ export class DevLeadNotificationHub {
     const runtime = this.reportRuntime(report)
     if (runtime === undefined) return false
     this.assertReportCapacity(report)
-    const coldObserved = origin === 'cold'
-      || (origin === undefined && !this.isLeadAgentLive(report.leadSessionId))
+    const queuedCold = runtime.coldQueuedReports.has(report.id)
+    const coldObserved = origin === 'live'
+      ? false
+      : origin === 'cold'
+        || (origin === undefined && (queuedCold || !this.isLeadAgentLive(report.leadSessionId)))
     const session = this.ctx.sessions.get(toSessionId(report.leadSessionId))
     if (session === undefined) {
       this.queueUnsavedReport(runtime, report, !coldObserved)
@@ -618,6 +628,12 @@ export class DevLeadNotificationHub {
           `devlead: could not record a report for lead "${runtime.sessionId}": ${thrownMessage(error)}`,
         )
         this.queueUnsavedReport(runtime, report, !coldObserved)
+        if (coldObserved && !isActionReportKind(report.kind)) {
+          // A cold-observed receipt failure needs its own bounded retry: the
+          // queued row alone has no live marker and would otherwise wait for an
+          // unrelated event.
+          this.queueColdReportFailure(runtime, report)
+        }
         return false
       }
       // The retry path may have queued this identity already. This append just
@@ -720,7 +736,10 @@ export class DevLeadNotificationHub {
     if (!live) {
       if (duplicate) return
       // A cold lead is never resumed for background context; the durable digest
-      // (written when the lead returns) is the only delivery.
+      // (written when the lead returns) is the only delivery. Remember the
+      // origin so a later hub-direct persistReport without an explicit origin
+      // cannot mistake the now-live Agent for a live observation.
+      if (!isActionReportKind(report.kind)) runtime.coldQueuedReports.add(report.id)
       this.markDeliveryState(runtime, report.id, 'digest-only')
       this.countReport(report, 'digest-only')
       return
@@ -728,6 +747,10 @@ export class DevLeadNotificationHub {
     if (!runtime.liveReportFailures.has(report.id)) {
       runtime.liveReportFailures.add(report.id)
       runtime.coldReportFailures.delete(report.id)
+      runtime.coldQueuedReports.delete(report.id)
+      // A new failure starts a fresh bounded burst, so a report queued while an
+      // older one is near its cap still gets the full retry budget.
+      runtime.backgroundRetryAttempts = 0
       this.markDeliveryState(runtime, report.id, 'pending')
       this.countReport(report, 'queued')
     }
@@ -743,7 +766,11 @@ export class DevLeadNotificationHub {
    */
   private queueColdReportFailure(runtime: LeadRuntime, report: DevLeadReport): void {
     if (runtime.liveReportFailures.has(report.id)) return
-    runtime.coldReportFailures.add(report.id)
+    runtime.coldQueuedReports.add(report.id)
+    if (!runtime.coldReportFailures.has(report.id)) {
+      runtime.coldReportFailures.add(report.id)
+      runtime.backgroundRetryAttempts = 0
+    }
     this.scheduleBackgroundRetry(runtime)
   }
 
@@ -759,6 +786,7 @@ export class DevLeadNotificationHub {
     const existed = runtime.unsavedReports.some(report => report.id === reportId)
     runtime.liveReportFailures.delete(reportId)
     runtime.coldReportFailures.delete(reportId)
+    runtime.coldQueuedReports.delete(reportId)
     runtime.unsavedReports = runtime.unsavedReports.filter(report => report.id !== reportId)
     if (!this.hasBackgroundReportWork(runtime)) {
       this.clearBackgroundTimer(runtime)
@@ -785,6 +813,7 @@ export class DevLeadNotificationHub {
    * @param queued - whether this runtime already queued/counted the identity.
    */
   private settleColdBackground(runtime: LeadRuntime, report: DevLeadReport, queued: boolean): void {
+    runtime.coldQueuedReports.delete(report.id)
     const alreadyDigestOnly = runtime.deliveryStates.get(report.id) === 'digest-only'
     this.markDeliveryState(runtime, report.id, 'digest-only')
     if (!queued && !alreadyDigestOnly) this.countReport(report, 'digest-only')
@@ -1071,6 +1100,7 @@ export class DevLeadNotificationHub {
       unsavedReports: [],
       liveReportFailures: new Set(),
       coldReportFailures: new Set(),
+      coldQueuedReports: new Set(),
       timer: undefined,
       scheduled: false,
       flushing: false,
@@ -1135,10 +1165,11 @@ export class DevLeadNotificationHub {
     runtime.unsaved = runtime.unsaved.filter(notification => next.has(notification.sessionId))
     runtime.pendingActionReports = runtime.pendingActionReports.filter(report => next.has(report.senderSessionId))
     runtime.unsavedReports = runtime.unsavedReports.filter(report => next.has(report.senderSessionId))
-    for (const reportId of [...runtime.liveReportFailures, ...runtime.coldReportFailures]) {
+    for (const reportId of [...runtime.liveReportFailures, ...runtime.coldReportFailures, ...runtime.coldQueuedReports]) {
       if (!runtime.unsavedReports.some(report => report.id === reportId)) {
         runtime.liveReportFailures.delete(reportId)
         runtime.coldReportFailures.delete(reportId)
+        runtime.coldQueuedReports.delete(reportId)
       }
     }
     for (const sender of [...runtime.backgroundCounts.keys()]) {
@@ -1547,6 +1578,7 @@ export class DevLeadNotificationHub {
       if (this.stateOf(session)?.reports.some(existing => existing.id === report.id) === true) {
         runtime.liveReportFailures.delete(report.id)
         runtime.coldReportFailures.delete(report.id)
+        runtime.coldQueuedReports.delete(report.id)
         continue
       }
       try {
@@ -1572,6 +1604,7 @@ export class DevLeadNotificationHub {
         // The receipt append finally succeeded for a report observed while the
         // lead was live: re-enter the background lane instead of treating the
         // earlier append failure as a cold-observation digest-only outcome.
+        runtime.coldQueuedReports.delete(report.id)
         this.deliverBackground(runtime, report)
       } else {
         // Cold-observed background context is digest-only by policy. The
@@ -2075,6 +2108,7 @@ export class DevLeadNotificationHub {
       }
       if (runtime.coldReportFailures.delete(report.id)) {
         cold += 1
+        runtime.coldQueuedReports.delete(report.id)
         this.markDeliveryState(runtime, report.id, 'digest-only')
       }
     }
