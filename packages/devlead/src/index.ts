@@ -297,6 +297,14 @@ const ANSWER_DISCARD_RETRY_MS = 5_000
  */
 const REPAIR_BARRIER_TIMEOUT_MS = 30_000
 
+/**
+ * Upper bound on how long answer admission waits for an in-flight discard drain.
+ * The drain itself keeps running after this bound; only the admission wait is
+ * abandoned with a retryable error, so a hung `sessionQuery.readSession` cannot
+ * wedge the target admission tail forever.
+ */
+const ANSWER_DISCARD_DRAIN_TIMEOUT_MS = 30_000
+
 /** Maximum per-child answer-log observers retained; FIFO eviction bounds them. */
 const MAX_CHILD_ANSWER_OBSERVERS = 512
 
@@ -2090,15 +2098,27 @@ export class DevLeadService extends Service {
     return await this.withTargetAdmission(targetId, async () => {
       signal?.throwIfAborted()
       const leadId = String(agent.id)
-      // Drain any queued discards before this admission: the question guards
-      // below must see the reopened state, and an older discard must reach the
-      // durable audit before a newer answer record is appended. This is
-      // UNCONDITIONAL: a trigger that already started a drain (lead activation or
-      // the retry timer) removed its rows from pendingAnswerDiscards before the
-      // survival proof resolved, so checking that map would miss the in-flight
-      // pass and could admit a duplicate answer. reconcileAnswerDiscards reuses
-      // the in-flight promise per lead and returns immediately when idle.
-      await this.reconcileAnswerDiscards(leadId)
+      // An ANSWER admission always waits for any queued or in-flight discard
+      // drain: the question guards below must see the reopened state, and an
+      // older discard must reach the durable audit before a newer answer record
+      // is appended. This cannot be conditional on pendingAnswerDiscards: a
+      // trigger that already started a drain (lead activation or the retry
+      // timer) removed its rows from that map before the survival proof
+      // resolved, so checking the map alone would miss the in-flight pass and
+      // could admit a duplicate answer. Other intents wait only when this prompt
+      // itself has queued rows to drain (the pre-existing "drain before the next
+      // prompt" contract); they never need to join an already in-flight drain,
+      // which keeps a hung drain from blocking unrelated instruction/background
+      // traffic. Every wait is bounded and follows options.signal; the drain
+      // keeps running in the background when a wait loses.
+      const queuedDiscards = this.pendingAnswerDiscards.has(leadId)
+      const drain = this.reconcileAnswerDiscards(leadId)
+      // The bounded wait below may lose: observe the background pass's eventual
+      // rejection so it never surfaces as an unhandled rejection.
+      void drain.catch(() => undefined)
+      if (intent === 'answer' || queuedDiscards) {
+        await this.awaitDiscardDrain(drain, ANSWER_DISCARD_DRAIN_TIMEOUT_MS, signal)
+      }
       // Settle repairs before the question guards. Kick any deferred repairs,
       // then await the barrier chain until no repair is in flight (the chain
       // accumulates EVERY registered repair, so any number of them settles —
@@ -4762,22 +4782,56 @@ export class DevLeadService extends Service {
    * @param signal - the caller's cancellation signal, when provided.
    */
   private async awaitRepairBarrier(run: Promise<void>, ms: number, signal?: AbortSignal): Promise<void> {
-    let timer: ReturnType<typeof setTimeout> | undefined
-    let onAbort: (() => void) | undefined
-    const retryable = (reason: string): DevLeadError => new DevLeadError(
+    await this.awaitBounded(run, ms, signal, reason => new DevLeadError(
       `answer-discard repair did not settle (${reason}); retry the answer shortly`,
       'DEVLEAD_SESSION_UNAVAILABLE',
-    )
+    ))
+  }
+
+  /**
+   * Await one in-flight discard drain with the same bounded, abort-aware rules.
+   * A timeout/cancellation abandons only this wait: the drain keeps running in
+   * the background so the queued discard still reaches the durable audit.
+   * @param run - the in-flight drain promise.
+   * @param ms - milliseconds before giving up.
+   * @param signal - the caller's cancellation signal, when provided.
+   */
+  private async awaitDiscardDrain(run: Promise<void>, ms: number, signal?: AbortSignal): Promise<void> {
+    await this.awaitBounded(run, ms, signal, reason => new DevLeadError(
+      `answer-discard drain did not settle (${reason}); retry the answer shortly`,
+      'DEVLEAD_SESSION_UNAVAILABLE',
+    ))
+  }
+
+  /**
+   * Await one promise with a finite deadline and abort awareness. On timeout or
+   * cancellation it throws the caller's retryable error; normal settlement is
+   * unchanged. Timers/listeners are always cleaned up, and the awaited promise's
+   * later rejection is observed by the race (so background work cannot become an
+   * unhandled rejection).
+   * @param run - promise to await.
+   * @param ms - milliseconds before giving up.
+   * @param signal - the caller's cancellation signal, when provided.
+   * @param errorFor - maps the give-up reason to the caller's retryable error.
+   */
+  private async awaitBounded(
+    run: Promise<void>,
+    ms: number,
+    signal: AbortSignal | undefined,
+    errorFor: (reason: 'timed out' | 'cancelled') => DevLeadError,
+  ): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let onAbort: (() => void) | undefined
     const timeout = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(retryable('timed out')), ms)
+      timer = setTimeout(() => reject(errorFor('timed out')), ms)
     })
     const abort = new Promise<never>((_, reject) => {
       if (signal === undefined) return
       if (signal.aborted) {
-        reject(retryable('cancelled'))
+        reject(errorFor('cancelled'))
         return
       }
-      onAbort = () => reject(retryable('cancelled'))
+      onAbort = () => reject(errorFor('cancelled'))
       signal.addEventListener('abort', onAbort, { once: true })
     })
     try {

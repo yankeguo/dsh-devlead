@@ -7708,3 +7708,164 @@ describe('cold-discard closure round 8 (in-flight drain, genuine settle failure 
     expect(health.pendingRepairs[leadId]).toBe(1)
   })
 })
+
+describe('cold-discard closure round 9 (bounded in-flight drain wait)', () => {
+  /**
+   * Build the round-8 in-flight drain window: the lead has a durable admitted
+   * answer, the tracker discarded it, one queued row has no repair mark, and the
+   * lead activation's drain is blocked inside a hanging sessionQuery.readSession.
+   * @param leadId - lead Session identity.
+   * @returns the fixture plus the gate that releases the hanging read.
+   */
+  async function bootInFlightDrain(leadId: string) {
+    const question = devLeadReport({ senderSessionId: 'target', leadSessionId: leadId, turn: 1, kind: 'question', message: 'Which target?', at: T0 })
+    const query = new FakeSessionQuery()
+    const realReadSession = query.readSession.bind(query)
+    let releaseRead!: () => void
+    const readGate = new Promise<void>((resolve) => { releaseRead = resolve })
+    let readStarted = false
+    let hangRead = true
+    query.readSession = async (sessionId) => {
+      if (hangRead) {
+        hangRead = false
+        readStarted = true
+        await readGate
+      }
+      return realReadSession(sessionId)
+    }
+    const harness = await bootService({
+      leadId,
+      enabled: true,
+      sessionIds: ['target'],
+      watched: ['target'],
+      sessionQuery: query,
+      seedLead: (session) => {
+        appendPluginRecord(session, DEVLEAD_REPORT_RECORD_TYPE, reportRecord(question))
+      },
+    })
+    await nextTask()
+    const target = new FakeAgent(requireSession(harness, 'target'))
+    harness.agents.add(target)
+    harness.ctx.emit('agent/created', { agent: target.agent, source: 'resume' })
+    await flushMicrotasks()
+    const receipt = await harness.service.promptSession(harness.lead.agent, 'target', 'use staging', { intent: 'answer', questionId: question.id })
+    const message = target.inbox.nextStep.find(entry => String(entry.id) === receipt.delivery.messageId)
+    if (message === undefined) throw new Error('expected the admitted answer to be pending')
+    target.inbox.remove(receipt.delivery.messageId)
+    const realGet = harness.ctx.sessions.get.bind(harness.ctx.sessions)
+    let hideLead = true
+    let hideTarget = false
+    const sessionSpy = vi.spyOn(harness.ctx.sessions, 'get').mockImplementation((id: Parameters<typeof realGet>[0]) => {
+      const key = String(id)
+      if (hideLead && key === leadId) return undefined
+      if (hideTarget && key === 'target') return undefined
+      return realGet(id)
+    })
+    try {
+      harness.ctx.emit('agent/inbox/discarded', { agent: target.agent, message })
+      await flushMicrotasks()
+      const queued = harness.service.answerDiscardHealth()
+      expect(queued.pending[leadId]).toBe(1)
+      expect(queued.pendingRepairs[leadId] ?? 0).toBe(0)
+      hideLead = false
+      hideTarget = true
+      harness.agents.remove('target')
+      harness.ctx.emit('agent/created', { agent: harness.lead.agent, source: 'resume' })
+      for (let round = 0; round < 64 && !readStarted; round += 1) await flushMicrotasks(64)
+      expect(readStarted).toBe(true)
+      return {
+        harness,
+        question,
+        target,
+        message,
+        receipt,
+        releaseRead,
+        restoreSessionLookup: () => sessionSpy.mockRestore(),
+      }
+    } catch (error: unknown) {
+      sessionSpy.mockRestore()
+      throw error
+    }
+  }
+
+  it('an aborted drain wait rejects promptly and releases the target admission tail', async () => {
+    const fixture = await bootInFlightDrain('r9-abort-lead')
+    const { harness, target, message } = fixture
+    try {
+      const controller = new AbortController()
+      let settled = false
+      const prompt = harness.service.promptSession(harness.lead.agent, 'target', 'use prod', {
+        intent: 'answer',
+        questionId: fixture.question.id,
+        signal: controller.signal,
+      }).then((value) => { settled = true; return value }, (error) => { settled = true; throw error })
+      void prompt.catch(() => undefined)
+      await flushMicrotasks(256)
+      expect(settled).toBe(false)
+      controller.abort()
+      const error = await expectCodeAsync(() => prompt, 'DEVLEAD_SESSION_UNAVAILABLE')
+      expect(error.message).toContain('answer-discard drain did not settle (cancelled)')
+      // The drain is still hanging, but the first admission's target tail is
+      // released: make the target live and admit an unrelated instruction now.
+      fixture.restoreSessionLookup()
+      harness.agents.add(target)
+      target.inbox.append('next-step', message)
+      const instruction = await harness.service.promptSession(harness.lead.agent, 'target', 'a normal instruction')
+      expect(instruction.delivery.messageId.length).toBeGreaterThan(0)
+      // The abandoned drain still finishes in the background: it classifies the
+      // row unknown, re-queues it, and marks the question provisional.
+      fixture.releaseRead()
+      await nextTask()
+      const health = harness.service.answerDiscardHealth()
+      expect(health.pending[harness.lead.id]).toBe(1)
+      expect(health.pendingRepairs[harness.lead.id]).toBeGreaterThanOrEqual(1)
+      expect(harness.service.questionAnswerView(harness.lead.agent, fixture.question.id)?.repairPending).toBe(true)
+      // The aborted admission never wrote a second answer record.
+      const records = harness.leadSession.snapshotEvents().flatMap((event) => {
+        const record = pluginRecordOf(event)
+        return record?.type === DEVLEAD_REPORT_ANSWER_RECORD_TYPE
+          ? [(record.data as { answer: DevLeadReportAnswer }).answer]
+          : []
+      })
+      expect(records.filter(record => record.status === 'admitted')).toHaveLength(1)
+    } finally {
+      fixture.restoreSessionLookup()
+    }
+  })
+
+  it('a never-resolving drain hits the deadline without wedging admission', async () => {
+    const fixture = await bootInFlightDrain('r9-timeout-lead')
+    const { harness } = fixture
+    try {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+      let settled = false
+      const prompt = harness.service.promptSession(harness.lead.agent, 'target', 'use prod', {
+        intent: 'answer',
+        questionId: fixture.question.id,
+      }).then((value) => { settled = true; return value }, (error) => { settled = true; throw error })
+      void prompt.catch(() => undefined)
+      await flushMicrotasks(256)
+      expect(settled).toBe(false)
+      await vi.advanceTimersByTimeAsync(30_001)
+      const error = await expectCodeAsync(() => prompt, 'DEVLEAD_SESSION_UNAVAILABLE')
+      expect(error.message).toContain('answer-discard drain did not settle (timed out)')
+      // The timeout abandoned only the wait: the drain keeps running and
+      // completes once the read is released, with no unhandled rejection.
+      fixture.releaseRead()
+      await flushMicrotasks(512)
+      const health = harness.service.answerDiscardHealth()
+      expect(health.pending[harness.lead.id]).toBe(1)
+      expect(health.pendingRepairs[harness.lead.id]).toBeGreaterThanOrEqual(1)
+      const records = harness.leadSession.snapshotEvents().flatMap((event) => {
+        const record = pluginRecordOf(event)
+        return record?.type === DEVLEAD_REPORT_ANSWER_RECORD_TYPE
+          ? [(record.data as { answer: DevLeadReportAnswer }).answer]
+          : []
+      })
+      expect(records.filter(record => record.status === 'admitted')).toHaveLength(1)
+    } finally {
+      vi.useRealTimers()
+      fixture.restoreSessionLookup()
+    }
+  })
+})

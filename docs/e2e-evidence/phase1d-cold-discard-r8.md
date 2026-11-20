@@ -90,6 +90,8 @@ r7 的日志末尾没有 shell exit code；本轮三条 E2E 均以
 - prompt 对 in-flight drain 的等待没有单独 deadline；如果 composing 的 `sessionQuery.readSession`
   永不 resolve，prompt 会一直等待（与 drain 本身同寿命）。repair barrier 的 30s deadline 只覆盖
   barrier，不覆盖 drain。本轮按终审要求实现“无条件等待”，未新增 drain 超时。
+  （**r9 已修复**：`ANSWER_DISCARD_DRAIN_TIMEOUT_MS` 30s + `options.signal`，见
+  [r9 证据](phase1d-cold-discard-r9.md)。）
 - E2E 不专门构造 in-flight drain 场景；该窗口由上述 vitest 覆盖。
 - v1→v2 storage schema 迁移仍只由 fake open-time parse 测试核对；真实 backend 上已有 v1 数据的
   迁移路径未覆盖（沿用前几轮声明）。

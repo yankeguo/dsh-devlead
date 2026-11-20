@@ -632,11 +632,15 @@ DevLead 无需额外工具调用即可判断是否要介入。
    取消则以 `DEVLEAD_SESSION_UNAVAILABLE` 可重试退出），再查
    deferred/repairPending（含 **queued 且 child unreadable** 的 unknown reopen），仍 pending 则以
    `DEVLEAD_SESSION_UNAVAILABLE` 可重试拒绝本次 answer，避免 stale open 放进重复 answer。
-   **in-flight drain 窗口**：prompt admission 还会**无条件** await 该 lead 的
-   `reconcileAnswerDiscards`（复用 in-flight promise；无队列时立即返回），因为 drain 在等待
-   survival proof 前已把 row 移出 `pendingAnswerDiscards`；drain 同时把这份 row 快照发布到
-   `drainingAnswerDiscards` 并在 `finally` 清理，`pendingRepairIds`/`answerDiscardHealth` 在
-   drain 期间按 unresolved 计入，避免 view/health 漏报、guard 放行重复 answer。`questionAnswerView` 对 repair in-flight/deferred/unknown
+   **in-flight drain 窗口**：answer admission **总是** await 该 lead 的
+   `reconcileAnswerDiscards`（复用 in-flight promise；无队列时立即返回），其它 intent 仅在
+   本次 prompt 自身有 queued rows 时等待，避免被别的 trigger 的 in-flight drain 阻塞。因为
+   drain 在等待 survival proof 前已把 row 移出 `pendingAnswerDiscards`；drain 同时把这份 row
+   快照发布到 `drainingAnswerDiscards` 并在 `finally` 清理，`pendingRepairIds`/
+   `answerDiscardHealth` 在 drain 期间按 unresolved 计入，避免 view/health 漏报、guard 放行
+   重复 answer。等待本身有 `ANSWER_DISCARD_DRAIN_TIMEOUT_MS`(30s) + prompt signal：超时/取消
+   以 `DEVLEAD_SESSION_UNAVAILABLE` 可重试退出，只放弃等待（drain 后台继续，race 输掉后挂
+   no-op catch 防 unhandled），`withTargetAdmission` 的 finally 释放 target tail。`questionAnswerView` 对 repair in-flight/deferred/unknown
    的 question 标 `repairPending:true`（protocol view 可选字段，tool `REPORT_SCHEMA`/`reportValue`
    透传给 get_session/notifications 消费者），UI 不把 stale terminal 当最终 open。
    resolvedAnswer 对 same-message presented 优先于 durable terminal，claimed/admitted 与
@@ -2017,6 +2021,7 @@ Phase 1 前的 hub 只有一个 `pending` / `pendingReports` 队列和一个全�
 | Phase 1d cold-discard 收口 round 6（已完成） | tool `REPORT_SCHEMA`/`reportValue` 透传 `repairPending`（get_session/notifications 消费者可见）；prompt repair barrier 收口：await 直到无 in-flight（非固定 8 轮）后再查 deferred/repairPending，仍 pending 则以 `DEVLEAD_SESSION_UNAVAILABLE` 可重试拒绝本次 answer；drain/restore/drop 的 repair 同链；tracker 仅在 durable append+flush 成功后 advance（失败 view 保持 repairPending，不抢先 answered）；cold child + 无 query/log → survivalProof `unknown`，view repairPending、prompt 拒绝（不静默接受重复 answer，defer 到 child live 重试）；repairingQuestions 扫描到 latest terminal 即标记、resolve 才清；lastRepairFailure 按 lead+message 记录（其它成功不清）；pendingRepairs 合并 in-flight/deferred/unknown | 否 | tool repairPending 透传、append failure+immediate prompt 拒绝、>8 repair 等完、cold/no-query view+prompt、in-flight pendingRepairs、per-message failure 单测+集成；`pnpm verify` + `pnpm check:packages` + rc.5 e2e |
 | Phase 1d cold-discard 收口 round 7（已完成） | queued discard 的 unknown 态纳入 repairPending：`pendingRepairIds` 统一集合（in-flight mark + deferred + **queued 且 child unreadable** + durable terminal unreadable），`questionRepairPending`/`answerDiscardHealth().pendingRepairs` 同源；restore/drain unknown 分支显式 markRepairPending，drain append+flush 成功/supersede/genuine settle 清除；prompt drain 后重查 queued-unknown 仍以 `DEVLEAD_SESSION_UNAVAILABLE` 拒绝；barrier while 加 `REPAIR_BARRIER_TIMEOUT_MS`(30s) deadline + signal abort 安全退出（可重试，等待期间 cancel 有测试）；`repairFailures` 按 lead+message 记时间戳、bounded、取最新失败，resolve/supersede 也清；tool get_session repairPending 显式断言；>8 queued-row repair 链真实 negative control（临时改回旧固定 8 轮 barrier 时新测试实测失败，恢复当前 while+deadline 后通过） | 否 | queued-unknown view/health/prompt 拒绝+恢复、abort 退出、>8 queued-row repair 链+negative control、get_session 显式断言；`pnpm verify`（1209 tests）+ `pnpm check:packages` + rc.5 e2e 188/188/165 |
 | Phase 1d cold-discard 收口 round 8（已完成） | in-flight drain 并发窗口：`promptSession` 无条件 await `reconcileAnswerDiscards(leadId)`（复用 in-flight promise，无队列立即返回）；drain 删除 queue 后把 rows 发布到 `drainingAnswerDiscards`，`finally` 清理，`pendingRepairIds`/`answerDiscardHealth` 在 drain 期间计入 unresolved（普通未开始 drain 的 queued row 仍只对 child unreadable 计入）；`repairDisprovenDurableDiscards` 的 genuine settle 同时清 repair failure；并发测试（挂起 `sessionQuery.readSession`）验证 prompt 等待、view/health 可见、unknown 拒绝、无第二条 answer、恢复后幂等；三条 e2e 日志末尾写入真实 exit code | 否 | in-flight drain 窗口 + genuine settle failure clear；`pnpm verify`（1211 tests）+ `pnpm check:packages` + rc.5 e2e 188/188/165 |
+| Phase 1d cold-discard 收口 round 9（已完成） | in-flight drain await 有界化：answer admission 总是、其它 intent 仅在自身有 queued rows 时等待 `reconcileAnswerDiscards`；抽通用 `awaitBounded` 供 repair/drain 复用，新增 `ANSWER_DISCARD_DRAIN_TIMEOUT_MS`(30s) + `options.signal`，超时/取消抛 `DEVLEAD_SESSION_UNAVAILABLE` 可重试并释放 target admission tail；drain 后台继续，race 输掉后 catch 防 unhandled；abort 后无关 instruction 可立即投递；fake-timer 验证 30s 超时、后台完成与无 unhandled | 否 | abort + fake-timer deadline + r8 release 并发 + 全量；`pnpm verify`（1213 tests）+ `pnpm check:packages` + rc.5 e2e 188/188/165 |
 | Phase 1e | T2/P1–P4 路径、notifications/get_session **全量**输出与 UI 呈现（1d 已落 minimal output，见上行）、policy/UI 文案、指标 | 否 | 全量单测/集成/E2E；`pnpm e2e`；UI 验收 |
 | Phase 2 | `idempotency_key` durable、claimed/presented/discarded 的 durable replay/backfill、replay open question、multi-lead 硬门禁、answer TTL、background 背压、`possibleQuestion`、blocking bridge 指标评估（不写原型） | 否 | 全量 + 兼容性 + 指标复盘 |
 | Phase 3 | 仅当 Phase 2 指标支持时：blocking bridge 原型（capability flag）；以及 DSH 上游通用 ordinary-Session mailbox / ephemeral context / blocking question primitive / turn-boundary hooks | 部分是 | 上游设计 review；dsh-devlead 保留 fallback |
