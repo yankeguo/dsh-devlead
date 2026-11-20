@@ -351,10 +351,10 @@ barrier 校验结果、P6 not-found 每轮重置失败预算、P8 扫描无 sign
 | 项 | 实现 |
 | --- | --- |
 | P5 | barrier 现在返回它用 persistence 真值校验过的 `ReadyCorpusListing`，权威扫描直接消费该 listing，不再二次 list 未校验语料；扫描自己的 not-found re-list 与 finalize 复核同样经 `verifyCorpusListingNow` 校验（persistence ids ⊆ listed ids）；finalize 要求快照 rows 仍全部在列（消失即 fail closed 并重扫），扫描期间新增的 persisted row 在最多 2 次有界 refresh 内追加扫描；已证明的授权绑定到稳定的服务 provision 身份（reflect `uid` + 值 token；`Symbol.for('cordis.original')` 解包 traceable proxy），prompt gate 发现原地替换/卸载时同步作废授权并触发重扫；`ctx.inject` 观察 arrival/replacement/unload，有意销毁 hook 不会误判成卸载；一次证明过持久语料的 Host 不退回 live-only 授权。负控：barrier listing 变化、re-list 省略 foreign supervisor、原地替换、移除绑定。 |
-| P6 | `not-found` 先按 `remoteCodeOf === 'SESSION_QUERY_SESSION_NOT_FOUND'` 分类（文本正则仅 fallback）；re-list 后该 id 仍在列则第二次 not-found 计 read 失败，只有 id 真消失或游标前进才宽恕预算；not-found re-list 时把 corrupt/liveFailure 终态带入新 state；read 失败与 cap warning 分开；retry cap 变 sticky（probe 失败只重排 probe）。负控：同一 id 持续 not-found 的生产路径（重试次数进入预算并最终 arm 30s probe，而非 2.5s 内几十次 list）。 |
+| P6 | `not-found` 先按 `remoteCodeOf === 'SESSION_QUERY_SESSION_NOT_FOUND'` 分类（文本正则仅 fallback）；re-list 后该 id 仍在列则第二次 not-found 计 read 失败，只有 id 真消失或游标前进才宽恕预算；not-found re-list 时把 corrupt/liveFailure 终态带入新 state；read 失败与 cap warning 分开；retry cap 在“游标保留”的场景下变 sticky（probe 失败只重排 probe）。**覆盖范围修正（第五轮）**：此处的负控用单行 corpus + 第一批内 not-found，只证明“同一 attempt 内重复 not-found 计预算并 arm probe”，**没有**覆盖 ghost 位于第一批 64 读之外、re-list 仍列出该行时 cursor 被重置回 0 的场景；当时的 cursor/progress 语义在该场景下仍会 fast/probe 循环（见第五轮 R2）。 |
 | P8 | 整次 attempt（barrier + listing + 每次 `persistence.list` / `listSessions` / `readSession`）受 `REHYDRATION_ATTEMPT_TIMEOUT_MS=5s` 的 AbortSignal 约束，后端 promise 忽略 signal 也会被 race 放弃；超时 bump epoch、按失败计入预算，由下一次有界 attempt/慢速探针接管，`[Service.init]` 不再可能被挂起后端卡死。负控：`readSession` 永不 settle 时 boot 在 5s deadline 后完成并可在后续 attempt 恢复。 |
-| minor 1 | sticky `rehydrationRetryCapped`：cap 检查先于 armed-timer 早退（cap 当刻在跑的 attempt 自己 arm 的 fast timer 会被原地升级为 probe）；probe 回调不再重置 attempts；只有 progress/complete/reset/recomposition 清除。 |
-| minor 2 | 服务身份每次变化都 bump epoch：注入 callback 每次 replacement/unload 都作废授权（不再只在 `fresh` 时）；attempt 入口的 binding snapshot 检测原地 `ctx.set`；prompt gate 再做一次身份复核。 |
+| minor 1 | cap 检查先于 armed-timer 早退（cap 当刻在跑的 attempt 自己 arm 的 fast timer 会被原地升级为 probe）；probe 回调不再重置 attempts。**覆盖范围修正（第五轮）**：当时“只有 progress/complete/reset/recomposition 清除 cap”的说法过强——`rehydrateFromPersistence` 的 finally 仍会在 `nextIndex > previousIndex` 时清除 capped，而 retry-cap probe 会先把游标重置为 0，因此失败点在第一批 64 读之后时，probe 扫描“新进度”（0→64）会清掉 capped 并重启 12 次快速退避，fast/probe cycle 并未真正终止（见第五轮 R1）。 |
+| minor 2 | 服务身份每次变化都 bump epoch：注入 callback 每次 replacement/unload 都作废授权（不再只在 `fresh` 时）；attempt 入口的 binding snapshot 检测原地 `ctx.set`；prompt gate 再做一次身份复核。**覆盖范围修正（第五轮）**：该轮“原地替换/移除服务作废授权”的负控用 `ctx.provide` 的普通对象 fake 实现；生产路径上真实 `extends Service` 的实例在 `_getImpl(name).value` 里自带 `Symbol.for('cordis.tracker')` 但没有 `Symbol.for('cordis.original')`，token 退化为 `undefined`，同 uid 的原地替换因此检测不到（M3 fail-open，见第五轮 R3）。 |
 | minor 3 | 恢复文案改为真实路径：`/devlead reset` 需要 live Agent，冷 Session 必须先 open/resume 后 reset；探针不修复原因，只在原因移除后恢复；README/COMPATIBILITY/DESIGN/错误文案同步。 |
 | minor 4 | COMPATIBILITY/DESIGN 中 barrier 超时的“warning + best-effort 继续”改为“本 attempt 不扫描该 listing、prompt 保持 fail-closed，直到就绪后的完整扫描”。 |
 | minor 5 | 证据残余风险改为 finalize 后只能重启 Host（或 reset 后重扫），服务重组不会重建已 finalize 的索引；retry-cap 文案同步 sticky 语义。 |
@@ -459,4 +459,143 @@ NO_WORKTREE_EXIT=0
 - 就绪校验假设 `sessionPersistence.list()` 返回完整的 stored id 集合（与 COMPATIBILITY 中已文档化
   的假定一致）：若该服务在持久语料实际存在时短暂返回空列表，barrier 会按“全新 Host”通过并以
   当次 listing 授权；这是 persistence 契约假设，不是 DevLead 能独立证明的部分。
+- mutation / e2e 日志保存在本机 `/tmp`，不随仓库提交。
+
+## 五次修复：retry-cap 跨批粘滞 / 64 读窗口外 ghost cursor / 真实 cordis Service 绑定（对 `d98c5ea` 的第五轮 delta）
+
+输入：第五轮 delta 复核对 `d98c5ea` 的 FINAL ISSUES——3 个可复现 major（R1 retry-cap 在失败点位于
+首批 64 读之后时 sticky 失效；R2 ghost 在 64 读窗口之外时 cursor 被 not-found re-list 重置；R3
+binding token 对真实 cordis Service 恒 `undefined`）与 7 项 medium/minor。本轮从 clean tree
+（HEAD `d98c5ea`，origin/main 仍 `a21c7b7`）修复，**未 push、未 bump version、未打 tag**。冻结
+代码 commit：`d282f62`（先提交 `e3e8424`，随后仅对新增测试做一次断言写法修正——用布尔对象
+身份比较替代会触发 cordis tracker 代理打印错误的 `toBe(Service 实例)`——amend 为 `d282f62`；
+门禁与 mutation 均在该 commit 的干净树上重跑）。之后仅以未推送的 `git commit --amend` 追加本
+证据文件（最终 HEAD 的代码树与 `d282f62` 相同）。
+
+### 逐项修复
+
+| 项 | 实现 |
+| --- | --- |
+| R1（major） | 新增 `rehydrationScanHighWater`：扫描结束把“本次 attempt 结束时游标”记为高水位，只有下一次 attempt 的游标**严格越过**该点才算 progress；仅重读同一批前缀（0→64）不算。`rehydrateFromPersistence` 的 finally 不再因 progress 清除 sticky cap（`rehydrationRetryCapped` 只由完整扫描成功 finalize、reset、语料重组合清除），probe 的批次推进也不清。retry-cap 探针**保留 coldScan 游标**（corrupt/live-failure 探针才丢弃终止态快照），失败点位于第一读批之后时探针从失败点重试，而不是每 30s 重读前 64 行；probe 再次失败继续 arm 30s probe，不再 restart 12 次 fast backoff。新增失败点在第 65 行（>64 行 corpus）的生产路径负控：cap 后 30s probe 只重读失败行（成功读取数不增长）、capped 保持、10s 内无 fast timer；原因移除后下一次 probe 从保留游标完成并 finalize。 |
+| R2（major） | not-found re-list 后**不再无条件 `coldScan = undefined` 重置 cursor**：`verifyCorpusListingNow` 先用 persistence 真值复核新 listing；若该 id **仍在列**，则不是“会话消失”而是这一行的读取失败——保留快照/游标，对该行在同一 attempt 内**重试一次**（一次性 transient not-found 可在本 attempt 恢复）；同一 attempt 内再次 not-found 进入顶部失败分支，`readFailed` 计预算、游标不动，12 次后进入 sticky cap + 30s probe。只有该 id 真的从新校验 listing 消失时才丢弃陈旧快照、从新 listing 重扫（此时才宽恕预算）。新增 100 行 corpus、第 90 行恒 not-found 的负控：不重置 cursor（cursor 稳定在 89，而非 64）、cap 后 3s 窗口内无 list/read、complete=false；原因移除后 probe 从 ghost 行继续完成。 |
+| R3（major，生产路径 fail-open） | `corpusBinding` 的 token 改为 **`ctx.reflect._getImpl(name).value` 的对象身份**；只有当该 provision 值本身是 traceable proxy（同时带 `Symbol.for('cordis.tracker')` 与 `Symbol.for('cordis.original')`）时才解包 `original`。真实 `extends Service` 的实例自带 tracker symbol 但没有 `original`（后者只是读代理 getter），旧实现返回 `token: undefined`，同 uid 的原地 `ctx.set` 替换被 `bindingEqual` 判为未变化。`impl.value === undefined` 现在返回 `undefined` binding（移除），`ctx.set(name, undefined)` 因此作废授权；`bindingEqual` 对 undefined 保持 `left === right`。新增真实 cordis Service 负控：真实实例 token 必须等于该实例（不再 undefined）、原地替换后 prompt 立即 `DEVLEAD_SESSION_UNAVAILABLE` 并最终以新语料重证出 `DEVLEAD_FOREIGN_SUPERVISOR`、`ctx.set(undefined)` 移除后持续 fail-closed（恢复同实例 + lifecycle wake 后可重新证明）。真实 Host 的 patch/installed e2e（真实 `SessionQueryEngine` 等 Service）无 false recomposition。 |
+| medium/minor 1 abort vs change | 新 `CorpusVerification` 判别联合（`ok`/`aborted`/`unverifiable`/`changed`），abort 与“读到但不一致”分离：finalize 复核 abort 时保留 trusted 快照/游标、按失败计费（`rehydrationValidationTimedOut`），不再 `trusted=false` + 丢弃 cursor；not-found re-list 的 abort 同样保留快照/游标。finalize 复核有独立预算（`REHYDRATION_FINALIZE_TIMEOUT_MS=5s`）并在其前停掉 attempt deadline（`attempt.stop()`），慢而可用的 listing 之后从保留游标只重做复核；若复核追加了新行（`attempt.extend()` 重新 arm 有界窗口）后继续扫描。负控：listing 第 2 次起耗时 6s（>独立预算）时，首次 attempt 保留完整快照/cursor（index=5）并按失败计费，修复 listing 后下一次 attempt 不再读任何日志即 finalize。 |
+| medium/minor 2 finalize refresh 预算 | 刷新预算耗尽而仍存在“未被扫描的新 persisted id”时**不 finalize**：保留游标、标记 `rehydrationFinalizeBlocked` 并计入失败（避免热循环），下一次有界 attempt 先 append+扫描新行再复核。新增负控：每次 finalize 复核都多出一行时，首轮 boot 与后续重试都保持 `rehydrated=false`/fail-closed；停止增长后才 append+扫描并 finalize。 |
+| medium/minor 3 probe 文案 | 三处（`REHYDRATION_PROBE_MESSAGES`、`scheduleRehydrationProbe` JSDoc、prompt-gate 错误文案）改为“探针每 30s 重试一次，原因移除后恢复（recovers once the cause is removed）”，不再暗示探针只在原因移除后才开始 retry。README/README.zh/COMPATIBILITY/DESIGN 同步。 |
+| medium/minor 4 dead 字段与文档 | 删除 `ReadyCorpusListing.expectedIds/at/seq`、`DevLeadColdScan.listedAt/listingSeq` 与 `rehydrationListingSeq`（全部 dead）；DESIGN §4.1.1 的 cursor 结构、AUDIT D2 的 dead 签名 `persistedLeadRecords(scanPersisted)`、“完全一致/超时 warning + best-effort”表述改为 superset + 有界刷新 + fail-closed 语义。 |
+| medium/minor 5 abandoned promise / signal / dispose | `awaitScan` 注释收窄为“放弃的 promise 不被后续 attempt 复用，后续重试发起新 read”（不再声称 single-flight：复用永不 settle 的 promise 会让所有后续 retry 一起挂死）；readiness 屏障的 `listSessions` 通过 `listPersistedSessionsWithin(deadline, signal)` 接入 attempt signal；新增 `rehydrationAttempts` 跟踪在飞 attempt 的 controller，plugin dispose 时 `abortRehydrationAttempts()` 立即 abort 所有后端等待。负控：挂起 read 的 attempt 在 dispose 后 signal 全部 aborted 且 attempt 立即 settle。 |
+| medium/minor 6 not-found 分类 | `isSessionNotFoundError` 只在**完全没有 code** 时才回落到 message 正则；有 code 时仅 `SESSION_QUERY_SESSION_NOT_FOUND` 返回 true（其他 code 即使 message 含 “not found” 也是读取失败）。负控：`code:'ETIMEDOUT'` + “temporarily not found” 文案只产生 1 次 barrier listing（不触发 re-list），修复后正常 finalize；code-positive 由 R2 的 `SESSION_QUERY_SESSION_NOT_FOUND` 负控覆盖。 |
+| medium/minor 7 覆盖缺口 | 新增 12 个 phase2 用例：R1 与 R2 的 >64 读场景；真实 cordis Service 绑定/原地替换/`ctx.set(undefined)` 移除；mid-scan query Service 替换不 finalize；慢 listing 的 finalize 预算 + cursor 保留；refresh 预算耗尽不 finalize；770 行走 attempt/5s deadline；reset while hung；挂起 readiness barrier listing；coded transient 分类；dispose abort。 |
+
+新增测试集中在 `packages/devlead/tests/phase2.spec.ts`（48 → **60** 例），全仓 **34 files / 1453
+tests**（+12）；新增本地 helper `RealCorpusPersistence` / `RealCorpusQuery`（真实
+`extends Service`，第二个实例用 shadow name 注册以作为合法 `ctx.set` 替换值）。
+
+### 真实时间线
+
+| 时间 | 事实 |
+| --- | --- |
+| 22:08 | 起点复核：HEAD `d98c5ea`、origin/main `a21c7b7`、工作区干净；读码并定位 R1/R2/R3 与 minors |
+| 22:09–22:23 | 实现 R1/R2/R3 + minors；新增 12 个负控；`pnpm verify` 首轮 34/1453，phase2 **60/60** |
+| 22:24–22:25 | 自查发现 finalize 复核停掉 attempt deadline 后 append 批次缺少 deadline，补 `attempt.extend()` 并重跑定向测试 |
+| 22:25:40 | 本地 commit `e3e8424`（未 push、未 bump version、未打 tag） |
+| 22:26:06–22:27:21 | 候选树三条 e2e：patch **221/221**、installed **221/221**、no-worktree **198/198** |
+| 22:27:33–22:27:38 | 首轮 mutation 10 项：9 项按预期失败；BARRIER 1 项不可检出（见下），另 R3 因 vitest 打印 Service 实例报错而非断言失败 |
+| 22:27–22:28 | 测试断言改为布尔对象身份比较（避免 tracker 代理打印错误），`git commit --amend` → 冻结 commit `d282f62`；移除不可检出的 BARRIER mutation 项 |
+| 22:28:03–22:29:37 | 冻结树最终门禁：`pnpm verify` 34/1453（`VERIFY_EXIT=0`）、`check:packages` OK、patch **221/221**、installed **221/221**、no-worktree **198/198** |
+| 22:29:39–22:29:44 | 9 项 mutation 在 `d282f62` 冻结树上重跑：全部 `MUTATION_TEST_EXIT=1`，全部 `restore_clean=true`（`git status --porcelain` 空 + `git diff --quiet` 退出 0） |
+| 22:30 | 仅以 `git commit --amend` 追加本证据文件（最终 HEAD 的代码树与 `d282f62` 相同；未 push、未 bump version、未打 tag） |
+
+### 门禁真实输出（冻结树 `d282f62`）
+
+```text
+$ pnpm verify
+Test Files  34 passed (34)
+Tests       1453 passed (1453)
+build complete (6 targets)
+VERIFY_EXIT=0
+
+$ pnpm check:packages
+check-packages: OK (6 packages)
+CHECK_PACKAGES_EXIT=0
+
+$ pnpm e2e --no-build
+E2E SMOKE PASS (patch, DeepSeek Harness 0.2.2-rc.5)
+  phase 1: 27/27; phase 1b: 12/12; phase 2: 23/23; phase 3: 128/128; phase 1e: 31/31
+  total: 221/221 checks
+PATCH_EXIT=0
+
+$ pnpm e2e --flow installed --no-build
+E2E SMOKE PASS (installed, DeepSeek Harness 0.2.2-rc.5)
+  total: 221/221 checks
+INSTALLED_EXIT=0
+
+$ pnpm e2e --no-worktree --no-build
+E2E SMOKE PASS (patch, DeepSeek Harness 0.2.2-rc.5)
+  total: 198/198 checks; phase 2 skipped (--no-worktree)
+NO_WORKTREE_EXIT=0
+```
+
+client revision `2774836314bb`；日志（本机）：
+`/tmp/dsh-batch1-r5/final2-{verify,check-packages,e2e-patch,e2e-installed,e2e-no-worktree}.log`
+（更早的候选树日志在 `/tmp/dsh-batch1-r5/*-1.log` / `final-*`，不用于本证据）。
+
+### Mutation 负控（冻结树 `d282f62`，全部重跑；全部 `EXIT=1` + `restore_clean=true`）
+
+| 场景 | mutation | 目标测试 | 实际失败输出 |
+| --- | --- | --- | --- |
+| R1 sticky | 恢复旧 retry-cap probe 语义：probe 无条件重置 cursor，并在 finally progress 时清 `rehydrationRetryCapped` | `keeps the retry-cap sticky and the cursor when the failing row is beyond the first 64-read batch` | `expected false to be true`（cap 被清/cursor 被重置） |
+| R1 high-water | 扫描结束把 high-water 归 0（退化为“任意 index 前进都算 progress”） | 同上 | `condition "retry-cap probe with a second-batch failure" did not settle within 200000ms of advanced time`（永不进入 cap） |
+| R2 cursor | 恢复“not-found 一律丢弃快照并从 0 重扫” | `never resets the cursor for a ghost row beyond the first 64-read batch` | `condition "retry-cap probe with a second-batch ghost" did not settle within 200000ms`（cursor 抖动、cap 不可达） |
+| R3 token | token 退回旧的 traceable-only 逻辑（真实 Service → `undefined`） | `binds the proof to the raw Service instance and detects an in-place replacement` | `expected false to be true`（token 不是实例 / 原地替换未检测） |
+| abort-vs-change | finalize 复核 abort 当作语料变化（丢弃 trusted 快照与 cursor） | `retains the trusted cursor when the finalize validation times out instead of restarting the scan` | `expected undefined to be 5`（coldScan 被清） |
+| refresh budget | 预算耗尽仍有新 persisted 行时照旧 finalize | `does not finalize while the finalize refresh budget is exhausted and new persisted rows keep appearing` | `expected true to be false`（首轮即 `rehydrated=true`） |
+| dispose abort | dispose 不 abort 在飞 attempt | `aborts the in-flight attempt when the plugin is disposed` | `expected false to be true`（AbortController 未 abort） |
+| not-found 分类 | 有 code 时仍回落 message 正则 | `classifies a coded transient read error as a read failure, not a vanished Session` | `expected 2 to be 1`（temporarily-not-found 触发多余 re-list） |
+| validation 计费 | finalize validation 超时不按失败计费 | `retains the trusted cursor when the finalize validation times out instead of restarting the scan` | `expected 0 to be greater than or equal to 1`（attempts 未增长） |
+
+每次 mutation 的完整日志（含 `FROZEN_COMMIT`、mutation diff、测试输出与
+`MUTATION_TEST_EXIT`、恢复后 `git status --porcelain` 空与 `git diff --quiet` 退出 0）：
+`/tmp/dsh-batch1-r5/mut/<name>.log`，汇总 `/tmp/dsh-batch1-r5/mut/SUMMARY.json`（9/9
+`restore_clean=true`）。
+
+另两项说明（不用不存在的日志充数）：
+
+- **barrier listing 的 attempt-signal 接线**：曾尝试 mutation（去掉
+  `listPersistedSessionsWithin` 的 signal 接线），但该 listing 自身有 readiness deadline（2s）
+  小于 attempt deadline（5s），挂起 listing 仍会在 2s 内被自身 timer 解除，mutation 不可检出；
+  接线作为 belt-and-braces 保留，负控 `abandons a hung readiness-barrier listing at the attempt
+  deadline` 仍固定“挂起 listing 不会挂死 init”的行为。
+- **被放弃 backend promise 的 single-flight**：问题按“收窄注释 + 不重用 promise”处理，不是
+  新增 keyed single-flight（复用永不 settle 的 promise 会让所有后续 retry 一起挂死）；该契约的
+  可执行证据是 R1/R2 负控（失败后下一次 attempt 重新发起 read 并继续推进）与 dispose abort
+  mutation。
+
+### 证据修正（本轮）
+
+- 前文“四次修复”的 3 处覆盖范围表述已按真实测试范围改写（行内标注“**覆盖范围修正（第五轮）**”）：
+  P6 的重复 not-found 负控只覆盖第一批内 ghost，未覆盖 64 读窗口外 cursor 重置（R2）；minor 1 的
+  “只有 progress/complete/reset/recomposition 清除 cap”与实际代码不符（progress 仍会清 capped，
+  R1）；minor 2 的“原地替换/移除服务作废授权”负控使用普通对象 fake，生产路径真实 `extends
+  Service` 的 token 恒 undefined（R3）。
+- 本轮不引用任何早于冻结树 `d282f62` 的 mutation/e2e 日志；上表只引用可复现命令与日志路径。
+
+### 残余风险（本轮，非未完成项）
+
+- finalize 复核使用独立 5s 预算并停掉 attempt deadline：极慢但可用的 listing 最多让一次 attempt
+  计失败并保留快照/游标，下一次 attempt 只重做复核；持续的 listing 故障仍会 fail-closed（这是
+  安全方向）。病理组合（慢 listing + 持续新增 Session）下首次有界 attempt 的最坏耗时会超过 5s
+  （scan 5s + 至多 2 次 append 批次各自的 5s window + 每次复核 5s），但每一步都有独立上限，
+  `[Service.init]` 不会被无限挂起。
+- sticky cap 只在**完整扫描成功 finalize / reset / 语料重组合**时清除：retry-cap 探针保留游标
+  并每 30s 推进一个 batch，若 corpus 很大（>64×n 行）且原因一直存在，恢复会按 30s/64 行推进，
+  而不是恢复到快速退避；这是有意的有界恢复取舍。
+- not-found 仍在列时的“行内重试一次”意味着每个 fast attempt 对永久 ghost 行最多 2 次 read +
+  1 次校验 re-list；12 次后进入 30s probe，代价有界。若某后端把瞬时错误误报为稳定
+  `SESSION_QUERY_SESSION_NOT_FOUND`，该行同样会按读取失败进入有界恢复，不会 fail-open。
+- 真实 Service token 用 provision 值对象身份：不换 fiber、不换实例的 republish 不构成变化（正确）；
+  若未来 cordis 把 `_getImpl().value` 改成返回读代理，则依赖 `original` 解包（仍有保底：uid 变化
+  会被检测）。`ctx.set(name, undefined)` 依赖 `_getImpl` 仍返回该 provision（当前 cordis 行为，
+  mock/未来版本变化由测试固定）。
+- 载荷/日志行为不变：本轮只改 cold-supervision 状态机与文档；未 push、未 bump version、未打 tag。
 - mutation / e2e 日志保存在本机 `/tmp`，不随仓库提交。

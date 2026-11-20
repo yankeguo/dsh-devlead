@@ -970,29 +970,38 @@ composed — the plugin never depends on it.
   barrier cannot authorize a partial snapshot. The rebuild is a resumable multi-batch cursor
   rather than a single pass: each attempt folds at most 64 unclassified Session logs in full
   (rows the projection cache positively identifies as leads are not counted), and the next
-  attempt resumes from the saved cursor only while a freshly validated listing has the same
-  persisted id set, so pagination progress does not consume the retry budget. Every attempt is
-  also bounded as a whole (5 s): a backend promise that never settles is abandoned, its epoch is
-  invalidated and the attempt counts as a failure, so `[Service.init]` and later retries can
-  never hang. A corrupt candidate advances the cursor and marks the index degraded without
-  stopping the scan; a read failure keeps the cursor and is retried on a bounded exponential
-  backoff (250 ms → 5 s, at most 12 attempts), after which only a slow 30 s degraded recovery
-  probe retries — never a hot loop. That cap is sticky: a failed probe re-arms the single probe
-  instead of restarting the fast backoff, and only cursor progress, completion, a reset or a
-  service recomposition clears it. A Session that disappeared mid-scan triggers one re-list,
-  validated the same way: only a dropped row or real cursor progress forgives that round, and a
-  repeated not-found for a still-listed Session is a read failure. A snapshot may only finalize
-  after a finalize recheck proves its listing still equals the current validated corpus;
-  otherwise the index restarts from a fresh validated listing while prompt authorization stays
-  fail-closed. A corpus with no projection cache still scans cold candidates with bounded exact
-  folds (warning once); it does not degrade to live Sessions only. Replacing or unloading a
-  corpus service invalidates the proven index, and a Host that once proved a persisted corpus
-  never falls back to live-only authorization. When a persisted corpus exists, prompt
-  authorization stays fail-closed (`DEVLEAD_SESSION_UNAVAILABLE`; the error names the cause and
-  the recovery options) until a scan proves the complete supervisor set against the current
-  corpus services. Recovery: open (resume) the affected DevLead Session and run `/devlead reset`
-  there, or repair/delete the corrupt or unreadable Session log; the slow probe only retries
-  after the cause is removed, and a Host restart rebuilds the index. By default
+  attempt resumes from the saved cursor; a freshly validated listing that only adds persisted
+  rows is appended to the snapshot, while a vanished/replaced row restarts from the fresh
+  snapshot. Cursor progress beyond the recorded failure high-water — not merely re-reading the
+  same prefix — does not consume the retry budget. Every attempt is also bounded as a whole
+  (5 s): a backend promise that never settles is abandoned, its epoch is invalidated and the
+  attempt counts as a failure, so `[Service.init]` and later retries can never hang. A completed
+  snapshot validates under an independent 5 s finalize budget, so a slow but usable listing
+  backend keeps its trusted snapshot and cursor (the attempt is charged one failure) and the
+  next attempt only re-validates from the retained cursor instead of rescanning. A corrupt
+  candidate advances the cursor and marks the index degraded without stopping the scan; a read
+  failure keeps the cursor and is retried on a bounded exponential backoff (250 ms → 5 s, at most
+  12 attempts), after which only a slow 30 s degraded recovery probe retries — never a hot loop.
+  That cap is sticky: a failed probe re-arms the single probe instead of restarting the fast
+  backoff, and only completion, a reset or a service recomposition clears it (probe batch
+  movement does not). A retry-cap probe keeps the cursor, so a failure point beyond the first
+  64-read batch is retried instead of re-reading the first batch forever. A Session that
+  disappeared mid-scan triggers one re-list, validated the same way: if the id is really gone,
+  the snapshot restarts from the fresh listing; if it is still listed, the row is retried once
+  and then counted as a read failure with the cursor kept (the re-list never resets a
+  still-listed cursor). A snapshot may only finalize when it is still a subset of the freshly
+  validated corpus and every newer persisted row was appended and scanned under a bounded
+  refresh budget; an exhausted refresh budget blocks finalization. Any other change restarts
+  from a fresh validated listing while prompt authorization stays fail-closed. A corpus with no
+  projection cache still scans cold candidates with bounded exact folds (warning once); it does
+  not degrade to live Sessions only. Replacing (including in place) or unloading a corpus
+  service invalidates the proven index, and a Host that once proved a persisted corpus never
+  falls back to live-only authorization. When a persisted corpus exists, prompt authorization
+  stays fail-closed (`DEVLEAD_SESSION_UNAVAILABLE`; the error names the cause and the recovery
+  options) until a scan proves the complete supervisor set against the current corpus services.
+  Recovery: open (resume) the affected DevLead Session and run `/devlead reset` there, or
+  repair/delete the corrupt or unreadable Session log; the slow probe retries every 30 s and
+  recovers once the cause is removed, and a Host restart rebuilds the index. By default
   (`wakeColdSession: true`) a queued notification first resumes the cold lead
   (`sessionController.resolveAgent(leadId)`) and then delivers; set it to `false` to keep the
   queues in memory and wait until a human opens the lead Session (which writes the pending

@@ -764,23 +764,32 @@ settle，结果里 `stopped: true`（已归档的 Session 是 no-op，结果 `st
   用 persistence 真值校验过的 listing 直接交给权威扫描，扫描不会再自行 list 一份未校验的语料：
   屏障之后语料变化或 persistence 绑定丢失/被替换时，不能拿一个残缺快照授权。冷扫描是
   **可续扫的多批游标**，不是一次全量扫描：每次尝试最多对 64 条无法分类的 Session 日志做全量
-  精确折叠（projection cache 明确判定为 lead 的行不计入），下一次尝试只在**新校验的 listing
-  的 persisted id 集合不变**时从保存的游标继续，分页推进不消耗重试预算。每次 attempt 整体还有
-  5s deadline：后端 promise 永不 settle 时整个 attempt 被放弃、epoch 作废并计一次失败，
-  `[Service.init]` 与后续 retry 都不会被挂死。损坏候选会推进游标并让索引进入 degraded，但不会
-  中止扫描；读取失败保留游标并按有界指数退避重试（250ms→5s，最多 12 次），之后只保留一条 30s
-  慢速降级恢复探针，不会形成热循环；**cap 是 sticky 的**：探针失败后只会再排同一条探针，不会
-  重新进入 12 次快速退避，只有游标前进、完成、reset 或服务重新组合才清除。扫描中途消失的
-  Session 会触发一次同样经过校验的重新列出：只有该行真的消失或游标确实前进才宽恕本轮预算，
-  同一个 id 连续 not-found 按读取失败计。快照只有在 finalize 复核证明其 listing 仍等于当前
-  校验后的语料时才能授权；否则索引从新的校验 listing 重启，期间 prompt 保持 fail-closed。
-  live Agent / attach-only Session 的 projection 损坏同样让索引 degraded。没有 projection
-  cache 时仍按有界精确折叠扫描冷候选（只 warning 一次），**不会**退化为只恢复 live 会话。
-  语料服务被替换或卸载会让已证明的索引作废；一旦本进程证明过持久语料，就不会退回 live-only
-  授权。存在持久语料时，prompt 授权保持 fail-closed（`DEVLEAD_SESSION_UNAVAILABLE`，错误文案
-  给出降级原因与恢复提示），直到一次针对当前语料服务的扫描证明 supervisor 集合完整。恢复路径：
-  打开（resume）受影响的 DevLead Session 并在其中运行 `/devlead reset`，或修复/删除损坏或不可读
-  的 Session 日志；慢速探针只在原因移除后才会恢复，重启 Host 也会重建索引。默认
+  精确折叠（projection cache 明确判定为 lead 的行不计入），下一次尝试从保存的游标继续；新校验
+  listing 只是新增 persisted 行时把新行 append 到快照尾部继续扫，有行消失/被替换时从新快照重启。
+  只有游标越过此前失败/卡住的高水位才算进展（只重读同一批前缀不算），分页推进不消耗重试预算。
+  每次 attempt 整体还有 5s deadline：后端 promise 永不 settle 时整个 attempt 被放弃、epoch
+  作废并计一次失败，`[Service.init]` 与后续 retry 都不会被挂死。读到完整快照后的 finalize 复核
+  用独立的 5s 预算：慢但可用的 listing 后端会让本次 attempt 保留 trusted 快照/游标并按失败计费，
+  下一次 attempt 只从保留游标重做复核，不会从 0 重扫、也不会因此永久 fail-closed。损坏候选会推进
+  游标并让索引进入 degraded，但不会中止扫描；读取失败保留游标并按有界指数退避重试（250ms→5s，
+  最多 12 次），之后只保留一条 30s 慢速降级恢复探针，不会形成热循环；**cap 是 sticky 的**：探针
+  失败后只会再排同一条探针，不会重新进入 12 次快速退避，只有完整扫描成功 finalize、reset 或服务
+  重新组合才清除（探针自己的批次推进不清除）。retry-cap 探针**保留游标**：失败点若在第一批 64
+  行之后，重置游标的探针只会每 30s 重读同一批前缀、永远到不了失败行。扫描中途消失的 Session 会
+  触发一次同样经过校验的重新列出：该行真的从新 listing 消失时丢弃陈旧快照并从新 listing 重扫
+  （宽恕本轮预算）；该行仍在列时不是"会话消失"，而是该行的读取失败——保留快照/游标、对该行立即
+  重试一次，同一 attempt 内再次 not-found 才按读取失败计。快照只有在 finalize 复核证明其仍是
+  当前校验语料的 subset（快照里的 id 都还在列）时才可能授权；扫描期间新增的持久行会在
+  `MAX_FINALIZE_LISTING_REFRESHES=2` 次有界刷新内 append+扫描，**刷新预算耗尽而仍有未扫描的新
+  持久行时绝不 finalize**（fail closed，保留游标等下一次 attempt）。其他变化会让索引从新的校验
+  listing 重启，期间 prompt 保持 fail-closed。live Agent / attach-only Session 的 projection
+  损坏同样让索引 degraded。没有 projection cache 时仍按有界精确折叠扫描冷候选（只 warning
+  一次），**不会**退化为只恢复 live 会话。语料服务被替换（含原地 `ctx.set`）或卸载会让已证明的
+  索引作废；一旦本进程证明过持久语料，就不会退回 live-only 授权。存在持久语料时，prompt 授权
+  保持 fail-closed（`DEVLEAD_SESSION_UNAVAILABLE`，错误文案给出降级原因与恢复提示），直到一次
+  针对当前语料服务的扫描证明 supervisor 集合完整。恢复路径：打开（resume）受影响的 DevLead
+  Session 并在其中运行 `/devlead reset`，或修复/删除损坏或不可读的 Session 日志；慢速探针每
+  30s 重试一次、原因移除后才恢复，重启 Host 也会重建索引。默认
   （`wakeColdSession: true`）先
   `sessionController.resolveAgent(leadId)` resume 冷 lead 再投递；设为 `false` 时队列只留在
   内存里，等人类打开 lead Session 时补写并投递。插件卸载期间结束的 turn 无法补发；下次加载

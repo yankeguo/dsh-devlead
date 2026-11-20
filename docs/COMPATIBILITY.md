@@ -201,10 +201,16 @@ wire projection 的 questionStatus/answerStatus 都是可选 additive 字段，�
    "warning + best-effort 继续扫描"的路径。之后冷扫描按可续扫的多批游标推进，每次 attempt
    整体有 5s deadline（挂起的后端 promise 会被放弃、epoch 作废并计一次失败），每次尝试对有界
    数量的非 active 候选做精确 fold，失败按有界指数退避重试（250ms→5s、最多 12 次），超限后
-   只保留一条 30s 慢速降级探针；该 cap 是 sticky 的，探针失败只重排探针，不重启快速退避。
-   同一 id 连续 not-found 计为读取失败，re-list 也必须用 persistence 真值复核；finalize 前
-   还会复核 listing 的 persisted id 集合仍等于当前语料。缺少该可选服务时跳过屏障，只有从未
-   证明过持久语料的 Host 才按 live 会话授权。依据：
+   只保留一条 30s 慢速降级探针；该 cap 是 sticky 的：探针失败只重排探针，不重启快速退避，
+   且只有完整扫描成功 finalize、reset 或语料服务重新组合才清除（探针的批次推进不清除）；
+   retry-cap 探针保留游标，失败点在第一读批之外时也能从失败点重试。读到完整快照后 finalize
+   复核使用独立 5s 预算并先停 attempt deadline：慢而可用的 listing 只让本次 attempt 计一次
+   失败并保留 trusted 快照/游标，下一次 attempt 从保留游标重做复核，不会永久 fail-closed。
+   not-found re-list 也必须用 persistence 真值复核：id 真的消失才丢弃快照重扫；id 仍在列时
+   是读取失败（保留游标、行内重试一次，连续 not-found 计失败），绝不为仍在列的行重置游标。
+   finalize 要求快照仍是当前语料的 subset；扫描期间新增的持久行在至多 2 次有界刷新里
+   append+扫描，刷新预算耗尽而仍有未扫描的新行时不 finalize（fail closed，保留游标）。
+   缺少该可选服务时跳过屏障，只有从未证明过持久语料的 Host 才按 live 会话授权。依据：
    `@deepseek-ai/dsh-session-persistence` README（`list()` 返回 one snapshot per visible
    stored session）与 rc.1–rc.5 的 `session-query` optional binding 行为。假设是 `list()`
    完整且 id 与 query listing 可比；DSH 没有把它文档化为“就绪探针”。
@@ -226,10 +232,12 @@ wire projection 的 questionStatus/answerStatus 都是可选 additive 字段，�
 路径：(a) 打开（resume）受影响的 DevLead Session 并在其中运行 `/devlead reset`——`/devlead
 reset` 要求 live Agent，冷 Session 直接调用会以 `DEVLEAD_AGENT_NOT_LIVE` 拒绝；(b) 删除或
 修复损坏/不可读的 Session 日志；(c) 重启 Host 重建索引。30s 慢速探针本身不会修复 at-rest
-corrupt / live projection failure：原因未移除时它只会继续失败，只有原因移除后才会恢复。期间
-prompt 授权保持 fail-closed（`DEVLEAD_SESSION_UNAVAILABLE`），错误文案同时给出降级原因与
-恢复提示。语料服务被替换或卸载同样会作废已证明的索引（包括原地替换），重新扫描完成前保持
-fail-closed；一旦本进程证明过持久语料，不会退回 live-only 授权。
+corrupt / live projection failure：探针每 30s 重试一次，原因未移除时它只会继续失败，只有
+原因移除后下一次探针才会恢复。期间 prompt 授权保持 fail-closed（`DEVLEAD_SESSION_UNAVAILABLE`），
+错误文案同时给出降级原因与恢复提示。语料服务被替换或卸载同样会作废已证明的索引（包括不换
+fiber 的原地 `ctx.set`；绑定 token 取 `impl.value` 的对象身份，真实 `extends Service` 实例也
+能检测），重新扫描完成前保持 fail-closed；一旦本进程证明过持久语料，不会退回 live-only 授权。
+plugin dispose 会 abort 进行中的 attempt。
 
 ## 0.4.0 Batch 1 breaking changes
 
