@@ -58,12 +58,27 @@ export const DEVLEAD_REPORT_OUTBOX_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000
  */
 export const DEVLEAD_ANSWER_DISCARD_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000
 
+/**
+ * Whether a report was observed while the lead Agent was live (`live`) or cold
+ * (`cold`). The origin must survive a restart because a cold-observed
+ * background report is digest-only by policy and must never be injected by a
+ * later outbox replay. Older rows without the field are treated as `cold` for
+ * background reports (conservative: no late inject).
+ */
+export type DevLeadReportOrigin = 'live' | 'cold'
+
 /** One persisted outbox row. */
 export interface DevLeadOutboxRecord {
   /** Full report receipt, including sender and lead identities. */
   readonly report: DevLeadReport
   /** Epoch milliseconds when the row was first enqueued. */
   readonly enqueuedAt: number
+  /**
+   * Lead liveness when the report was admitted (Phase 1e fix). Optional so
+   * version-1/2 rows stay readable; replay treats a missing background origin
+   * as `cold` and never injects it.
+   */
+  readonly origin?: DevLeadReportOrigin
 }
 
 /** One tombstone for an archived holder that could not be disabled. */
@@ -159,6 +174,7 @@ const reportSchema = zod.object({
 const outboxSchema = zod.object({
   report: reportSchema,
   enqueuedAt: zod.number().int().nonnegative().max(DEVLEAD_MAX_INSTANT),
+  origin: zod.enum(['live', 'cold']).optional(),
 }).strict()
 
 /** Tombstone row schema. */
@@ -251,9 +267,10 @@ export class DevLeadReportOutbox {
   /**
    * Persist one report before the child receives a success receipt.
    * @param report - report to enqueue.
+   * @param origin - lead liveness at admission, preserved across restarts.
    * @returns whether the row is durable.
    */
-  async put(report: DevLeadReport): Promise<boolean> {
+  async put(report: DevLeadReport, origin?: DevLeadReportOrigin): Promise<boolean> {
     if (this.closed) return false
     const key = devLeadOutboxKey(report)
     try {
@@ -262,6 +279,7 @@ export class DevLeadReportOutbox {
       await table.put(key, {
         report,
         enqueuedAt: existing?.enqueuedAt ?? Date.now(),
+        ...(origin === undefined ? {} : { origin }),
       } satisfies DevLeadOutboxRecord)
       this.lastError = undefined
       return true

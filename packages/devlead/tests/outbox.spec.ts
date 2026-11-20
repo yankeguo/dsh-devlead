@@ -54,6 +54,21 @@ describe('DevLeadReportOutbox', () => {
     expect(second!.entries()).toEqual([])
   })
 
+  it('persists the lead-liveness origin and accepts legacy rows without it', async () => {
+    const storage = new FakeStorageDomain()
+    const outbox = await DevLeadReportOutbox.open(storageContext(storage))
+    expect(outbox).toBeDefined()
+    expect(await outbox!.put(report('cold row'), 'cold')).toBe(true)
+    expect(await outbox!.put(report('live row'), 'live')).toBe(true)
+    const entries = outbox!.entries()
+    expect(entries.find(entry => entry.report.message === 'cold row')?.origin).toBe('cold')
+    expect(entries.find(entry => entry.report.message === 'live row')?.origin).toBe('live')
+    // A version-1/2 row without the additive field still parses; replay treats
+    // a missing background origin as cold and never injects it.
+    const legacy = { report: report('legacy origin-less row'), enqueuedAt: T0 }
+    expect(OUTBOX_SPEC.tables.pending.valueSchema.parse(legacy)).toEqual(legacy)
+  })
+
   it('round-trips structured questions and keeps legacy reports compatible', async () => {
     const storage = new FakeStorageDomain()
     const outbox = await DevLeadReportOutbox.open(storageContext(storage))

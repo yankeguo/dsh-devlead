@@ -1136,6 +1136,45 @@ describe('mid-turn reports', () => {
     expect(service.outboxReplayTimer).toBeUndefined()
   })
 
+  it('keeps a cold-observed background report digest-only through an outbox replay/restart', async () => {
+    const storage = new FakeStorageDomain()
+    const options = {
+      leadId: 'lead-cold-origin',
+      enabled: true,
+      sessionIds: ['child-cold-origin'],
+      watched: ['child-cold-origin'],
+      storageDomain: storage,
+    }
+    const first = await bootService(options)
+    const firstChild = new FakeAgent(requireSession(first, 'child-cold-origin'))
+    first.agents.add(firstChild)
+    // The lead Agent is gone (cold) while its Session log stays attached.
+    first.agents.remove(String(first.lead.id))
+    const commit = vi.spyOn(first.leadSession as unknown as { commit: (...args: unknown[]) => unknown }, 'commit')
+      .mockImplementationOnce(() => { throw new Error('disk full') })
+    const receipt = await first.service.reportProgress(firstChild.agent, { message: 'cold replay report', kind: 'progress' })
+    commit.mockRestore()
+    expect(receipt.durable).toBe(true)
+    expect(receipt.queued).toBe(true)
+    const rows = (): Array<{ report: { message: string }; origin?: string }> => [...storage.table('devlead_report_outbox', 'pending').records.values()] as Array<{
+      report: { message: string }
+      origin?: string
+    }>
+    expect(rows()).toHaveLength(1)
+    expect(rows()[0]?.origin).toBe('cold')
+    expect(first.lead.injects).toHaveLength(0)
+    await first.dispose()
+
+    // A restart replays the durable row while the lead Agent is now live. The
+    // persisted cold origin keeps the report digest-only: no late inject.
+    const second = await bootService(options)
+    await flushMicrotasks()
+    expect(second.lead.injects).toHaveLength(0)
+    expect(rows()).toHaveLength(0)
+    expect(second.service.reports(second.lead.agent).map(entry => entry.message)).toContain('cold replay report')
+    expect(second.service.reportDeliveryState(second.lead.agent, receipt.report.id)).toBe('digest-only')
+  })
+
   it('releases the outbox domain on dispose so a reload opens it durably again', async () => {
     const storage = new FakeStorageDomain()
     const first = await bootReporting({}, { storageDomain: storage })

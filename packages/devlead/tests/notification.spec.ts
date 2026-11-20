@@ -1413,6 +1413,129 @@ describe('Phase 1e background report receipt retry', () => {
     expect(backgroundOutcome(harness, 'digest-only')).toBe(1)
   })
 
+  /** Build one background report for the booted watched Session and lead. */
+  function backgroundReport(harness: HubHarness, leadId: string, message: string) {
+    return devLeadReport({
+      senderSessionId: String(harness.watched.id),
+      leadSessionId: leadId,
+      turn: 1,
+      kind: 'progress',
+      message,
+      at: T0,
+    })
+  }
+
+  it('keeps an attach-only cold lead background receipt digest-only and never injects', async () => {
+    installFakeTimers()
+    const harness = await bootHub({ batchMs: 400 })
+    const lead = onlyLead(harness)
+    // The Session log stays attached while the Agent is cold: liveness must be
+    // the Agent's, not the Session's.
+    harness.agents.remove(String(lead.agent.id))
+    const commit = vi.spyOn(lead.session as unknown as { commit: (...args: unknown[]) => unknown }, 'commit')
+      .mockImplementationOnce(() => { throw new Error('disk full') })
+    const report = backgroundReport(harness, String(lead.agent.id), 'cold attach-only')
+    expect(harness.hub.report(report)).toBe(true)
+    commit.mockRestore()
+    expect(harness.hub.deliveryStateOf(String(lead.agent.id), report.id)).toBe('digest-only')
+    expect(backgroundOutcome(harness, 'digest-only')).toBe(1)
+    harness.agents.add(lead.agent)
+    harness.ctx.emit('agent/created', { agent: lead.agent.agent, source: 'resume' })
+    await flushMicrotasks()
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(lead.agent.injects).toHaveLength(0)
+    expect(harness.hub.deliveryStateOf(String(lead.agent.id), report.id)).toBe('digest-only')
+    expect(projectionStateOf(lead.session).reports).toHaveLength(1)
+  })
+
+  it('retries a cold-observed background receipt, persists it, and never injects', async () => {
+    installFakeTimers()
+    const harness = await bootHub({ batchMs: 400 })
+    const lead = onlyLead(harness)
+    harness.agents.remove(String(lead.agent.id))
+    // Fail the first report append (queue as cold) and the first persistence
+    // attempt after the Agent returns (arm the cold retry); the timer retry then
+    // succeeds without ever injecting.
+    let failures = 2
+    const sessionWithCommit = lead.session as unknown as { commit: (...args: unknown[]) => unknown }
+    const original = sessionWithCommit.commit.bind(sessionWithCommit)
+    const commit = vi.spyOn(sessionWithCommit, 'commit')
+      .mockImplementation((...args: unknown[]) => {
+        if (failures > 0) {
+          failures -= 1
+          throw new Error('disk full')
+        }
+        return original(...args)
+      })
+    const report = backgroundReport(harness, String(lead.agent.id), 'cold retry receipt')
+    expect(harness.hub.report(report)).toBe(true)
+    expect(projectionStateOf(lead.session).reports).toHaveLength(0)
+    harness.agents.add(lead.agent)
+    harness.ctx.emit('agent/created', { agent: lead.agent.agent, source: 'resume' })
+    await flushMicrotasks()
+    // Still no durable receipt after the failed sync attempt.
+    expect(projectionStateOf(lead.session).reports).toHaveLength(0)
+    await vi.advanceTimersByTimeAsync(1_000)
+    await flushMicrotasks()
+    commit.mockRestore()
+    expect(projectionStateOf(lead.session).reports).toHaveLength(1)
+    expect(lead.agent.injects).toHaveLength(0)
+    expect(harness.hub.deliveryStateOf(String(lead.agent.id), report.id)).toBe('digest-only')
+    expect(backgroundOutcome(harness, 'digest-only')).toBe(1)
+  })
+
+  it('gives a new live failure a full retry budget after an earlier success', async () => {
+    installFakeTimers()
+    const harness = await bootHub({ batchMs: 400 })
+    const lead = onlyLead(harness)
+    let failures = 1
+    const sessionWithCommit = lead.session as unknown as { commit: (...args: unknown[]) => unknown }
+    const original = sessionWithCommit.commit.bind(sessionWithCommit)
+    const commit = vi.spyOn(sessionWithCommit, 'commit')
+      .mockImplementation((...args: unknown[]) => {
+        if (failures > 0) {
+          failures -= 1
+          throw new Error('disk full')
+        }
+        return original(...args)
+      })
+    const first = backgroundReport(harness, String(lead.agent.id), 'first burst')
+    expect(harness.hub.report(first)).toBe(true)
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(lead.agent.injects).toHaveLength(1)
+    // The successful burst reset the counter; a new report may consume the full
+    // eight attempts before the ninth tick makes the receipt durable.
+    failures = 8
+    const second = backgroundReport(harness, String(lead.agent.id), 'second burst')
+    expect(harness.hub.report(second)).toBe(true)
+    await vi.advanceTimersByTimeAsync(7_000)
+    expect(lead.agent.injects).toHaveLength(1)
+    await vi.advanceTimersByTimeAsync(1_000)
+    commit.mockRestore()
+    expect(lead.agent.injects).toHaveLength(2)
+    expect(harness.hub.deliveryStateOf(String(lead.agent.id), second.id)).toBe('delivered')
+  })
+
+  it('warns after the cold receipt retry cap without injecting', async () => {
+    installFakeTimers()
+    const harness = await bootHub({ batchMs: 400 })
+    const lead = onlyLead(harness)
+    harness.agents.remove(String(lead.agent.id))
+    const commit = vi.spyOn(lead.session as unknown as { commit: (...args: unknown[]) => unknown }, 'commit')
+      .mockImplementation(() => { throw new Error('disk full') })
+    const warn = vi.spyOn(harness.ctx.logger, 'warn')
+    const report = backgroundReport(harness, String(lead.agent.id), 'cold never appendable')
+    expect(harness.hub.report(report)).toBe(true)
+    harness.agents.add(lead.agent)
+    harness.ctx.emit('agent/created', { agent: lead.agent.agent, source: 'resume' })
+    await vi.advanceTimersByTimeAsync(60_000)
+    commit.mockRestore()
+    expect(lead.agent.injects).toHaveLength(0)
+    expect(harness.hub.deliveryStateOf(String(lead.agent.id), report.id)).toBe('digest-only')
+    expect(warn.mock.calls.some(([message]) => String(message).includes('cold-observed background report'))).toBe(true)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
   it('drops the retry timer when the hub is disposed before the append succeeds', async () => {
     installFakeTimers()
     const harness = await bootHub({ batchMs: 400 })

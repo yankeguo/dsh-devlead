@@ -291,6 +291,9 @@ requires Node ≥ 24.9):
 | `0.2.2-rc.5` | `pnpm e2e --flow installed --no-build` (Phase 1e background-retry fix, pinned totals) | **221/221** (218 PASS + 3 SKIP; background-retry fix rerun) |
 | `0.2.2-rc.5` | `pnpm e2e` (patch, background-retry fix round) | **221/221** (same round) |
 | `0.2.2-rc.5` | `pnpm e2e --no-worktree --no-build` (background-retry fix round) | **198/198** (same round, phase 2 skipped) |
+| `0.2.2-rc.5` | `pnpm e2e --flow installed --no-build` (Phase 1e cold-origin fix, pinned totals) | **221/221** (218 PASS + 3 SKIP; cold-origin replay fix rerun) |
+| `0.2.2-rc.5` | `pnpm e2e` (patch, cold-origin fix round) | **221/221** (same round) |
+| `0.2.2-rc.5` | `pnpm e2e --no-worktree --no-build` (cold-origin fix round) | **198/198** (same round, phase 2 skipped) |
 
 The 0.3.0 prerelease candidates (0.3.0-rc.1 / 0.3.0-rc.2, not yet promoted as stable) include question routing
 and queued inbox inputs. The Phase 1c harness rounds add the question-gate and `devlead_report` question
@@ -322,7 +325,10 @@ installed/patch **221/221** each, `--no-worktree` **198/198**; see
 [merge evidence](docs/e2e-evidence/phase1e-merge.md)). The Phase 1e review-fix round (bounded
 retry for a live lead's failed background receipt append, 30 test files / 1339 tests) reran the
 same gates: installed/patch **221/221** each and `--no-worktree` **198/198** (see
-[background-retry evidence](docs/e2e-evidence/phase1e-bg-retry.md)). A pre-release rerun of the
+[background-retry evidence](docs/e2e-evidence/phase1e-bg-retry.md)). The Phase 1e cold-origin
+fix round (cold-observed background receipts stay digest-only across outbox replay/restart,
+30 test files / 1345 tests) reran the same gates with the same totals (see
+[cold-origin evidence](docs/e2e-evidence/phase1e-cold-origin.md)). A pre-release rerun of the
 full combination is still required by the publishing guide.
 
 Three positive model-selection checks per flow are reported as SKIP on this credential-less
@@ -611,7 +617,10 @@ receipt append fails is retried instead of silently parked: the report keeps its
 background report re-enters the background lane exactly once when a bounded retry (8 attempts)
 makes the append durable and degrades to digest-only with a warning after the cap, and a durable
 outbox row is replayed on a bounded (1 s, 5 attempts) timer while its lead is live. Reports
-genuinely observed while the lead was cold stay digest-only by policy. The fallback
+genuinely observed while the lead was cold stay digest-only by policy, including across a durable
+outbox replay/restart: the outbox row records the lead-liveness origin, and a cold-origin
+background report is never injected later (a failed cold receipt is retried to durability only).
+The fallback
 when a Host composes no storage is explicit: the receipt has `durable: false` and a warning, and
 the child can retry after the lead is available. Outbox rows are pruned after 7 days if their lead
 never returns; `/devlead reset` drops that lead's pending rows. The receipt appears in the
@@ -1176,7 +1185,8 @@ installed/patch full flows **150/150** each; the Phase 1c evidence round pinned 
 Phase 1d answer-routing round pinned **188/188**, and the Phase 1e message-lane round pinned
 **221/221** (installed/patch full flows each). The Phase 1e × cold-discard r3–r9 merge round reran
 the same pins on the merged tree: **221/221** each full flow and **198/198** `--no-worktree`; the
-Phase 1e review-fix round reran them once more with the same totals. The probe is a private
+Phase 1e review-fix round and the cold-origin fix round reran them again with the same totals.
+The probe is a private
 test-only package under `scripts/e2e-probe/`, not a published or workspace package. The profile
 mutations happen only in the throwaway profile under `os.tmpdir()`; no pnpm install, network, or
 lockfile change is involved.

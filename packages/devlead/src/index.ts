@@ -122,7 +122,7 @@ import {
   restoreInputs,
 } from './inbox.ts'
 import { DevLeadReportOutbox } from './outbox.ts'
-import type { DevLeadAnswerDiscardRow } from './outbox.ts'
+import type { DevLeadAnswerDiscardRow, DevLeadReportOrigin } from './outbox.ts'
 import {
   applyDevLeadProjection,
   devLeadModeProjectionDefinition,
@@ -2574,8 +2574,11 @@ export class DevLeadService extends Service {
           continue
         }
         let delivered = false
+        // A missing origin is a legacy row: treat background as cold-observed
+        // so a replay can never turn a digest-only report into a late inject.
+        const origin: DevLeadReportOrigin = entry.origin ?? 'cold'
         try {
-          delivered = (await this.hub?.persistReport(report)) ?? false
+          delivered = (await this.hub?.persistReport(report, origin)) ?? false
         } catch (error: unknown) {
           this.ctx.logger.warn(
             `devlead: could not replay report "${report.id}": ${thrownMessage(error)}`,
@@ -2644,11 +2647,17 @@ export class DevLeadService extends Service {
     // rejected question look accepted; replay applies the same check in the hub.
     this.hub?.assertReportCapacity(report)
     await this.pruneOutboxOpportunistically()
-    const outboxed = this.outbox === undefined ? false : await this.outbox.put(report)
+    // The Agent's presence is the liveness authority (an attach-only cold lead
+    // still has a Session log). The origin is persisted with the outbox row so
+    // a later replay keeps cold background reports digest-only.
+    const origin: DevLeadReportOrigin = this.ctx.agents.get(toSessionId(report.leadSessionId)) === undefined
+      ? 'cold'
+      : 'live'
+    const outboxed = this.outbox === undefined ? false : await this.outbox.put(report, origin)
     if (outboxed && this.outbox !== undefined) {
       let delivered = false
       try {
-        delivered = (await this.hub?.persistReport(report)) ?? false
+        delivered = (await this.hub?.persistReport(report, origin)) ?? false
       } catch (error: unknown) {
         // The preflight above is not atomic: two concurrent questions can both
         // pass it at the pair-cap boundary, and the loser's receipt write then
