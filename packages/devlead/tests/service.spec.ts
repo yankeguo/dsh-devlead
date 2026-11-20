@@ -4485,8 +4485,9 @@ describe('cold lead rehydration', () => {
       config: { notificationBatchMs: 0 },
     })
     // [Service.init] only resolved after the corpus became consistent: one stale
-    // readiness listing, one consistent readiness listing, then the scan.
-    expect(persistence.listCalls).toBe(1)
+    // readiness listing, one consistent readiness listing used by the scan, and
+    // one finalize recheck that re-validates the corpus before authorizing.
+    expect(persistence.listCalls).toBe(2)
     expect(query.listSessionsCalls).toBe(3)
     expect(query.readSessionCalls).toBe(1)
     // The index is rebuilt: the next watched turn/end resumes the cold lead.
@@ -4698,12 +4699,12 @@ describe('cold lead rehydration', () => {
     // A rejected listing never finalizes rehydration, but it must warn. Wait
     // for that exact observable instead of the old fixed 300ms delay.
     await waitForCondition(
-      () => warn.mock.calls.some(call => String(call[0]).includes('could not list persisted Sessions')),
+      () => warn.mock.calls.some(call => String(call[0]).includes('prompt authorization stays fail-closed')),
       'the rejected persisted-corpus scan to warn',
     )
     await nextTask()
     expect(harness.service.view(harness.lead.agent).enabled).toBe(true)
-    expect(warn.mock.calls.some(call => String(call[0]).includes('could not list persisted Sessions'))).toBe(true)
+    expect(warn.mock.calls.some(call => String(call[0]).includes('prompt authorization stays fail-closed'))).toBe(true)
     warn.mockRestore()
   })
 })

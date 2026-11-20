@@ -760,18 +760,27 @@ settle，结果里 `stopped: true`（已归档的 Session 是 no-op，结果 `st
 - **冷 / 已 dispose 的 DevLead 会话**：Agent dispose 后 hub 仍保留该 lead 的索引与反向关注关系索引，因此已关注会话的 `turn/end` 仍会被观察并写入持久通知。插件加载时（Host 重启 /
   插件重载）从持久状态重建索引：`[Service.init]` 会先等持久语料可读（有界 2s 的
   corpus-readiness barrier、100ms 轮询；全新 Host 无存储会话时立即通过，稳定 Host 只付一次
-  语料比对）并完成第一次有界扫描尝试；更大的语料在之后的有界尝试里分批完成。冷扫描是
-  **可续扫的多批游标**，不是一次全量扫描：listing 缓存后复用到其行耗尽为止（语料就绪前拿到的
-  listing 不可信，必须重新列出），每次尝试最多对 64 条无法分类的 Session 日志做全量精确折叠
-  （projection cache 明确判定为 lead 的行不计入），下一次尝试从保存的游标继续，分页推进不消耗
-  重试预算。损坏候选会推进游标并让索引进入 degraded，但不会中止扫描；读取失败保留游标并按有界
-  指数退避重试（250ms→5s，最多 12 次），之后只保留一条 30s 慢速降级恢复探针，不会形成热循环；
-  扫描中途消失的 Session 会让 listing 失效并重新列出、不消耗该预算；live Agent / attach-only
-  Session 的 projection 损坏同样让索引 degraded。没有 projection cache 时仍按有界精确折叠扫描冷候选
-  （只 warning 一次），**不会**退化为只恢复 live 会话。存在持久语料时，prompt 授权保持
-  fail-closed（`DEVLEAD_SESSION_UNAVAILABLE`，错误文案给出降级原因与恢复提示），直到一次在
-  语料就绪后完成的扫描证明 supervisor 集合完整；恢复路径是修复/删除损坏 Session、在 lead
-  Session 运行 `/devlead reset`，或等待下一次降级探针（重启 Host 也会重建索引）。默认
+  语料比对）并完成第一次有界扫描尝试；更大的语料在之后的有界尝试里分批完成。就绪屏障会把它
+  用 persistence 真值校验过的 listing 直接交给权威扫描，扫描不会再自行 list 一份未校验的语料：
+  屏障之后语料变化或 persistence 绑定丢失/被替换时，不能拿一个残缺快照授权。冷扫描是
+  **可续扫的多批游标**，不是一次全量扫描：每次尝试最多对 64 条无法分类的 Session 日志做全量
+  精确折叠（projection cache 明确判定为 lead 的行不计入），下一次尝试只在**新校验的 listing
+  的 persisted id 集合不变**时从保存的游标继续，分页推进不消耗重试预算。每次 attempt 整体还有
+  5s deadline：后端 promise 永不 settle 时整个 attempt 被放弃、epoch 作废并计一次失败，
+  `[Service.init]` 与后续 retry 都不会被挂死。损坏候选会推进游标并让索引进入 degraded，但不会
+  中止扫描；读取失败保留游标并按有界指数退避重试（250ms→5s，最多 12 次），之后只保留一条 30s
+  慢速降级恢复探针，不会形成热循环；**cap 是 sticky 的**：探针失败后只会再排同一条探针，不会
+  重新进入 12 次快速退避，只有游标前进、完成、reset 或服务重新组合才清除。扫描中途消失的
+  Session 会触发一次同样经过校验的重新列出：只有该行真的消失或游标确实前进才宽恕本轮预算，
+  同一个 id 连续 not-found 按读取失败计。快照只有在 finalize 复核证明其 listing 仍等于当前
+  校验后的语料时才能授权；否则索引从新的校验 listing 重启，期间 prompt 保持 fail-closed。
+  live Agent / attach-only Session 的 projection 损坏同样让索引 degraded。没有 projection
+  cache 时仍按有界精确折叠扫描冷候选（只 warning 一次），**不会**退化为只恢复 live 会话。
+  语料服务被替换或卸载会让已证明的索引作废；一旦本进程证明过持久语料，就不会退回 live-only
+  授权。存在持久语料时，prompt 授权保持 fail-closed（`DEVLEAD_SESSION_UNAVAILABLE`，错误文案
+  给出降级原因与恢复提示），直到一次针对当前语料服务的扫描证明 supervisor 集合完整。恢复路径：
+  打开（resume）受影响的 DevLead Session 并在其中运行 `/devlead reset`，或修复/删除损坏或不可读
+  的 Session 日志；慢速探针只在原因移除后才会恢复，重启 Host 也会重建索引。默认
   （`wakeColdSession: true`）先
   `sessionController.resolveAgent(leadId)` resume 冷 lead 再投递；设为 `false` 时队列只留在
   内存里，等人类打开 lead Session 时补写并投递。插件卸载期间结束的 turn 无法补发；下次加载

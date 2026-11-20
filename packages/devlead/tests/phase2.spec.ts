@@ -27,6 +27,7 @@ import {
   nextTask,
   queuedMessage,
   T0,
+  type ServiceHarness,
 } from './harness.ts'
 import { answer, modeEvent, watchEvent } from './fixtures.ts'
 
@@ -90,6 +91,38 @@ async function eventuallyCode(run: () => Promise<unknown>, code: string, timeout
     throw new Error(`expected ${code}, but the call succeeded`)
   }
   throw new Error(`operation never failed with ${code} within ${timeoutMs}ms`)
+}
+
+/**
+ * Advance vitest fake timers until a synchronous predicate holds. The bounded
+ * step count fails loudly instead of letting a wedged timer chain hang a spec.
+ */
+async function advanceUntil(predicate: () => boolean, label: string, stepMs = 100, maxSteps = 900): Promise<void> {
+  for (let index = 0; index < maxSteps; index += 1) {
+    if (predicate()) return
+    await vi.advanceTimersByTimeAsync(stepMs)
+    await flushMicrotasks(128)
+  }
+  if (predicate()) return
+  throw new Error(`condition "${label}" did not settle within ${String(maxSteps * stepMs)}ms of advanced time`)
+}
+
+/**
+ * Boot the service while vitest fake timers are active: the readiness barrier,
+ * the bounded retry timer and the attempt deadline are all fake-timer driven,
+ * so boot settles only when those timers advance. A backend promise that never
+ * settles must not keep the boot promise pending past the advanced-time bound.
+ */
+async function bootUnderFakeTimers(options: Parameters<typeof bootService>[0]): Promise<ServiceHarness> {
+  const pending = bootService(options)
+  let settled = false
+  void pending.then(() => { settled = true }, () => { settled = true })
+  for (let index = 0; index < 600 && !settled; index += 1) {
+    await vi.advanceTimersByTimeAsync(100)
+    await flushMicrotasks(128)
+  }
+  if (!settled) throw new Error('bootService did not settle within 60s of advanced fake time')
+  return await pending
 }
 
 function question(leadSessionId: string, at = T0, message = 'Which target?') {
@@ -807,11 +840,11 @@ describe('cold cursor sticky corruption and retry bounds', () => {
       sessionPersistence: persistence,
     })
     const service = harness.service as unknown as {
-      persistedLeadRecords(scan: boolean): Promise<{ complete: boolean }>
+      persistedLeadRecords(): Promise<{ complete: boolean }>
     }
-    const first = await service.persistedLeadRecords(true)
+    const first = await service.persistedLeadRecords()
     expect(first.complete).toBe(false)
-    const second = await service.persistedLeadRecords(true)
+    const second = await service.persistedLeadRecords()
     expect(second.complete).toBe(false)
     const calls = query.readSessionCalls
     await new Promise(resolve => setTimeout(resolve, 400))
@@ -844,11 +877,11 @@ describe('cold cursor sticky corruption and retry bounds', () => {
       sessionPersistence: persistence,
     })
     const service = harness.service as unknown as {
-      persistedLeadRecords(scan: boolean): Promise<{ complete: boolean }>
+      persistedLeadRecords(): Promise<{ complete: boolean }>
     }
     let result = { complete: false }
     for (let index = 0; index < 13; index += 1) {
-      result = await service.persistedLeadRecords(true)
+      result = await service.persistedLeadRecords()
       if (result.complete) break
     }
     expect(result.complete).toBe(true)
@@ -1000,128 +1033,130 @@ describe('cold supervisor trust, epoch and degraded recovery', () => {
     expect(query.readSessionCalls).toBe(reads)
   })
 
-  it('keeps a live projection failure terminal, skips hot rescans, and recovers via the slow probe', async () => {
-    const query = new FakeSessionQuery()
-    for (let index = 0; index < 8; index += 1) query.seed(`ordinary-${index}`, [])
-    const cache = new FakeProjectionCache()
-    const persistence = new FakeSessionPersistence()
-    persistence.ids = Array.from({ length: 8 }, (_, index) => `ordinary-${index}`)
-    const harness = await bootService({
-      enabled: true,
-      sessionIds: ['target'],
-      sessionQuery: query,
-      projectionCache: cache,
-      sessionPersistence: persistence,
-      // An attach-only Session (no Agent) with a corrupt DevLead replay: the
-      // live-attach fallback cannot prove the supervisor set.
-      beforeServicePlugin: (ctx) => {
-        const broken = ctx.sessions.create(SessionId('broken-attach'))
-        appendPluginRecord(broken, DEVLEAD_MODE_RECORD_TYPE, {
-          kind: 'devlead/mode', version: 2, enabled: 'yes', at: T0,
-        } as never)
-      },
-    })
-    const target = new FakeAgent(harness.sessions['target']!)
-    harness.agents.add(target)
-    const service = harness.service as unknown as {
-      coldScan?: { liveFailure: boolean; complete: boolean }
-      supervisionIndexComplete: boolean
-      rehydrationRetryTimer: unknown
-      scheduleRehydrationRetry(): void
-    }
-    expect(service.supervisionIndexComplete).toBe(false)
-    expect(service.coldScan?.liveFailure).toBe(true)
-    expect(service.coldScan?.complete).toBe(false)
-    await expectCode(
-      () => harness.service.promptSession(harness.lead.agent, 'target', 'must not deliver', { watch: false }),
-      'DEVLEAD_SESSION_UNAVAILABLE',
-    )
-    const reads = query.readSessionCalls
-    await sleep(350)
-    // A live projection failure must not turn into an endless full rescan: the
-    // single slow probe owns recovery.
-    expect(query.readSessionCalls).toBe(reads)
-    // Repair the corrupt Session (the human `/devlead reset` equivalent) and let
-    // the slow probe re-list and rescan.
-    const broken = harness.ctx.sessions.get(SessionId('broken-attach'))!
-    appendPluginRecord(broken, DEVLEAD_RESET_RECORD_TYPE, resetRecord(T0 + 1))
-    if (service.rehydrationRetryTimer !== undefined) {
-      clearTimeout(service.rehydrationRetryTimer as ReturnType<typeof setTimeout>)
-      service.rehydrationRetryTimer = undefined
-    }
+  it('keeps a live projection failure terminal and recovers via the production slow probe', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     try {
-      service.scheduleRehydrationRetry()
-      expect(service.rehydrationRetryTimer).toBeDefined()
-      await vi.advanceTimersByTimeAsync(30_000)
-      for (let index = 0; index < 50 && !service.supervisionIndexComplete; index += 1) {
-        await vi.advanceTimersByTimeAsync(1)
-        await flushMicrotasks(32)
+      const query = new FakeSessionQuery()
+      for (let index = 0; index < 8; index += 1) query.seed(`ordinary-${index}`, [])
+      const cache = new FakeProjectionCache()
+      const persistence = new FakeSessionPersistence()
+      persistence.ids = Array.from({ length: 8 }, (_, index) => `ordinary-${index}`)
+      const harness = await bootUnderFakeTimers({
+        enabled: true,
+        sessionIds: ['target'],
+        sessionQuery: query,
+        projectionCache: cache,
+        sessionPersistence: persistence,
+        // An attach-only Session (no Agent) with a corrupt DevLead replay: the
+        // live-attach fallback cannot prove the supervisor set.
+        beforeServicePlugin: (ctx) => {
+          const broken = ctx.sessions.create(SessionId('broken-attach'))
+          appendPluginRecord(broken, DEVLEAD_MODE_RECORD_TYPE, {
+            kind: 'devlead/mode', version: 2, enabled: 'yes', at: T0,
+          } as never)
+        },
+      })
+      const target = new FakeAgent(harness.sessions['target']!)
+      harness.agents.add(target)
+      const service = harness.service as unknown as {
+        coldScan?: { liveFailure: boolean; complete: boolean }
+        supervisionIndexComplete: boolean
+        rehydrationRetryProbe: boolean
       }
+      expect(service.supervisionIndexComplete).toBe(false)
+      expect(service.coldScan?.liveFailure).toBe(true)
+      expect(service.coldScan?.complete).toBe(false)
+      await expectCode(
+        () => harness.service.promptSession(harness.lead.agent, 'target', 'must not deliver', { watch: false }),
+        'DEVLEAD_SESSION_UNAVAILABLE',
+      )
+      // The scan's own end armed exactly one slow probe; no manual timer staging.
+      expect(service.rehydrationRetryProbe).toBe(true)
+      const reads = query.readSessionCalls
+      await vi.advanceTimersByTimeAsync(300)
+      await flushMicrotasks(128)
+      // A live projection failure must not turn into an endless full rescan: the
+      // single slow probe owns recovery.
+      expect(query.readSessionCalls).toBe(reads)
+      // Repair the corrupt Session (the human `/devlead reset` equivalent); the
+      // production probe re-lists and rescans once the cause is gone.
+      const broken = harness.ctx.sessions.get(SessionId('broken-attach'))!
+      appendPluginRecord(broken, DEVLEAD_RESET_RECORD_TYPE, resetRecord(T0 + 1))
+      await advanceUntil(() => service.supervisionIndexComplete, 'live-failure probe recovery', 500, 80)
+      const receipt = await harness.service.promptSession(harness.lead.agent, 'target', 'recovered after live-failure probe')
+      expect(receipt.sessionId).toBe('target')
+      expect(target.followups).toHaveLength(1)
     } finally {
       vi.useRealTimers()
     }
-    expect(service.supervisionIndexComplete).toBe(true)
-    const receipt = await harness.service.promptSession(harness.lead.agent, 'target', 'recovered after probe')
-    expect(receipt.sessionId).toBe('target')
-    expect(target.followups).toHaveLength(1)
-  })
+  }, 30_000)
 
-  it('recovers after the bounded retry budget through the slow degraded probe', async () => {
-    const query = new FakeSessionQuery()
-    query.seed('transient', [])
-    query.readError = new Error('persistent read failure')
-    const cache = new FakeProjectionCache()
-    const persistence = new FakeSessionPersistence()
-    persistence.ids = ['transient']
-    const harness = await bootService({
-      enabled: true,
-      sessionIds: ['target'],
-      sessionQuery: query,
-      projectionCache: cache,
-      sessionPersistence: persistence,
-    })
-    const target = new FakeAgent(harness.sessions['target']!)
-    harness.agents.add(target)
-    await expectCode(
-      () => harness.service.promptSession(harness.lead.agent, 'target', 'must not deliver', { watch: false }),
-      'DEVLEAD_SESSION_UNAVAILABLE',
-    )
-    query.readError = undefined
-    const service = harness.service as unknown as {
-      supervisionIndexComplete: boolean
-      rehydrationRetryAttempts: number
-      rehydrationRetryTimer: unknown
-      scheduleRehydrationRetry(): void
-    }
-    // Stage the exact state after the last bounded attempt: budget exhausted,
-    // no timer armed. The production path then arms the slow degraded probe.
-    if (service.rehydrationRetryTimer !== undefined) {
-      clearTimeout(service.rehydrationRetryTimer as ReturnType<typeof setTimeout>)
-      service.rehydrationRetryTimer = undefined
-    }
-    service.rehydrationRetryAttempts = 12
-    const warn = vi.spyOn(harness.ctx.logger, 'warn')
+  it('keeps the retry-cap probe sticky instead of restarting the fast backoff', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     try {
-      service.scheduleRehydrationRetry()
-      const probeMessage = warn.mock.calls.map(call => String(call[0])).find(text => text.includes('slow 30s recovery probe'))
-      expect(probeMessage).toContain('/devlead reset')
-      expect(service.rehydrationRetryTimer).toBeDefined()
-      await vi.advanceTimersByTimeAsync(30_000)
-      for (let index = 0; index < 50 && !service.supervisionIndexComplete; index += 1) {
-        await vi.advanceTimersByTimeAsync(1)
-        await flushMicrotasks(32)
+      const query = new FakeSessionQuery()
+      query.seed('transient', [])
+      query.readError = new Error('persistent read failure')
+      const cache = new FakeProjectionCache()
+      const persistence = new FakeSessionPersistence()
+      persistence.ids = ['transient']
+      const harness = await bootUnderFakeTimers({
+        enabled: true,
+        sessionIds: ['target'],
+        sessionQuery: query,
+        projectionCache: cache,
+        sessionPersistence: persistence,
+      })
+      const target = new FakeAgent(harness.sessions['target']!)
+      harness.agents.add(target)
+      const service = harness.service as unknown as {
+        supervisionIndexComplete: boolean
+        rehydrationRetryAttempts: number
+        rehydrationRetryCapped: boolean
+        rehydrationRetryProbe: boolean
       }
+      await expectCode(
+        () => harness.service.promptSession(harness.lead.agent, 'target', 'must not deliver', { watch: false }),
+        'DEVLEAD_SESSION_UNAVAILABLE',
+      )
+      const warn = vi.spyOn(harness.ctx.logger, 'warn')
+      // Stage the last bounded attempt; the production timer walks into the cap
+      // and the scan's own end arms the single slow probe.
+      service.rehydrationRetryAttempts = 11
+      await advanceUntil(() => service.rehydrationRetryProbe, 'retry-cap probe', 50, 120)
+      expect(service.rehydrationRetryCapped).toBe(true)
+      const capMessages = warn.mock.calls
+        .map(call => String(call[0]))
+        .filter(text => text.includes('slow 30s recovery probe'))
+      expect(capMessages).toHaveLength(1)
+      expect(capMessages[0]).toContain('Open (resume)')
+      expect(capMessages[0]).toContain('/devlead reset there')
+      // Fire the probe while the cause is still present: it must re-arm the one
+      // slow probe, never restart the 12-attempt fast backoff.
+      await vi.advanceTimersByTimeAsync(30_000)
+      await advanceUntil(() => service.rehydrationRetryAttempts >= 13, 'probe failure counted', 50, 60)
+      await advanceUntil(() => service.rehydrationRetryProbe, 'second slow probe', 50, 20)
+      expect(service.rehydrationRetryCapped).toBe(true)
+      expect(service.rehydrationRetryAttempts).toBeGreaterThanOrEqual(13)
+      const listsAfterProbe = query.listSessionsCalls
+      await vi.advanceTimersByTimeAsync(10_000)
+      await flushMicrotasks(256)
+      // A sticky cap means no fast retry may fire inside the next probe window.
+      expect(query.listSessionsCalls).toBe(listsAfterProbe)
+      expect(service.rehydrationRetryProbe).toBe(true)
+      // Only one cap warning: the re-armed probe reuses the deduped reason.
+      expect(warn.mock.calls.map(call => String(call[0])).filter(text => text.includes('slow 30s recovery probe'))).toHaveLength(1)
+      // Remove the cause; the next slow probe recovers the index.
+      query.readError = undefined
+      await advanceUntil(() => service.supervisionIndexComplete, 'sticky probe recovery', 500, 120)
+      const receipt = await harness.service.promptSession(harness.lead.agent, 'target', 'recovered after sticky probe')
+      expect(receipt.sessionId).toBe('target')
+      expect(target.followups).toHaveLength(1)
+      warn.mockRestore()
     } finally {
       vi.useRealTimers()
-      warn.mockRestore()
     }
-    expect(service.supervisionIndexComplete).toBe(true)
-    const receipt = await harness.service.promptSession(harness.lead.agent, 'target', 'degraded probe recovered')
-    expect(receipt.sessionId).toBe('target')
-    expect(target.followups).toHaveLength(1)
-  })
+  }, 30_000)
 
   it('refreshes a vanished Session listing inside the attempt without a retry cycle', async () => {
     const query = new FakeSessionQuery()
@@ -1283,6 +1318,318 @@ describe('cold supervisor trust, epoch and degraded recovery', () => {
     await sleep(200)
     expect(service.rehydrationRetryAttempts).toBe(0)
     expect(service.rehydrationRetryTimer).toBeUndefined()
+  })
+})
+
+describe('cold supervision authorization binding and bounded attempts', () => {
+  it('refuses delivery when the listing authorized by the barrier changes before finalize', async () => {
+    const query = new FakeSessionQuery()
+    query.seed('foreign-lead', [modeEvent(0, true), watchEvent(1, ['target'])])
+    for (let index = 0; index < 5; index += 1) query.seed(`ordinary-${index}`, [])
+    const cache = new FakeProjectionCache()
+    cache.setDevLead('foreign-lead', { enabled: true, sessions: ['target'] })
+    const persistence = new FakeSessionPersistence()
+    persistence.ids = ['foreign-lead', ...Array.from({ length: 5 }, (_, index) => `ordinary-${index}`)]
+    const originalList = query.listSessions.bind(query)
+    let listings = 0
+    query.listSessions = async () => {
+      listings += 1
+      const rows = await originalList()
+      // The barrier's first listing is the complete authoritative corpus; every
+      // later listing silently omits a legitimate foreign supervisor, exactly
+      // like a corpus whose persistence binding was lost/replaced mid-scan.
+      return listings === 1 ? rows : rows.filter(row => String(row.header.id) !== 'foreign-lead')
+    }
+    const harness = await bootService({
+      enabled: true,
+      sessionIds: ['target'],
+      sessionQuery: query,
+      projectionCache: cache,
+      sessionPersistence: persistence,
+    })
+    const target = new FakeAgent(harness.sessions['target']!)
+    harness.agents.add(target)
+    const service = harness.service as unknown as {
+      rehydrated: boolean
+      supervisionIndexComplete: boolean
+      rehydrationListingSeq: number
+    }
+    // The finalize recheck sees the corpus changed: no stale snapshot may
+    // authorize the prompt and no prompt may be delivered.
+    await expectCode(
+      () => harness.service.promptSession(harness.lead.agent, 'target', 'must not deliver', { watch: false }),
+      'DEVLEAD_SESSION_UNAVAILABLE',
+    )
+    expect(target.followups).toHaveLength(0)
+    expect(service.rehydrated).toBe(false)
+    // The barrier's complete listing was rejected by the finalize recheck when
+    // the corpus changed; a second, partial listing was observed.
+    expect(listings).toBeGreaterThanOrEqual(2)
+    // A later retry also cannot obtain a complete validated listing: still closed.
+    await sleep(400)
+    await expectCode(
+      () => harness.service.promptSession(harness.lead.agent, 'target', 'still must not deliver', { watch: false }),
+      'DEVLEAD_SESSION_UNAVAILABLE',
+    )
+    expect(target.followups).toHaveLength(0)
+  }, 15_000)
+
+  it('does not trust a scan re-list that omits a stored foreign supervisor', async () => {
+    const query = new FakeSessionQuery()
+    query.seed('deleted', [])
+    query.seed('foreign-lead', [modeEvent(0, true), watchEvent(1, ['target'])])
+    const persistence = new FakeSessionPersistence()
+    persistence.ids = ['deleted', 'foreign-lead']
+    const originalRead = query.readSession.bind(query)
+    const originalList = query.listSessions.bind(query)
+    let notFoundOnce = true
+    let omitForeign = true
+    query.readSession = async (sessionId) => {
+      if (String(sessionId) === 'deleted' && notFoundOnce) {
+        notFoundOnce = false
+        throw new Error('persisted Session deleted does not exist')
+      }
+      return await originalRead(sessionId)
+    }
+    query.listSessions = async () => {
+      const rows = await originalList()
+      // The not-found refresh returns a listing that silently omits a stored
+      // foreign supervisor; that re-list must not be trusted as authorization.
+      return omitForeign ? rows.filter(row => String(row.header.id) !== 'foreign-lead') : rows
+    }
+    const harness = await bootService({
+      enabled: true,
+      sessionIds: ['target'],
+      sessionQuery: query,
+      sessionPersistence: persistence,
+    })
+    const target = new FakeAgent(harness.sessions['target']!)
+    harness.agents.add(target)
+    await expectCode(
+      () => harness.service.promptSession(harness.lead.agent, 'target', 'must not deliver', { watch: false }),
+      'DEVLEAD_SESSION_UNAVAILABLE',
+    )
+    expect(target.followups).toHaveLength(0)
+    // Stop lying: the next bounded attempt gets a complete validated listing and
+    // discovers the stored foreign supervisor instead of delivering.
+    omitForeign = false
+    await eventuallyCode(
+      () => harness.service.promptSession(harness.lead.agent, 'target', 'still must not deliver', { watch: false }),
+      'DEVLEAD_FOREIGN_SUPERVISOR',
+    )
+    expect(target.followups).toHaveLength(0)
+  }, 15_000)
+
+  it('counts a repeated not-found as a read failure instead of forgiving the budget every round', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const query = new FakeSessionQuery()
+      query.seed('ghost', [])
+      const originalRead = query.readSession.bind(query)
+      query.readSession = async () => { throw new Error('persisted Session ghost does not exist') }
+      const cache = new FakeProjectionCache()
+      const persistence = new FakeSessionPersistence()
+      persistence.ids = ['ghost']
+      const harness = await bootUnderFakeTimers({
+        enabled: true,
+        sessionIds: ['target'],
+        sessionQuery: query,
+        projectionCache: cache,
+        sessionPersistence: persistence,
+      })
+      const service = harness.service as unknown as {
+        rehydrated: boolean
+        supervisionIndexComplete: boolean
+        rehydrationRetryAttempts: number
+        rehydrationRetryCapped: boolean
+        rehydrationRetryProbe: boolean
+      }
+      expect(service.supervisionIndexComplete).toBe(false)
+      // The first attempt already failed; the re-list still lists the id, so it
+      // is a read failure that consumes the bounded budget.
+      expect(service.rehydrationRetryAttempts).toBeGreaterThanOrEqual(1)
+      const listsAfterFirst = query.listSessionsCalls
+      await advanceUntil(() => service.rehydrationRetryAttempts >= 2, 'second bounded retry', 50, 200)
+      expect(query.listSessionsCalls).toBeLessThanOrEqual(listsAfterFirst + 6)
+      const warn = vi.spyOn(harness.ctx.logger, 'warn')
+      // The production path walks the remaining bounded retries and the scan's
+      // own end arms exactly one slow probe at the cap.
+      await advanceUntil(() => service.rehydrationRetryProbe, 'retry-cap probe', 500, 200)
+      expect(service.rehydrationRetryCapped).toBe(true)
+      const capMessages = warn.mock.calls
+        .map(call => String(call[0]))
+        .filter(text => text.includes('slow 30s recovery probe'))
+      expect(capMessages).toHaveLength(1)
+      expect(capMessages[0]).toContain('Open (resume)')
+      // Remove the cause; the probe recovers the index.
+      query.readSession = originalRead
+      await advanceUntil(
+        () => service.rehydrated === true && service.supervisionIndexComplete,
+        'probe recovery after repeated not-found',
+        500,
+        200,
+      )
+      const target = new FakeAgent(harness.sessions['target']!)
+      harness.agents.add(target)
+      const receipt = await harness.service.promptSession(harness.lead.agent, 'target', 'recovered after repeated not-found')
+      expect(receipt.sessionId).toBe('target')
+      warn.mockRestore()
+    } finally {
+      vi.useRealTimers()
+    }
+  }, 30_000)
+
+  it('abandons a scan attempt whose backend never settles and recovers on a later attempt', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const query = new FakeSessionQuery()
+      query.seed('cold-lead', [modeEvent(0, true), watchEvent(1, ['target'])])
+      const originalRead = query.readSession.bind(query)
+      let hang = true
+      query.readSession = async (sessionId) => {
+        if (hang) return await new Promise<never>(() => {})
+        return await originalRead(sessionId)
+      }
+      const cache = new FakeProjectionCache()
+      const persistence = new FakeSessionPersistence()
+      persistence.ids = ['cold-lead']
+      const started = Date.now()
+      const harness = await bootUnderFakeTimers({
+        enabled: true,
+        sessionIds: ['target'],
+        sessionQuery: query,
+        projectionCache: cache,
+        sessionPersistence: persistence,
+      })
+      // The attempt deadline abandoned the hung backend instead of hanging
+      // [Service.init]; the whole attempt is bounded well under the 60s
+      // advanced-time budget above (it takes the 5s attempt deadline).
+      expect(Date.now() - started).toBeLessThan(1_000)
+      const service = harness.service as unknown as {
+        supervisionIndexComplete: boolean
+        rehydrated: boolean
+        rehydrationRetryAttempts: number
+      }
+      expect(service.supervisionIndexComplete).toBe(false)
+      expect(service.rehydrated).toBe(false)
+      expect(service.rehydrationRetryAttempts).toBeGreaterThanOrEqual(1)
+      // Repair the backend: the next bounded attempt succeeds.
+      hang = false
+      await advanceUntil(
+        () => service.rehydrated === true && service.supervisionIndexComplete,
+        'next attempt after abandoned scan',
+        100,
+        200,
+      )
+      const target = new FakeAgent(harness.sessions['target']!)
+      harness.agents.add(target)
+      // The recovered scan discovered the stored foreign supervisor.
+      await expectCode(
+        () => harness.service.promptSession(harness.lead.agent, 'target', 'must not deliver', { watch: false }),
+        'DEVLEAD_FOREIGN_SUPERVISOR',
+      )
+      expect(target.followups).toHaveLength(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  }, 30_000)
+
+  it('invalidates the proven index when a corpus service is replaced in place', async () => {
+    const query = new FakeSessionQuery()
+    const cache = new FakeProjectionCache()
+    const persistence = new FakeSessionPersistence()
+    persistence.ids = []
+    const harness = await bootService({
+      enabled: true,
+      sessionIds: ['target'],
+      sessionQuery: query,
+      projectionCache: cache,
+      sessionPersistence: persistence,
+    })
+    const target = new FakeAgent(harness.sessions['target']!)
+    harness.agents.add(target)
+    await waitFor(() => (harness.service as unknown as { rehydrated: boolean }).rehydrated, 'initial finalize')
+    // A legitimate foreign supervisor appears and the persistence binding is
+    // replaced in place (no fiber unload, so no inject callback fires).
+    query.seed('foreign-lead', [modeEvent(0, true), watchEvent(1, ['target'])])
+    const replacement = new FakeSessionPersistence()
+    replacement.ids = ['foreign-lead']
+    harness.ctx.set('sessionPersistence', replacement as never)
+    // The old proof was bound to the old service instance: fail closed now.
+    await expectCode(
+      () => harness.service.promptSession(harness.lead.agent, 'target', 'must not deliver', { watch: false }),
+      'DEVLEAD_SESSION_UNAVAILABLE',
+    )
+    expect(target.followups).toHaveLength(0)
+    // The invalidated index is re-proven against the new binding and finds the
+    // foreign supervisor instead of delivering.
+    await eventuallyCode(
+      () => harness.service.promptSession(harness.lead.agent, 'target', 'still must not deliver', { watch: false }),
+      'DEVLEAD_FOREIGN_SUPERVISOR',
+    )
+    expect(target.followups).toHaveLength(0)
+  }, 15_000)
+
+  it('stays fail-closed when the corpus binding is removed after a proof', async () => {
+    const query = new FakeSessionQuery()
+    const cache = new FakeProjectionCache()
+    const persistence = new FakeSessionPersistence()
+    persistence.ids = []
+    const harness = await bootService({
+      enabled: true,
+      sessionIds: ['target'],
+      sessionQuery: query,
+      projectionCache: cache,
+      sessionPersistence: persistence,
+    })
+    const target = new FakeAgent(harness.sessions['target']!)
+    harness.agents.add(target)
+    await waitFor(() => (harness.service as unknown as { rehydrated: boolean }).rehydrated, 'initial finalize')
+    harness.ctx.set('sessionPersistence', undefined)
+    // A proven corpus must not degrade back to live-only authorization: the
+    // removed binding could hide a foreign cold supervisor.
+    await expectCode(
+      () => harness.service.promptSession(harness.lead.agent, 'target', 'must not deliver', { watch: false }),
+      'DEVLEAD_SESSION_UNAVAILABLE',
+    )
+    await sleep(300)
+    await expectCode(
+      () => harness.service.promptSession(harness.lead.agent, 'target', 'still must not deliver', { watch: false }),
+      'DEVLEAD_SESSION_UNAVAILABLE',
+    )
+    expect(target.followups).toHaveLength(0)
+    // Restoring the binding plus a lifecycle wake re-proves the corpus.
+    harness.ctx.set('sessionPersistence', persistence as never)
+    harness.ctx.emit('agent/created', { agent: harness.lead.agent, source: 'resume' })
+    await waitFor(
+      () => (harness.service as unknown as { rehydrated: boolean }).rehydrated,
+      're-proof after binding restore',
+    )
+    const receipt = await harness.service.promptSession(harness.lead.agent, 'target', 'allowed after re-proof')
+    expect(receipt.sessionId).toBe('target')
+    expect(target.followups).toHaveLength(1)
+  }, 15_000)
+
+  it('warns about a read failure instead of the read-cap when a candidate cannot be read', async () => {
+    const query = new FakeSessionQuery()
+    for (const id of ['row-a', 'row-b', 'row-c']) query.seed(id, [])
+    query.readError = new Error('storage unavailable')
+    const persistence = new FakeSessionPersistence()
+    persistence.ids = ['row-a', 'row-b', 'row-c']
+    const warnings: string[] = []
+    await bootService({
+      enabled: true,
+      sessionIds: ['target'],
+      sessionQuery: query,
+      sessionPersistence: persistence,
+      beforeServicePlugin: (ctx) => {
+        vi.spyOn(ctx.logger, 'warn').mockImplementation((...args: unknown[]) => {
+          warnings.push(String(args[0]))
+        })
+      },
+    })
+    expect(warnings.some(text => text.includes('could not read a cold lead candidate'))).toBe(true)
+    expect(warnings.some(text => text.includes('stopped reading unclassified Session logs after'))).toBe(false)
   })
 })
 

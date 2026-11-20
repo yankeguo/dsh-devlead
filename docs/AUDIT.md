@@ -255,12 +255,18 @@ nits 已全部拍板并落地，含 breaking 影响与 file/test 证据。
 
 > **现状更新（0.4.0 Batch 1，2026-11-20）**：下表 D2 的冷重建描述是 0.2.0 时点的历史记录；当前
 > 实现改为可续扫的多批游标（每次尝试最多 64 条无法分类读取、游标续扫）、读取失败按
-> 250ms→5s 有界指数退避重试（最多 12 次）+ 30s 慢速降级探针、not-found 重新列语料不消耗
-> 预算；无 projection cache 时仍做有界精确折叠（不是不读日志、也不是只恢复 live）；
+> 250ms→5s 有界指数退避重试（最多 12 次）+ 30s 慢速降级探针（cap 为 sticky：探针失败只重排
+> 探针，不重启快速退避）；not-found 触发一次同样经 persistence 真值复核的 re-list，只有 id
+> 真消失或游标前进才宽恕预算，同一 id 连续 not-found 计读取失败；无 projection cache 时仍做
+> 有界精确折叠（不是不读日志、也不是只恢复 live）。就绪屏障返回其校验过的 listing 并直接交给
+> 权威扫描（不再二次 list 未校验语料），finalize 前复核 persisted id 集合仍等于当前语料；
+> 整次 attempt 有 5s deadline（挂起后端 promise 被放弃、epoch 作废并计失败），
 > `[Service.init]` 不再等完整重建（首次有界尝试后即可报告 application-ready，期间 prompt
-> 授权 fail closed）。终态（corrupt at-rest replay / live projection failure / 12 次退避耗尽）
-> 的恢复路径：受影响 lead Session 的 `/devlead reset`、删除/修复损坏或不可读的 Session、或
-> 等待 30s 慢速降级探针/重启 Host；期间 prompt 以 `DEVLEAD_SESSION_UNAVAILABLE` fail closed，
+> 授权 fail closed）。语料服务替换/卸载会作废已证明的索引（含原地替换），一次证明过持久语料
+> 的 Host 不退回 live-only 授权。终态（corrupt at-rest replay / live projection failure /
+> 12 次退避耗尽）的恢复路径：先打开（resume）受影响 lead Session 再执行 `/devlead reset`
+> （reset 要求 live Agent）、删除/修复损坏或不可读的 Session 日志、或重启 Host；30s 慢速探针
+> 只在原因移除后才可能恢复。期间 prompt 以 `DEVLEAD_SESSION_UNAVAILABLE` fail closed，
 > 错误文案同时给出原因与恢复提示。当前语义以 [DESIGN §4.1.1](DESIGN.md) 为准。
 
 上一轮 §10 末尾"仍需决策"的六项（`isolation` 必填字段发布、cold lead 索引重建、

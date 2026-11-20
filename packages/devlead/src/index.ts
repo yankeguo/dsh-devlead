@@ -309,6 +309,100 @@ const REHYDRATION_READINESS_POLL_MS = 100
 /** One persisted Session row as the optional Session query engine reports it. */
 type PersistedSessionRecord = Awaited<ReturnType<SessionQueryEngine['listSessions']>>[number]
 
+/**
+ * One corpus listing validated against the persistence ground truth: every
+ * Session id the optional persistence service reports as stored is visible in
+ * this query-corpus listing. A listing that was not validated this way is a
+ * warmup subset and must never be used as authorization evidence.
+ */
+interface ReadyCorpusListing {
+  /** Complete query-corpus rows (live and persisted) in listing order. */
+  readonly records: readonly PersistedSessionRecord[]
+  /** Persisted Session ids visible in this listing. */
+  readonly listedIds: ReadonlySet<string>
+  /** Stored Session ids (persistence ground truth) this listing was validated against. */
+  readonly expectedIds: ReadonlySet<string>
+  /** When the validated listing was obtained. */
+  readonly at: number
+  /** Monotonic validation sequence, so a stale snapshot is never mistaken for this attempt's listing. */
+  readonly seq: number
+}
+
+/** One resumable cold-supervision scan snapshot. */
+interface DevLeadColdScan {
+  /** Corpus records this snapshot scans (always from a validated listing). */
+  records: readonly PersistedSessionRecord[]
+  /** Cursor: index of the next record to classify. */
+  index: number
+  /** Leads discovered so far. */
+  readonly leads: Map<string, DevLeadPersistedLead>
+  /** Active cold lead Sessions discovered so far. */
+  readonly active: DevLeadActiveSession[]
+  /** Identities already pushed to {@link active}, so a re-list rescan cannot duplicate them. */
+  readonly activeIds: Set<string>
+  /** Whether every record was classified successfully and the corpus stayed stable. */
+  complete: boolean
+  /** At-rest corrupt replay: terminal for ordinary retries, recovered by a slow probe or reset. */
+  corrupt: boolean
+  /** Live projection failure: not cached in the corpus, recovered by a slow probe or reset. */
+  liveFailure: boolean
+  /**
+   * Only a validated listing may be finalized. A snapshot taken while the
+   * corpus was warming up is a subset and must be discarded and re-listed.
+   */
+  trusted: boolean
+  /** Persisted ids of the validated listing this snapshot was built from. */
+  listedIds: ReadonlySet<string>
+  /** When that listing was obtained. */
+  listedAt: number
+  /** Validation sequence of that listing. */
+  listingSeq: number
+}
+
+/** Stable identity of one provided corpus service. */
+interface CorpusBinding {
+  /** Provision identity: changes whenever the service is (re)provided or unloaded. */
+  readonly uid: number
+  /**
+   * Stable value token for an in-place `ctx.set` replacement: the raw value for
+   * a plain service object, the unwrapped implementation for a cordis traced
+   * service proxy, or `undefined` when the traced target cannot be unwrapped
+   * (the provision uid still detects reprovisioning).
+   */
+  readonly token: unknown
+}
+
+/** Identity snapshot of the optional corpus services. */
+interface CorpusBindingSnapshot {
+  readonly query: CorpusBinding | undefined
+  readonly persistence: CorpusBinding | undefined
+  readonly cache: CorpusBinding | undefined
+}
+
+/** Deadline/signal of one bounded rehydration attempt. */
+interface RehydrationAttempt {
+  /** Aborted at the attempt deadline. */
+  readonly signal: AbortSignal
+  /** Whether the attempt hit its deadline (as opposed to merely aborting). */
+  timedOut(): boolean
+  /** Clear the deadline timer after the attempt settled. */
+  stop(): void
+}
+
+/** Optional corpus service names observed by the rehydration binding hooks. */
+type CorpusBindingName = 'sessionQuery' | 'sessionPersistence' | 'sessionProjectionCache'
+
+/** Sentinel returned by a scan backend read that lost its attempt signal. */
+const SCAN_ABORTED: unique symbol = Symbol('devlead-scan-aborted')
+
+/**
+ * Cordis's globally registered symbols for a traced service proxy (registered
+ * with `Symbol.for`, so they resolve across cordis module instances) and its
+ * underlying implementation. Used only to compare corpus service identities.
+ */
+const CORPUS_TRACED_ORIGINAL = Symbol.for('cordis.original')
+const CORPUS_TRACED_MARKER = Symbol.for('cordis.tracker')
+
 /** Outcome of one prompt admission: whether the Host resumed the target and whether a running turn was interrupted. */
 interface PromptAdmission {
   /** Whether a cold Session had to be resumed to admit the prompt. */
@@ -366,6 +460,21 @@ const MAX_CHILD_ANSWER_READS = 64
 const MAX_REHYDRATION_RETRY_ATTEMPTS = 12
 const MAX_REHYDRATION_RETRY_DELAY_MS = 5_000
 const DEGRADED_REHYDRATION_PROBE_MS = 30_000
+/**
+ * Bound on one cold-supervision scan attempt: readiness barrier, corpus
+ * listing validation and every log read. Backend calls are additionally raced
+ * against this attempt signal, so a promise that never settles can never hang
+ * `[Service.init]`: the attempt is abandoned, its epoch is invalidated and the
+ * next bounded attempt (or the slow degraded probe) owns recovery.
+ */
+const REHYDRATION_ATTEMPT_TIMEOUT_MS = 5_000
+/**
+ * How many times a completed cold scan refreshes its listing before finalizing
+ * when new persisted Sessions keep appearing. New rows are appended and scanned
+ * under the same budget; after this bound the scan finalizes against the last
+ * validated listing (a later rescan/restart picks up still-newer Sessions).
+ */
+const MAX_FINALIZE_LISTING_REFRESHES = 2
 /** Initial prompt-gate reason before any concrete rehydration failure was observed. */
 const DEFAULT_SUPERVISION_DEGRADED_REASON = 'the cold-lead supervisor index is incomplete'
 /** Degraded recovery reasons that arm the single slow probe. */
@@ -375,15 +484,17 @@ const REHYDRATION_PROBE_MESSAGES: Readonly<Record<RehydrationProbeReason, string
   'corrupt-terminal':
     'devlead: cold lead rehydration is degraded by a corrupt persisted DevLead replay; '
     + 'ordinary retries are paused and a slow 30s recovery probe will retry. '
-    + 'Run /devlead reset in the affected DevLead Session, delete the corrupt Session log, or wait for the probe',
+    + 'Open (resume) the affected DevLead Session and run /devlead reset there, or repair/delete the corrupt Session log; '
+    + 'the probe recovers only after the cause is removed (a Host restart also rebuilds the index)',
   'live-failure':
     'devlead: a live attached DevLead projection is corrupt, so the supervisor set cannot be proven; '
-    + 'prompting stays disabled until it is repaired. Repair or delete the corrupt Session, run /devlead reset, '
-    + 'or wait for the slow 30s recovery probe',
+    + 'prompting stays disabled until it is repaired. Open the affected Session, run /devlead reset there, '
+    + 'or repair/delete the corrupt Session log; the slow 30s recovery probe recovers only after the cause is removed',
   'retry-cap':
     `devlead: cold lead rehydration failed ${String(MAX_REHYDRATION_RETRY_ATTEMPTS)} bounded retry attempts; `
-    + 'prompting stays disabled until a complete scan succeeds. Run /devlead reset in the affected DevLead Session, '
-    + 'repair the unreadable Session storage, remove the corrupt Session, or wait for the slow 30s recovery probe / restart the Host',
+    + 'prompting stays disabled until a complete scan succeeds. Open (resume) the affected DevLead Session and run '
+    + '/devlead reset there, repair or delete the unreadable/corrupt Session storage, or restart the Host; '
+    + 'the slow 30s recovery probe retries only after the cause is removed',
 }
 /** Concise cause shown in the prompt-side fail-closed error per warning reason. */
 const REHYDRATION_DEGRADED_CAUSES: Readonly<Record<string, string>> = {
@@ -393,6 +504,8 @@ const REHYDRATION_DEGRADED_CAUSES: Readonly<Record<string, string>> = {
   cap: 'the cold index reached its bounded read cap before completing; the next attempt resumes from the saved cursor',
   cache: 'the projection cache is unavailable; cold candidates are exact-folded from their logs',
   'not-found': 'a persisted Session disappeared while the cold index was scanning; the listing is refreshed',
+  corpus: 'the persisted Session corpus could not be verified against the Session persistence listing',
+  'binding-changed': 'the Session corpus services were recomposed; the cold index is being re-proven',
   'corrupt-terminal': 'corrupt persisted DevLead state blocks the cold-lead supervisor index',
   'live-failure': 'a live attached DevLead projection is corrupt',
   'retry-cap': 'the cold index exceeded its bounded retry budget',
@@ -536,15 +649,30 @@ function resolveConfig(config: Config): DevLeadSettings {
  * @param error - thrown value.
  * @returns the code, or undefined when the value carries none.
  */
-function isSessionNotFoundError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error)
-  return /not found|does not exist|unknown session|SESSION_NOT_FOUND/iu.test(message)
-}
-
 function remoteCodeOf(error: unknown): string | undefined {
   if (typeof error !== 'object' || error === null) return undefined
   const code = (error as { code?: unknown }).code
   return typeof code === 'string' ? code : undefined
+}
+
+/**
+ * Whether one query failure means the persisted Session no longer exists.
+ *
+ * The stable DSH remote code (`SESSION_QUERY_SESSION_NOT_FOUND`) is the
+ * authoritative classification; the message regex is only a fallback for a
+ * backend/host that strips the code, because an ordinary transient read error
+ * must not be mistaken for a deleted Session.
+ * @param error - thrown value.
+ * @returns whether the failure is a session-not-found classification.
+ */
+function isSessionNotFoundError(error: unknown): boolean {
+  const code = remoteCodeOf(error)
+  if (code !== undefined) {
+    if (code === 'SESSION_QUERY_SESSION_NOT_FOUND') return true
+    if (/^(SESSION_QUERY_|DEVLEAD_)/u.test(code)) return false
+  }
+  const message = error instanceof Error ? error.message : String(error)
+  return /not found|does not exist|unknown session|SESSION_NOT_FOUND/iu.test(message)
 }
 
 /**
@@ -798,23 +926,7 @@ export class DevLeadService extends Service {
   private supervisionIndexComplete = false
 
   /** Resumable cold-scan cursor; avoids re-reading settled prefixes on retry. */
-  private coldScan: {
-    readonly records: readonly PersistedSessionRecord[]
-    index: number
-    readonly leads: Map<string, DevLeadPersistedLead>
-    readonly active: DevLeadActiveSession[]
-    complete: boolean
-    /** At-rest corrupt replay: terminal for ordinary retries, recovered by a slow probe or reset. */
-    corrupt: boolean
-    /** Live projection failure: not cached in the corpus, recovered by a slow probe or reset. */
-    liveFailure: boolean
-    /**
-     * Only a listing obtained while the corpus was ready may be finalized. A
-     * listing taken while the corpus was still warming up is a subset and must
-     * be discarded and re-listed, never used as authorization evidence.
-     */
-    trusted: boolean
-  } | undefined
+  private coldScan: DevLeadColdScan | undefined
 
   /** A live attached projection failure makes the supervisor set unprovable. */
   private liveAttachFailure = false
@@ -824,10 +936,27 @@ export class DevLeadService extends Service {
   private rehydrationEpoch = 0
   /** Whether the current attempt reached the corpus scan (early live-only returns do not). */
   private rehydrationScanned = false
-  /** Whether the current attempt refreshed its listing or re-listed after a vanished Session. */
+  /** Whether the current attempt made real progress (dropped row or advanced cursor). */
   private rehydrationProgress = false
   /** A service recomposition landed while a scan was in flight; rerun after it settles. */
   private rehydrationFreshRequested = false
+  /** Whether the current attempt was abandoned at its deadline instead of settling. */
+  private rehydrationTimedOut = false
+  /** Monotonic sequence of validated corpus listings, carried by scan snapshots. */
+  private rehydrationListingSeq = 0
+  /**
+   * Sticky terminal for the bounded fast-retry budget: once the 12-attempt cap
+   * is hit, only the single slow degraded probe may retry. Cursor progress,
+   * completion, an explicit reset or a corpus-service recomposition clears it;
+   * a probe failing again re-arms the probe instead of restarting fast retries.
+   */
+  private rehydrationRetryCapped = false
+  /** Corpus service identities observed by the most recent scan attempt. */
+  private observedBindings: CorpusBindingSnapshot | undefined
+  /** Corpus service identities the current supervisor authorization was proven against. */
+  private trustedBindings: CorpusBindingSnapshot | undefined
+  /** Whether this process ever proved a complete persisted corpus. */
+  private corpusWasProven = false
 
   /** In-flight rehydration attempt, so concurrent readiness triggers share it. */
   private rehydrating: Promise<void> | undefined
@@ -1050,6 +1179,8 @@ export class DevLeadService extends Service {
    * that was missing when armed as a recomposition (a fresh scan epoch).
    */
   private rehydrationRetry: Array<() => unknown> | undefined
+  /** Set while retry fibers are disposed intentionally; their lost-hooks must not re-arm. */
+  private rehydrationRetryDisposing = false
 
   /**
    * Lifecycle wake listeners (`agent/created`, `session/event`), armed while the
@@ -1260,8 +1391,16 @@ export class DevLeadService extends Service {
    * corpus-readiness barrier (see {@link awaitCorpusReady}) before `rehydrated`
    * becomes final, so `[Service.init]` cannot resolve before the hub's watch
    * index was rebuilt.
+   *
+   * One attempt is additionally bounded as a whole: its readiness barrier,
+   * every listing and every log read run under one attempt signal, so a
+   * backend promise that never settles is abandoned instead of wedging
+   * `[Service.init]` or the shared in-flight promise. The abandoned attempt
+   * counts as a failed retry and bumps the epoch; the next bounded attempt (or
+   * the slow degraded probe) starts from a fresh signal.
    */
   private async rehydrateFromPersistence(): Promise<void> {
+    this.checkCorpusBindingReplacement()
     if (this.rehydrated) return
     const pending = this.rehydrating
     if (pending !== undefined) {
@@ -1276,7 +1415,9 @@ export class DevLeadService extends Service {
       await run
     } finally {
       this.rehydrating = undefined
-      if (epoch !== this.rehydrationEpoch) {
+      const timedOut = this.rehydrationTimedOut
+      this.rehydrationTimedOut = false
+      if (epoch !== this.rehydrationEpoch && !timedOut) {
         // A reset or a service recomposition invalidated this run: never
         // finalize or re-arm its cursor. Re-run from the new epoch's state.
         this.rehydrationScanned = false
@@ -1285,12 +1426,30 @@ export class DevLeadService extends Service {
           if (this.rehydrationFreshRequested) {
             this.rehydrationFreshRequested = false
             this.coldScan = undefined
+            this.liveAttachFailure = false
+            this.trustedBindings = undefined
             this.rehydrationRetryAttempts = 0
             this.rehydrationRetryDelayMs = 250
+            this.rehydrationRetryCapped = false
           }
           void this.rehydrateFromPersistence()
         }
         return
+      }
+      if (timedOut) {
+        // The deadline was the failure: an abandoned attempt may still have
+        // advanced the cursor, which is real progress and clears the budget,
+        // but a fresh epoch must never be re-entered synchronously here.
+        this.rehydrationScanned = true
+        if (this.rehydrationFreshRequested) {
+          this.rehydrationFreshRequested = false
+          this.coldScan = undefined
+          this.liveAttachFailure = false
+          this.trustedBindings = undefined
+          this.rehydrationRetryAttempts = 0
+          this.rehydrationRetryDelayMs = 250
+          this.rehydrationRetryCapped = false
+        }
       }
       if (!this.rehydrated && !this.supervisionIndexComplete && !this.disposed) {
         const nextIndex = this.coldScan?.index ?? 0
@@ -1301,6 +1460,7 @@ export class DevLeadService extends Service {
           // cap; a re-list after a vanished Session is likewise not a failure.
           this.rehydrationRetryAttempts = 0
           this.rehydrationRetryDelayMs = 250
+          this.rehydrationRetryCapped = false
         } else if (this.rehydrationScanned) {
           // Only an attempt that actually reached the authoritative scan may
           // consume the bounded retry budget; missing optional services and
@@ -1320,18 +1480,32 @@ export class DevLeadService extends Service {
   }
 
   /**
-   * Run one rehydration attempt: the live-attach fallback immediately, a
-   * boot-time corpus-readiness barrier, then one authoritative persisted scan.
-   *
-   * The barrier is the fix for the ready-vs-rehydration race: until the query
-   * engine's own optional `sessionPersistence` binding is installed its listing
-   * is live-only, so the scan must wait until every stored Session the
-   * persistence service reports is visible in the query corpus. The wait is
-   * bounded and only happens when the corpus is observably inconsistent; a
-   * steady Host pays one macrotask plus one comparison.
+   * Run one bounded rehydration attempt.
+   * @param epoch - rehydration epoch the attempt belongs to.
+   * @returns fulfillment after the attempt settled or was abandoned.
    */
   private async runRehydration(epoch = this.rehydrationEpoch): Promise<void> {
     if (this.rehydrated || this.disposed) return
+    const attempt = this.startRehydrationAttempt()
+    try {
+      await this.runRehydrationAttempt(epoch, attempt)
+    } finally {
+      attempt.stop()
+    }
+  }
+
+  /**
+   * One rehydration attempt: the live-attach fallback immediately, a boot-time
+   * corpus-readiness barrier, then one authoritative persisted scan.
+   *
+   * The barrier validates the listing against the persistence ground truth and
+   * hands that exact listing to the scan, so the trusted snapshot is the one
+   * the barrier checked, never a second unvalidated listing. The scan re-lists
+   * only after a vanished Session, and that re-list is validated the same way.
+   * @param epoch - rehydration epoch the attempt belongs to.
+   * @param attempt - attempt deadline/signal.
+   */
+  private async runRehydrationAttempt(epoch: number, attempt: RehydrationAttempt): Promise<void> {
     this.rehydrationScanned = false
     this.rehydrationProgress = false
     const queryReady = this.ctx.get('sessionQuery') !== undefined
@@ -1355,11 +1529,13 @@ export class DevLeadService extends Service {
       this.ctx.logger.warn(`devlead: cold lead rehydration failed: ${thrownMessage(error)}`)
     }
     if (this.liveAttachFailure) applicationComplete = false
-    if (this.disposed || epoch !== this.rehydrationEpoch) return
+    if (this.attemptAbandoned(epoch, attempt)) return
     if (!queryReady) {
-      if (this.ctx.get('sessionPersistence') === undefined) {
-        // No persisted corpus exists yet: live prompting is allowed, but keep
-        // the retry armed so a late binding can install a cold supervisor.
+      if (this.ctx.get('sessionPersistence') === undefined && !this.corpusWasProven) {
+        // No persisted corpus ever existed on this Host: live prompting is
+        // allowed, but keep the retry armed so a late binding installs a cold
+        // supervisor. A Host that proved a corpus before but lost the binding
+        // stays fail-closed until it is re-proven.
         this.supervisionIndexComplete = applicationComplete
       }
       this.armRehydrationRetry(false)
@@ -1372,10 +1548,10 @@ export class DevLeadService extends Service {
     this.armRehydrationRetry(true)
     // One task boundary so the query engine's own optional-service callback has
     // had the chance to bind `sessionPersistence`.
-    await new Promise<void>((resolve) => { setTimeout(resolve, 0) })
-    if (this.rehydrated || this.disposed || epoch !== this.rehydrationEpoch) return
+    await this.attemptSleep(attempt, 0)
+    if (this.attemptAbandoned(epoch, attempt)) return
     if (this.ctx.get('sessionQuery') === undefined) {
-      if (this.ctx.get('sessionPersistence') === undefined) {
+      if (this.ctx.get('sessionPersistence') === undefined && !this.corpusWasProven) {
         this.supervisionIndexComplete = applicationComplete
       }
       this.armRehydrationRetry(false)
@@ -1384,18 +1560,18 @@ export class DevLeadService extends Service {
     if (this.ctx.get('sessionPersistence') === undefined) {
       // A Host that never composes persistence has no cold corpus to recover; a
       // Host that composes it later is picked up by the armed inject retry.
-      this.supervisionIndexComplete = applicationComplete
+      if (!this.corpusWasProven) this.supervisionIndexComplete = applicationComplete
       this.armRehydrationRetry(true)
       return
     }
-    const corpusReady = await this.awaitCorpusReady()
-    if (this.rehydrated || this.disposed || epoch !== this.rehydrationEpoch) return
+    const listing = await this.awaitCorpusReady(attempt.signal)
+    if (this.attemptAbandoned(epoch, attempt)) return
     this.rehydrationScanned = true
     let scanComplete = false
     let applied = false
     try {
-      const scan = await this.persistedLeadRecords(true, corpusReady)
-      if (this.disposed || epoch !== this.rehydrationEpoch) return
+      const scan = await this.persistedLeadRecords(listing, attempt.signal)
+      if (this.attemptAbandoned(epoch, attempt)) return
       this.recoveredActive = [...scan.active]
       // A lead resumed while the scan was in flight already has an
       // authoritative live index (`agent/created` → `syncLead`); replaying the
@@ -1409,10 +1585,86 @@ export class DevLeadService extends Service {
       applicationComplete = false
       this.ctx.logger.warn(`devlead: cold lead rehydration failed: ${thrownMessage(error)}`)
     }
-    if (this.disposed || epoch !== this.rehydrationEpoch) return
-    this.supervisionIndexComplete = corpusReady && applicationComplete && scanComplete && applied
+    if (this.attemptAbandoned(epoch, attempt)) return
+    this.supervisionIndexComplete = listing !== undefined
+      && applicationComplete && scanComplete && applied
     if (this.supervisionIndexComplete) this.finalizeRehydration()
     else this.armRehydrationRetry(true)
+  }
+
+  /**
+   * Create the deadline/signal pair that bounds one attempt.
+   * @returns the attempt handle; {@link RehydrationAttempt.stop} clears its timer.
+   */
+  private startRehydrationAttempt(): RehydrationAttempt {
+    const controller = new AbortController()
+    let timedOut = false
+    const timer = setTimeout(() => {
+      timedOut = true
+      controller.abort()
+    }, REHYDRATION_ATTEMPT_TIMEOUT_MS)
+    timer.unref?.()
+    return {
+      signal: controller.signal,
+      timedOut: () => timedOut,
+      stop: () => { clearTimeout(timer) },
+    }
+  }
+
+  /**
+   * Whether the current attempt must stop before applying more work.
+   * A deadline hit abandons the run through a new epoch and records the
+   * failure; other epoch changes (reset/recomposition) simply stop the run.
+   * @param epoch - epoch the attempt was started under.
+   * @param attempt - attempt deadline/signal.
+   * @returns whether the attempt is stale.
+   */
+  private attemptAbandoned(epoch: number, attempt: RehydrationAttempt): boolean {
+    if (attempt.timedOut()) {
+      this.rehydrationTimedOut = true
+      this.rehydrationEpoch += 1
+      this.rehydrationScanned = true
+      return true
+    }
+    return this.disposed || epoch !== this.rehydrationEpoch
+  }
+
+  /**
+   * Await one backend read under the attempt signal. A promise that ignores the
+   * signal is abandoned when it aborts; the pending work is left single-flight
+   * while the attempt moves on.
+   * @param work - backend promise.
+   * @param signal - attempt signal; undefined keeps the raw await.
+   * @returns the value, or {@link SCAN_ABORTED} when the attempt lost its signal.
+   */
+  private async awaitScan<T>(work: Promise<T>, signal: AbortSignal | undefined): Promise<T | typeof SCAN_ABORTED> {
+    // Keep an abandoned rejection handled when the race settles on abort first.
+    void work.catch(() => undefined)
+    if (signal === undefined) return await work
+    if (signal.aborted) return SCAN_ABORTED
+    let onAbort: (() => void) | undefined
+    const aborted = new Promise<typeof SCAN_ABORTED>((resolve) => {
+      onAbort = () => resolve(SCAN_ABORTED)
+      signal.addEventListener('abort', onAbort, { once: true })
+    })
+    try {
+      return await Promise.race([work, aborted])
+    } finally {
+      if (onAbort !== undefined) signal.removeEventListener('abort', onAbort)
+    }
+  }
+
+  /** Wake the attempt's task-boundary sleep early when the deadline aborts it. */
+  private async attemptSleep(attempt: RehydrationAttempt, milliseconds: number): Promise<void> {
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, milliseconds)
+      timer.unref?.()
+      const onAbort = (): void => {
+        clearTimeout(timer)
+        resolve()
+      }
+      attempt.signal.addEventListener('abort', onAbort, { once: true })
+    })
   }
 
   /**
@@ -1422,61 +1674,135 @@ export class DevLeadService extends Service {
    * The persistence listing is the ground truth: a fresh Host reports no stored
    * Sessions and proceeds immediately, a steady Host reports the same Sessions
    * the corpus lists, and only a corpus whose optional binding is still warming
-   * up is observably inconsistent. The barrier is best-effort — after the bound
-   * it warns once and lets the scan proceed.
+   * up is observably inconsistent. The barrier returns the validated listing
+   * itself (not merely a boolean), so the authoritative scan cannot silently
+   * re-list a different, possibly partial corpus afterwards. When the corpus
+   * does not settle within the bound the attempt stays fail-closed and a later
+   * bounded attempt retries; it never scans a warmup subset.
+   * @param signal - attempt signal.
+   * @returns the validated listing, or undefined when the corpus is not ready.
    */
-  private async awaitCorpusReady(): Promise<boolean> {
+  private async awaitCorpusReady(signal: AbortSignal): Promise<ReadyCorpusListing | undefined> {
     const deadline = Date.now() + REHYDRATION_READINESS_TIMEOUT_MS
-    let probe = await this.probeCorpus(deadline)
-    while (!this.disposed && probe?.verifiable === true && probe.ids === undefined && Date.now() < deadline) {
+    let probe = await this.probeCorpus(deadline, signal)
+    while (!this.disposed && !signal.aborted && probe?.verifiable === true && probe.ids === undefined && Date.now() < deadline) {
       await this.readinessSleep(REHYDRATION_READINESS_POLL_MS)
-      probe = await this.probeCorpus(deadline)
+      probe = await this.probeCorpus(deadline, signal)
     }
-    if (this.disposed) return false
-    const ids = probe?.ids
-    if (ids === undefined) {
+    if (this.disposed || signal.aborted) return undefined
+    const expectedIds = probe?.ids
+    if (expectedIds === undefined) {
       if (probe?.verifiable === true) {
-        this.ctx.logger.warn(
+        this.warnRehydration(
+          'list',
           'devlead: the Session persistence listing did not settle within '
-          + `${REHYDRATION_READINESS_TIMEOUT_MS}ms; cold lead rehydration proceeds best-effort`,
+          + `${REHYDRATION_READINESS_TIMEOUT_MS}ms; prompt authorization stays fail-closed until a later attempt proves the corpus`,
         )
       }
-      return false
+      return undefined
     }
-    if (ids.size === 0) return true
-    let consistent = false
-    while (!this.disposed && Date.now() < deadline) {
-      const listed = await this.listedPersistedSessionIds(deadline)
-      if (this.containsAllSessionIds(listed, ids)) {
-        consistent = true
-        break
-      }
+    let listing: ReadyCorpusListing | undefined
+    while (!this.disposed && !signal.aborted && Date.now() < deadline) {
+      listing = await this.validatedCorpusListing(expectedIds, deadline)
+      if (listing !== undefined) break
       await this.readinessSleep(REHYDRATION_READINESS_POLL_MS)
     }
-    if (this.disposed) return false
-    if (!consistent) {
+    if (listing === undefined && !this.disposed && !signal.aborted) {
       // One last check: the corpus may have become consistent during the final
       // poll's wait.
-      consistent = this.containsAllSessionIds(await this.listedPersistedSessionIds(deadline), ids)
+      listing = await this.validatedCorpusListing(expectedIds, deadline)
     }
-    if (!consistent) {
-      this.ctx.logger.warn(
-        'devlead: the persisted Session corpus is still warming up; cold lead rehydration proceeds best-effort',
+    if (listing === undefined && !this.disposed && !signal.aborted) {
+      this.warnRehydration(
+        'list',
+        'devlead: the persisted Session corpus is still warming up; prompt authorization stays fail-closed '
+        + 'until a later attempt scans a complete validated listing',
       )
     }
-    return consistent
+    return listing
   }
 
   /**
-   * Read the persistence ground truth under the readiness deadline. The real
-   * backend honors the signal; the race is a belt-and-braces bound for a
-   * backend that ignores it, so plugin load can never hang on the probe.
-   * @param deadline - absolute readiness deadline.
-   * @returns the probe result, or undefined when the deadline is already spent
-   *   or the listing did not settle in time.
+   * Read one corpus listing and validate it against the persistence ground
+   * truth. A listing missing any stored Session id is a warmup subset and is
+   * never returned.
+   * @param expectedIds - stored Session ids the listing must contain.
+   * @param deadline - absolute readiness deadline for the listing read.
+   * @returns the validated listing, or undefined.
    */
-  private async probeCorpus(deadline: number): Promise<PersistedSessionsProbe | undefined> {
-    if (this.disposed) return undefined
+  private async validatedCorpusListing(
+    expectedIds: ReadonlySet<string>,
+    deadline: number,
+  ): Promise<ReadyCorpusListing | undefined> {
+    const listed = await this.listPersistedSessionsWithin(deadline)
+    if (listed === undefined) return undefined
+    if (!this.containsAllSessionIds(listed.listedIds, expectedIds)) return undefined
+    return {
+      records: listed.records,
+      listedIds: listed.listedIds,
+      expectedIds,
+      at: Date.now(),
+      seq: (this.rehydrationListingSeq += 1),
+    }
+  }
+
+  /**
+   * Read the persistence ground truth and one corpus listing in the same read,
+   * requiring the listing to contain every stored id. This is the immediate
+   * post-list recheck used for a scan's own re-list and before finalization.
+   * @param signal - attempt signal.
+   * @returns the validated listing, or undefined when unverifiable/inconsistent.
+   */
+  private async verifyCorpusListingNow(signal: AbortSignal | undefined): Promise<ReadyCorpusListing | undefined> {
+    if (this.disposed || signal?.aborted === true) return undefined
+    const probe = await this.awaitScan(persistedSessionsOf(this.ctx, signal), signal)
+    if (probe === SCAN_ABORTED || probe === undefined) return undefined
+    if (probe.verifiable !== true || probe.ids === undefined) return undefined
+    const listed = await this.listPersistedSessionsNow(signal)
+    if (listed === undefined) return undefined
+    if (!this.containsAllSessionIds(listed.listedIds, probe.ids)) return undefined
+    return {
+      records: listed.records,
+      listedIds: listed.listedIds,
+      expectedIds: probe.ids,
+      at: Date.now(),
+      seq: (this.rehydrationListingSeq += 1),
+    }
+  }
+
+  /**
+   * List the current corpus and derive its persisted id set, bounded by the
+   * attempt signal.
+   * @param signal - attempt signal.
+   * @returns the records and persisted ids, or undefined.
+   */
+  private async listPersistedSessionsNow(signal: AbortSignal | undefined): Promise<{
+    readonly records: readonly PersistedSessionRecord[]
+    readonly listedIds: ReadonlySet<string>
+  } | undefined> {
+    const query = this.ctx.get('sessionQuery')
+    if (query === undefined) return undefined
+    try {
+      const records = await this.awaitScan(query.listSessions(signal), signal)
+      if (records === SCAN_ABORTED) return undefined
+      return this.listingOf(records)
+    } catch (error: unknown) {
+      this.ctx.logger.debug(`devlead: corpus listing failed: ${thrownMessage(error)}`)
+      return undefined
+    }
+  }
+
+  /**
+   * List the current corpus under the readiness deadline.
+   * @param deadline - absolute readiness deadline.
+   * @returns the records and persisted ids, or undefined.
+   */
+  private async listPersistedSessionsWithin(deadline: number): Promise<{
+    readonly records: readonly PersistedSessionRecord[]
+    readonly listedIds: ReadonlySet<string>
+  } | undefined> {
+    const query = this.ctx.get('sessionQuery')
+    if (query === undefined) return undefined
     const remaining = deadline - Date.now()
     if (remaining <= 0) return undefined
     const controller = new AbortController()
@@ -1485,7 +1811,62 @@ export class DevLeadService extends Service {
       const aborted = new Promise<undefined>((resolve) => {
         controller.signal.addEventListener('abort', () => resolve(undefined), { once: true })
       })
-      return await Promise.race([persistedSessionsOf(this.ctx, controller.signal), aborted])
+      const records = await Promise.race([query.listSessions(controller.signal), aborted])
+      if (records === undefined) return undefined
+      return this.listingOf(records)
+    } catch (error: unknown) {
+      this.ctx.logger.debug(`devlead: corpus readiness listing failed: ${thrownMessage(error)}`)
+      return undefined
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
+  /** Derive the persisted-id set of one listing. */
+  private listingOf(records: readonly PersistedSessionRecord[]): {
+    readonly records: readonly PersistedSessionRecord[]
+    readonly listedIds: ReadonlySet<string>
+  } {
+    return {
+      records,
+      listedIds: new Set(
+        records
+          .filter(record => record.persisted)
+          .map(record => String(record.header.id)),
+      ),
+    }
+  }
+
+  /**
+   * Read the persistence ground truth under the readiness deadline. The real
+   * backend honors the signal; the race is a belt-and-braces bound for a
+   * backend that ignores it, so plugin load can never hang on the probe.
+   * @param deadline - absolute readiness deadline.
+   * @param signal - attempt signal.
+   * @returns the probe result, or undefined when the deadline is already spent
+   *   or the listing did not settle in time.
+   */
+  private async probeCorpus(deadline: number, signal?: AbortSignal): Promise<PersistedSessionsProbe | undefined> {
+    if (this.disposed || signal?.aborted === true) return undefined
+    const remaining = deadline - Date.now()
+    if (remaining <= 0) return undefined
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), remaining)
+    try {
+      const aborted = new Promise<undefined>((resolve) => {
+        controller.signal.addEventListener('abort', () => resolve(undefined), { once: true })
+      })
+      let outerAborted: Promise<undefined> | undefined
+      if (signal !== undefined) {
+        outerAborted = new Promise<undefined>((resolve) => {
+          signal.addEventListener('abort', () => resolve(undefined), { once: true })
+        })
+      }
+      const work = persistedSessionsOf(this.ctx, controller.signal)
+      const raced = await (outerAborted === undefined
+        ? Promise.race([work, aborted])
+        : Promise.race([work, aborted, outerAborted]))
+      return raced
     } finally {
       clearTimeout(timer)
     }
@@ -1529,48 +1910,32 @@ export class DevLeadService extends Service {
   }
 
   /**
-   * Read the ids of the persisted Sessions visible in the Session query corpus.
-   *
-   * Before its optional persistence binding is installed the query engine merges
-   * only live Sessions, so this is the number the readiness barrier compares
-   * against the persistence service's complete stored listing.
-   * @param deadline - absolute readiness deadline for the listing read.
-   * @returns the visible persisted Session ids.
+   * Whether two corpus listings describe the same persisted Session id set.
+   * A cursor is only reusable across listings when the set is unchanged; any
+   * new or removed row forces a re-scan from the fresh validated snapshot.
+   * @param left - first persisted id set.
+   * @param right - second persisted id set.
+   * @returns whether the sets are equal.
    */
-  private async listedPersistedSessionIds(deadline: number): Promise<ReadonlySet<string>> {
-    const query = this.ctx.get('sessionQuery')
-    if (query === undefined) return new Set()
-    const remaining = deadline - Date.now()
-    if (remaining <= 0) return new Set()
-    const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), remaining)
-    try {
-      const aborted = new Promise<undefined>((resolve) => {
-        controller.signal.addEventListener('abort', () => resolve(undefined), { once: true })
-      })
-      const records = await Promise.race([query.listSessions(controller.signal), aborted])
-      if (records === undefined) return new Set()
-      return new Set(
-        records
-          .filter(record => record.persisted)
-          .map(record => String(record.header.id)),
-      )
-    } catch (error: unknown) {
-      this.ctx.logger.debug(`devlead: corpus readiness listing failed: ${thrownMessage(error)}`)
-      return new Set()
-    } finally {
-      clearTimeout(timer)
+  private sameSessionIdSet(left: ReadonlySet<string>, right: ReadonlySet<string>): boolean {
+    if (left.size !== right.size) return false
+    for (const id of left) {
+      if (!right.has(id)) return false
     }
+    return true
   }
 
   /**
    * Mark rehydration final and disarm the optional-service retry. The
-   * authoritative scan runs after the readiness barrier, so it needs no
-   * confirmation re-scan.
+   * authoritative scan runs on the barrier-validated listing and its finalize
+   * recheck, so it needs no further confirmation pass.
    */
   private finalizeRehydration(): void {
     this.rehydrated = true
+    this.corpusWasProven = true
     this.supervisionDegradedReason = DEFAULT_SUPERVISION_DEGRADED_REASON
+    this.trustedBindings = this.currentCorpusBindings()
+    this.observedBindings = this.trustedBindings
     this.disposeRehydrationRetry()
     // The corpus may have become ready after the first live-only scan; a
     // best-effort follow-up recovers cold duplicates without blocking load.
@@ -1584,9 +1949,14 @@ export class DevLeadService extends Service {
 
   /** Dispose every armed readiness-retry hook: injections, lifecycle wakes, timer. */
   private disposeRehydrationRetry(): void {
-    const disposers = this.rehydrationRetry
-    this.rehydrationRetry = undefined
-    if (disposers !== undefined) for (const dispose of disposers.splice(0)) dispose()
+    this.rehydrationRetryDisposing = true
+    try {
+      const disposers = this.rehydrationRetry
+      this.rehydrationRetry = undefined
+      if (disposers !== undefined) for (const dispose of disposers.splice(0)) dispose()
+    } finally {
+      this.rehydrationRetryDisposing = false
+    }
     const lifecycle = this.rehydrationLifecycle
     this.rehydrationLifecycle = undefined
     if (lifecycle !== undefined) for (const dispose of lifecycle.disposers.splice(0)) dispose()
@@ -1599,45 +1969,31 @@ export class DevLeadService extends Service {
     // Keep the documented first-retry delay; zero would turn a reset/recompose
     // into a synchronous hot loop.
     this.rehydrationRetryDelayMs = 250
+    this.rehydrationRetryCapped = false
+    this.rehydrationTimedOut = false
   }
 
   /**
    * Arm the readiness retry for a Host that composed the DevLead service before
    * its Session query engine or persistence binding.
    *
-   * The persistence/projection-cache/query services are awaited through one-shot
-   * optional-service fibers (`ctx.inject`): each fires as soon as the real
-   * profile installs (or replaces) the service, which happens during Host boot,
-   * well before the Web server accepts the first prompt. A binding that was
-   * already present when the fiber was armed is not a recomposition and must not
-   * discard the scan cursor or the retry budget.
+   * The optional services are awaited through one-shot `ctx.inject` fibers:
+   * each fires when the real profile installs (or replaces) the service, and
+   * its disposer fires when the service is unloaded. Any change to a corpus
+   * service invalidates the proven supervisor index synchronously (before the
+   * delayed rescan), so a prompt arriving inside the retry window is still
+   * refused; a binding that was already present when the fiber was armed must
+   * not be mistaken for a change.
    * @param queryReady - whether `sessionQuery` was composed when the scan ran.
    */
   private armRehydrationRetry(queryReady: boolean): void {
     if (this.disposed || this.rehydrated) return
     if (this.rehydrationRetry === undefined) {
-      const disposers: Array<() => unknown> = []
-      const persistenceMissing = this.ctx.get('sessionPersistence') === undefined
-      const cacheMissing = projectionCacheOf(this.ctx) === undefined
-      const queryMissing = this.ctx.get('sessionQuery') === undefined
-      const persistenceInjection = this.ctx.inject(['sessionPersistence'], () => {
-        this.onRehydrationBindingChanged(persistenceMissing)
-        return undefined
-      })
-      disposers.push(() => persistenceInjection.dispose())
-      const cacheInjection = this.ctx.inject(['sessionProjectionCache' as never], () => {
-        this.onRehydrationBindingChanged(cacheMissing)
-        return undefined
-      })
-      disposers.push(() => cacheInjection.dispose())
-      if (queryMissing) {
-        const queryInjection = this.ctx.inject(['sessionQuery'], () => {
-          this.onRehydrationBindingChanged(true)
-          return undefined
-        })
-        disposers.push(() => queryInjection.dispose())
-      }
-      this.rehydrationRetry = disposers
+      this.rehydrationRetry = [
+        this.watchCorpusBinding('sessionPersistence'),
+        this.watchCorpusBinding('sessionProjectionCache'),
+        this.watchCorpusBinding('sessionQuery'),
+      ]
       this.ctx.logger.debug(
         queryReady
           ? 'devlead: the Session persistence binding is not ready yet; cold lead rehydration is retried when it is composed'
@@ -1653,60 +2009,165 @@ export class DevLeadService extends Service {
   }
 
   /**
-   * Rebuild the lifecycle wake listeners when the query-readiness mode flips.
-   *
-   * While the query engine is missing, a Session event is the only hint that a
-   * late corpus may now be listable. Once the query engine is present the same
-   * event is only a wake for a pending bounded retry, but the listeners are kept
-   * (and rebuilt, never left stale) until finalization so a Host that unloads
-   * the query service can still recover; they are always disposed on finalize,
-   * reset or service disposal.
-   * @param queryReady - whether the Session query engine is currently composed.
+   * Observe one optional corpus service for arrival, replacement and removal.
+   * A service that was already present when the hook was armed produces one
+   * registration firing that is not a change; every later firing (and the
+   * disposer) invalidates the proven index.
+   * @param name - corpus service name.
+   * @returns disposer of the injection fiber.
    */
-  private syncRehydrationLifecycleHooks(queryReady: boolean): void {
-    const lifecycle = this.rehydrationLifecycle
-    if (lifecycle !== undefined && lifecycle.queryReady === queryReady) return
-    if (lifecycle !== undefined) {
-      this.rehydrationLifecycle = undefined
-      for (const dispose of lifecycle.disposers.splice(0)) dispose()
+  private watchCorpusBinding(name: CorpusBindingName): () => unknown {
+    const presentAtArm = this.corpusBinding(name) !== undefined
+    let seen: CorpusBinding | undefined = presentAtArm ? this.corpusBinding(name) : undefined
+    let registered = false
+    // An intentional retry disposal must not be mistaken for a service
+    // unload: cordis runs the effect disposer asynchronously, so a shared
+    // "currently disposing" flag would already be false by then.
+    let retired = false
+    const fiber = this.ctx.inject([name as never], () => {
+      const current = this.corpusBinding(name)
+      const first = !registered
+      registered = true
+      if (first && presentAtArm) {
+        // Registration firing of an already-composed service: not a change.
+        seen = current
+      } else if (!this.bindingEqual(current, seen)) {
+        seen = current
+        this.onCorpusBindingArrived(name, !first)
+      }
+      return () => {
+        seen = undefined
+        if (retired) return
+        this.onCorpusBindingLost(name)
+      }
+    })
+    return () => {
+      retired = true
+      fiber.dispose()
     }
-    if (this.disposed || this.rehydrated) return
-    const disposers: Array<() => unknown> = [
-      this.ctx.on('agent/created', () => {
-        this.onRehydrationLifecycleSignal(queryReady)
-        return undefined
-      }),
-      this.ctx.on('session/event', () => {
-        this.onRehydrationLifecycleSignal(queryReady)
-        return undefined
-      }),
-    ]
-    this.rehydrationLifecycle = { queryReady, disposers }
   }
 
   /**
-   * Handle one optional-service composition change.
+   * Read one optional corpus service by stable provision identity.
    *
-   * Invalidation happens synchronously in the hook itself: a prompt that arrives
-   * inside the retry delay must already be refused, not authorized by the stale
-   * live-only index. Only a service that was missing when the fiber was armed is
-   * a recomposition; a service that was already composed is a no-op wake.
-   * @param fresh - whether the service was missing when the retry was armed.
+   * `ctx.get` returns a freshly created traceable proxy for every cordis
+   * service instance, so comparing those proxies would report a recomposition
+   * on every read. The reflect layer exposes the provision (`uid`) and the raw
+   * value; a traced proxy is unwrapped through cordis's global `original`
+   * symbol when present. A plain service object is compared directly, which is
+   * also what detects an in-place `ctx.set` replacement.
+   * @param name - corpus service name.
+   * @returns the stable binding identity, or undefined when not provided.
    */
-  private onRehydrationBindingChanged(fresh: boolean): void {
+  private corpusBinding(name: CorpusBindingName): CorpusBinding | undefined {
+    const impl = this.ctx.reflect._getImpl(name)
+    if (impl === undefined) return undefined
+    const value: unknown = impl.value
+    if (typeof value !== 'object' || value === null) return { uid: impl.uid, token: value }
+    const original = (value as Record<symbol, unknown>)[CORPUS_TRACED_ORIGINAL]
+    const isTraced = (value as Record<symbol, unknown>)[CORPUS_TRACED_MARKER] !== undefined
+    if (isTraced) {
+      return { uid: impl.uid, token: typeof original === 'object' && original !== null ? original : undefined }
+    }
+    return { uid: impl.uid, token: original ?? value }
+  }
+
+  /** Current identity snapshot of the optional corpus services. */
+  private currentCorpusBindings(): CorpusBindingSnapshot {
+    return {
+      query: this.corpusBinding('sessionQuery'),
+      persistence: this.corpusBinding('sessionPersistence'),
+      cache: this.corpusBinding('sessionProjectionCache'),
+    }
+  }
+
+  /** Whether two corpus binding snapshots describe the same service provisions/values. */
+  private bindingsEqual(left: CorpusBindingSnapshot | undefined, right: CorpusBindingSnapshot): boolean {
+    return left !== undefined
+      && this.bindingEqual(left.query, right.query)
+      && this.bindingEqual(left.persistence, right.persistence)
+      && this.bindingEqual(left.cache, right.cache)
+  }
+
+  /** Whether two optional bindings describe the same provision and value. */
+  private bindingEqual(left: CorpusBinding | undefined, right: CorpusBinding | undefined): boolean {
+    if (left === undefined || right === undefined) return left === right
+    return left.uid === right.uid && left.token === right.token
+  }
+
+  /**
+   * Detect a corpus-service replacement between attempts (a service value can
+   * be overwritten without unloading its providing fiber, so the inject hook
+   * cannot see every replacement). A changed snapshot invalidates the proven
+   * authorization and forces a fresh scan epoch.
+   */
+  private checkCorpusBindingReplacement(): void {
     if (this.disposed) return
-    if (this.rehydrated) {
-      this.disposeRehydrationRetry()
-      return
-    }
-    if (this.ctx.get('sessionPersistence') !== undefined) {
-      // A cold corpus exists now: the previous live-only authorization is stale
-      // until the new readiness barrier and complete scan finish.
-      this.supervisionIndexComplete = false
-    }
-    if (fresh) this.requestFreshRehydration()
+    const current = this.currentCorpusBindings()
+    const previous = this.observedBindings
+    this.observedBindings = current
+    if (previous === undefined || this.bindingsEqual(previous, current)) return
+    this.ctx.logger.debug('devlead: the optional Session corpus services changed; re-proving the cold-supervision index')
+    this.invalidateCorpusProof()
+    this.requestFreshRehydration()
+  }
+
+  /** Drop any proven supervisor index; it must be re-proven by a complete scan. */
+  private invalidateCorpusProof(): void {
+    this.rehydrated = false
+    this.supervisionIndexComplete = false
+    this.trustedBindings = undefined
+  }
+
+  /**
+   * Invalidate a proven authorization synchronously (before scheduling the
+   * re-scan) so a prompt arriving in the retry window is still refused.
+   * @param name - corpus service that changed.
+   * @param replaced - whether the service was replaced (as opposed to arriving).
+   */
+  private onCorpusBindingArrived(name: CorpusBindingName, replaced: boolean): void {
+    if (this.disposed || this.rehydrationRetryDisposing) return
+    this.ctx.logger.debug(
+      `devlead: the optional ${name} service ${replaced ? 'was replaced' : 'was composed'}; `
+      + 'the cold-supervision index will be re-proven',
+    )
+    this.observedBindings = this.currentCorpusBindings()
+    this.invalidateCorpusProof()
+    if (name === 'sessionPersistence' || name === 'sessionQuery') this.supervisionIndexComplete = false
+    this.requestFreshRehydration()
     this.syncRehydrationLifecycleHooks(this.ctx.get('sessionQuery') !== undefined)
     this.scheduleRehydrationRetry()
+  }
+
+  /**
+   * A corpus service was unloaded: every proven authorization is stale until a
+   * fresh complete scan succeeds. The disarm hook is also used during an
+   * intentional retry disposal and must not re-arm then.
+   * @param name - corpus service that disappeared.
+   */
+  private onCorpusBindingLost(name: CorpusBindingName): void {
+    if (this.disposed || this.rehydrationRetryDisposing) return
+    this.ctx.logger.debug(`devlead: the optional ${name} service was unloaded; the cold-supervision index is invalidated`)
+    this.observedBindings = this.currentCorpusBindings()
+    this.invalidateCorpusProof()
+    this.requestFreshRehydration()
+    this.syncRehydrationLifecycleHooks(this.ctx.get('sessionQuery') !== undefined)
+    this.scheduleRehydrationRetry()
+  }
+
+  /**
+   * Invalidate the supervisor authorization from a prompt-time gate check and
+   * start a fresh bounded recovery. The current prompt is still refused because
+   * the caller throws after this.
+   * @param reason - prompt-side degraded cause.
+   */
+  private invalidateSupervision(reason: string): void {
+    if (this.disposed) return
+    this.invalidateCorpusProof()
+    this.supervisionDegradedReason = reason
+    this.requestFreshRehydration()
+    this.armRehydrationRetry(this.ctx.get('sessionQuery') !== undefined)
+    void this.rehydrateFromPersistence()
   }
 
   /**
@@ -1724,8 +2185,10 @@ export class DevLeadService extends Service {
     }
     this.coldScan = undefined
     this.liveAttachFailure = false
+    this.trustedBindings = undefined
     this.rehydrationRetryAttempts = 0
     this.rehydrationRetryDelayMs = 250
+    this.rehydrationRetryCapped = false
   }
 
   /**
@@ -1766,12 +2229,20 @@ export class DevLeadService extends Service {
       this.scheduleRehydrationProbe('live-failure')
       return
     }
-    if (this.rehydrationRetryTimer !== undefined) return
-    if (this.ctx.get('sessionQuery') === undefined || this.ctx.get('sessionPersistence') === undefined) return
-    if (this.rehydrationRetryAttempts >= MAX_REHYDRATION_RETRY_ATTEMPTS) {
+    // A sticky retry-cap is terminal for fast retries: only the slow probe may
+    // retry until progress, completion, reset or a corpus recomposition clears
+    // it. This prevents a probe from restarting the 12-attempt fast backoff
+    // forever. The cap check deliberately precedes the armed-timer guard: the
+    // attempt that exhausts the budget may have armed its own fast retry while
+    // still running, and that timer is upgraded in place to the slow probe
+    // instead of being allowed one more fast round.
+    if (this.rehydrationRetryCapped || this.rehydrationRetryAttempts >= MAX_REHYDRATION_RETRY_ATTEMPTS) {
+      this.rehydrationRetryCapped = true
       this.scheduleRehydrationProbe('retry-cap')
       return
     }
+    if (this.rehydrationRetryTimer !== undefined) return
+    if (this.ctx.get('sessionQuery') === undefined || this.ctx.get('sessionPersistence') === undefined) return
     const delay = this.rehydrationRetryDelayMs
     this.rehydrationRetryDelayMs = Math.min(this.rehydrationRetryDelayMs * 2, MAX_REHYDRATION_RETRY_DELAY_MS)
     this.rehydrationRetryProbe = false
@@ -1791,8 +2262,10 @@ export class DevLeadService extends Service {
   /**
    * A single slow degraded probe, never a hot retry loop. Corrupt/terminal
    * states and exhausted retry budgets are recoverable without a Host restart:
-   * the probe re-lists and rescans once every {@link DEGRADED_REHYDRATION_PROBE_MS},
-   * while `/devlead reset` or removing the offending Session recovers immediately.
+   * the probe re-lists and rescans once every {@link DEGRADED_REHYDRATION_PROBE_MS}.
+   * The probe itself does not repair anything: it retries only after a human
+   * opens the affected Session and resets it, repairs/deletes the corrupt log,
+   * or restarts the Host. An explicit reset recovers immediately.
    * @param reason - stable warning key and degraded-state cause.
    */
   private scheduleRehydrationProbe(reason: RehydrationProbeReason): void {
@@ -1810,15 +2283,52 @@ export class DevLeadService extends Service {
       this.rehydrationRetryTimer = undefined
       this.rehydrationRetryProbe = false
       if (this.disposed || this.rehydrated) return
-      // A probe is a fresh bounded attempt: drop the retained cursor and the
-      // exhausted budget so a transient cause can recover.
+      // A probe is a fresh bounded attempt: drop the retained cursor and reset
+      // the transient budget so a repaired cause can recover. A sticky
+      // retry-cap is deliberately kept: if the probe fails again, only the next
+      // slow probe retries, never the fast backoff.
       this.coldScan = undefined
       this.liveAttachFailure = false
-      this.rehydrationRetryAttempts = 0
-      this.rehydrationRetryDelayMs = 250
+      this.trustedBindings = undefined
+      if (!this.rehydrationRetryCapped) {
+        this.rehydrationRetryAttempts = 0
+        this.rehydrationRetryDelayMs = 250
+      }
       void this.rehydrateFromPersistence()
     }, DEGRADED_REHYDRATION_PROBE_MS)
     this.rehydrationRetryTimer.unref?.()
+  }
+
+  /**
+   * Rebuild the lifecycle wake listeners when the query-readiness mode flips.
+   *
+   * While the query engine is missing, a Session event is the only hint that a
+   * late corpus may now be listable. Once the query engine is present the same
+   * event is only a wake for a pending bounded retry, but the listeners are kept
+   * (and rebuilt, never left stale) until finalization so a Host that unloads
+   * the query service can still recover; they are always disposed on finalize,
+   * reset or service disposal.
+   * @param queryReady - whether the Session query engine is currently composed.
+   */
+  private syncRehydrationLifecycleHooks(queryReady: boolean): void {
+    const lifecycle = this.rehydrationLifecycle
+    if (lifecycle !== undefined && lifecycle.queryReady === queryReady) return
+    if (lifecycle !== undefined) {
+      this.rehydrationLifecycle = undefined
+      for (const dispose of lifecycle.disposers.splice(0)) dispose()
+    }
+    if (this.disposed || this.rehydrated) return
+    const disposers: Array<() => unknown> = [
+      this.ctx.on('agent/created', () => {
+        this.onRehydrationLifecycleSignal(queryReady)
+        return undefined
+      }),
+      this.ctx.on('session/event', () => {
+        this.onRehydrationLifecycleSignal(queryReady)
+        return undefined
+      }),
+    ]
+    this.rehydrationLifecycle = { queryReady, disposers }
   }
 
   /** Emit each rehydration warning reason once per service epoch and track its cause. */
@@ -2044,8 +2554,12 @@ export class DevLeadService extends Service {
     }
     this.rehydrated = false
     this.supervisionIndexComplete = false
+    this.trustedBindings = undefined
+    this.observedBindings = this.currentCorpusBindings()
     this.rehydrationRetryAttempts = 0
     this.rehydrationRetryDelayMs = 250
+    this.rehydrationRetryCapped = false
+    this.rehydrationTimedOut = false
     void this.rehydrateFromPersistence()
     await this.outbox?.dropForLead(sessionId)
     await this.outbox?.dropAnswerDiscardsForLead(sessionId)
@@ -3311,12 +3825,21 @@ export class DevLeadService extends Service {
 
   /** Hard prompt-side supervision gate; report routing deliberately stays unchanged. */
   private assertPromptSupervision(agent: Agent, targetId: string): void {
+    // A proven authorization is bound to the exact corpus services it was
+    // proven with. A service replaced in place (no fiber unload, so no inject
+    // hook) must invalidate it before this prompt can be admitted; the rescan
+    // is started here and the prompt below still fails closed.
+    if (this.rehydrated && !this.bindingsEqual(this.trustedBindings, this.currentCorpusBindings())) {
+      this.invalidateSupervision('the Session corpus services were recomposed; the supervisor index is being re-proven')
+    }
     if (!this.supervisionIndexComplete) {
       throw new DevLeadError(
         `cannot prove the complete DevLead supervisor set for Session "${targetId}" yet; `
         + `no prompt was delivered — ${this.supervisionDegradedReason}. `
-        + 'Recovery: run /devlead reset in the affected DevLead Session, delete or repair the corrupt/unreadable '
-        + `Session, or wait for the slow recovery probe (${String(DEGRADED_REHYDRATION_PROBE_MS / 1_000)}s)`,
+        + 'Recovery: open (resume) the affected DevLead Session and run /devlead reset there, or repair/delete '
+        + 'the corrupt or unreadable Session log; the slow recovery probe '
+        + `(${String(DEGRADED_REHYDRATION_PROBE_MS / 1_000)}s) retries only after the cause is removed, and a Host `
+        + 'restart also rebuilds the index',
         'DEVLEAD_SESSION_UNAVAILABLE',
       )
     }
@@ -4139,9 +4662,15 @@ export class DevLeadService extends Service {
   /**
    * Scan durable state for lead Sessions the hub must index after a restart.
    *
-   * Only called with `scanPersisted: true` once both the Session query engine
-   * and the optional Session persistence service are composed; otherwise only
-   * the live-attach fallback runs.
+   * The scan runs on a corpus listing validated against the Session persistence
+   * listing: either the boot readiness barrier's own validated listing (passed
+   * in) or one immediate validated listing for direct/internal calls. It never
+   * scans an unvalidated corpus and never re-lists one silently: every re-list
+   * is validated against the persistence ground truth, and a snapshot may only
+   * finalize after a finalize-time recheck proves the persisted corpus id set is
+   * still exactly the snapshot's. A change therefore restarts from a fresh
+   * validated listing (or stays fail-closed) instead of authorizing a stale
+   * subset that may hide a foreign supervisor.
    *
    * Cheap sources first: a live Session without an Agent has its projection
    * folded directly (attach-only leads), then the persisted corpus is filtered
@@ -4151,11 +4680,13 @@ export class DevLeadService extends Service {
    * full-log exact fold (bounded, because a Host history is unbounded).
    * A corrupt replay skips that candidate with one warning; it must never stop
    * the scan, and it must never make the plugin fail to load.
+   * @param listing - barrier-validated listing; re-verified when omitted.
+   * @param signal - attempt signal bounding every backend read.
    * @returns one persisted lead record per recovered lead Session.
    */
   private async persistedLeadRecords(
-    scanPersisted: boolean,
-    corpusReady = true,
+    listing?: ReadyCorpusListing,
+    signal?: AbortSignal,
   ): Promise<{ readonly leads: readonly DevLeadPersistedLead[]; readonly active: readonly DevLeadActiveSession[]; readonly complete: boolean }> {
     const archived = new Set(
       (this.ctx.get('workspaceRegistry')?.archivedSessionIds ?? []).map(id => String(id)),
@@ -4170,60 +4701,99 @@ export class DevLeadService extends Service {
       active,
       complete: complete && !this.liveAttachFailure,
     })
-    if (!scanPersisted) {
-      const complete = this.ctx.get('sessionPersistence') === undefined
-      if (this.ctx.get('sessionQuery') === undefined) {
-        this.ctx.logger.debug('devlead: no Session query engine is composed; cold lead rehydration scans live Sessions only')
-      } else {
-        this.ctx.logger.debug(
-          'devlead: the Session persistence binding is not composed yet; cold lead rehydration scans live Sessions only',
-        )
-      }
-      return result(attached, [], complete)
-    }
     const query = this.ctx.get('sessionQuery')
     if (query === undefined) {
-      return result(attached, [], this.ctx.get('sessionPersistence') === undefined)
+      this.ctx.logger.debug('devlead: no Session query engine is composed; cold lead rehydration scans live Sessions only')
+      return result(attached, [], false)
+    }
+    let pending: ReadyCorpusListing | undefined = listing
+    if (pending === undefined) {
+      pending = await this.verifyCorpusListingNow(signal)
+      if (pending === undefined) {
+        this.warnRehydration(
+          'corpus',
+          'devlead: the persisted Session corpus could not be verified against the Session persistence listing; '
+          + 'cold lead rehydration stays fail-closed',
+        )
+        return result(attached, [], false)
+      }
     }
     let state = this.coldScan
-    if (state !== undefined && !state.trusted && corpusReady) {
-      // A listing made while the corpus was not ready is not authorization
-      // evidence (it can silently omit the real foreign supervisor). Re-list
-      // from scratch instead of finalizing that subset.
+    if (state !== undefined && !state.trusted) {
+      // A listing made before the corpus was ready is not authorization
+      // evidence (it can silently omit the real foreign supervisor).
       this.coldScan = undefined
       state = undefined
     }
-    // A vanished Session invalidates exactly one snapshot: re-list once inside
-    // this attempt so the cursor keeps moving without consuming the failure
-    // budget or waiting for a whole retry cycle.
+    // Terminal causes carried across a vanished-Session re-list: only an
+    // explicit reset, the slow probe or a service recomposition clears them.
+    let carriedCorrupt = state?.corrupt ?? false
+    let carriedLiveFailure = state?.liveFailure ?? false
     let relistedAfterNotFound = false
+    let listingRefreshes = 0
     outer: for (;;) {
       if (state === undefined) {
-        let records: readonly PersistedSessionRecord[]
-        try {
-          records = await query.listSessions()
-        } catch (error: unknown) {
-          this.warnRehydration('list', `devlead: could not list persisted Sessions for cold lead rehydration: ${thrownMessage(error)}`)
+        const snapshotListing = pending
+        if (snapshotListing === undefined) {
           return result(attached, [], false)
         }
         state = {
-          records,
+          records: snapshotListing.records,
           index: 0,
           leads: new Map(),
           active: [],
-          complete: corpusReady,
-          corrupt: false,
-          liveFailure: false,
-          trusted: corpusReady,
+          activeIds: new Set(),
+          complete: !carriedCorrupt && !carriedLiveFailure,
+          corrupt: carriedCorrupt,
+          liveFailure: carriedLiveFailure,
+          trusted: true,
+          listedIds: snapshotListing.listedIds,
+          listedAt: snapshotListing.at,
+          listingSeq: snapshotListing.seq,
         }
         this.coldScan = state
-      } else {
-        state.complete = corpusReady && !state.corrupt && !state.liveFailure && !this.liveAttachFailure
-        // Re-detect the live-attach failure from the current Session store on
-        // every attempt; a repaired projection recovers through the next probe.
-        state.liveFailure = false
+        pending = undefined
+      } else if (pending !== undefined) {
+        // A fresh validated listing from a later attempt. When it is a pure
+        // superset (new persisted Sessions appeared after the snapshot) the new
+        // rows are appended and scanned; a removed/replaced row changes cursor
+        // semantics, so that case restarts from the fresh snapshot.
+        if (!this.sameSessionIdSet(state.listedIds, pending.listedIds)) {
+          if (!this.containsAllSessionIds(pending.listedIds, state.listedIds)) {
+            this.coldScan = undefined
+            state = undefined
+            continue outer
+          }
+          const known = state.listedIds
+          state.records = [
+            ...state.records,
+            ...pending.records.filter(record => !known.has(String(record.header.id))),
+          ]
+          state.listedIds = pending.listedIds
+          state.listedAt = pending.at
+          state.listingSeq = pending.seq
+          pending = undefined
+        } else {
+          const resumeId = state.index < state.records.length
+            ? String(state.records[state.index]!.header.id)
+            : undefined
+          state.records = pending.records
+          state.listedIds = pending.listedIds
+          state.listedAt = pending.at
+          state.listingSeq = pending.seq
+          if (resumeId !== undefined) {
+            const resumed = state.records.findIndex(record => String(record.header.id) === resumeId)
+            if (resumed < 0) {
+              this.coldScan = undefined
+              state = undefined
+              continue outer
+            }
+            state.index = resumed
+          }
+          pending = undefined
+        }
       }
-      if (!corpusReady) return result([...state.leads.values()], state.active, false)
+      state.complete = !state.corrupt && !state.liveFailure && !this.liveAttachFailure
       for (const lead of attached) {
         if (lead.sessionId.length > 0 && lead.watched.length > 0) state.leads.set(lead.sessionId, lead)
       }
@@ -4235,7 +4805,12 @@ export class DevLeadService extends Service {
         )
       }
       let reads = 0
+      let readFailed = false
       while (state.index < state.records.length && reads < MAX_COLD_LEAD_LOG_READS) {
+        if (signal?.aborted === true) {
+          state.complete = false
+          return result([...state.leads.values()], state.active, false)
+        }
         const record = state.records[state.index]!
         const sessionId = String(record.header.id)
         if (state.leads.has(sessionId) || record.live || record.header.origin === 'subagent') {
@@ -4248,26 +4823,58 @@ export class DevLeadService extends Service {
         let events: readonly SessionEvent[]
         let inheritedEventCount = 0
         try {
-          const snapshot = await query.readSession(record.header.id)
+          const snapshot = await this.awaitScan(query.readSession(record.header.id), signal)
+          if (snapshot === SCAN_ABORTED) {
+            state.complete = false
+            return result([...state.leads.values()], state.active, false)
+          }
           events = snapshot.events
           inheritedEventCount = snapshot.inheritedEventCount
         } catch (error: unknown) {
+          if (signal?.aborted) {
+            state.complete = false
+            return result([...state.leads.values()], state.active, false)
+          }
           if (isSessionNotFoundError(error)) {
-            // A deleted/recreated Session invalidates the snapshot, not the
-            // failure budget: refresh the listing once inside this attempt.
+            if (relistedAfterNotFound) {
+              // The id stayed not-found across a validated re-list: that is a
+              // read failure, not progress. Keep the cursor and let the bounded
+              // retry budget (then the slow probe) own recovery.
+              state.complete = false
+              readFailed = true
+              this.warnRehydration(
+                'read',
+                `devlead: a persisted Session stayed unreadable (not found) after re-listing; `
+                + `keeping the cursor for a bounded retry: ${thrownMessage(error)}`,
+              )
+              break
+            }
+            const fresh = await this.verifyCorpusListingNow(signal)
+            if (fresh === undefined) {
+              // A retry re-list that cannot be validated is not authorization
+              // evidence: fail closed and re-validate on the next attempt.
+              state.complete = false
+              state.trusted = false
+              this.coldScan = undefined
+              return result([...state.leads.values()], state.active, false)
+            }
             this.warnRehydration(
               'not-found',
-              `devlead: a persisted Session disappeared during cold lead rehydration; refreshing the listing `
-              + `without consuming the retry budget: ${thrownMessage(error)}`,
+              `devlead: a persisted Session disappeared during cold lead rehydration; refreshing the validated listing: ${thrownMessage(error)}`,
             )
-            this.rehydrationProgress = true
+            // Forgive the failure budget only when the re-list really dropped
+            // the row; a still-listed id is a read failure (see above).
+            if (!fresh.listedIds.has(sessionId)) this.rehydrationProgress = true
+            carriedCorrupt = state.corrupt
+            carriedLiveFailure = state.liveFailure
             this.coldScan = undefined
             state = undefined
-            if (relistedAfterNotFound) return result(attached, [], false)
+            pending = fresh
             relistedAfterNotFound = true
             continue outer
           }
           state.complete = false
+          readFailed = true
           this.warnRehydration('read', `devlead: could not read a cold lead candidate Session log: ${thrownMessage(error)}`)
           // Keep the cursor on this row: the next bounded attempt retries it.
           break
@@ -4287,24 +4894,29 @@ export class DevLeadService extends Service {
         }
         state.index += 1
         if (!folded.enabled) continue
-        state.active.push({
-          sessionId,
-          live: false,
-          archived: archived.has(sessionId),
-          running: false,
-          createdAt: record.header.createdAt,
-          enabledAt: lastEnabledAt(events) ?? 0,
-        })
+        if (!state.activeIds.has(sessionId)) {
+          state.activeIds.add(sessionId)
+          state.active.push({
+            sessionId,
+            live: false,
+            archived: archived.has(sessionId),
+            running: false,
+            createdAt: record.header.createdAt,
+            enabledAt: lastEnabledAt(events) ?? 0,
+          })
+        }
         if (folded.sessions.length > 0) {
           state.leads.set(sessionId, { sessionId, watched: [...folded.sessions], reports: folded.reports, answers: folded.answers })
         }
       }
       if (state.index < state.records.length) {
-        this.warnRehydration(
-          'cap',
-          `devlead: cold lead rehydration stopped reading unclassified Session logs after ${MAX_COLD_LEAD_LOG_READS}; `
-          + 'the next bounded attempt resumes from the saved cursor',
-        )
+        if (!readFailed) {
+          this.warnRehydration(
+            'cap',
+            `devlead: cold lead rehydration stopped reading unclassified Session logs after ${MAX_COLD_LEAD_LOG_READS}; `
+            + 'the next bounded attempt resumes from the saved cursor',
+          )
+        }
         return result([...state.leads.values()], state.active, false)
       }
       if (this.liveAttachFailure) {
@@ -4314,7 +4926,36 @@ export class DevLeadService extends Service {
         state.complete = false
         state.liveFailure = true
       }
-      const complete = state.complete && state.trusted
+      let complete = state.complete && state.trusted
+      if (complete) {
+        // Finalize recheck: the trusted snapshot's rows must still all be in the
+        // current validated corpus (the recheck itself already proves every
+        // stored id is listed). A row that vanished may hide a different
+        // supervisor set, so that case restarts from a fresh validated listing.
+        // New rows are appended and scanned under the same budget; after the
+        // bounded refreshes the scan finalizes against the last validated
+        // listing (still-newer Sessions are picked up by a later rescan/restart).
+        const recheck = await this.verifyCorpusListingNow(signal)
+        const contained = recheck !== undefined && this.containsAllSessionIds(recheck.listedIds, state.listedIds)
+        if (!contained) {
+          state.trusted = false
+          this.coldScan = undefined
+          this.warnRehydration(
+            'corpus',
+            'devlead: the persisted Session corpus changed after the authorization listing; '
+            + 'the cold index will restart from a fresh validated listing',
+          )
+          complete = false
+        } else if (recheck !== undefined && state !== undefined) {
+          const scanState = state
+          const newIds = [...recheck.listedIds].filter(id => !scanState.listedIds.has(id))
+          if (newIds.length > 0 && listingRefreshes < MAX_FINALIZE_LISTING_REFRESHES) {
+            listingRefreshes += 1
+            pending = recheck
+            continue outer
+          }
+        }
+      }
       const leads = [...state.leads.values()]
       const active = state.active
       if (complete) this.coldScan = undefined
