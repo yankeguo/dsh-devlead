@@ -49,8 +49,9 @@ Documentation: [Design notes (中文)](docs/DESIGN.md) · [Publishing guide (中
 
 ## 0.4.0-rc.1 breaking changes (Batch 1 + Batch 2)
 
-This tree is the **0.4.0-rc.1 release candidate**: all 7 manifests (the root plus the 6 publishable
-packages) are `0.4.0-rc.1`. Batch 1 implemented the planned 0.4.0 compatibility break; Batch 2 only
+This tree is the **0.4.0-rc.1 release candidate**: all 7 workspace manifests (the root plus the 6
+publishable packages; `scripts/e2e-probe/package.json` stays `0.0.0` and is not a workspace
+member) are `0.4.0-rc.1`. Batch 1 implemented the planned 0.4.0 compatibility break; Batch 2 only
 bumped the version, updated the docs/evidence and reran the release gates, so runtime behavior is
 unchanged since `a35fc1d`. No tag, GitHub Release, or npm publish has happened yet — those await
 explicit human approval.
@@ -1031,6 +1032,9 @@ composed — the plugin never depends on it.
   falls back to live-only authorization. When a persisted corpus exists, prompt authorization
   stays fail-closed (`DEVLEAD_SESSION_UNAVAILABLE`; the error names the cause and the recovery
   options) until a scan proves the complete supervisor set against the current corpus services.
+  Plugin dispose aborts the in-flight attempt and, through the service-lifetime signal, also
+  aborts finalize-validation reads that already left the attempt deadline; after dispose
+  `extend()` is a no-op.
   Recovery: open (resume) the affected DevLead Session and run `/devlead reset` there, or
   repair/delete the corrupt or unreadable Session log; the slow probe retries every 30 s and
   recovers once the cause is removed, and a Host restart rebuilds the index. By default

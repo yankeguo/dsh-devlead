@@ -16,8 +16,9 @@
 
 本批按「正确性 > 兼容性」执行，后文早期 Phase 1 memory-only、legacy fallback、Phase 2 Proposed
 仅作历史设计背景；当前实现以本节为准。**Batch 1**（本地 `a21c7b7..a35fc1d`，7 个 commit）落地
-下列契约；**Batch 2** 把 7 个 manifest 统一 bump 到 `0.4.0-rc.1`、同步文档/证据/决策记录并在
-冻结树上重跑最终门禁，**运行时行为与 Batch 1 相同**。两次提交都是**本地 commit：未 push、
+下列契约；**Batch 2** 把 7 个 workspace manifest（根 + 6 个可发布包；不含
+`scripts/e2e-probe/package.json` 的 0.0.0）统一 bump 到 `0.4.0-rc.1`、同步文档/证据/决策记录并在
+冻结树上重跑最终门禁，**运行时行为与 Batch 1 相同**。这些提交都是**本地 commit：未 push、
 未打 tag、未 publish**；发布需人类另行批准（见 [PUBLISHING](PUBLISHING.md)）。release notes
 见 [`releases/v0.4.0-rc.1.md`](releases/v0.4.0-rc.1.md)，Batch 2 门禁证据见
 [`e2e-evidence/batch2-release-prep.md`](e2e-evidence/batch2-release-prep.md)。
@@ -1030,7 +1031,7 @@ Session 的工作目录切到独立分支/检出，DevLead 用它**可选地**�
 | D5 | **question 走 `action-required`**：wake 带完整 question/options、`[DEV LEAD QUESTION]` 头、`question_id` 报告 id、跳过 400ms 与 queued-turn-notice 避让；`devlead_report({kind:'question'})` 在 durable 成功时调用 `exec.concludeTurn()`，结果标 `turnEndRequested:true`。 | 解决/改善当前四个问题：wake 只有 summary、question 被写成 «not a question»、question + turn-end 双 wake（只在可合并或已包含时抑制，不吞真实 turn-end）、native gate 不能确定结束 turn。`turnEndRequested` 只表示请求结束，不表示立即关闭。 |
 | D6 | **answer/correction 走 `steer` 优先道**：running → `steer`；idle → `steer`（开一个 turn，仍走 next-step）；cold → resume + `steer`；archived → error。只有 `interrupt:true` 覆盖为 cancel + `followup`。 | running child 的 `followup` 要等当前 turn 结束（样本中位 914s）；`steer` 在下一个 pre-step 就能被 claim，且不会抢占当前 model request/tool batch。idle 时 `steer` 会开 turn，但 next-step 仍可能和一条旧 next-turn 输入进入同一个 model request，**不是隔离**。 |
 | D7 | **MVP 不做 blocking bridge / wait tool**；question 的 fallback 永远是 durable report + 新 turn。 | `steer` 是 next-step，无法解开正在等待的 tool call；bridge 需要 out-of-band mailbox、超时、取消、死锁与持久化处理，且模型请求数并不减少，收益主要是 turn 边界。先用 `action-required` + answer routing 拿下大部分延迟。 |
-| D8 | **权限保持 unique active supervisor**；新增 prompt 侧的 foreign/multiple supervisor 拒绝（Proposed，Phase 2 硬门禁）。 | 防止两个 lead 同时改写一个 child；report 侧现有 `DEVLEAD_NOT_SUPERVISED` 规则保留。Phase 1 只写日志 warning，不新增结果字段。 |
+| D8 | **权限保持 unique active supervisor**；新增 prompt 侧的 foreign/multiple supervisor 拒绝（**已实现（0.4.0-rc.1）**，Phase 2 硬门禁）。 | 防止两个 lead 同时改写一个 child；report 侧现有 `DEVLEAD_NOT_SUPERVISED` 规则保留。Phase 1 只写日志 warning；0.4.0-rc.1 起升级为 prompt 侧硬门禁，返回 `DEVLEAD_FOREIGN_SUPERVISOR` / `DEVLEAD_MULTIPLE_SUPERVISORS`。 |
 | D9 | **源 attribution 只由 runtime 写**：lead prompt 用 `devlead`/`relay`（带 `intent`），lead wake 用 `devlead`/`notice`（带 `wakeRequested` 与内部 `lane`），background 注入 child 用 `devlead`/`notice`/`wakeRequested:false`；绝不伪装成 `user`。 | question gate、`isHumanDirectedTurn`、retract、`clear-own`、UI 都依赖 source；模型永远不能提供 source。内部 `lane` 与 DSH 的 `source.form:'notice'` 不是同一层。 |
 | D10 | **保持 14+1 工具；MVP 不新增工具。** | 增量集中在参数、source、record 与 hub 队列；如果模型行为证明 `intent` 不够，再评估拆分（见 §4.4.13）。 |
 
@@ -1348,8 +1349,8 @@ blocked/decision/review 分支＋ `background`（progress/fyi）＋ source metad
 #### 4.4.5 API / tool schema 提案
 
 **目标**：保持 14 个主工具 + `devlead_report`；只做 additive 的参数、结果、source 与 record
-变化。以下 schema 是 Proposed，不是本次实现；字段名在实现前还可以调整，但**语义分层**
-（模型表达意图、runtime 选 transport）不应回退。
+变化。以下 schema 已在 **0.4.0-rc.1 实现**（Phase 1d/1e）；字段已按本稿落地，**语义分层**
+（模型表达意图、runtime 选 transport）不再回退。
 
 **`devlead_prompt_session`（扩展）**
 
@@ -2078,7 +2079,7 @@ question 路由。
 
 **工具描述要改的点**
 
-| 工具 | 现有文案的问题 | Proposed 文案要点 |
+| 工具 | 现有文案的问题 | 落地文案要点（已实现，0.4.0-rc.1） |
 | --- | --- | --- |
 | `devlead_prompt_session` | 只说「follow-up instruction」，没有 intent/answer/steer 概念 | 默认 `instruction` 是新的 next-turn 边界；`answer` 必须配 `question_id`，默认 `steer`；`correction` 用于改变当前做法，不抢占 model request/tool batch，也不隔离旧 next-turn 输入；`background` 不请求 wake；`interrupt` 才是替换工作 |
 | `devlead_report` | `progress` 会唤醒，`question` 要模型自己结束 turn | `progress`/`fyi` 只用于可等下一次 wake/settled-turn 通知的非紧急背景，不唤醒；真实阻塞用 blocked，需 lead 在 turn 结束前做调度/方向选择用 decision；`question` 在 durable 成功时设置 `turnEndRequested`（只请求结束，不保证立即关闭）；`durable:false` 时不要等，最终消息重述 |
@@ -2832,8 +2833,10 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   安装版 rc.5 实跑 installed 与 patch **完整双流各 221/221**（phase 1 27 + 1b 12 + 2 23 + 3 128
   + 1e 31；218 PASS + 3 SKIP；client revision `4098223abe00`），`--no-worktree` **198/198**；
   `git diff --check` 通过。Batch 1 通过独立 DeepSeek 审查第七轮 delta 复核，判定 **FINAL:
-  SAFE**；冻结树 sha256、6 项 mutation negative control（全部 `MUTATION_TEST_EXIT=1`）、逐轮
-  修复时间线与残余风险见 [`batch1-breaking-correctness.md`](e2e-evidence/batch1-breaking-correctness.md)。
+  SAFE**；冻结树 tree SHA `e39ca88…`、6 项 mutation negative control（全部
+  `MUTATION_TEST_EXIT=1`）、逐轮修复时间线与 round-6 残余风险见
+  [`batch1-breaking-correctness.md`](e2e-evidence/batch1-breaking-correctness.md)；round-7
+  FINAL SAFE 的 M1/M2/low 残余项见下方「Batch 1 第七轮 FINAL SAFE 残余项」。
 - **Batch 2（0.4.0-rc.1 发布准备）最终验证数字**（主 checkout `main`，HEAD `a35fc1d` +
   未提交 Batch 2 改动；`packages/` 与 Batch 1 最终树差异仅 version 行）：`pnpm verify` =
   typecheck 通过 + **34 文件 / 1464 tests** + 6 个构建目标（`VERIFY_EXIT=0`）；
@@ -2843,8 +2846,10 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   `NOWORKTREE_EXIT=0`）；prerelease dry-run：`pnpm release:dry` 的 latest guard 预期拒绝
   （`RELEASE_DRY_LATEST_GUARD_EXIT=1`），`stage-release.mjs --dry-run --dist-tag next` 输出
   `DRY RUN OK`（`RELEASE_DRY_EXIT=0`）；`pnpm pack` 6 包内容/版本/workspace 改写核对通过
-  （`PACK_INSPECT_EXIT=0`）。真实日志与发布检查见
-  [`batch2-release-prep.md`](e2e-evidence/batch2-release-prep.md)。
+  （`PACK_INSPECT_EXIT=0`）。纯文档修复后在最终文档树上复跑 `pnpm verify` /
+  `pnpm check:packages` 与三条 e2e，计数与上表相同（`EXIT=0`、`OK (6 packages)`、
+  221/221、221/221、198/198；日志带 `VERSION`/`GIT_HEAD`/`GIT_TREE` echo）。真实日志与发布
+  检查见 [`batch2-release-prep.md`](e2e-evidence/batch2-release-prep.md)。
 - **证据修正（Phase 1d installed/退出码）**：Phase 1d r7 轮的三条 E2E 日志只记录到
   `E2E SMOKE PASS` + 188/188（installed/patch）与 165/165（no-worktree），runner 当轮未把
   shell exit code 写入日志；真实退出码由同一代码线的 r8/r9 重跑日志补齐（末尾
@@ -2951,27 +2956,44 @@ mutation negative control；运行时代码和既有 E2E 对应的构建未变�
 本轮只改文档，`pnpm verify` 通过；未改 `packages/`、版本/tag、DSH，未 push。
 
 **2026-11-20 Batch 1（breaking 兼容性清理 + 正确性收口）— FINAL SAFE**：本地 7 个 commit
-（`a21c7b7..a35fc1d`，43 files +8974/−834）实现 §0.4.0-rc.1 契约：旧 DevLead 状态显式丢弃、
+（`a21c7b7..a35fc1d`，43 files +8974/−834，tree
+`e39ca88ba9b23c68d12b1a84db85cc2d12a743bf`）实现 §0.4.0-rc.1 契约：旧 DevLead 状态显式丢弃、
 OUTBOX v3 / `answerSeq` / `origin`、durable 幂等、multi-lead 硬门禁、question TTL、cold replay、
 repair barrier、multi-batch cold supervision rehydration 与 A 加固（record API 探测/降级、隐私
 披露、升级门禁、deprecated reader 清零）。最终门禁：34 文件 / 1464 tests、`check:packages` OK、
 installed/patch 各 221/221（218 PASS + 3 SKIP）、`--no-worktree` 198/198；6 项 mutation 全部
-`MUTATION_TEST_EXIT=1`。独立 DeepSeek 审查第七轮 delta 复核判定 **FINAL: SAFE**。逐轮时间线、
-冻结树 sha256、mutation 与残余风险见
+`MUTATION_TEST_EXIT=1`。独立 DeepSeek 审查第七轮 delta 复核判定 **FINAL: SAFE**；该轮 2 项
+medium（M1 慢但可读 listing 的可用性、M2 delivery proof 未快照 supervisor/watch 集合的窄
+fail-open）与 4 项 low 代码 nit 见下节。逐轮时间线、冻结树 tree SHA 与 mutation 见
 [`e2e-evidence/batch1-breaking-correctness.md`](e2e-evidence/batch1-breaking-correctness.md)。
 本批未 push、未 bump version（当时仍 0.3.0-rc.2）、未打 tag。
 
-**2026-11-21 Batch 2（0.4.0-rc.1 发布准备）**：见下节「Batch 2 发布准备记录」。
+### Batch 1 第七轮 FINAL SAFE 残余项（不阻断 SAFE，列入 GA 前 follow-up）
+
+独立 DeepSeek 审查对 `a35fc1d` 的第七轮 delta 复核判定 **FINAL: SAFE**（没有可复现的
+fail-open、无界循环或挂死；U1/TOCTOU/dispose/文档 minor 均经独立探针与 6 项 mutation 验证）。
+以下残余项已如实同步到 [release notes known limitations](releases/v0.4.0-rc.1.md)，
+本 RC **不改代码**：
+
+| Sev | 位置 | 残余项 | GA 前建议 |
+| --- | --- | --- | --- |
+| medium | `packages/devlead/src/index.ts`（readiness 2s / finalize 5s 预算） | **M1**：慢但可读（2–5s）listing 时 barrier 返回 unverifiable，入口 verify 成功仍可能无法 finalize（一次 finalize 复核需覆盖两次 2–5s 读取），慢但可用的后端会 fail-closed 到 cap/30s probe（探针：2.5s latency、120s fake 内 attempts 1→10、capped=false；延迟清除后恢复） | 用 effective validatedListing（barrier listing 或入口 verify ok），或入口 verify 成功后允许 finalize；补 2s<L<5s 慢 listing 恢复测试 |
+| medium | `packages/devlead/src/index.ts:393-399`、`:4138`、`:4166-4175`、调用点 `:3608/:5766/:5888` | **M2**：delivery-time `SupervisionProof` 只绑定 corpus bindings/rehydrated，不含 gate 时的 supervisor/watch 集合；admission await 期间出现 live foreign watch 时 stale verdict 可在 delivery 被放行（窄 fail-open，未复现） | 把 sorted supervisor ids（含 archived 输入）纳入 proof，delivery 前重跑 conflict 判定；补“resume 期间 foreign watch 出现”负控 |
+| low | `packages/devlead/src/index.ts` | ① `proof===undefined` 时 delivery 复核直接放行（`createSession` 本就不需要 gate proof，当前不可利用，但类型允许未来调用方静默跳过）；② probe reset 清 `rehydrationValidationTimedOut`/`FinalizeBlocked` 但未清 `rehydrationValidationUnverifiable`（当前由 attempt 入口/finally 兜底）；③ `rehydrationScanHighWater = nextIndex` 非 `Math.max`；④ scan-entry 的 `changed` 保留快照/游标、另两处 `changed` 丢弃（pre-existing） | 改必填 proof 或显式 sentinel、同步清 sibling 标志、改 `Math.max(old, nextIndex)`、对齐三处 `changed` 语义或在文档注明例外 |
+| nit | 文档/证据 | 英文 README dispose/extend 句、`fold.ts` TTL JSDoc、batch1 evidence staged `reads=164`、冻结身份 tree SHA 已在文档修复轮更新；`rehydrateFromPersistence` JSDoc（index.ts:1475-1480）仍写“整条 attempt 一个 signal”、batch1 evidence mutation 时间线与“审查者”叙述、verdict 大小写措辞仍待后续轮次清理 | 后续文档轮清理；不影响发布 |
+
+**2026-11-20 Batch 2（0.4.0-rc.1 发布准备）**：见下节「Batch 2 发布准备记录」。
 
 ### Batch 2 发布准备记录（0.4.0-rc.1）
 
-**2026-11-21 Batch 2（0.4.0-rc.1 发布准备）**：把 7 个 manifest（根 + 6 个可发布包）统一
+**2026-11-20 Batch 2（0.4.0-rc.1 发布准备）**：把 7 个 workspace manifest（根 + 6 个可发布包，
+不含 `scripts/e2e-probe/package.json` 的 0.0.0）统一
 bump 到 `0.4.0-rc.1`；`pnpm-lock.yaml` 不记录本仓库自身版本，`pnpm install --frozen-lockfile`
 通过且未手改 lockfile。新增 [`releases/v0.4.0-rc.1.md`](releases/v0.4.0-rc.1.md) 作为 GitHub
 Release 正文；README / README.zh、[COMPATIBILITY](COMPATIBILITY.md)、
 [PUBLISHING](PUBLISHING.md) 与本节同步 breaking / 升级 / 发布说明；修正 Phase 1d r7 未被
 记录的 `*_EXIT` 矛盾与 installed 退出码证据缺口（见 §10 证据修正）。本批**不改运行时行为**
-（`packages/` 与 Batch 1 最终树差异仅为 6 处 `version` 行）。冻结树最终门禁：`pnpm verify` =
+（本准备 commit 的 `packages/` 与 Batch 1 最终树差异仅为 6 处 `version` 行）。冻结树最终门禁：`pnpm verify` =
 34 文件 / **1464 tests** + 6 targets；`check:packages` → `OK (6 packages)`；三条真实 E2E 在
 安装版 rc.5 上 patch / installed 各 **221/221**（218 PASS + 3 SKIP）、`--no-worktree`
 **198/198**（195 PASS + 3 SKIP）；prerelease staged-publish dry-run 先经 `pnpm release:dry` 的
@@ -2979,6 +3001,16 @@ Release 正文；README / README.zh、[COMPATIBILITY](COMPATIBILITY.md)、
 （6 包，7/7/6/6/6/7 files，无上传/无 stage id）；`pnpm pack` 内容与 expected files 一致。
 本批只做**本地 commit：未 push、未打 tag、未 publish/stage**；真实输出、版本清单与发布检查见
 [`e2e-evidence/batch2-release-prep.md`](e2e-evidence/batch2-release-prep.md)。
+
+**2026-11-20 Batch 2 文档修复（release notes 与文档 minors）**：在 `ce1b284` 之上做纯文档修复
+（release notes 的 known limitations 与 round-7 FINAL SAFE 对齐、范围账目/breaking 归属/错误码
+词表、UI-VERIFICATION 增补 0.4.0-rc.1 视觉项、PUBLISHING `NOWORKTREE_EXIT`、日期、DESIGN
+Proposed 行与残余项、batch1 evidence 的 `reads=164→100` 与冻结身份 tree SHA、`fold.ts` 过期
+JSDoc）；`packages/` 仅 `fold.ts` 一处**注释**、无运行时行为变化，版本不变。修复后在最终文档树
+上重跑 `pnpm verify`（34 文件 / 1464 tests）、`pnpm check:packages`（`OK`）与三条真实 E2E
+（patch/installed 221/221、no-worktree 198/198），结果与 `ce1b284` 冻结树相同；真实输出与日志见
+[`e2e-evidence/batch2-release-prep.md`](e2e-evidence/batch2-release-prep.md)。本轮仍未 push、
+未打 tag、未 publish。
 
 ### 决策记录（0.4.0-rc.1）
 
@@ -3005,7 +3037,7 @@ Release 正文；README / README.zh、[COMPATIBILITY](COMPATIBILITY.md)、
    标记、侧栏 active ring/watched 准星属于视觉与交互判断，必须按
    [`UI-VERIFICATION.md`](UI-VERIFICATION.md) 在隔离 profile 中由人类验收（列在
    [PUBLISHING](PUBLISHING.md) 的发布检查中）。本轮无截图工具，不伪造视觉结论。
-5. **版本引用口径。** 当前候选版本是 `0.4.0-rc.1`（7 个 manifest lockstep）；历史发布记录
+5. **版本引用口径。** 当前候选版本是 `0.4.0-rc.1`（7 个 workspace manifest lockstep）；历史发布记录
    （`docs/releases/v0.3.0-rc.1.md` / `v0.3.0-rc.2.md`、PUBLISHING 的历史小节）保留原版本号，
    不作为“当前版本”引用。`engines.dsh` 与 peer 范围不因插件版本 bump 而变化。
 

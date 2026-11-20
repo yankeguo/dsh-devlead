@@ -294,8 +294,9 @@ export function latestAnswerOf(
  * Derive the question lifecycle from the newest answer record. An answer in
  * `admitted`/`claimed`/`presented` marks the question answered; a
  * `discarded`/`failed` answer (or no answer) leaves it open. `expired` and
- * `cancelled` have no durable writer in Phase 1d (TTL/cancellation triggers
- * are Phase 2), so the fold never derives them.
+ * `cancelled` have no durable writer in 0.4.0-rc.1 either: TTL expiry is a
+ * runtime overlay (`questionTtlMs` in `index.ts`) and cancellation has no
+ * durable writer, so the fold itself never derives them.
  * @param answers - retained answer records, oldest first.
  * @param reportId - question report identity.
  * @returns the derived question status.

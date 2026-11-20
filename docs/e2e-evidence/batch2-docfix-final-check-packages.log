@@ -1,0 +1,10 @@
+# gate=final-check-packages
+RUN_AT=2026-11-20T23:43:41+0800
+VERSION=0.4.0-rc.1
+GIT_HEAD=ce1b284d776e4a50de9120d16fa4ba57508d8b61
+GIT_TREE=0101ba09442b647d0c8b6333d4517aea80f8412a
+UNCOMMITTED_FILES=20
+--- output ---
+$ node scripts/check-packages.mjs
+check-packages: OK (6 packages)
+EXIT=0

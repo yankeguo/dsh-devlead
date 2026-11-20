@@ -1,20 +1,21 @@
 # Batch 2：dsh-devlead 0.4.0-rc.1 发布准备 — 版本、门禁与发布检查证据
 
-日期：2026-11-21（Asia/Shanghai；门禁实际执行时间 2026-11-20 23:20–23:22）
+日期：2026-11-20（Asia/Shanghai；Batch 2 准备门禁实际执行时间 2026-11-20 23:20–23:22；
+文档修复后的门禁复跑时间见下文「文档修复后复跑」）
 基线：`main @ a35fc1d`（Batch 1 最终提交，独立审查第七轮 **FINAL: SAFE**）
 运行 DSH：安装版 **0.2.2-rc.5**（`dsh --version`；基线 pin 与 `scripts/e2e-smoke.mjs` 的
 `BASELINE_DSH_VERSION` 一致）。工具链：Node 26.13.0、pnpm 12.16.1、npm 11.20.0。
 
 本文件记录 **0.4.0-rc.1 发布准备**（Batch 2）的真实输出：版本清单、`pnpm verify` /
 `pnpm check:packages`、三条真实 E2E、staged-publish dry-run、npm pack 内容核对。所有日志由
-本轮冻结树实际生成并随本文件提交；**未引用任何旧轮次日志**。本批**未 push、未打 tag、
-未 npm publish/stage**。
+本轮冻结树实际生成并随本文件提交；**未引用任何旧轮次日志**。准备 commit 之后又做了一轮纯文档
+修复并复跑门禁，见下文「文档修复后复跑」。本批**未 push、未打 tag、未 npm publish/stage**。
 
 ## 冻结树
 
-门禁运行时的树 = `HEAD a35fc1d` + 本批未提交改动（7 个 manifest 的 `version` 行、7 个文档文件、
-新增 `docs/releases/v0.4.0-rc.1.md`）。`packages/` 的代码与 Batch 1 最终树完全相同，差异只有
-6 个包的 `version` 字段：
+准备 commit（`ce1b284`）门禁运行时的树 = `HEAD a35fc1d` + 本批未提交改动（7 个 workspace
+manifest 的 `version` 行、7 个文档文件、新增 `docs/releases/v0.4.0-rc.1.md`）。`packages/` 的
+代码与 Batch 1 最终树完全相同，`packages/` 差异只有 6 个包的 `version` 字段：
 
 ```text
 $ git rev-parse HEAD
@@ -34,12 +35,15 @@ $ git diff --check
 （无输出）DIFF_CHECK_EXIT=0
 ```
 
-Batch 1 的 7 个本地 commit（`a21c7b7..a35fc1d`，43 files +8974/−834）与最终门禁见
-[`batch1-breaking-correctness.md`](batch1-breaking-correctness.md)；本批**未修改**该证据文件。
+Batch 1 的 7 个本地 commit（`a21c7b7..a35fc1d`，43 files +8974/−834，tree
+`e39ca88…`）与最终门禁见 [`batch1-breaking-correctness.md`](batch1-breaking-correctness.md)；
+Batch 2 准备 commit 未修改该证据文件，**文档修复轮**补正了其中的 staged `reads=164→100`、
+冻结身份 tree SHA 与 mutation 时间线（见下文「文档修复后复跑」）。
 
 ## 版本清单（0.4.0-rc.1）
 
-7 个 manifest（根 private 包 + 6 个可发布包）统一 bump；`grep` 结果恰好 7 行：
+7 个 workspace manifest（根 private 包 + 6 个可发布包；`scripts/e2e-probe/package.json` 为
+`0.0.0`、非 workspace、不发布，不在 grep 范围）统一 bump；`grep` 结果恰好 7 行：
 
 ```text
 $ git grep -n '"version": "0.4.0-rc.1"' -- package.json packages/*/package.json
@@ -116,6 +120,48 @@ INSTALL_EXIT=0
 `FINAL_CHECK_PACKAGES_EXIT=0`；`git diff --check` → `DIFF_CHECK_EXIT=0`（日志
 `batch2-final-verify.log`、`batch2-final-check-packages.log`）。三条 E2E 的代码树与冻结门禁树
 相同（`packages/` 无改动），因此不重复执行。
+
+### 文档修复后复跑（2026-11-20，最终文档树）
+
+Batch 2 准备 commit `ce1b284` 之后又做了一轮**纯文档修复**（release notes 与 round-7
+FINAL SAFE 的 known limitations 对齐、范围账目/breaking 归属、UI-VERIFICATION 增补
+0.4.0-rc.1 视觉项、PUBLISHING `NOWORKTREE_EXIT`、日期、DESIGN Proposed 行/残余项、batch1
+evidence 的 `reads=164→100` 与 tree SHA，以及 `packages/devlead/src/fold.ts` 的过期 JSDoc
+注释）。本节所用日志在该修复树（尚未 commit；`packages/` 只有 6 处 `version` 行与 fold.ts 一处
+注释相对 Batch 1 树，无运行时行为变化）上重跑；wrapper 把 `VERSION` / `GIT_HEAD` /
+`GIT_TREE` 直接 echo 进每条日志（回应“门禁日志缺少 version/rev”的 nit）。注意：日志里的
+`GIT_HEAD`/`GIT_TREE` 是门禁起点 HEAD `ce1b284` 的值，门禁树 = 该 tree + 未提交的文档修复
+（日志头的 `WORKTREE_DOC_CHANGES` 记录改动文件数）；门禁由 commit 前的最终工作树生成，与
+Batch 2 准备轮相同：
+
+```text
+VERSION=0.4.0-rc.1
+GIT_HEAD=ce1b284d776e4a50de9120d16fa4ba57508d8b61
+GIT_TREE=0101ba09442b647d0c8b6333d4517aea80f8412a
+```
+
+| 门禁 | 命令 | 结果 | 完成时间 |
+| --- | --- | --- | --- |
+| `pnpm verify` | typecheck + test + build | 34 files / **1464 tests** + 6 targets，`EXIT=0` | 23:39:41–23:40:01 |
+| `pnpm check:packages` | 包不变式 | `check-packages: OK (6 packages)`，`EXIT=0` | 23:40:01 |
+| e2e patch | `pnpm e2e --no-build` | **221/221**（218 PASS + 3 SKIP），`EXIT=0` | 23:40:27 |
+| e2e installed | `pnpm e2e --flow installed --no-build` | **221/221**（218 PASS + 3 SKIP），`EXIT=0` | 23:40:52 |
+| e2e no-worktree | `pnpm e2e --no-worktree --no-build` | **198/198**（195 PASS + 3 SKIP），`EXIT=0` | 23:41:17 |
+| `git diff --check` | 工作区 diff | `DIFF_CHECK_EXIT=0`（未跟踪的新日志不计入） | 23:40:01 |
+
+日志：`batch2-docfix-{verify,check-packages,e2e-patch,e2e-installed,e2e-no-worktree,diff-check}.log`
+与元数据 `batch2-docfix-gates-meta.log`；该轮 e2e 的 client revision 为 `6056fe8a1305`（重
+build 后的 mtime hash，与准备 commit 的 `72a61091babf` 不同，但 `packages/` 代码未变）。
+
+**raw log 保真说明**：上述三个 e2e 日志各保留 1 行原始输出末尾空格（`PASS notification
+records the provider failure ...`），与准备 commit 的 `batch2-e2e-*.log` 相同；`git diff
+--cached --check` 会对此报 whitespace warning，这是 raw-log fidelity 取舍（日志即原始终端
+输出，CI 不检查 docs 日志），不是格式回归。
+
+随后在**更新完本证据后的最终文档树**上再跑一次 `pnpm verify` / `pnpm check:packages`
+（23:43:21–23:43:41，`EXIT=0`；日志 `batch2-docfix-final-verify.log` /
+`batch2-docfix-final-check-packages.log` / `batch2-docfix-final-diff-check.log`，同样带
+version/rev echo；结果 34/1464 + 6 targets、`OK (6 packages)`），确认证据更新没有影响门禁。
 
 ### `pnpm verify` / `check:packages`
 
@@ -219,7 +265,8 @@ workspace 依赖全部改写为精确 `0.4.0-rc.1`：
 
 ## 发布检查（按 PUBLISHING §「0.4.0-rc.1 首 RC 发布步骤与检查」）
 
-- [x] **(a) 版本 lockstep**：7 个 manifest 均 `0.4.0-rc.1`（grep 恰好 7 行）；
+- [x] **(a) 版本 lockstep**：7 个 workspace manifest（根 + 6 个可发布包）均 `0.4.0-rc.1`
+  （grep 恰好 7 行）；
   `pnpm install --frozen-lockfile` 通过；未手改 lockfile。
 - [x] **(b) release notes 就绪**：`docs/releases/v0.4.0-rc.1.md` 存在且非空（GitHub Release 正文）。
 - [x] **(c) stage 前门禁**：`pnpm verify`、`pnpm check:packages`、`stage-release --dry-run
@@ -260,6 +307,7 @@ workspace 依赖全部改写为精确 `0.4.0-rc.1`：
 
 ## 相关证据
 
-- Batch 1： [`batch1-breaking-correctness.md`](batch1-breaking-correctness.md)（本批未改动）
+- Batch 1： [`batch1-breaking-correctness.md`](batch1-breaking-correctness.md)（准备 commit 未改动；
+  文档修复轮补正 `reads=164→100`、冻结身份 tree SHA 与 mutation 时间线）
 - Phase 1e / 1d 历史轮次：见 [DESIGN §12 证据索引](../DESIGN.md)
 - 本批原始日志：`batch2-*.log`、`batch2-pack-inspect.txt`（同目录）

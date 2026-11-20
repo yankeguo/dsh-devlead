@@ -37,7 +37,8 @@
 
 ## 0.4.0-rc.1 breaking changes（Batch 1 + Batch 2）
 
-当前树是 **0.4.0-rc.1 release candidate**：全部 7 个 manifest（根包 + 6 个可发布包）均为
+当前树是 **0.4.0-rc.1 release candidate**：全部 7 个 workspace manifest（根包 + 6 个可发布包；
+`scripts/e2e-probe/package.json` 为 `0.0.0`，不是 workspace 成员、不发布）均为
 `0.4.0-rc.1`。Batch 1 实现了计划中的 0.4.0 兼容性断裂；Batch 2 只做版本升级、文档/证据更新与
 发布门禁重跑，运行时行为自 `a35fc1d` 起未变。尚未打 tag、未创建 GitHub Release、未 npm publish
 ——这些都要等人类明确批准。

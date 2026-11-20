@@ -49,6 +49,26 @@
      行没有这些标记。
    - 如需真实 watch/通知，再建一个会话并 watch，然后触发一次 turn 结束。
 
+### 0.4.0-rc.1 视觉验收项（发布前必查，对应 PUBLISHING checklist (d)）
+
+以下 4 项是 0.4.0-rc.1 新增/变更的浏览器视觉行为，必须在隔离 profile 里逐项确认；`pnpm e2e`
+只断言 projection/DOM/渲染，不能替代人工判断。
+
+1. **三 lane 配色**：让状态条显示 `turn-notice`（completed/forked）、`action-required`
+   （blocked/decision/question）与 `background`（progress/fyi）三类最近通知。`action-required`
+   的 kind label 应使用 warning 色的文字（与 blocked 圆点同色系）、`background` 整条 chip 更弱
+   （不透明度降低）、`turn-notice` 保持中性色；颜色只影响文字/圆点，不改变行高、间距或换行。
+2. **question 状态**：watch 一个子会话并触发真实 `ask_user_question`（或 e2e 的 scripted
+   child），DevLeadBar 的 question report 行显示生命周期后缀：`open` 为「待回答」，lead 回答后
+   fold 派生为「已回答」，answer 再按 admitted/claimed/presented 显示「已接收/已认领/已呈现」；
+   刷新页面后旧状态不得残留或回退。
+3. **`provisional` /「暂定」**：当 question report 的 `repairPending:true` 时，状态后缀追加
+   「暂定」（如 `open · provisional`），表示 fold 的 question/answer 状态尚未被 durable repair
+   证明；repair settle 后标记消失。确认标记不改变 strip 的只读语义（strip 不承载开关、不发命令）。
+4. **状态条布局**：把窗口收窄（如 720px）后，DevLeadBar 仍单行显示品牌、watched/running 计数、
+   最新通知与 question 后缀；长 session 标题/长 question 文案以 ellipsis 截断，不撑高 composer
+   dock、不产生横向滚动；关闭态与 subagent Session 不渲染 strip，开关仍留在 composer 工具栏原位。
+
 6. 清理：
 
    ```sh

@@ -218,7 +218,7 @@ pnpm e2e --no-worktree --no-build         # 跳过实验 forge bundle 组合（�
 都会使对应阶段失败），不要在本页复制旧数字作为验收依据。完整流必须 **221/221**、`--no-worktree`
 必须 **198/198**，数字以当次真实输出为准；完整流的 221/221 是 218 PASS + 3 条无 provider 凭据
 的正向模型选择 SKIP（SKIP 未执行、不能算通过）。本版 0.4.0-rc.1 冻结树的真实输出（含真实
-`PATCH_EXIT` / `INSTALLED_EXIT` / `NO_WORKTREE_EXIT` 与总计行）见
+`PATCH_EXIT` / `INSTALLED_EXIT` / `NOWORKTREE_EXIT` 与总计行）见
 [`docs/e2e-evidence/batch2-release-prep.md`](e2e-evidence/batch2-release-prep.md)。
 
 **新 DSH 版本验证的发布硬门禁：**任何宣称新验证 DSH 版本的发布，在 stage 前必须逐项完成
@@ -370,8 +370,9 @@ dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.0-rc.1
 [`docs/releases/v0.4.0-rc.1.md`](releases/v0.4.0-rc.1.md)（promote 的硬性前置条件）。打 tag 前
 必须逐项确认，任一项未完成不得进入下一步：
 
-- [ ] **(a) 版本 lockstep**：根 `package.json` + 6 个可发布包共 **7 个 manifest** 均为
-  `0.4.0-rc.1`（`git grep -n '"version": "0.4.0-rc.1"' -- package.json packages/*/package.json`
+- [ ] **(a) 版本 lockstep**：根 `package.json` + 6 个可发布包共 **7 个 workspace manifest**
+  （不含 `scripts/e2e-probe/package.json` 的 0.0.0）均为 `0.4.0-rc.1`
+  （`git grep -n '"version": "0.4.0-rc.1"' -- package.json packages/*/package.json`
   应恰好 7 行）；`pnpm install --frozen-lockfile` 通过——`pnpm-lock.yaml` 不记录本仓库自身的
   版本，**不要手工编辑 lockfile**。
 - [ ] **(b) release notes 就绪**：`docs/releases/v0.4.0-rc.1.md` 存在且非空；缺失/为空时
@@ -381,7 +382,7 @@ dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.0-rc.1
   `DRY RUN OK`（**`pnpm release:dry` 是稳定版形式，默认 `latest`，对 0.4.0-rc.1 会按设计失败，
   不能作为本 RC 的预检**）；三条真实 e2e 为 `pnpm e2e --no-build`、
   `pnpm e2e --flow installed --no-build`、`pnpm e2e --no-worktree --no-build`，保留真实
-  `PATCH_EXIT=0` / `INSTALLED_EXIT=0` / `NO_WORKTREE_EXIT=0` 与总计行（完整流 221/221、
+  `PATCH_EXIT=0` / `INSTALLED_EXIT=0` / `NOWORKTREE_EXIT=0` 与总计行（完整流 221/221、
   `--no-worktree` 198/198）。冻结树原始输出见
   [`docs/e2e-evidence/batch2-release-prep.md`](e2e-evidence/batch2-release-prep.md)。
 - [ ] **(d) 浏览器可视验收（人工）**：按 [UI-VERIFICATION](UI-VERIFICATION.md) 在隔离 profile

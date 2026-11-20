@@ -609,6 +609,10 @@ validation、文档 5s 措辞）及 5 项 minor。本轮从 clean tree（HEAD `7
 `a21c7b7`）修复，**未 push、未 bump version、未打 tag**。冻结工作树（提交前最终树，
 `pnpm verify`/`check:packages`/三条 e2e 与全部 mutation 均在该树上运行）：
 
+- 冻结代码 commit `a35fc1dc86ef76d45411274764e22bbbfb950e33` → **tree
+  `e39ca88ba9b23c68d12b1a84db85cc2d12a743bf`**（本地 commit，未 push；origin/main 仍
+  `a21c7b7`）；可核方式：`git rev-parse a35fc1d^{tree}`、`git show
+  a35fc1d:packages/devlead/src/index.ts | shasum -a 256`。
 - `packages/devlead/src/index.ts` sha256 `104aa4d313a58a80a4235134589f93f1d1ef4eab0a24c77238e99295e6647506`
 - `packages/devlead/tests/phase2.spec.ts` sha256 `8fe1a7038d928ad26b02a4ecd61d4d1a36b644dec4e668f08f1d23c2b7e66edd`
 - 代码树与最终本地 commit 相同（本证据随该 commit 一起提交；未 push）。
@@ -627,7 +631,7 @@ validation、文档 5s 措辞）及 5 项 minor。本轮从 clean tree（HEAD `7
 | 场景 | 实测 |
 | --- | --- |
 | natural（每 2 次 listing 失败） | 约 40s fake 内 `attempts≥12`、`capped=true`、`probe=true`、`cursor=highWater=100`、`reads=100`（每个 row 恰读一次）、list 调用有界；原因移除后下一次 30s probe 用保留游标 finalize，**新增读取 0** |
-| staged（恒 unverifiable） | 约 40s fake 内 `attempts≥12`、`capped=true`、`probe=true`、`cursor=highWater=100`、`reads=164`（boot 空语料 64 读 + 重证 100 读）；原因移除后 0 新增读取 finalize |
+| staged（恒 unverifiable） | 约 40s fake 内 `attempts≥12`、`capped=true`、`probe=true`、`cursor=highWater=100`、`reads=100`（提交测试断言 `query.readSessionCalls === 100`，恢复后仍为 100）；原因移除后 0 新增读取 finalize |
 
 ### 逐项修复
 
@@ -655,19 +659,20 @@ extended deadline / hung read、dispose 后 extend no-op、finalize 窗口内替
 | --- | --- |
 | 22:39 | 起点复核：HEAD `7bf4b95`、origin/main `a21c7b7`、工作区干净；读码定位 U1/TOCTOU/dispose/minors |
 | 22:42:22 | 未修复树 scratch 复现完成：natural 90s reads 12,064 / lists 241 / attempts 0 / cursor 64；staged 120s reads 16,128 / lists 322 / attempts 0/1（scratch 文件随后删除） |
-| 22:43–22:46 | 实现 U1（unverifiable split/retain/charge）、delivery-time proof、dispose lifetime、minor 1/2；scratch 复测：约 40s 内 cap+probe、reads 100/164、原因移除后 0 新增读取恢复 |
+| 22:43–22:46 | 实现 U1（unverifiable split/retain/charge）、delivery-time proof、dispose lifetime、minor 1/2；scratch 复测：约 40s 内 cap+probe、reads 100（natural/staged 两份正式测试各自的断言）、原因移除后 0 新增读取恢复 |
 | 22:46–22:48 | 写入 11 个正式负控；`npx vitest run packages/devlead/tests/phase2.spec.ts` 71/71；devlead 全包 892/892 |
 | 22:48–22:49 | 同步 DESIGN/AUDIT/COMPATIBILITY/README×2/OPTIONAL-DEPENDENCIES 措辞 |
 | 22:49:48–22:50:20 | 首轮 `pnpm verify`（含 scratch）35 files / 1465 tests 全过、build 6 targets；`check:packages` OK |
 | 22:50:34–22:51:35 | 候选树三条 e2e 全过（该轮 client revision `dcda03c54efd`）；后续最终 verify 重 build 后 rev 变化，故不使用该轮作为最终门禁引用 |
-| 22:52:15–22:53:41 | 6 项 mutation 在冻结树重跑：全部 `MUTATION_TEST_EXIT=1`、`RESTORE_CLEAN=true`、`FROZEN_DIFFSTAT_UNCHANGED=true` |
+| 22:52:15–22:53:41 | 候选树 6 项 mutation 演练（此时生产代码尚未最终冻结；该轮日志随后被 22:58 的最终树重跑覆盖，不作为最终证据）：全部 `MUTATION_TEST_EXIT=1`、`RESTORE_CLEAN=true` |
 | 22:54:14–22:54:35 | 删除 scratch、新增 finalize-removal 负控后 `pnpm verify`：**34 files / 1464 tests** 全过、build 6 targets；`check:packages` OK |
 | 22:54:47–22:56:04 | 该中间树三条 e2e 全过（client revision `95381841504e`）；随后自查补一处一致性：interrupt 已提交 stop 后若 delivery-time proof 复核失败，按既有 `DevLeadInterruptedAdmissionError` 语义保留 watch（生产代码小改动） |
 | 22:56–22:57 | 因上述生产代码改动，在最终冻结树（`104aa4d…`）上重跑全部门禁与 mutation |
 | 22:57:43–22:58:03 | **最终树** `pnpm verify`：**34 files / 1464 tests** 全过、build 6 targets；`check:packages` OK；`git diff --check` EXIT=0 |
-| 22:58:03–22:59:10 | **最终树** 6 项 mutation 全部重跑：全部 `MUTATION_TEST_EXIT=1`、`RESTORE_CLEAN=true` |
+| 22:58:03–22:59:10 | **最终树** mutation 重跑：`mut.sh` 的 U1 / DISPOSE / RELISTED / EXTEND 四项 + `mut-u1b.sh` 的 U1-STAGED，全部 `MUTATION_TEST_EXIT=1`、`RESTORE_CLEAN=true`（U1-STAGED 日志不含 `FROZEN_DIFFSTAT*` 行；TOCTOU 的 anchor 在 22:56 生产代码微调后失效，单独重跑见下行） |
 | 22:59:14–23:00:31 | **最终树** 三条 e2e：patch **221/221**、installed **221/221**、no-worktree **198/198**；client revision `4098223abe00`；EXIT 全 0 |
-| 23:00–23:05 | 以最终树输出更新本证据并本地 commit（未 push、未 bump version、未打 tag） |
+| 23:01:15–23:01:16 | **最终树** TOCTOU mutation 由 `mut-toctou.sh` 单独重跑（`mut.sh` 的 anchor 已失效）：`MUTATION_TEST_EXIT=1`、`RESTORE_CLEAN=true` |
+| 23:00–23:02 | 以最终树输出更新本证据并本地 commit `a35fc1d`（23:02:16；未 push、未 bump version、未打 tag） |
 
 ### 门禁真实输出（冻结树：`src/index.ts` sha256 `104aa4d…`，代码树与本 commit 相同）
 
@@ -702,7 +707,8 @@ NO_WORKTREE_EXIT=0
 日志（本机，最终冻结树）：`/tmp/dsh-batch1-r6/final4/{e2e-patch,e2e-installed,e2e-no-worktree}.log`；
 verify/check/diff-check 日志：`/tmp/dsh-batch1-r6/final4/{verify,check-packages,diff-check}.log`。
 最终 e2e client revision `4098223abe00`。更早的 `/tmp/dsh-batch1-r6/final{,-2,-3}/` 与首轮候选树
-（client revision `dcda03c54efd`）均被最终树重跑取代，本证据只引用最终树输出。
+（client revision `dcda03c54efd`）均被最终树重跑取代；下方门禁真实输出只引用最终树，
+中间态数字只出现在时间线中作为过程记录、不作为门禁证据。
 **SKIP 披露**：三条 e2e 的 3 条 SKIP 都是 phase 3 的 model-selection 检查，原因是本机
 provider 的 available model list 不含所请求的 `deepseek-official/deepseek-flash`（无凭据/路由
 不可用，SKIP 输出带真实拒绝文案）；`total: 221/221` 是 **PASS + SKIP** 合计，3 条 SKIP 未执行
@@ -739,21 +745,28 @@ provider 的 available model list 不含所请求的 `deepseek-official/deepseek
   证据所称“最终 HEAD 的代码树与 d282f62 相同”在本轮起点复核为真：`git diff d282f62 7bf4b95 --
   packages` 为空；本轮不得再引用“仅 reflog 可达”的裸 hash 作为唯一证据。
 - 本轮“修复前数字”来自临时 scratch spec（fake timer、100 行 corpus，复现后删除，不作为提交
-  内容）；修复后数字全部来自已提交的正式测试断言。候选树与中间树的 e2e（client revision `dcda03c54efd` / `95381841504e`）均被最终冻结树重跑取代，
-  本证据只引用最终树输出。
+  内容）；修复后数字全部来自已提交的正式测试断言。候选树与中间树的 e2e（client revision `dcda03c54efd` / `95381841504e`）均被最终冻结树重跑取代；
+  门禁真实输出只引用最终冻结树，中间态数字只作过程记录。
 
 ### 残余风险（本轮，非未完成项）
 
 - `unverifiable` 保留游标意味着：若语料真实变化而每一次验证都恰好不可读，DevLead 会保留旧快照
   并持续 fail-closed，直到某次验证成功才发现新增/删除行。这是安全方向（期间 prompt 不授权），
   代价是恢复延迟；12 次 cap + 30s 探针保证它不会退化成热循环，探针也会保留游标继续验证。
-- delivery-time 复核与同步投递之间没有 `await`，因此不存在可插入的替换窗口；但若未来把投递改成
-  异步/分批，需要把 proof 校验一起带入异步边界。interrupt 已在 stop providers 之后才检查 proof：
-  该路径仍可能先请求 stop 再拒绝投递（watch 保留的补偿语义不变，错误文案要求重试），这是既有的
-  “stop 不可回滚”取舍，不是新增 fail-open。
+- delivery-time 复核与同步投递之间没有 `await`；但本轮 proof 只绑定 corpus service，**未快照
+  gate 时的 supervisor/watch 集合**——第七轮 FINAL SAFE 把该残余窗口列为 M2（窄、未复现的
+  fail-open，见 [DESIGN §12「Batch 1 第七轮 FINAL SAFE 残余项」](../DESIGN.md)）。若未来把
+  投递改成异步/分批，需要把 proof 校验（含 watcher 集合）一起带入异步边界。interrupt 已在
+  stop providers 之后才检查 proof：该路径仍可能先请求 stop 再拒绝投递（watch 保留的补偿语义
+  不变，错误文案要求重试），这是既有的“stop 不可回滚”取舍，不是新增 fail-open。
 - dispose 通过服务 lifetime abort 覆盖 finalize 复核，通过 attempt controllers 覆盖扫描阶段；
   两者之外的第三方后端 promise 若完全忽略 signal，仍会被 `Promise.race` 放弃而不阻塞 Host。
 - e2e 不观测 binding 计数/替换（证据边界见上）；真实安装版只覆盖“无替换”的正常组合。
 - 本轮的“单次 attempt 最坏约 30s”是理论上界（5s 扫描 + ≤3 次独立复核 + ≤2 次 append 批次），
   实际启动通常只需一次扫描 + 一次复核；持续慢后端会在每个窗口被放弃并计失败，不会永久挂起。
 - mutation 与 e2e/verify 日志保存在本机 `/tmp`，不随仓库提交；本地证据 ref 不 push。
+- 本轮（第六次修复）之上，独立审查对 `a35fc1d` 的第七轮 delta 复核判定 **FINAL: SAFE**；
+  该轮 2 项 medium（慢但可读 listing 的 M1 可用性、delivery proof 未快照 supervisor/watch
+  集合的 M2 窄 fail-open）与 4 项 low 代码 nit 记录在
+  [DESIGN §12「Batch 1 第七轮 FINAL SAFE 残余项」](../DESIGN.md)，release notes 的 known
+  limitations 已如实披露。
