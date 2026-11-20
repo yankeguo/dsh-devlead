@@ -731,7 +731,7 @@ export const devLeadProjectionDefinition = {
     summary: false,
   },
   // 7: adds the runtime repair-pending set; pre-repair cache rows (stateVersion
-  // <=6) lack the required field and must be discarded and refolded.
+  // <7) lack the required field and must be discarded and refolded.
   stateVersion: 7,
 } satisfies ProjectionDefinition<'devLead', DevLeadProjectionState>
 

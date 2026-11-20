@@ -332,8 +332,8 @@ module table 里。E1 佐证：安装运行时 `dsh/node_modules/@deepseek-ai/` 
 | `sessionController` | `src/index.ts:505,589,896`；`src/notification.ts:499` | `createSession` 抛 `DEVLEAD_SESSION_UNAVAILABLE`；冷会话 prompt 同样报码；通知的冷唤醒静默跳过 | `service.spec.ts:1026-1028`、`:967-990`（无 controller / resolver 失败） |
 | `sessionTitle` | `src/index.ts:845-855`；`src/views.ts:179`；`src/notification.ts:352` | 标题字段省略；`rename` 跳过并 warn（不使创建失败） | `tests/harness.ts:320-364`（fake 服务形状）；服务实际由 base 默认提供 |
 | `sessionQuery` | `src/views.ts:140,184,302,474`；`src/index.ts`（`persistedLeadRecords` 冷扫描） | 冷会话/批量标题读降级，live Session 行仍可列出；无 query 时冷 lead 不重建索引 | `service.spec.ts:729-743`（query 引擎抛错时保留 live 行）、`service.spec.ts` 冷重建用例（无 query 只恢复 live） |
-| `sessionProjectionCache`（0.2.0 新增探测） | `src/projection-cache.ts`（`projectionCacheOf` / `devLeadPrefilterOf`） | 冷重建退化为"只恢复 live lead"，并 warning 一次；冷扫描不读任何持久日志 | `service.spec.ts` 冷重建用例（`rehydrates only live leads when no projection cache is composed`） |
-| `sessionPersistence`（0.2.0 新增探测，仅就绪判定） | `src/persistence.ts`（`persistedSessionsOf` 结构化探针）；`src/index.ts`（`awaitCorpusReady` / `armRehydrationRetry`） | 缺失时先 live-attach 回退并等待一次性 `ctx.inject` 重试；权威 cold scan 前 await corpus-readiness barrier（persistence 的完整存储 id 与 query 的 persisted 语料比对，100ms 轮询、有界 2s，超时 warning + best-effort），从未组合则冷扫描不执行（不 per-event 扫描） | `service.spec.ts` 冷重建用例（persistence 就绪前等待、stale corpus 等待、永不就绪时 live 仍可用、readiness 扫描一次、query engine 晚到、one-shot 保持 armed） |
+| `sessionProjectionCache`（0.2.0 新增探测） | `src/projection-cache.ts`（`projectionCacheOf` / `devLeadPrefilterOf`） | 冷重建仍对有界数量的冷候选做精确日志折叠：每次尝试最多 64 条无法分类读取（cache 明确 active 的行不占预算）、游标续扫，warning 一次；**不是**只恢复 live lead，也不等于不读持久日志 | `service.spec.ts` 冷重建用例（`exact-folds cold candidates when no projection cache is composed`）；`phase2.spec.ts`（`recovers a no-cache corpus without a hot retry loop`） |
+| `sessionPersistence`（0.2.0 新增探测，仅就绪判定） | `src/persistence.ts`（`persistedSessionsOf` 结构化探针）；`src/index.ts`（`awaitCorpusReady` / `armRehydrationRetry` / `persistedLeadRecords`） | 缺失时先 live-attach 回退并等待一次性 `ctx.inject` 重试；就绪后才把 listing 当作可信快照（就绪前取得的 listing 会重新列出），随后按可续扫的多批游标推进（每次尝试最多 64 条无法分类读取、游标续扫）；读取失败按 250ms→5s 有界指数退避重试（最多 12 次），超限后只保留一条 30s 慢速降级探针；not-found 让 listing 失效并重新列出、不消耗预算；从未组合则冷扫描不执行（不 per-event 扫描） | `service.spec.ts` 冷重建用例（`waits for the optional persistence binding before adopting cold leads`、`waits out a stale corpus listing before the authoritative scan`、`loads and serves live leads when the corpus never becomes consistent`）；`phase2.spec.ts`（`re-lists after corpus readiness instead of trusting a pre-ready partial snapshot`、`does not consume the failure cap while paginating a large corpus`、`recovers after the bounded retry budget through the slow degraded probe`） |
 | `worktrees`（实验） | `src/isolation.ts`（`worktreeCapabilityOf`；`ctx.get('worktrees')`）；`src/index.ts`（`worktreeIsolationAvailable` / `isolateSession`） | `isolation: {requested:'worktree', status:'unavailable'/'failed', reason?}`；创建与 prompt 照常（唯一例外是防御性的"子 Agent 非 live"：隔离报 `unavailable`，若同时要求 prompt 则仍走既有 `DEVLEAD_SESSION_UNAVAILABLE`；发行版 controller 不会触发） | `packages/devlead/tests/isolation.spec.ts`（缺失/非 live/失败/畸形服务/动态提供/取消） |
 | `storageDomain`（当前工作树新增探测） | `src/outbox.ts`（结构化 `open` / table 探测）；`src/idempotency.ts`（非 answer 幂等 receipt）；`src/index.ts`（`openOutbox` / `openIdempotencyStore` / `replayOutbox`） | 报告仍可投递但回执明确 `durable:false` + warning（进程内存队列，Host 退出可能丢）；outbox 行不落盘、cold/未 attached lead 无法跨重启 replay；archived tombstone 只在进程内生效；非 answer 幂等只在进程内窗口兜底并显式 warning | `packages/devlead/tests/outbox.spec.ts`、`idempotency.spec.ts`（缺失/写失败/TTL）、`service.spec.ts`（non-durable 回退、durable outbox、restart replay、reset drop）、`phase2.spec.ts`（重启幂等）；默认 Host 的 e2e 断言 storageDomain 存在且 receipt `durable:true` |
 
@@ -345,7 +345,14 @@ tombstone；默认 base 组合含该服务。未组合时退回显式 `durable:f
 corpus-readiness barrier 的就绪判定）三个可选服务；三者都是 `dsh-base` 默认行，但 DevLead
 不 import、不 `static inject`、不在 `package.json` 声明它们。缺失时的退化：无 query /
 persistence → 不扫描持久语料、只恢复 live lead（且不 per-event 扫描）；无 projection cache
-→ 冷扫描不读任何日志、只恢复 live lead 并 warning 一次。
+→ 冷重建仍按有界精确日志折叠扫描冷候选（每次尝试最多 64 条无法分类读取、游标续扫）并
+warning 一次，**不是**只恢复 live lead。
+
+**降级终态与恢复路径**：corrupt at-rest replay、live projection failure，以及 12 次有界退避
+耗尽，对普通 timer 重试是终态（不热重扫，只保留一条 30s 慢速降级探针）。恢复路径：
+(a) 在受影响的 DevLead Session 运行 `/devlead reset`；(b) 删除或修复损坏/不可读的 Session；
+(c) 等待 30s 慢速降级探针，或重启 Host。期间 prompt 授权保持 fail-closed
+（`DEVLEAD_SESSION_UNAVAILABLE`），错误文案同时给出降级原因与恢复提示。
 
 ### 6.2 必需 `inject` 逐项核验
 

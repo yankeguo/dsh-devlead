@@ -73,6 +73,7 @@ import {
   seedPersistedLead,
   seedPersistedLog,
   sleep,
+  waitForCondition,
 } from './harness.ts'
 import { DevLeadReportOutbox } from '../src/outbox.ts'
 import type { ServiceHarness } from './harness.ts'
@@ -136,6 +137,31 @@ function requireSession(harness: ServiceHarness, id: string): Session {
   const session = harness.sessions[id]
   if (session === undefined) throw new Error(`expected a booted Session "${id}"`)
   return session
+}
+
+/** Private rehydration bookkeeping the cold-corpus specs observe directly. */
+interface RehydrationProbe {
+  rehydrated: boolean
+  supervisionIndexComplete: boolean
+}
+
+/**
+ * Wait until the cold-corpus rehydration reaches its final state.
+ *
+ * Rehydration is driven by optional-service injection and one bounded retry
+ * timer, so a fixed wall-clock sleep would only guess at its latency. Polling
+ * the service's real completion flags ends the wait exactly when the
+ * authoritative scan finalized, and fails loudly when it never does.
+ * @param harness - booted service harness.
+ * @param timeoutMs - bounded wait; the retry timer may legitimately back off.
+ */
+async function settleRehydration(harness: ServiceHarness, timeoutMs = 4_000): Promise<void> {
+  const service = harness.service as unknown as RehydrationProbe
+  await waitForCondition(
+    () => service.rehydrated && service.supervisionIndexComplete,
+    'cold-corpus rehydration to finalize (rehydrated and supervisionIndexComplete)',
+    { timeoutMs },
+  )
 }
 
 /** Read one required Session view of a listing. */
@@ -4423,7 +4449,9 @@ describe('cold lead rehydration', () => {
     const persistence = new FakeSessionPersistence()
     persistence.ids = ['late-persist-lead']
     harness.ctx.provide('sessionPersistence', persistence)
-    await new Promise(resolve => setTimeout(resolve, 300))
+    // The late binding arms a bounded timer; wait for the real final state of
+    // the readiness barrier plus authoritative scan instead of guessing 300ms.
+    await settleRehydration(harness)
     await nextTask()
     // The readiness barrier confirms the corpus, then the authoritative scan
     // rebuilds the index.
@@ -4552,7 +4580,8 @@ describe('cold lead rehydration', () => {
     harness.ctx.provide('sessionQuery', query.asService())
     harness.ctx.provide('sessionProjectionCache', cache.asService())
     harness.ctx.provide('sessionPersistence', persistence)
-    await new Promise(resolve => setTimeout(resolve, 300))
+    // Wait for the service's actual rehydration completion, not a guessed delay.
+    await settleRehydration(harness)
     await nextTask()
     // One readiness listing (consistency check) + one authoritative scan, then final.
     expect(query.listSessionsCalls).toBe(2)
@@ -4593,12 +4622,20 @@ describe('cold lead rehydration', () => {
     harness.ctx.provide('sessionProjectionCache', cache.asService())
     harness.ctx.provide('sessionPersistence', persistence)
     appendTurnEnd(requireSession(harness, 'cold-watched-child'), 1)
-    await new Promise(resolve => setTimeout(resolve, 300))
+    // The bounded first attempt ends by warning that the unclassified-read cap
+    // was hit; waiting for that exact event replaces the guessed 300ms delay.
+    await waitForCondition(
+      () => warn.mock.calls.some(call => String(call[0]).includes('stopped reading unclassified')),
+      'the bounded cold-scan attempt to exhaust its unclassified-log read budget',
+    )
     await nextTask()
-    // Each attempt is capped at 1 known-enabled + 64 unclassified reads;
-    // transient failures may schedule another bounded attempt.
-    expect(query.readSessionCalls).toBeGreaterThanOrEqual(65)
-    expect(query.readSessionCalls % 65).toBe(0)
+    // Each attempt is capped at 64 unclassified + 1 known-enabled reads, and
+    // retries are bounded: the total is a real upper bound, never an exact
+    // multiple that a jittery extra attempt would invalidate.
+    const readsPerAttempt = 64 + 1
+    const boundedAttempts = 1 + 12 // one initial attempt + MAX_REHYDRATION_RETRY_ATTEMPTS
+    expect(query.readSessionCalls).toBeGreaterThanOrEqual(readsPerAttempt)
+    expect(query.readSessionCalls).toBeLessThanOrEqual(readsPerAttempt * boundedAttempts)
     expect(warn.mock.calls.some(call => String(call[0]).includes('corrupt DevLead replay'))).toBe(true)
     expect(warn.mock.calls.some(call => String(call[0]).includes('stopped reading unclassified'))).toBe(true)
     warn.mockRestore()
@@ -4619,12 +4656,14 @@ describe('cold lead rehydration', () => {
     harness.ctx.provide('sessionProjectionCache', cache.asService())
     harness.ctx.provide('sessionPersistence', persistence)
     appendTurnEnd(harness.leadSession, 2)
-    await new Promise(resolve => setTimeout(resolve, 300))
+    // The late binding retries through the service's bounded timer: wait for the
+    // real rehydration completion instead of guessing its latency.
+    await settleRehydration(harness)
     await nextTask()
     expect(query.readSessionCalls).toBe(1)
   })
 
-  it('rehydrates only live leads when no projection cache is composed', async () => {
+  it('exact-folds cold candidates when no projection cache is composed', async () => {
     const query = new FakeSessionQuery()
     await seedPersistedLead(query, { sessionId: 'persisted-lead', watched: ['cold-watched-child'] })
     const harness = await bootService({ enabled: true })
@@ -4634,7 +4673,9 @@ describe('cold lead rehydration', () => {
     harness.ctx.provide('sessionQuery', query.asService())
     harness.ctx.provide('sessionPersistence', persistence)
     appendTurnEnd(harness.leadSession, 1)
-    await new Promise(resolve => setTimeout(resolve, 300))
+    // Rehydration falls back to bounded exact folds without a cache and still
+    // finalizes: wait for that final state rather than a guessed delay.
+    await settleRehydration(harness)
     await nextTask()
     expect(query.readSessionCalls).toBe(1)
     expect(warn.mock.calls.some(call => String(call[0]).includes('no Session projection cache'))).toBe(true)
@@ -4654,7 +4695,12 @@ describe('cold lead rehydration', () => {
     harness.ctx.provide('sessionProjectionCache', cache.asService())
     harness.ctx.provide('sessionPersistence', persistence)
     appendTurnEnd(harness.leadSession, 1)
-    await new Promise(resolve => setTimeout(resolve, 300))
+    // A rejected listing never finalizes rehydration, but it must warn. Wait
+    // for that exact observable instead of the old fixed 300ms delay.
+    await waitForCondition(
+      () => warn.mock.calls.some(call => String(call[0]).includes('could not list persisted Sessions')),
+      'the rejected persisted-corpus scan to warn',
+    )
     await nextTask()
     expect(harness.service.view(harness.lead.agent).enabled).toBe(true)
     expect(warn.mock.calls.some(call => String(call[0]).includes('could not list persisted Sessions'))).toBe(true)

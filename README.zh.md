@@ -759,10 +759,20 @@ settle，结果里 `stopped: true`（已归档的 Session 是 no-op，结果 `st
   超限时降级为 digest-only，而不是让报告失败。
 - **冷 / 已 dispose 的 DevLead 会话**：Agent dispose 后 hub 仍保留该 lead 的索引与反向关注关系索引，因此已关注会话的 `turn/end` 仍会被观察并写入持久通知。插件加载时（Host 重启 /
   插件重载）从持久状态重建索引：`[Service.init]` 会先等持久语料可读（有界 2s 的
-  corpus-readiness barrier；全新 Host 无存储会话时立即通过，稳定 Host 只付一次语料比对），
-  然后执行**唯一一次**权威冷扫描——用 `sessionQuery` 列出持久会话，经 projection cache 零 I/O
-  预筛，再对候选精确折叠 `plugin:devlead/*` 记录（无法分类的行有全量日志读取上限 64）；没有
-  projection cache 时退化为只恢复 live 会话。默认（`wakeColdSession: true`）先
+  corpus-readiness barrier、100ms 轮询；全新 Host 无存储会话时立即通过，稳定 Host 只付一次
+  语料比对）并完成第一次有界扫描尝试；更大的语料在之后的有界尝试里分批完成。冷扫描是
+  **可续扫的多批游标**，不是一次全量扫描：listing 缓存后复用到其行耗尽为止（语料就绪前拿到的
+  listing 不可信，必须重新列出），每次尝试最多对 64 条无法分类的 Session 日志做全量精确折叠
+  （projection cache 明确判定为 lead 的行不计入），下一次尝试从保存的游标继续，分页推进不消耗
+  重试预算。损坏候选会推进游标并让索引进入 degraded，但不会中止扫描；读取失败保留游标并按有界
+  指数退避重试（250ms→5s，最多 12 次），之后只保留一条 30s 慢速降级恢复探针，不会形成热循环；
+  扫描中途消失的 Session 会让 listing 失效并重新列出、不消耗该预算；live Agent / attach-only
+  Session 的 projection 损坏同样让索引 degraded。没有 projection cache 时仍按有界精确折叠扫描冷候选
+  （只 warning 一次），**不会**退化为只恢复 live 会话。存在持久语料时，prompt 授权保持
+  fail-closed（`DEVLEAD_SESSION_UNAVAILABLE`，错误文案给出降级原因与恢复提示），直到一次在
+  语料就绪后完成的扫描证明 supervisor 集合完整；恢复路径是修复/删除损坏 Session、在 lead
+  Session 运行 `/devlead reset`，或等待下一次降级探针（重启 Host 也会重建索引）。默认
+  （`wakeColdSession: true`）先
   `sessionController.resolveAgent(leadId)` resume 冷 lead 再投递；设为 `false` 时队列只留在
   内存里，等人类打开 lead Session 时补写并投递。插件卸载期间结束的 turn 无法补发；下次加载
   会重建索引。
@@ -952,9 +962,10 @@ config 是整体替换）。
 
 DevLead 面向**默认 DSH Web 组合**（`dsh-base` + `dsh-web-app`）构建，不需要任何实验性 bundle
 或第三方插件。所有非默认能力都走可选服务查找（`ctx.get(...)`）并退化为有文档的行为，而不是
-失败：Workspace registry / Session controller / 标题服务都是可选 peer；Session projection
-cache 与 persistence 服务用于 Host 重启后重建关注关系索引（缺失时冷重建退化为只恢复 live
-会话）；实验性 Git worktree 服务只在显式请求隔离时被借用。逐包的依赖判定表（含客户端 `dsh.client.inject` 各项）见
+失败：Workspace registry / Session controller / 标题服务都是可选 peer；Session query /
+persistence 服务与 projection cache 用于 Host 重启后重建关注关系索引（没有 query/persistence
+服务时只有 live 会话可索引；没有 projection cache 时扫描仍按同样有界批次精确折叠冷候选并
+warning 一次）；实验性 Git worktree 服务只在显式请求隔离时被借用。逐包的依赖判定表（含客户端 `dsh.client.inject` 各项）见
 [`docs/OPTIONAL-DEPENDENCIES.md`](docs/OPTIONAL-DEPENDENCIES.md)。
 
 ## 开发与验证

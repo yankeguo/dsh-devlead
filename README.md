@@ -960,15 +960,28 @@ composed — the plugin never depends on it.
   overflow to digest-only instead of failing the report.
 - **Cold and disposed DevLead sessions:** the hub keeps an indexed lead even after its Agent is
   disposed, so a watched session's `turn/end` is still observed and recorded. At plugin load
-  (Host restart / plugin reload) the watch index is rebuilt from durable state. The Host cannot
-  report application-ready before that rebuild: `[Service.init]` waits for the durable corpus to
-  become readable (bounded at 2 s; a fresh Host with no stored Sessions proceeds immediately, a
-  steady Host pays one corpus comparison), then runs exactly one authoritative cold scan —
-  persisted Sessions are listed, the projection cache pre-filters them without log I/O,
-  candidates are exactly folded from their `plugin:devlead/*` records (unclassified rows are
-  capped at 64 full-log reads), and a corpus with no projection cache degrades to live Sessions
-  only. By
-  default (`wakeColdSession: true`) a queued notification first resumes the cold lead
+  (Host restart / plugin reload) the watch index is rebuilt from durable state. `[Service.init]`
+  first waits for the durable corpus to become readable (bounded at 2 s with 100 ms polling; a
+  fresh Host with no stored Sessions proceeds immediately, a steady Host pays one corpus
+  comparison) and completes the first bounded scan attempt; a larger corpus finishes across
+  later bounded attempts. The rebuild is a resumable multi-batch cursor rather than a single
+  pass: the listing is cached and reused until its rows are exhausted (a listing taken before
+  corpus readiness is never trusted and is re-taken), each attempt folds at most 64 unclassified
+  Session logs in full (rows the projection cache positively identifies as leads are not
+  counted), and the next attempt resumes from the saved cursor, so pagination progress does not
+  consume the retry budget. A corrupt candidate advances the cursor and marks the index degraded
+  without stopping the scan; a read failure keeps the cursor and is retried on a bounded
+  exponential backoff (250 ms → 5 s, at most 12 attempts), after which only a slow 30 s degraded
+  recovery probe retries — never a hot loop; a Session that disappeared mid-scan
+  invalidates the listing and re-lists without consuming that budget, and corrupt projection
+  state on a live or attach-only Session degrades the index the same way. A corpus with no
+  projection cache still scans cold candidates with bounded exact folds (warning once); it does
+  not degrade to live Sessions only. When a persisted corpus exists, prompt authorization stays
+  fail-closed (`DEVLEAD_SESSION_UNAVAILABLE`; the error names the cause and the recovery options)
+  until a scan that finished after corpus readiness proves the complete supervisor set; recovery
+  is to fix or delete the corrupt Session, run `/devlead reset` in the lead Session, or wait for
+  the next degraded probe (a Host restart also rebuilds the index). By default
+  (`wakeColdSession: true`) a queued notification first resumes the cold lead
   (`sessionController.resolveAgent(leadId)`) and then delivers; set it to `false` to keep the
   queues in memory and wait until a human opens the lead Session (which writes the pending
   records and delivers). Turns that settle while the plugin is unloaded are lost; the next load
@@ -1197,9 +1210,12 @@ DevLead is built for the **default DSH Web composition** (`dsh-base` + `dsh-web-
 experimental bundle and no third-party plugin. Every non-default capability is read through
 optional service lookups (`ctx.get(...)`) and degrades to a documented behavior instead of
 failing: the Workspace registry, Session controller, Session title service, and Session query
-service are optional peers; the Session projection cache and persistence services are probed to
-rebuild the watch index after a restart (missing ones degrade cold rehydration to live Sessions
-only); and the experimental Git worktree service is only borrowed for opt-in isolation. The full package-by-package judgment table, including the client-side
+service are optional peers; the Session persistence service and the Session projection cache are
+probed to rebuild the watch index after a restart (unless the Session query and persistence
+services are both composed, only live Sessions can be indexed; without a projection cache the
+scan still exact-folds cold candidates under the same bounded batches, warning once); and the
+experimental Git worktree service is only borrowed for opt-in isolation. The full
+package-by-package judgment table, including the client-side
 `dsh.client.inject` ids, is in [`docs/OPTIONAL-DEPENDENCIES.md`](docs/OPTIONAL-DEPENDENCIES.md).
 
 ## Development and verification

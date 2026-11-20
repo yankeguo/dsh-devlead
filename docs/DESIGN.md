@@ -209,10 +209,10 @@ DSH 的所有读取路径会保留并重放这些记录，但不会把它们投�
   类型遇到新 v2 payload 会 freeze，需要 `/devlead reset`；旧版本读不到 report（预期降级），
   不能宣称“回滚不会因新记录损坏日志”。`devLead` projection 的
   `stateVersion` 现为 7（2 新增 `reports`，3 新增 fork 继承前缀长度，4 新增 answer audit，
-  5 改为按 `answerSeq` 选 latest answer，6 丢弃旧 record/无 seq answer 并要求 seq，7 新增
-  repair-pending 集合并使旧 cache row 失效重折），
-  `devLeadWatch` / `devLeadMode` 均为 3（旧 record 不再冻结）；旧 projection-cache 行会失效并从
-  durable log 重新 fold。
+  5 改为按 `answerSeq` 选 latest answer；6 从未提交、git 历史里不存在，5 直接升到 7，7 同时
+  包含 runtime repair-pending 集合与严格的 seq/旧 record 丢弃——旧 v1 record 与无 `answerSeq`
+  的 answer 显式丢弃并要求 seq），`devLeadWatch` / `devLeadMode` 均为 3（旧 record 不再冻结）；
+  stateVersion <7 的旧 projection-cache 行会整体失效并从 durable log 重新 fold。
 - 每次变更都是**先追加日志，后发通知**。
 - 通知条数在 projection 里按常量 `DEVLEAD_DEFAULT_NOTIFICATION_RETENTION`（64）截断：
   fold 必须是**纯函数**，不能依赖部署 config，否则重放会分叉。
@@ -591,45 +591,66 @@ title 是展示元数据，DSH 0.2.2-rc.1–rc.5 的 WorkspaceRegistry 明确允
 
 `hub.rehydrate(leads)` 对每条 `DevLeadPersistedLead`（`{ sessionId, watched: string[] }`）执行
 `ensureLead` + `setWatched`；可重复调用（幂等），不要求 Agent / Session live。service 的私有
-`persistedLeadRecords(scanPersisted)` 用可选服务重建这份列表（全部 `ctx.get`，缺席即降级）：
+`persistedLeadRecords(scanPersisted, corpusReady)` 用可选服务重建这份列表（全部 `ctx.get`，
+缺席即降级）：
 
 - **live 会话兜底**：`ctx.sessions.list()` 里没有 Agent 的 live Session 直接
   `projectionHandle.stateOf(session)`；`failure === null && enabled && sessions.length > 0` 即
-  记录。这样 attach-only lead（有 Session、无 Agent）也能在重启后恢复观察。
+  记录。这样 attach-only lead（有 Session、无 Agent）也能在重启后恢复观察；live Agent 或
+  attach-only Session 的 projection 损坏会置 `liveAttachFailure`，让索引显式进入 degraded
+  （见下）。
 - **cold 候选预筛**：`sessionQuery.listSessions()` 的 `SessionRecord[]`，跳过 live（上面已处理）
-  与 `header.origin === 'subagent'` 的记录；用可选 `sessionProjectionCache` 的
-  `cachedSnapshot(header)?.values?.devLead` 做零 I/O 预筛：明确 `enabled === true` 且 watch 非空
-  → 候选；明确 disabled / 空 watch → 跳过；`undefined`（cache 无行/无该 key）→ 候选（unknown，
-  仅当 cache 服务存在时）。
+  与 `header.origin === 'subagent'` 的记录；可选 `sessionProjectionCache` 的
+  `cachedSnapshot(header)?.values?.devLead` 只作分类提示：明确 `enabled === true` 的行计为
+  active 候选，其余行（disabled / 空 watch / 无法分类）都按 unknown 走有界 exact-fold——
+  负判定不可信（stale-negative 会让 foreign supervisor 隐身），只是 active 行不占 64 条读取
+  预算。
 - **精确折叠**：对候选 `await sessionQuery.readSession(id)`，用
   `snapshot.inheritedEventCount` 初始化 `emptyDevLeadProjectionState(count)`，再
   `applyDevLeadProjection` 折叠 `snapshot.events` 得到含 `failure` 的权威状态；fork 继承前缀里
-  的 `plugin:devlead/*` 记录不参与判断。`failure !== null` → 首个损坏候选 warning 一次并跳过；
-  `enabled && sessions.length > 0` → 记录（关注集合以精确折叠为准，cache 只作预筛）。
-- **读取上限**：unknown 候选的全量日志读取有上限常量（64），超过后停止读取并 warning，避免
-  Host 重启扫描成千上万历史会话；已知 enabled 的候选不计入该上限（它们是真正的 lead，必须
-  恢复）。
-- 没有 projection cache 服务时：仍处理 live 会话；cold 不做全量日志读取，只记录一次
-  debug/warning（cold rehydration 依赖 projection cache 预筛）。
+  的 `plugin:devlead/*` 记录不参与判断。`failure !== null` → warning 一次、**推进游标**并把索引
+  标记为 degraded 后继续扫其它候选（不终止扫描）；`enabled && sessions.length > 0` → 记录
+  （关注集合以精确折叠为准，cache 只作候选提示）。
+- **可续扫的多批游标**：`coldScan` 保存 `{ records, index, leads, active, complete, corrupt,
+  trusted }`；`sessionQuery.listSessions()` 的 listing 只取一次并缓存复用，直到其行被耗尽
+  （语料就绪前取得的 listing `trusted=false`，就绪后必须重新列出，不得用该子集 finalize）。
+  每次尝试最多对 64 条未被 cache 明确判定为 active 的候选（unknown / stale-negative /
+  disabled）做全量日志读取（`MAX_COLD_LEAD_LOG_READS`；cache 明确判定为 active 的 lead 不计入，
+  它们必须恢复）；到达上限时保留游标并 warning，下一次有界尝试从断点续扫。游标推进（index
+  增加）是进展而不是失败，不消耗失败重试预算。
+- **失败与重试**：读取失败保留游标（下一轮重试同一行），按指数退避 250ms→5s、最多 12 次重试；
+  达到上限后只保留一条 30s 慢速降级恢复探针（每次失败后重新排一次，重置游标与预算再扫），不形成
+  热循环。扫描中途 Session 被删除（not-found）时让 listing 失效并重新列出、不消耗该预算；
+  corrupt 候选或 `liveAttachFailure` 同样进入 degraded 并走慢速探针。只有完整扫描且应用成功才
+  `finalizeRehydration()`。
+- **没有 projection cache 服务时**：仍处理 live 会话；cold 候选全部按 unknown 走上述有界精确
+  fold（warning 一次），不存在“只恢复 live 会话”的退化；只有语料服务本身缺席（没有
+  `sessionPersistence` / `sessionQuery`）时，才只剩 live 会话可索引。
 - **就绪条件与 corpus-readiness barrier（真实 Host 上的关键点）**：真实 query engine 通过
   自己的 `ctx.inject` 回调**异步**绑定 `sessionPersistence`，服务先可见、绑定后
   `listSessions()` 才返回持久语料；绑定前只返回 live-only 行（Host 重启后为空），所以
   "`sessionQuery` 存在"**不等于**可以扫描持久语料。`[Service.init]` 因此**await** 一个精确的
-  就绪屏障后才完成：先同步跑 live-attach 回退 → 等一个 macrotask（让 query engine 自己的
+  就绪屏障后再启动扫描：先同步跑 live-attach 回退 → 等一个 macrotask（让 query engine 自己的
   optional-service 绑定先运行）→ 用新增的私有探针 `persistedSessionsOf(ctx)`
   （`src/persistence.ts`：可选 `sessionPersistence.list()` 返回的**完整存储会话 id 集合**；
   服务缺失或没有可调用 `list` → 不可验证；调用抛错 → "已组合但未就绪"）做比对：
   - persistence 报告 0 个存储会话 → 立即就绪（全新 Host 直接通过）；
   - 否则每 100ms 轮询一次、**有界 2s**，直到 `sessionQuery.listSessions()` 的 persisted 行
     包含全部存储 id（稳定 Host 只付一次语料比对）；超时则 warning 一次并 best-effort 继续；
-  - 然后执行**唯一一次**权威 cold scan → 标记 `rehydrated`、解绑全部重试；之后事件不再重复
-    列语料（并发去重 + `rehydrate` 幂等）。
-  语义后果：Host 在关注关系索引重建完成前不会报告 application-ready；init 时若
-  `sessionPersistence` 尚未组合，则通过一次性 `ctx.inject(['sessionPersistence'], ...)` 等待，
-  它出现时再走同一屏障；从未组合 persistence 的 Host 不扫描持久语料、也不会 per-event 扫描
-  （`agent/created` / `session/event` 一次性监听只在 `sessionQuery` 本身缺失时才 arm）。
+  - 就绪后从一份**就绪后取得的 listing** 开始可续扫的批处理（就绪前的 listing 不可信、必须
+    重列）；`[Service.init]` 只 await 第一次有界尝试，超出一批的语料在之后的有界尝试里完成，
+    期间 `supervisionIndexComplete=false`，prompt 以 `DEVLEAD_SESSION_UNAVAILABLE` fail
+    closed；完整扫描收尾才 `finalizeRehydration()`（置 `rehydrated`、解绑全部重试）。
+  语义后果：关注关系索引的首次有界扫描完成前，Host 可能已经报告 application-ready，但 prompt
+  授权保持 fail closed；init 时若 `sessionPersistence` 尚未组合，则通过一次性
+  `ctx.inject(['sessionPersistence'], ...)` 等待，它出现时再走同一屏障；从未组合 persistence
+  的 Host 不扫描持久语料、也不会 per-event 扫描（`agent/created` / `session/event` 一次性监听
+  只在 `sessionQuery` 本身缺失时才 arm），只按 live 会话授权。
   两个服务都只读 `ctx.get` 探测，不新增 `static inject`、不新增依赖，缺失时仍可加载并仅恢复
   live lead。
+- **恢复路径**：修复或删除损坏 Session、在 lead Session 运行 `/devlead reset`（重置
+  rehydration epoch、清空游标/warning/重试计时器并重新扫描；`/devlead off` 在冻结 fold 上
+  也走同一 reset），或等待下一次 30s 慢速降级探针；重启 Host 也会重建索引。
 - 恢复的只是关注关系索引：**插件卸载期间**结束的 `turn/end` 不会补发（内存 transport 只在
   插件运行期间存在；事件只发生一次），Host 重启/重载后新的 `turn/end` 正常写入持久通知并
   投递；`agent/disposed` 不卸载插件，索引保留，因此不丢观察。
@@ -1865,11 +1886,13 @@ question 路由。
   - watcher 数 = 1 且是另一个 lead → 拒绝 `DEVLEAD_FOREIGN_SUPERVISOR`。
   - watcher 数 > 1 → 一律拒绝 `DEVLEAD_MULTIPLE_SUPERVISORS`，即使 caller 是 active incumbent；
     先由人类关闭一个 lead 或解除冲突关注，不提供 warning/config 回退。
-  - 无 projection cache、unknown/capped 扫描、stale-negative、读取失败或语料未就绪导致 supervisor
-    集合不可证明完整 → `DEVLEAD_SESSION_UNAVAILABLE`，不投递；stale-negative 不再作为负判定信任，
-    必须 exact-fold，避免 foreign supervisor 隐身。无持久语料的 Host 仍按 live-only 可用。每次有 corpus
-    的重扫先清回不完整状态，只有完整扫描才 finalize；不完整扫描在 finally 重新调度 250ms/optional-service
-    重试，慢失败后可恢复，不形成永久 prompt 禁令。
+  - 有界扫描无法覆盖全部候选（例如没有 projection cache 时全部行按 unknown 精确 fold，可能
+    超过每批 64 条读取上限）、损坏记录、读取失败或语料未就绪，使 supervisor 集合不可证明完整 →
+    `DEVLEAD_SESSION_UNAVAILABLE`，不投递；stale-negative 不再作为负判定信任，必须 exact-fold，
+    避免 foreign supervisor 隐身。无持久语料的 Host 仍按 live-only 可用。每次有 corpus 的重扫
+    先清回不完整状态，只有完整扫描才 finalize；不完整扫描按 250ms→5s 有界指数退避续扫
+    （最多 12 次），之后只保留一条 30s 慢速降级探针，慢失败后可恢复（修复/删除损坏 Session、
+    运行 `/devlead reset`、等待下一次探针或重启 Host），不形成永久 prompt 禁令。
 - **不能 prompt 另一个 DevLead Session**：target `isEnabled === true` 时拒绝
   `DEVLEAD_INVALID_INPUT`，防止 lead-to-lead 循环。当前只拒绝 self；这是 Proposed 变更。
 - subagent Session 已经不在 `collectSessionIds` / `resolveSessionReference` 的可寻址集合里，
@@ -2527,7 +2550,7 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
 | `DEVLEAD_SESSION_NOT_FOUND` | 指定 Session 不存在（含 Host 侧 `session/not-found` 映射） |
 | `DEVLEAD_SESSION_ARCHIVED` | Session 已归档，不能续写 |
 | `DEVLEAD_SESSION_ACTIVE` | Session 仍有活动（turn / subagent / job / schedule），未传 `stop_running` 时拒绝归档；消息列出活动种类（item 最多 3 条） |
-| `DEVLEAD_SESSION_UNAVAILABLE` | 无法 resume / 没有 sessionController / 没有 create 能力 / followup/steer/inject 被拒 |
+| `DEVLEAD_SESSION_UNAVAILABLE` | 无法 resume / 没有 sessionController / 没有 create 能力 / followup/steer/inject 被拒；或 cold supervisor 索引 degraded（corrupt at-rest replay、live projection failure、12 次退避耗尽）时 prompt fail closed——文案含降级原因与恢复路径，见 §4.1.1 |
 | `DEVLEAD_QUESTION_NOT_FOUND` | `intent:'answer'` 的 `question_id` 无效：report 不存在、非 question、sender 不匹配 target、leadSessionId 非调用者，或 question 已 expired/cancelled（Phase 1d 无 TTL/cancel 写入者，仅 policy 拒绝语义）；提示读 digest 或改用普通 instruction |
 | `DEVLEAD_QUESTION_ALREADY_ANSWERED` | question 已 answered（最新 answer admitted/claimed/presented）且新 answer 文本/幂等键不同；消息附已有 answer 摘要，提示同文本/同键幂等重试或改用不带 question_id 的 correction/instruction |
 | `DEVLEAD_WATCH_LIMIT` | 关注集合超过上限 |
@@ -2547,11 +2570,14 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   （字段漂移 / 缺失字段 / 时间范围）、fold identity 复用、fold **reset 解冻**（合法 reset
   清空状态、坏 reset 不解冻、reset 后记录正常 fold）、通知泵（合并窗口 / 去重 / 重试 /
   冷会话 / 归档 / dispose / 零延迟代际守卫 / **queued notice 保留与 1s recheck**）、
-  **冷 lead 索引重建**（`FakeSessionQuery` + `FakeProjectionCache`：cache 预筛 enabled /
-  disabled、精确折叠遇损坏记录跳过 + warning、live 无 Agent 也索引、`wakeColdSession` 默认
-  true 时 resume；**corpus-readiness barrier**：等待 optional persistence 绑定、stale corpus
-  等到一致、永不就绪时 warning + best-effort、readiness 扫描只做一次、query engine 晚到、
-  无 projection cache 只恢复 live、persisted scan 抛错不阻加载）、Workspace 与 Session 编排、
+  **冷 lead 索引重建**（`FakeSessionQuery` + `FakeProjectionCache`：active/inactive/unknown
+  预筛与负判定仍需 exact-fold、精确折叠遇损坏记录跳过 + warning、live 无 Agent 也索引、
+  `wakeColdSession` 默认 true 时 resume；**corpus-readiness barrier**：等待 optional
+  persistence 绑定、stale corpus 等到一致、永不就绪时 warning + best-effort、就绪前的 listing
+  不 finalize、query engine 晚到、无 projection cache 走有界精确折叠（不再只恢复 live）、
+  多批游标续扫与 250ms→5s 有界退避、12 次后每 30s 一次的降级探针、reset 重置扫描 epoch、
+  persisted scan 抛错不阻加载）、
+  Workspace 与 Session 编排、
   列表排序与截断、列表窗口外的身份解析、**截断 Session 引用解析**（完整 id / `session-` 前缀
   部分 id / 裸 uuid 第一段 / 裸完整 uuid / 首尾空白；同第一段歧义列候选且不猜、零命中给出
   可恢复提示、subagent origin 仍不可寻址）、

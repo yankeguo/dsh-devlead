@@ -194,20 +194,32 @@ wire projection 的 questionStatus/answerStatus 都是可选 additive 字段，�
 1. **`ctx.get('sessionPersistence').list()` 作为 query 语料就绪信号。** 真实 Session query
    engine 通过自己的 scheduled `ctx.inject` 绑定 `sessionPersistence`；在绑定完成前
    `sessionQuery.listSessions()` 可能只返回 live 行。DevLead 在冷重建前比较 persistence
-   `list()` 的 stored Session id 集合与 query listing：最多等 2s（100ms 轮询），一致后做唯一
-   一次权威扫描；超时只 warning 并 best-effort 继续，缺少该可选服务时跳过屏障。依据：
+   `list()` 的 stored Session id 集合与 query listing：最多等 2s（100ms 轮询），并且只把就绪后
+   取得的 listing 当作可 finalize 的可信快照（就绪前取得的 listing 会在就绪后重新列出）；之后
+   冷扫描按可续扫的多批游标推进，每次尝试对有界数量的非 active 候选做精确 fold，失败按有界
+   指数退避重试（250ms→5s、最多 12 次），超限后只保留一条 30s 慢速降级探针。超时只 warning
+   并 best-effort 继续，缺少该可选服务时跳过屏障。依据：
    `@deepseek-ai/dsh-session-persistence` README（`list()` 返回 one snapshot per visible
    stored session）与 rc.1–rc.5 的 `session-query` optional binding 行为。假设是 `list()`
    完整且 id 与 query listing 可比；DSH 没有把它文档化为“就绪探针”。
-2. **`sessionProjectionCache` eager checkpoint。** 冷重建与全局单活准入用
-   `cachedSnapshot(header)` 的 `devLead` 行做零 I/O 预筛：`enabled:false` 直接跳过日志、
-   `enabled:true` 才是候选、无法分类则精确 fold。负判定的安全性依赖 DevLead 在 mode/watch/
-   reset 的 durable 写入后主动 `await cache.write(session)`，以及 DSH 的缓存契约“the log
-   leads and the cache follows ... never ahead of it”。若服务没有 `write` 或写入失败，
-   DevLead warning 后走精确 fold；无法分类的行有 64 条全量日志读取上限。依据：
+2. **`sessionProjectionCache` eager checkpoint。** 全局单活准入与冷重建都用
+   `cachedSnapshot(header)` 的 `devLead` 行做零 I/O 预筛，但两者对负判定的用法不同：单活准入
+   对 active 行精确 fold、unknown 行有界读取、`enabled:false` 的行直接跳过日志；冷重建只把
+   active 行当候选提示，负判定不可信（stale-negative 会让 foreign supervisor 隐身），其余行
+   一律按有界 exact-fold 处理。负判定的安全性依赖 DevLead 在 mode/watch/reset 的 durable 写入后
+   主动 `await cache.write(session)`，以及 DSH 的缓存契约“the log leads and the cache follows
+   ... never ahead of it”。若服务没有 `write` 或写入失败，DevLead warning 后走精确 fold；
+   无法分类的行按每次尝试 64 条的全量日志读取上限分批续扫（游标保留，不会因单次上限丢弃剩余行；
+   损坏候选推进游标并让索引进入 degraded，由 30s 慢速探针重试）。依据：
    `@deepseek-ai/dsh-session-projection-cache` README 与 `docs/capability-seams.md`
    （`ctx.sessionProjectionCache`）；该 README 只描述 creation / turn-end / disposal 三个
    mandatory write point，没有把 `write()` 单独承诺为第三方插件契约。
+
+**降级终态与恢复路径**：corrupt at-rest replay、live projection failure，以及 12 次有界退避
+耗尽，对普通 timer 重试是终态（不热重扫，只保留一条 30s 慢速降级探针）。恢复路径：
+(a) 在受影响的 DevLead Session 运行 `/devlead reset`；(b) 删除或修复损坏/不可读的 Session；
+(c) 等待 30s 慢速降级探针，或重启 Host。期间 prompt 授权保持 fail-closed
+（`DEVLEAD_SESSION_UNAVAILABLE`），错误文案同时给出降级原因与恢复提示。
 
 ## 0.4.0 Batch 1 breaking changes
 

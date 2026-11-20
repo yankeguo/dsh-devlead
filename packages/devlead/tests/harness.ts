@@ -76,6 +76,41 @@ export async function sleep(ms: number): Promise<void> {
   await flushMicrotasks(512)
 }
 
+/** Options accepted by {@link waitForCondition}. */
+export interface WaitForConditionOptions {
+  /** Bounded total wait before failing; defaults to four seconds. */
+  readonly timeoutMs?: number
+  /** Delay between two polls; defaults to five milliseconds. */
+  readonly intervalMs?: number
+}
+
+/**
+ * Poll a condition until it holds, settling the timer queue and microtasks
+ * between checks. A deterministic replacement for a guessed wall-clock sleep:
+ * the wait ends as soon as the observable state is reached and fails with the
+ * caller's description when it never is.
+ * @param condition - predicate polled until it returns true.
+ * @param description - what is awaited, used in the timeout error.
+ * @param options - bounded timeout and poll interval.
+ */
+export async function waitForCondition(
+  condition: () => boolean,
+  description: string,
+  options: WaitForConditionOptions = {},
+): Promise<void> {
+  const timeoutMs = options.timeoutMs ?? 4_000
+  const intervalMs = options.intervalMs ?? 5
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    if (condition()) return
+    if (Date.now() >= deadline) {
+      throw new Error(`timed out after ${String(timeoutMs)}ms waiting for ${description}`)
+    }
+    await new Promise<void>((resolve) => { setTimeout(resolve, intervalMs) })
+    await flushMicrotasks(256)
+  }
+}
+
 /** Extract the visible text of one admitted message. */
 export function messageText(message: UserMessage): string {
   return message.content

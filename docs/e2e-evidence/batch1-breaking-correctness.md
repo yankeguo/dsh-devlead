@@ -17,7 +17,7 @@
 | 17:25:12 | 最终 patch 完成：**221/221，PATCH_EXIT=0** |
 | 17:25:56 | 最终 installed 完成：**221/221，INSTALLED_EXIT=0** |
 | 17:27:05 | 首轮最终 no-worktree 完成：**198/198，NO_WORKTREE_EXIT=0** |
-| 17:49–17:59 | 独立复核的 3 项问题及后续 2 个边界修复后，`pnpm verify`：34 files / **1400 tests** 全过，`check:packages` 再次 OK；复核结论：未发现 blocker |
+| 17:49–17:59 | 3 项问题及后续 2 个边界修复后，`pnpm verify`：34 files / **1400 tests** 全过，`check:packages` 再次 OK |
 | 17:59:57 | blocker-fixed patch：**221/221，PATCH_EXIT=0** |
 | 18:00:35 | blocker-fixed installed：**221/221，INSTALLED_EXIT=0** |
 | 18:01:21 | blocker-fixed no-worktree：**198/198，NO_WORKTREE_EXIT=0** |
@@ -235,3 +235,104 @@ check-packages: OK (6 packages)
 ```
 
 client revision：`2ce2a5a4eedb`；日志：`/tmp/dsh-devlead-batch1-final9-{patch,installed,no-worktree}.log`。
+
+## 三次修复：cold-index fail-open 与终态恢复（从 Kimi 429 的未提交 WIP 续做）
+
+本轮以 delta 复核对 `6ef5631` 的 findings 为输入（1 blocker + 4 major + minors），从 Kimi 实施到一半的未提交
+WIP 继续完成，**没有 revert**：继承的 WIP 为 `packages/devlead/src/index.ts`（+112/−26，含
+`rehydrationEpoch`、`DEGRADED_REHYDRATION_PROBE_MS=30s`、`state.trusted`、`liveAttachFailure` 部分收口、
+7 个新测试草稿）与 `packages/devlead/tests/phase2.spec.ts`（+192，末个测试缺右括号、无法解析）。起点工作树
+dirty、`main` ahead 3（HEAD `6ef5631`）。本轮在该 WIP 上继续实现、修复半成品并重写负控，未回退任何已有修复。
+
+### 修复清单（逐项落实）
+
+| 项 | 实现 |
+| --- | --- |
+| B1（blocker） | `coldScan.trusted`：只有 corpus 就绪后取得的 listing 才允许 finalize；`complete` 必须同时满足 `trusted`；未就绪时取得的 listing 在下次就绪后整份丢弃并重新 list；负控覆盖 corpusReady false→true 且含合法 foreign supervisor 的恢复路径（恢复后 prompt 只能 `DEVLEAD_FOREIGN_SUPERVISOR`，绝不 delivered=true） |
+| M1（major） | lifecycle wake（`agent/created`、`session/event`）不再清除 corrupt/live-failure 终态、不再重置 attempts/delay；queryReady 翻转时重建 lifecycle listener；corrupt/cap 终态保持到显式 `/devlead reset` 或服务重新组合（新注入的 persistence/cache/query 触发新 epoch） |
+| M2（major） | live projection failure 写入 `state.complete=false` + `state.liveFailure=true`，阻止 cursor 被清除；与 at-rest corrupt 区分开；终态走单条 30s 慢速探针，不在 250ms 快速重试里反复全量重扫；探针在修复后重新 list+scan 并恢复授权 |
+| M3（major） | optional-service hook 内**同步**把 `supervisionIndexComplete=false`，再调度扫描；负控证明 250ms 窗口内 prompt 立即 `DEVLEAD_SESSION_UNAVAILABLE` 且 `readSessionCalls===0`，不允许绕过 cold supervisor 证明 |
+| M4（major） | corrupt/live-failure/12 次退避耗尽后进入单条 30s 慢速降级探针（无热循环），`/devlead reset` 立即恢复；错误文案带原因+恢复动作（`/devlead reset`、删除/修复坏 Session、等待探针）；read 失败区分 not-found 与瞬时错误：not-found 在同一次尝试内重新 list 一次，且不消耗重试预算，瞬时错误保留 cursor 由有界退避重试；README/COMPATIBILITY/DESIGN/OPTIONAL-DEPENDENCIES 改写为多批游标语义并写恢复路径 |
+| minor 1 | persisted-scan applied 失败负控：spy `DevLeadNotificationHub.rehydrate`，只在第 2 次（persisted scan 应用）抛错，断言失败确实发生在 persisted 分支（payload 为 `['cold-lead']`）且不投递 |
+| minor 2 | answers.spec 新增 observer answer-only 负控：300 条普通 `kind:'user'` 消息不进入 presented、不驱逐 answer 证据、不消耗 256 预算，overflow warning 对非 answer family 至多一次；并走真实 cold-read projection 复核 |
+| minor 3 | 版本叙事改为真实历史 5→7（`stateVersion: 6` 从未提交：`git log --all -G "stateVersion: 6"` 为空）；`fold.ts` 注释 `<=6`→`<7`；phase2 真实 registry refold 用 ver 5；DESIGN.md 对应段落同步 |
+| minor 4 | service.spec 的 6 处真实 `setTimeout(300)` 改为等待真实完成状态/告警的条件轮询；`readSessionCalls % 65 === 0` 改为真实上界（`>=65` 且 `<=65*(1+12)`） |
+| minor 5 | reset 与 in-flight scan 竞态：`rehydrationEpoch` 覆盖 scan 应用前、后与 finally；reset 后旧 run 不得 finalize/re-arm，settle 后从新 epoch 重新扫描；负控用闸门卡住旧 run 的 read，断言 reset 后、post-reset scan 完成前 prompt 必须 fail closed |
+| minor 6 | not-found 不再把 cursor 钉在坏行：同一次尝试重列一次并在重列后的 listing 上继续 exact fold；断言 `listSessionsCalls===3`、读取序列 `deleted(deleted 抛错) → deleted → stable`，boot 内即完成、无额外重试周期 |
+| minor 7 | cap 时不再把 live-only 早退计成失败（`rehydrationScanned`）；`disposeRehydrationRetry` 的 delay 归 250 而非 0；reset 清 timer/warnings/coldScan/recoveredActive/fresh 标志并复位 degraded reason；终态不再保留误导性 recoveredActive |
+
+### 真实时间线
+
+| 时间 | 事实 |
+| --- | --- |
+| 20:58 | 接管 WIP，修复 `phase2.spec.ts` 未完成括号；定向 `npx vitest run packages/devlead/tests/phase2.spec.ts` 为 **34 passed / 5 failed**（probe 用例 fake timer 泄漏级联，另有 applied/not-found 与两条 answer 投影用例超时） |
+| 21:05–21:10 | 补齐 B1/M1/M2/M3/M4 与 minors，重写 phase2 负控；phase2 达到 **41/41** |
+| 21:12:29 | 全量 `pnpm verify`：**34 files / 1434 tests** 全过，build 6 targets |
+| 21:13:56–21:14:01 | 7 项 mutation 在最终树逐一重跑，全部 `EXIT=1`；每次恢复源码后 `diff -q` 确认与最终树一致 |
+| 21:14:07–21:14:23 | 最终 `pnpm verify` + `pnpm check:packages`：34/1434、`OK (6 packages)`；`git diff --check` EXIT=0 |
+| 21:14:27–21:14:53 | 最终 patch e2e：**221/221，PATCH_EXIT=0** |
+| 21:14:53–21:15:18 | 最终 installed e2e：**221/221，INSTALLED_EXIT=0** |
+| 21:15:18–21:15:43 | 最终 no-worktree e2e：**198/198，NO_WORKTREE_EXIT=0** |
+
+最终 e2e 的 client revision 为 `fe2e2ce73e39`（patch/installed 日志 boot graph 行）。
+
+### 门禁真实输出（最终树）
+
+```text
+$ pnpm verify
+Test Files  34 passed (34)
+Tests       1434 passed (1434)
+build complete (6 targets)
+VERIFY_EXIT=0
+
+$ pnpm check:packages
+check-packages: OK (6 packages)
+CHECK_PACKAGES_EXIT=0
+
+$ pnpm e2e --no-build
+E2E SMOKE PASS (patch, DeepSeek Harness 0.2.2-rc.5)
+  phase 1: 27/27; phase 1b: 12/12; phase 2: 23/23; phase 3: 128/128; phase 1e: 31/31
+  total: 221/221 checks
+PATCH_EXIT=0
+
+$ pnpm e2e --flow installed --no-build
+E2E SMOKE PASS (installed, DeepSeek Harness 0.2.2-rc.5)
+  total: 221/221 checks
+INSTALLED_EXIT=0
+
+$ pnpm e2e --no-worktree --no-build
+E2E SMOKE PASS (patch, DeepSeek Harness 0.2.2-rc.5)
+  total: 198/198 checks; phase 2 skipped (--no-worktree)
+NO_WORKTREE_EXIT=0
+```
+
+日志（本机）：`/tmp/dsh-batch1-r3-final/{verify,e2e-patch,e2e-installed,e2e-no-worktree}.log`。
+
+### Mutation 负控（最终树；先写回旧行为/去掉修复，确认目标测试失败后恢复）
+
+| 场景 | mutation | 目标测试 | 结果 |
+| --- | --- | --- | --- |
+| B1-new | 恢复旧 `complete`/去掉 trusted re-list | `re-lists after corpus readiness instead of trusting a pre-ready partial snapshot` | `EXIT=1`，`expected DEVLEAD_FOREIGN_SUPERVISOR, but the call succeeded`（fail-open 被抓住） |
+| M1 | lifecycle wake 清 corrupt 并重置预算（pre-fix） | `keeps terminal corruption across lifecycle events without resetting the retry budget` | `EXIT=1`，coldScan 身份断言失败（终态被清） |
+| M2 | 去掉 liveAttachFailure 的 state 写入 | `keeps a live projection failure terminal, skips hot rescans, and recovers via the slow probe` | `EXIT=1`，coldScan.liveFailure 断言失败（cursor 被清） |
+| M3 | 把授权失效推迟到 setTimeout(0) | `rejects immediately when corpus services arrive before the retry timer runs` | `EXIT=1`，`expected DEVLEAD_SESSION_UNAVAILABLE, but the call succeeded` |
+| M4 | 去掉 30s degraded probe（只 warning） | `recovers after the bounded retry budget through the slow degraded probe` | `EXIT=1`，探针 timer 未定义 |
+| applied/persisted | catch 里忽略 apply 失败并标记成功 | `rejects when the persisted scan application fails after a complete scan` | `EXIT=1`，`expected DEVLEAD_SESSION_UNAVAILABLE, but the call succeeded` |
+| reset epoch | 去掉 scan 应用前后两处 epoch guard | `ignores an in-flight pre-reset scan and rescans after it settles` | `EXIT=1`，reset 后旧 run 仍 finalize，prompt 未被拒绝 |
+
+每项 mutation 的完整日志：`/tmp/dsh-batch1-r3-mut/{B1,M1,M2,M3,M4,APPLIED,EPOCH}.log`
+（文件内记录 `EXIT` 与耗时；本轮所有 mutation 均在该轮最终树上重跑，未沿用早于最终树的日志）。
+
+### 证据修正
+
+- 删除原时间线第 20 行未经授权、不可核实的结论性表述，该行只保留当时真实的 verify/check 结果。
+- 本轮不引用任何早于最终树的 mutation 或 e2e 日志；结论只引用可复现的命令输出与日志路径。
+
+### 残余风险（非未完成项）
+
+- not-found 判定基于错误文本启发式（`not found|does not exist|unknown session|SESSION_NOT_FOUND`）；后端文案变化可能把瞬时错误当成“会话消失”。影响有界：同一次尝试最多重列一次、不消耗预算，最坏多一次 list，不会 fail-open。
+- 慢速探针周期为 30s：修复 corrupt Session 后，prompt 授权最坏约 30s 才恢复；`/devlead reset` 立即恢复，删除 Session 也要等一次探针。
+- live projection failure 依赖 Host 重折该 Session 的 projection；坏记录仍在日志时探针会持续失败，这是既定恢复路径（reset/删除/修复日志）。
+- persisted-scan 应用失败负控用 spy `DevLeadNotificationHub.rehydrate` 注入，未在真实 e2e Host 上制造该失败；真实 Host 的冷重建成功路径由 installed/patch phase 1b 覆盖。
+- 冷索引的 listing 在 not-found/服务重组之外不会重取；finalize 之后由其他 Host 进程写入的 cold lead Session 不会被本进程发现，需重启/服务重组（与既有设计一致）。
+- mutation 与 e2e 日志保存在本机 `/tmp`，不随仓库提交。

@@ -8,6 +8,11 @@ import { describe, expect, it } from 'vitest'
 import { DEVLEAD_MESSAGE_KIND } from '@yankeguo/dsh-devlead-protocol'
 import { DevLeadAnswerTracker, DevLeadChildAnswerObserver, entryOfRecord, recordOfEntry } from '../src/answers.ts'
 import { DevLeadMetrics } from '../src/metrics.ts'
+import {
+  DEVLEAD_CHILD_ANSWER_OBSERVATION_MAX,
+  applyDevLeadChildAnswers,
+  emptyDevLeadChildAnswersState,
+} from '../src/child-answer-projection.ts'
 import type { DevLeadChildAnswersState } from '../src/child-answer-projection.ts'
 import { answer, legacyAnswer, sessionEvent } from './fixtures.ts'
 
@@ -551,5 +556,113 @@ describe('DevLeadChildAnswerObserver (durable child-log reconstruction)', () => 
       third.observe(sessionEvent(index + 1, 'user/message', { ...answerMessage(`p${index}`) as object, turn: 1, step: 1 }, index))
     }
     expect(warnings.some(message => message.includes('presented observation'))).toBe(true)
+  })
+
+  it('treats ordinary user/message traffic as non-answer: no presentation, eviction, budget use or repeated warning', () => {
+    const warnings: string[] = []
+    const observer = new DevLeadChildAnswerObserver(message => warnings.push(message))
+    // Answer evidence of every live shape: one presented answer, one claimed by
+    // a proposed pre-step, and one suppressed cancellation candidate.
+    observer.observe(sessionEvent(1, 'agent/inbox/spliced', {
+      target: 'next-step', start: 0, inserted: [answerMessage('m-presented'), answerMessage('m-claimed')],
+    }, 10))
+    observer.observe(sessionEvent(2, 'agent/inbox/spliced', { target: 'next-step', start: 0, removedCount: 2, inserted: [] }, 20))
+    observer.observe(sessionEvent(3, 'user/message', { ...answerMessage('m-presented') as object, turn: 1, step: 1 }, 30))
+    observer.observe(sessionEvent(4, 'agent/inbox/spliced', { target: 'next-step', start: 0, inserted: [answerMessage('m-cancelled')] }, 40))
+    observer.observe(sessionEvent(5, 'agent/inbox/spliced', {
+      target: 'next-step', start: 0, removedCount: 1, inserted: [], outcome: 'canceled',
+    }, 50), true)
+    expect(observer.wasPresented('m-presented')).toBe(true)
+    expect(observer.isClaimed('m-claimed')).toBe(true)
+    // More ordinary human messages than the whole bounded family: if the
+    // observer counted non-answer traffic, it would evict the answer evidence
+    // above and warn about it.
+    for (let index = 0; index < 300; index += 1) {
+      observer.observe(sessionEvent(100 + index, 'user/message', {
+        ...humanMessage(`chat-${String(index)}`) as object, turn: 1, step: 1,
+      }, 1_000 + index))
+    }
+    // Ordinary chat is never recorded as a presentation...
+    for (const id of ['chat-0', 'chat-299']) {
+      expect(observer.wasPresented(id)).toBe(false)
+      expect(observer.presentedAtOf(id)).toBeUndefined()
+    }
+    // ...never evicts answer evidence...
+    expect(observer.wasPresented('m-presented')).toBe(true)
+    expect(observer.presentedAtOf('m-presented')).toBe(30)
+    expect(observer.isClaimed('m-claimed')).toBe(true)
+    expect(observer.claimedAtOf('m-claimed')).toBe(20)
+    // ...and never consumes the bounded budget, so not even the once-latched
+    // eviction warning fires.
+    expect(warnings).toEqual([])
+    // The anchor plus this many real presentations exactly fills the family:
+    // ordinary chat consumed none of the capacity.
+    for (let index = 0; index < DEVLEAD_CHILD_ANSWER_OBSERVATION_MAX - 1; index += 1) {
+      observer.observe(sessionEvent(500 + index, 'user/message', {
+        ...answerMessage(`real-${String(index)}`) as object, turn: 1, step: 1,
+      }, 3_000 + index))
+    }
+    expect(warnings).toEqual([])
+    // The next real presentation is the first overflow, and it warns exactly
+    // once; later real or ordinary traffic never repeats the warning.
+    observer.observe(sessionEvent(800, 'user/message', { ...answerMessage('real-overflow') as object, turn: 1, step: 1 }, 4_000))
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0]).toContain('presented observation')
+    for (let index = 0; index < 50; index += 1) {
+      observer.observe(sessionEvent(900 + index, 'user/message', {
+        ...answerMessage(`real-more-${String(index)}`) as object, turn: 1, step: 1,
+      }, 5_000 + index))
+      observer.observe(sessionEvent(1_000 + index, 'user/message', {
+        ...humanMessage(`late-chat-${String(index)}`) as object, turn: 1, step: 1,
+      }, 5_000 + index))
+    }
+    expect(warnings).toHaveLength(1)
+    // A settled turn still derives both surviving answer facts: the rejected
+    // claimed pre-step and the cancellation that was never restored.
+    expect(observer.observe(sessionEvent(2_000, 'turn/end', { turn: 1, reason: { kind: 'completed' } }, 6_000))).toEqual([
+      { messageId: 'm-claimed', questionId: REPORT, leadId: LEAD, at: 6_000 },
+      { messageId: 'm-cancelled', questionId: REPORT, leadId: LEAD, at: 50 },
+    ])
+
+    // The cold-read answer projection fold applies the same answer-only rule:
+    // ordinary messages neither become presentations nor fill the family.
+    let projection = emptyDevLeadChildAnswersState()
+    projection = applyDevLeadChildAnswers(projection, sessionEvent(1, 'agent/inbox/spliced', {
+      target: 'next-step', start: 0, inserted: [answerMessage('p-answer')],
+    }, 10))
+    projection = applyDevLeadChildAnswers(projection, sessionEvent(2, 'agent/inbox/spliced', { target: 'next-step', start: 0, removedCount: 1, inserted: [] }, 20))
+    projection = applyDevLeadChildAnswers(projection, sessionEvent(3, 'user/message', { ...answerMessage('p-answer') as object, turn: 1, step: 1 }, 30))
+    for (let index = 0; index < 300; index += 1) {
+      projection = applyDevLeadChildAnswers(projection, sessionEvent(100 + index, 'user/message', {
+        ...humanMessage(`p-chat-${String(index)}`) as object, turn: 1, step: 1,
+      }, 1_000 + index))
+    }
+    expect(projection.presented).toEqual([{ id: 'p-answer', at: 30 }])
+    expect(projection.claimed).toEqual([])
+    expect(projection.nextStep).toEqual([])
+    expect(projection.overflow.presented).toBe(false)
+    // The fold's whole presented budget is still available to real answers.
+    for (let index = 0; index < DEVLEAD_CHILD_ANSWER_OBSERVATION_MAX - 1; index += 1) {
+      projection = applyDevLeadChildAnswers(projection, sessionEvent(500 + index, 'user/message', {
+        ...answerMessage(`p-real-${String(index)}`) as object, turn: 1, step: 1,
+      }, 3_000 + index))
+    }
+    expect(projection.presented).toHaveLength(DEVLEAD_CHILD_ANSWER_OBSERVATION_MAX)
+    expect(projection.overflow.presented).toBe(false)
+    // Only a real answer presentation overflows the family, and non-answer
+    // traffic afterwards changes neither the evidence nor the overflow marker.
+    projection = applyDevLeadChildAnswers(projection, sessionEvent(800, 'user/message', {
+      ...answerMessage('p-overflow') as object, turn: 1, step: 1,
+    }, 4_000))
+    expect(projection.presented).toHaveLength(DEVLEAD_CHILD_ANSWER_OBSERVATION_MAX)
+    expect(projection.overflow.presented).toBe(true)
+    const filled = { presented: projection.presented, overflow: projection.overflow }
+    for (let index = 0; index < 50; index += 1) {
+      projection = applyDevLeadChildAnswers(projection, sessionEvent(900 + index, 'user/message', {
+        ...humanMessage(`p-late-chat-${String(index)}`) as object, turn: 1, step: 1,
+      }, 5_000 + index))
+    }
+    expect(projection.presented).toEqual(filled.presented)
+    expect(projection.overflow).toEqual(filled.overflow)
   })
 })
