@@ -126,19 +126,22 @@ export function DevLeadBar({
               />
               <span className="devlead-notification-who">{reportNotice.who}</span>
               <span className="devlead-notification-label">{t(reportNotice.labelKey)}</span>
-              {(reportNotice.questionStatusKey !== undefined || reportNotice.answerStatusKey !== undefined) && (
+              {(reportNotice.questionStatusKey !== undefined || reportNotice.answerStatusKey !== undefined || reportNotice.repairPending) && (
                 // Fold-derived question lifecycle (question reports only): a
-                // compact "answered · presented" suffix. The raw literals ride
-                // data attributes so a drifted status stays inspectable while
-                // its label degrades to the neutral dictionary copy.
+                // compact "answered · presented" suffix. A repair-pending row
+                // adds "provisional" so a stale status is not read as final.
+                // Raw literals ride data attributes so a drifted status stays
+                // inspectable while its label degrades to neutral copy.
                 <span
                   className="devlead-notification-status"
                   data-question-status={reportNotice.questionStatus}
                   data-answer-status={reportNotice.answerStatus}
+                  data-repair-pending={reportNotice.repairPending ? 'true' : undefined}
                 >
                   {[
                     reportNotice.questionStatusKey === undefined ? undefined : t(reportNotice.questionStatusKey),
                     reportNotice.answerStatusKey === undefined ? undefined : t(reportNotice.answerStatusKey),
+                    reportNotice.repairPending ? t('report.question.provisional') : undefined,
                   ].filter(part => part !== undefined).join(' · ')}
                 </span>
               )}

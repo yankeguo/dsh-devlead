@@ -678,6 +678,29 @@ describe('DevLeadBar', () => {
     expect(textOf(status)).toBe(zh['report.question.open'])
     expect(status.props['data-question-status']).toBe('open')
     expect(status.props['data-answer-status']).toBeUndefined()
+    expect(status.props['data-repair-pending']).toBeUndefined()
+  })
+
+  it.each([
+    ['Chinese', zh],
+    ['English', en],
+  ] as const)('renders a repair-pending projection question as provisional in %s', async (_locale, dictionary) => {
+    // Exercise the full client-owned path: projection input → reportSummary →
+    // DevLeadBar. The optional protocol field is structural until Batch 1 lands.
+    const report = {
+      ...REPORT,
+      questionStatus: 'open',
+      repairPending: true,
+    } as DevLeadProjectionReport
+    const renderer = await mount(
+      <DevLeadBar {...barProps({ projection: reportProjection(report), t: translate(dictionary) })} />,
+    )
+    const status = renderer.root.findByProps({ className: 'devlead-notification-status' })
+    expect(textOf(status)).toBe(
+      `${dictionary['report.question.open']} · ${dictionary['report.question.provisional']}`,
+    )
+    expect(status.props['data-question-status']).toBe('open')
+    expect(status.props['data-repair-pending']).toBe('true')
   })
 
   it.each(['expired', 'cancelled'] as const)('renders the literal %s question status', async (questionStatus) => {
@@ -712,6 +735,7 @@ describe('DevLeadBar', () => {
       kind: 'progress',
       questionStatus: 'open',
       answerStatus: 'presented',
+      repairPending: true,
     } as DevLeadProjectionReport
     const progress = await mount(<DevLeadBar {...barProps({ projection: reportProjection(stray) })} />)
     expect(progress.root.findAllByProps({ className: 'devlead-notification-status' })).toHaveLength(0)

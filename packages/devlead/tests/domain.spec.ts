@@ -92,15 +92,15 @@ function questionReportValue(): Record<string, unknown> {
 
 describe('builders', () => {
   it('stamps the record envelope and version on every durable payload', () => {
-    expect(modeRecord(true, T0)).toEqual({ kind: 'devlead/mode', version: 1, enabled: true, at: T0 })
+    expect(modeRecord(true, T0)).toEqual({ kind: 'devlead/mode', version: 2, enabled: true, at: T0 })
     expect(watchRecord(['a', 'b'], T0)).toEqual({
       kind: 'devlead/watch',
-      version: 1,
+      version: 2,
       sessions: ['a', 'b'],
       at: T0,
     })
     const value = devLeadNotification('session-alpha', 'webapp', 'error', 2, T0, 'boom', 'summary')
-    expect(notificationRecord(value)).toEqual({ kind: 'devlead/notification', version: 1, notification: value })
+    expect(notificationRecord(value)).toEqual({ kind: 'devlead/notification', version: 2, notification: value })
   })
 
   it('omits absent optional notification fields instead of writing undefined', () => {
@@ -400,7 +400,7 @@ describe('answer record decoder (Phase 1d)', () => {
 
   it('rejects presentedAt on a non-presented answer and a wrong envelope', () => {
     expect(() => decodeReportAnswer({ ...answer(), status: 'admitted', presentedAt: T0 })).toThrow('presentedAt')
-    expect(() => decodeReportAnswerRecord({ kind: 'devlead/report-answer', version: 2, answer: answer() }))
+    expect(() => decodeReportAnswerRecord({ kind: 'devlead/report-answer', version: 1, answer: answer() }))
       .toThrow('unsupported version')
     expect(() => decodeReportAnswerRecord({ kind: 'devlead/report', version: 1, answer: answer() }))
       .toThrow('unexpected kind')

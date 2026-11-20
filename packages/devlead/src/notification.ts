@@ -57,6 +57,7 @@ import type {
   DevLeadNotification,
   DevLeadProjectionState,
   DevLeadReport,
+  DevLeadReportAnswer,
   DevLeadReportKind,
 } from '@yankeguo/dsh-devlead-protocol'
 import {
@@ -69,7 +70,7 @@ import {
   reportRecord,
   representableInstant,
 } from './domain.ts'
-import { DevLeadError, thrownMessage } from './error.ts'
+import { DevLeadError, isDevLeadError, thrownMessage } from './error.ts'
 import type { DevLeadReportOrigin } from './outbox.ts'
 import { countDelivery, DevLeadMetrics } from './metrics.ts'
 import type { DevLeadDeliveryOutcome } from './metrics.ts'
@@ -96,6 +97,9 @@ export interface DevLeadPersistedLead {
   readonly sessionId: string
   /** Complete durable watch set of that lead. */
   readonly watched: readonly string[]
+  /** Durable reports/answers used for one bounded open-question replay. */
+  readonly reports?: readonly DevLeadReport[]
+  readonly answers?: readonly DevLeadReportAnswer[]
 }
 
 /**
@@ -449,6 +453,7 @@ export class DevLeadNotificationHub {
     private readonly readState: (session: Session) => DevLeadProjectionState,
     private readonly config: DevLeadNotificationConfig,
     private readonly metrics: DevLeadMetrics = new DevLeadMetrics(),
+    private readonly onActionReady: (leadSessionId: string) => void = () => undefined,
   ) {}
 
   /**
@@ -543,6 +548,29 @@ export class DevLeadNotificationHub {
    */
   deliveryStateOf(leadSessionId: string, reportId: string): DevLeadReportDeliveryState | undefined {
     return this.leads.get(leadSessionId)?.deliveryStates.get(reportId)
+  }
+
+  /**
+   * Requeue one already-durable open question after cold recovery. No record is
+   * appended and no second durable receipt is claimed; only the action-required
+   * wake is replayed. The service supplies the once-per-question guard.
+   */
+  replayQuestion(report: DevLeadReport): 'queued' | 'capacity' | 'unavailable' {
+    if (report.kind !== 'question') return 'unavailable'
+    const runtime = this.reportRuntime(report)
+    if (runtime === undefined) return 'unavailable'
+    if (runtime.pendingActionReports.some(existing => existing.id === report.id)
+      || runtime.unsavedReports.some(existing => existing.id === report.id)) return 'queued'
+    try {
+      this.assertPendingActionCapacity(runtime, report)
+    } catch (error: unknown) {
+      if (isDevLeadError(error) && error.code === 'DEVLEAD_DELIVERY_RATE_LIMITED') return 'capacity'
+      throw error
+    }
+    runtime.pendingActionReports = [...runtime.pendingActionReports, report]
+    this.markDeliveryState(runtime, report.id, 'pending')
+    this.scheduleActionFlush(runtime)
+    return 'queued'
   }
 
   /**
@@ -2007,6 +2035,9 @@ export class DevLeadNotificationHub {
     if (this.hasOrdinaryWork(runtime) && this.leads.get(runtime.sessionId) === runtime) {
       this.scheduleFlush(runtime)
     }
+    // Cold open-question replay uses the same capacity release point as normal
+    // action reports; the callback only queues retained candidates.
+    this.onActionReady(runtime.sessionId)
   }
 
   /**

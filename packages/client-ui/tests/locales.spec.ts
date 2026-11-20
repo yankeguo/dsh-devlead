@@ -144,6 +144,11 @@ describe('dictionaries', () => {
     for (const status of statuses) expect(en[questionStatusLabelKey(status)]).toBe(status)
   })
 
+  it('localizes the repair-pending provisional marker in both dictionaries', () => {
+    expect(zh['report.question.provisional']).toBe('暂定')
+    expect(en['report.question.provisional']).toBe('provisional')
+  })
+
   it('localizes every answer lifecycle status in both dictionaries', () => {
     const statuses: readonly DevLeadAnswerStatus[] = ['admitted', 'claimed', 'presented', 'discarded', 'failed']
     for (const status of statuses) {

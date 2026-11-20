@@ -35,6 +35,17 @@
 [devlead](packages/devlead/README.md) · [tool](packages/tool/README.md) ·
 [command](packages/command/README.md) · [client-ui](packages/client-ui/README.md)
 
+## 0.4.0 Batch 1 breaking changes（当前工作树）
+
+当前树实现计划中的 0.4.0 兼容性断裂；本批**不改包版本、不打 tag、不发布**。
+
+- durable record 升为 **version 2**。version-1 record 与缺少必填 `answerSeq` 的旧 answer 会被忽略并丢弃，只 warning 一次，不冻结 projection；version-2 当前 schema 的损坏 payload 仍冻结，仍用 `/devlead reset` 恢复。三个 stateVersion 分别为 `devLead` 7、`devLeadMode` 3、`devLeadWatch` 3。旧 Session 的 DevLead 模式、关注集合、digest 与 answer 状态因此明确失效，不做 best-effort 迁移。
+- `devlead_report_outbox` 升为 **spec v3，无 compatibleVersions**，pending report 的 `origin` 必填。旧 v1/v2 domain、无 origin 行和旧 discard 队列数据全部丢弃；旧 domain 打不开时 warning 并禁用该 durable domain，不 crash、不继续写入。`answer_discards` 的 30 天 retention 不变。
+- 生产代码已全部移除 deprecated `Session.snapshotEvents()` / `eventAt()` / `ownEvents()`。inbox 入队时间、当前 turn 来源、child answer survival 都改为有界 Session projection；cold 恢复用 `observeSession()` 读取 answer projection，不读取原始事件。
+- prompt 监督关系改为硬门禁：跨 lead 写入返回 `DEVLEAD_FOREIGN_SUPERVISOR`，冲突多 lead 返回 `DEVLEAD_MULTIPLE_SUPERVISORS`。非 answer 的幂等 receipt 在 `devlead_idempotency` 持久保存 7 天（同 key 同文本返回原 receipt，不同文本冲突）；corrupt/unreadable receipt 与 composed storage 打开失败在投递前 fail closed，只有 Host 未组合 storage 时才显式 warning 并用进程内窗口兜底。
+- `questionTtlMs` 默认 24 小时，`0` 禁用。只有仍为 open 的 question 会 lazy 过期，过期后拒绝 answer。cold 恢复时每进程对每条未过期 open question 最多 replay 一次 action-required wake，与普通 action report 共用 16/pair 容量，溢出保留到容量释放后续投；等待期间已 answered 的问题不再 replay。每个 lead/child pair 在每个 child turn 最多投递 4 条 correction、8 条 background，超限返回 `DEVLEAD_DELIVERY_RATE_LIMITED`。cold answer projection 读取有 30 秒放弃上限、每 child single-flight、64 并发上限，重试不会累积永久挂起的查询。
+- question projection 行可增加 runtime 派生的 `repairPending: true`；DevLeadBar 用 `open · provisional` 等文案标明暂定状态，tool 输出既有字段不变。
+
 ## 特性
 
 | 能力 | 说明 |
@@ -46,7 +57,7 @@
 | 14 个主工具 + 1 个汇报工具 | 注册/列出/关闭 Workspace，列出 Host 模型与 Agent preset，创建（继承或固定模型/Agent Teams）/读取/续写/归档/恢复/关注 Session，查看/撤回排队 inbox 输入，读取通知/汇报摘要；已关注的非 DevLead 会话可用 `devlead_report` 单向汇报（见[模型工具](#模型工具)） |
 | 人类命令 | `/devlead`（状态）、`/devlead on\|off`、`/devlead reset`（损坏状态恢复）、`/devlead watch\|unwatch <session>`；会话支持完整 id 或唯一前缀 |
 | 通知回路 | 已关注会话的 `turn/end` 写入持久通知记录并按 lane 投递：completed/forked 按合并窗口唤醒 DevLead，失败/被打断的 turn 以立即 steer 送达 review 唤醒，blocked/decision/question 报告走 action-required steer，progress/fyi 报告注入 background 上下文但不唤醒（冷 lead 默认 resume，background 除外）；关注关系索引在 Host 重启后从持久记录重建，已 dispose 的 lead 继续观察（见[通知机制](#通知机制)） |
-| 事件溯源 | 模式/关注集合/通知/中途汇报/answer 记录/reset 全部是可忽略的 `plugin:devlead/*` 记录，严格回放校验，可跨重启 / 恢复（fork 会复制日志，但被继承的记录不参与 fold，forked subagent 不会继承模式） |
+| 事件溯源 | 模式/关注集合/通知/中途汇报/answer 记录/reset/repair-pending 集合全部是可忽略的 `plugin:devlead/*` 记录，严格回放校验，可跨重启 / 恢复（fork 会复制日志，但被继承的记录不参与 fold，forked subagent 不会继承模式） |
 | 损坏状态恢复 | 损坏的 `plugin:devlead/*` 记录会冻结 fold；人类专属 `/devlead reset`（或冻结时的 `/devlead off`）追加 `plugin:devlead/reset` 记录，让三个 projection 回到默认 disabled 状态（见[通知机制](#通知机制)） |
 | Session projection | `devLead` projection（`{ enabled, sessions, notifications, reports }`）把状态同步到浏览器，无需自定义 Remote API；summary 级的 `devLeadMode`（`{ enabled }`）与 `devLeadWatch`（`{ sessions }`）随每个 Session 列表行下发，供侧边栏渲染激活 lead 与已关注标记 |
 | 界面 | composer 工具条里带 DevLead 文本的图标按钮是 top-level Session 的唯一开关，两态都存在（关闭态发 `/devlead on`、开启态发 `/devlead off`）；开启后 composer 上方出现只读 DevLeadBar：已关注会话数/运行中数、最近一条通知；状态条不带开关；激活 lead 行有强调色 ring（无行尾图标），已关注行有弱化准星图标 |
@@ -204,12 +215,11 @@ staged 发布辅助脚本（`stage-release.mjs`、`promote-release.mjs`、`trust
 | 可选 worktree 隔离 | 可选 bundle | 可选 bundle | 可选 bundle | 可选 bundle | 可选 bundle | E2E 阶段 2 在 rc.4 / rc.5 上用官方实验 forge bundle 验证 happy path |
 | `agent_teams: true` | **不支持** — `DEVLEAD_TEAM_UNAVAILABLE`，不创建 Session | 支持\* | 支持\* | 支持\* | 支持\* | \*Host 需组合 `agent-team`；`dsh-base` 从 rc.2 起默认包含。`false`/省略在 rc.1 正常工作 |
 
-**已知兼容债务。** 生产代码仍有 5 处调用已 deprecated 的 `Session.snapshotEvents()`：
-`packages/devlead/src/inbox.ts:141`、`packages/devlead/src/index.ts` 的 `survivalProof` /
-`childLogEvents` / `replayChildObserver` 方法，以及 `packages/tool/src/question-routing.ts:235`。DSH rc.1 与 rc.5 原文为“existing logic may remain
-unmigrated for now, but new production calls are prohibited.” 迁移方向是事件订阅 / Session
-projection / 查询引擎有界读。在 DSH 0.3.0（`engines.dsh` 上界）前迁移这些调用，或加能力检测与
-有界 fallback；本轮只记录债务，不改代码。见 [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md)。
+**deprecated reader 迁移已完成。** 生产代码不再调用 `snapshotEvents()` / `eventAt()` /
+`ownEvents()`；rc.1/rc.5 共有的 Session projection seam 负责有界 inbox、turn-source、child-answer
+状态。cold answer 恢复用 `observeSession()` 读取 projection wire value，带超时放弃与 single-flight，
+不读取原始事件。进入 DSH 0.3.0 前的剩余门禁是复核这些 projection/query 契约，见
+[docs/COMPATIBILITY.md](docs/COMPATIBILITY.md)。
 
 rc.4 已发布到 npm（该版本的全部 `@deepseek-ai/*` 包；npm 的 `latest` tag 仍指向
 `0.2.2-rc.1`，rc.4 在 `next` tag 下，也可按精确版本安装）。它是一个小修复版本：与 DevLead
@@ -544,9 +554,9 @@ background report 在有界重试（8 次）使 append 成功后**恰好一次**
 不必等待无关事件。真正在 lead cold 时观察到的报告仍按策略 digest-only，且在 durable outbox
 replay/重启后依然如此：outbox row 持久化 lead-liveness origin，cold-origin background 永不被
 late inject；receipt 持久化失败也只会重试补 receipt，不 inject。live-origin background row 在 replay
-时若 Agent 已 cold，只补 durable receipt 并降级 digest-only（不做 late inject）；无 origin 的旧 row
-按 cold 处理，旧 live background row 可能只进 digest。回滚到 pre-origin 构建时其 strict outbox
-schema 会 backup-and-skip 这类新 row，需要人工处理。Host 未组合 storage 时回执明确变 degraded：`durable:false` 并带 warning，
+时若 Agent 已 cold，只补 durable receipt 并降级 digest-only（不做 late inject）。outbox spec v3
+要求 `origin` 必填；无 origin 及其他 v1/v2 旧 row 全部丢弃，旧 domain 打不开时 warning 并禁用
+该 durable domain，不 crash、不接受新写入。Host 未组合 storage 时回执明确变 degraded：`durable:false` 并带 warning，
 子会话可在 lead 可用后重试。outbox 行最多保留 7 天，`/devlead reset` 会丢弃该 lead 的待投递
 报告。receipt 出现在 `devLead` projection、状态条、`/devlead` 状态、`devlead_notifications`，
 读取 lead 自身时也出现在 `devlead_get_session`。报告投递按 lane 区分（Phase 1e）：
@@ -809,6 +819,7 @@ config 是整体替换）。
     maxListedSessions: 200       # 会话列表最大行数（正整数）
     wakeColdSession: true        # resume 冷 DevLead 会话以投递其排队的通知（默认）
     defaultAgentPreset: ''       # 创建会话的默认 Agent preset（空 = 用 Host 默认；无效 id 创建失败）
+    questionTtlMs: 86400000      # open question TTL（24 小时；0 = 禁用 lazy 过期）
 ```
 
 | 键 | 默认 | 范围 / 说明 |
@@ -819,6 +830,7 @@ config 是整体替换）。
 | `maxListedSessions` | `200` | 正整数；列表类调用（`devlead_list_sessions` / `/devlead` 状态）的行数上限。身份解析不受该上限限制；watched-only 列表也不会截断到小于关注集合 |
 | `wakeColdSession` | `true` | 为 `true` 时 resume（`sessionController.resolveAgent`）冷 lead 会话来投递其**已排队**的通知；设为 `false` 只把队列留在内存，等人类打开 lead Session。该开关不影响观察（观察由索引保留 + 重建保证） |
 | `defaultAgentPreset` | `''` | 创建会话时未指定 `preset`（或传空白）的默认值；空字符串表示没有插件默认值，使用 Host 有效默认。无效 id 会让创建失败并返回结构化错误 |
+| `questionTtlMs` | `86400000` | 非负安全整数；open question 的 lazy TTL（24 小时），`0` 禁用过期。已回答的问题不会 retroactive 过期；cold replay 跳过已过期问题 |
 
 `tool` / `command` / `client-ui` 没有部署配置；所有领域限制（watch 上限、通知保留条数等）
 由核心服务与 protocol 常量决定。
@@ -927,6 +939,8 @@ config 是整体替换）。
 | `devlead_use_workspace` 报 `DEVLEAD_DIRECTORY_MISSING` | 目录不存在且默认不允许创建。先创建目录，或在人类明确要求建该目录后带 `create: true` 重试 |
 | Workspace 参数报 `DEVLEAD_WORKSPACE_AMBIGUOUS` | 多个 Workspace 共用同一显示标题。按错误中（或 `devlead_list_workspaces`）列出的 id / 路径改用唯一引用；解析器不会静默取第一个 |
 | `devlead_report` 报 `DEVLEAD_NOT_SUPERVISED` | 该会话自己是 DevLead、lead 已取消关注、lead 已归档或关闭模式，或多个历史 watcher 中没有唯一 active lead 关注它。从 active lead 重新 watch |
+| `devlead_prompt_session` 报 `DEVLEAD_FOREIGN_SUPERVISOR` / `DEVLEAD_MULTIPLE_SUPERVISORS` | 目标已由其他 lead 关注，或历史状态留下冲突关注关系。改从所属 lead 续写，或关闭另一个 lead / 解除冲突 watch；prompt 在投递前拒绝 |
+| `devlead_prompt_session` 报 `DEVLEAD_DELIVERY_RATE_LIMITED` | 当前 child turn 内该 pair 已投 4 条 correction 或 8 条 background。合并上下文或等下一个 child turn；原 receipt 的幂等 replay 仍可返回 |
 | `devlead_report` 报 `DEVLEAD_REPORT_RATE_LIMITED` | 子会话本轮已发送 4 条不同的普通（非 question）报告；`question` 报告不计入该预算。等下一轮；lead 仍可用 `devlead_prompt_session` 继续引导 |
 | `devlead_report` 报 `DEVLEAD_INVALID_INPUT` | message 为空或超过 4000 码点、summary 超过 200 码点，或 kind 不是 `progress` / `blocked` / `decision` / `question` / `fyi` |
 | 已关注子会话调用 `ask_user_question` | 工具层闸门会拒绝并把问题作为 `question` report 转给 active lead；子会话应结束 turn，lead 用 `devlead_prompt_session` 回答（或先代问人类）。只有当前 turn 由人类直接发起的子会话可就地提问 |

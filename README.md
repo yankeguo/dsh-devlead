@@ -47,6 +47,37 @@ Documentation: [Design notes (中文)](docs/DESIGN.md) · [Publishing guide (中
 [tool](packages/tool/README.md) · [command](packages/command/README.md) ·
 [client-ui](packages/client-ui/README.md)
 
+## 0.4.0 Batch 1 breaking changes (current tree)
+
+This tree implements the planned 0.4.0 compatibility break; it deliberately does **not** change the
+package version or create a tag/release.
+
+- Durable records now use **version 2**. Version-1 records and answers without the now-required
+  `answerSeq` are ignored and discarded with one warning, not frozen; a malformed version-2 payload
+  still freezes the projection and `/devlead reset` remains the recovery path. Projection state
+  versions are `devLead` 7, `devLeadMode` 3, and `devLeadWatch` 3. Older sessions therefore lose
+  their previous DevLead mode/watch/digest/answer state rather than receiving a best-effort migration.
+- `devlead_report_outbox` is **spec v3 with no compatible versions**. `origin` is required on every
+  pending report. Old v1/v2 domains, origin-less rows, and queued discards are dropped. If an old
+  domain cannot open, DevLead warns and disables that durable domain instead of crashing or writing
+  through it. The answer-discard retention remains 30 days.
+- All production calls to deprecated `Session.snapshotEvents()` / `eventAt()` / `ownEvents()` are
+  gone. Inbox times, latest-turn source, and child-answer survival are bounded Session projections;
+  cold recovery uses `observeSession()` to read the child-answer projection, not raw events.
+- Prompt supervision is a hard gate: `DEVLEAD_FOREIGN_SUPERVISOR` and
+  `DEVLEAD_MULTIPLE_SUPERVISORS` reject cross-lead/conflicting writes. Non-answer idempotency receipts
+  persist in `devlead_idempotency` for 7 days (same key + text replays the original receipt; different
+  text conflicts). Corrupt/unreadable receipts and composed-storage open failures fail closed before
+  delivery; only a Host without storage uses the explicit process-local fallback warning.
+- `questionTtlMs` defaults to 24 hours (`0` disables it). Only still-open questions expire, lazily;
+  answers to expired questions are rejected. Cold recovery replays each unexpired open question once
+  per process, sharing the normal 16/pair action cap and retaining overflow for later capacity;
+  questions answered while deferred are not replayed. Correction/background admissions are limited to 4/8 per lead-child pair per child turn
+  with `DEVLEAD_DELIVERY_RATE_LIMITED`. Cold answer-projection reads have a 30-second abandon bound,
+  per-child single-flight, and a 64-read concurrency cap, so retries cannot accumulate hung queries.
+- Question projection rows may carry runtime-derived `repairPending: true`; DevLeadBar renders the
+  lifecycle as provisional (for example `open · provisional`) without changing tool output fields.
+
 ## Features
 
 | Capability | Description |
@@ -58,7 +89,7 @@ Documentation: [Design notes (中文)](docs/DESIGN.md) · [Publishing guide (中
 | 14 lead tools + 1 report tool | Register/list/remove Workspaces, list Host models and Agent presets, create (model/Agent Teams inherited or pinned)/read/continue/archive/restore/watch Sessions, inspect/retract queued inbox inputs, read the notification/report digest; watched non-lead Sessions can send a one-way `devlead_report` update (see [Model tools](#model-tools)) |
 | Human commands | `/devlead` (status), `/devlead on\|off`, `/devlead reset` (damaged-state recovery), `/devlead watch\|unwatch <session>`; sessions are addressable by full id or unique prefix |
 | Notification loop | A watched session's `turn/end` writes a durable notification and delivers it by lane: completed/forked turns wake an indexed DevLead through a coalescing window, failed/interrupted turns steer an immediate review wake, blocked/decision/question reports steer action-required wakes, and progress/fyi reports inject background context without a wake (cold leads are resumed by default except for background); the watch index is rebuilt from durable records after a Host restart, and a disposed lead keeps observing (see [Notification loop](#notification-loop)) |
-| Event sourcing | Mode / watch set / notifications / reports / answer records / reset are ignorable `plugin:devlead/*` records with strict replay validation; survive restart / resume (a fork copies the log but inherited records are ignored, so a forked subagent never inherits the mode) |
+| Event sourcing | Mode / watch set / notifications / reports / answer records / reset / repair-pending set are ignorable `plugin:devlead/*` records with strict replay validation; survive restart / resume (a fork copies the log but inherited records are ignored, so a forked subagent never inherits the mode) |
 | Damaged-state recovery | A corrupt `plugin:devlead/*` record freezes the fold, but the human-only `/devlead reset` (or `/devlead off` on a frozen fold) appends a `plugin:devlead/reset` record that restarts all three projections from the default disabled state (see [Notification loop](#notification-loop)) |
 | Session projection | The `devLead` projection (`{ enabled, sessions, notifications, reports }`) syncs state to the browser without a custom Remote API; summary-sized companions `devLeadMode` (`{ enabled }`) and `devLeadWatch` (`{ sessions }`) ride every Session-list summary so sidebar rows can render the active lead and watched marks |
 | UI | A labelled composer-toolbar DevLead toggle (icon + text) is present in both states of a top-level Session and sends `/devlead on` or `/devlead off`. On: a status-only DevLeadBar above the composer shows the watched/running counts and the latest notification; the bar has no switch, so turning the mode off never hides the control that did it. The active lead row gets an accent ring (no trailing glyph), and watched Session rows get a quiet target glyph |
@@ -235,15 +266,12 @@ accept every 0.2.2 release candidate instead of reporting unmet peers on rc.2+.
 | Plugin records (`appendPluginRecord` / `PluginRecordMap`; all durable state) | present‡ | present‡ | present‡ | present‡ | present‡ | ‡ experimental and caller-restricted; present in rc.1–rc.5 but not a public contract, and Session format migration is best-effort |
 | `agent_teams: true` | **no** — `DEVLEAD_TEAM_UNAVAILABLE`, no Session created | yes\* | yes\* | yes\* | yes\* | \*Host must compose `agent-team`; `dsh-base` includes it from rc.2. `false`/omitted work on rc.1 |
 
-**Known compatibility debt.** Production code still calls the deprecated
-`Session.snapshotEvents()` at `packages/devlead/src/inbox.ts:141`, the `survivalProof`,
-`childLogEvents`, and `replayChildObserver` methods in `packages/devlead/src/index.ts`, and
-`packages/tool/src/question-routing.ts:235`. DSH rc.1 and rc.5 mark that reader deprecated:
-"existing logic may remain unmigrated for now, but new production calls are prohibited." The
-migration direction is event subscription / Session projection / bounded reads through the
-Session query engine. Before DSH 0.3.0 (the `engines.dsh` upper bound), migrate these calls or add
-capability detection with a bounded fallback; this round documents the debt and changes no code.
-See [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) for the gate.
+**Deprecated-reader migration completed.** Production no longer calls `snapshotEvents()`,
+`eventAt()`, or `ownEvents()`. DSH rc.1/rc.5 provide the same projection seam used for bounded
+inbox/turn-source/child-answer state. Cold answer recovery uses `observeSession()` with an
+abandon/single-flight bound and reads only the projection wire value. The remaining compatibility
+gate is to recheck those projection/query contracts before entering DSH 0.3.0; see
+[docs/COMPATIBILITY.md](docs/COMPATIBILITY.md).
 
 rc.4 exists on npm as every `@deepseek-ai/*` package for that release (npm's `latest` dist-tag
 still points at `0.2.2-rc.1`; rc.4 is the `next` tag and is available by exact version). It is a
@@ -665,9 +693,9 @@ genuinely observed while the lead was cold stay digest-only by policy, including
 outbox replay/restart: the outbox row records the lead-liveness origin, and a cold-origin
 background report is never injected later, and a cold receipt failure retried to durability only.
 A live-origin background row replayed while the Agent is cold keeps its durable receipt but
-degrades to digest-only (no late inject); legacy outbox rows without an origin are treated as
-cold, so an old live background row may only reach the digest. A rollback to a pre-origin build
-can make its strict outbox schema backup-and-skip such rows, which then need manual handling.
+degrades to digest-only (no late inject). `origin` is required in outbox spec v3; origin-less and
+other v1/v2 rows are discarded, and an old domain that cannot open disables the durable domain
+with a warning rather than crashing or accepting new writes.
 The fallback
 when a Host composes no storage is explicit: the receipt has `durable: false` and a warning, and
 the child can retry after the lead is available. Outbox rows are pruned after 7 days if their lead
@@ -1004,6 +1032,7 @@ the profile's `cordis.patch.yml` — DSH replaces a row's whole config):
     maxListedSessions: 200       # max rows per session listing (positive integer)
     wakeColdSession: true        # resume a cold DevLead Session to deliver its queued notifications (default)
     defaultAgentPreset: ''       # default Agent preset for created sessions (empty = Host default; invalid id fails creation)
+    questionTtlMs: 86400000      # open-question TTL (24h; 0 disables lazy expiry)
 ```
 
 | Key | Default | Range / notes |
@@ -1014,6 +1043,7 @@ the profile's `cordis.patch.yml` — DSH replaces a row's whole config):
 | `maxListedSessions` | `200` | positive integer; row cap for listing calls (`devlead_list_sessions` / `/devlead` status). Identity resolution is not limited by it, and a watched-only listing never truncates below the watch set |
 | `wakeColdSession` | `true` | when `true`, a cold lead Session with queued notifications is resumed (`sessionController.resolveAgent`) to deliver them; set `false` to keep the queues in memory and wait for a human to open the lead Session. Observation is not affected by this flag |
 | `defaultAgentPreset` | `''` | default value used when a created session names no `preset` (or passes blanks); an empty string means no plugin default, so the Host's effective default applies. An invalid id fails creation with a structured error |
+| `questionTtlMs` | `86400000` | non-negative safe integer; lazy open-question TTL (24h), with `0` disabling expiry. Answered questions do not retroactively expire; cold replay skips expired questions |
 
 `tool` / `command` / `client-ui` have no deployment configuration; all domain limits (watch cap,
 notification retention, etc.) are owned by the core service and protocol constants.
@@ -1147,6 +1177,8 @@ without it keeps the default single-checkout behavior and reports `unavailable`.
 | Passing `title` to an already-registered Workspace has no effect | expected: `title` only applies when registering a new Workspace record; an existing record keeps its title |
 | `/devlead on` reports `DEVLEAD_ALREADY_ACTIVE` | another Session already holds the Host-wide DevLead mode. The error names it; run `/devlead off` in that Session before enabling this one. An **archived** holder does not block a new enable: it is ignored for admission, listed under `Archived DevLead holders` in `/devlead status`, and should be unarchived/opened to run `/devlead off` (or deleted). |
 | `devlead_report` reports `DEVLEAD_NOT_SUPERVISED` | the Session is a DevLead itself, the lead stopped watching it, the lead is archived, the lead's mode is off, or several historical watchers leave no unique active lead watching it. Re-watch it from the active lead. |
+| `devlead_prompt_session` reports `DEVLEAD_FOREIGN_SUPERVISOR` / `DEVLEAD_MULTIPLE_SUPERVISORS` | the target belongs to another lead, or historical state leaves conflicting watchers. Continue from the owning lead, or disable the other lead / remove the conflicting watch; the prompt is rejected before delivery. |
+| `devlead_prompt_session` reports `DEVLEAD_DELIVERY_RATE_LIMITED` | this lead/child pair reached 4 corrections or 8 background prompts in the current child turn. Merge the context or wait for the next child turn; an idempotent replay of the original receipt remains allowed. |
 | `devlead_report` reports `DEVLEAD_REPORT_RATE_LIMITED` | the child already sent four distinct non-question reports in this turn (`question` reports are exempt from the budget). Wait for its next turn; the lead can still steer it with `devlead_prompt_session`. |
 | `devlead_report` reports `DEVLEAD_INVALID_INPUT` | the message is empty or over 4000 code points, the summary is over 200, or the kind is not `progress` / `blocked` / `decision` / `question` / `fyi`. |
 | A watched child tried to call `ask_user_question` | the call is intercepted and forwarded to the active lead as a `question` report; the child gets a tool error telling it to end its turn. Answer with `devlead_prompt_session`, or ask the human from the lead first. The one exception is a child turn opened by a direct human message, which may ask in place |

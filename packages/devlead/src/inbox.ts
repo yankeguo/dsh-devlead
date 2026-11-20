@@ -14,7 +14,6 @@
 
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
-import type { Session } from '@deepseek-ai/dsh-session'
 import {
   DEVLEAD_ERROR_EXCERPT_MAX,
   DEVLEAD_MESSAGE_KIND,
@@ -126,32 +125,6 @@ export function locatedInputs(agent: Agent): LocatedInput[] {
   ]
 }
 
-/**
- * Find the durable enqueue instant of each pending message: the newest
- * `agent/inbox/spliced` event whose insertion carries the message id. The scan
- * walks backwards and stops once every id is resolved, so a long history costs
- * only the tail since the last enqueue.
- * @param session - live Session whose log carries the inbox splices.
- * @param ids - pending message identities.
- * @returns enqueue instants by message id; ids without a recorded splice are absent.
- */
-function enqueuedTimes(session: Session, ids: ReadonlySet<string>): Map<string, number> {
-  const times = new Map<string, number>()
-  if (ids.size === 0) return times
-  const events = session.snapshotEvents()
-  for (let index = events.length - 1; index >= 0 && times.size < ids.size; index -= 1) {
-    const event = events[index]
-    if (event?.type !== 'agent/inbox/spliced') continue
-    const inserted = (event.data as { inserted?: unknown }).inserted
-    if (!Array.isArray(inserted)) continue
-    for (const candidate of inserted) {
-      const id = (candidate as { id?: unknown } | null)?.id
-      if (typeof id === 'string' && ids.has(id) && !times.has(id)) times.set(id, event.time)
-    }
-  }
-  return times
-}
-
 /** Bounded single-line excerpt of one message's text blocks. */
 function textExcerpt(message: UserMessage): string | undefined {
   const blocks: unknown = message.content
@@ -171,19 +144,21 @@ function textExcerpt(message: UserMessage): string | undefined {
  * @param agent - live Agent whose inbox is read.
  * @param deliveryStateOf - optional observed lifecycle of a tracked answer
  *   message; absent for messages the runtime does not track.
+ * @param enqueuedAtOf - enqueue instant looked up in the Host-driven inbox
+ *   projection; omitted when no projection is composed.
  * @returns queued inputs in queue order (next-turn, then next-step).
  */
 export function queuedInputsOf(
   agent: Agent,
   deliveryStateOf?: (messageId: string) => 'admitted' | 'claimed' | undefined,
+  enqueuedAtOf?: (messageId: string) => number | undefined,
 ): DevLeadQueuedInput[] {
   const located = locatedInputs(agent)
-  const times = enqueuedTimes(agent.session, new Set(located.map(entry => String(entry.message.id))))
   return located.map(({ boundary, message }) => {
     const source = sourceOf(message)
     const id = String(message.id)
     const excerpt = textExcerpt(message)
-    const enqueuedAt = times.get(id)
+    const enqueuedAt = enqueuedAtOf?.(id)
     const sourceForm = sourceString(source, 'form')
     const senderSessionId = sourceString(source, 'senderSessionId')
     const rawIntent = sourceString(source, 'intent')

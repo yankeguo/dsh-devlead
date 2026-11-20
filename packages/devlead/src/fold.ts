@@ -2,7 +2,8 @@
  * Pure fold of the `devLead` Session projection: durable mode selection,
  * whole-value watched-session set, and the bounded notification digest.
  *
- * The fold never throws to the projection registry: the first invalid owned
+ * The fold never throws to the projection registry: recognized legacy records
+ * are skipped with one process-wide warning, the first invalid current owned
  * record is retained in `failure`, the last valid state stays served, and the
  * Host service rejects reads while the failure is present.
  *
@@ -28,6 +29,7 @@ import {
   DEVLEAD_QUESTIONS_MAX,
   DEVLEAD_QUESTION_FIELD_MAX,
   DEVLEAD_QUESTION_OPTIONS_MAX,
+  DEVLEAD_REPAIR_RECORD_TYPE,
   DEVLEAD_REPORT_ANSWER_RECORD_TYPE,
   DEVLEAD_REPORT_KINDS,
   DEVLEAD_REPORT_MESSAGE_MAX,
@@ -60,11 +62,43 @@ import type {
 import {
   decodeModeRecord,
   decodeNotificationRecord,
+  decodeRepairRecord,
   decodeReportAnswerRecord,
   decodeReportRecord,
   decodeResetRecord,
   decodeWatchRecord,
+  legacyDevLeadRecordReason,
 } from './domain.ts'
+
+/** Structural subset of the Host logger used for legacy-record warnings. */
+export interface DevLeadFoldLogger {
+  warn(message: string): void
+}
+
+let legacyRecordLogger: DevLeadFoldLogger | undefined
+let legacyRecordWarningEmitted = false
+
+/** Connect the process-wide one-time legacy-record warning to the Host logger. */
+export function initializeDevLeadFoldWarnings(hostLogger: DevLeadFoldLogger): void {
+  legacyRecordLogger = hostLogger
+}
+
+/** Reset warning state between isolated unit tests. */
+export function resetDevLeadFoldWarningsForTests(): void {
+  legacyRecordLogger = undefined
+  legacyRecordWarningEmitted = false
+}
+
+/** Skip one recognized legacy record without turning it into replay failure. */
+function ignoreLegacyRecord(event: SessionEvent, type: string, reason: string): void {
+  if (legacyRecordWarningEmitted) return
+  legacyRecordWarningEmitted = true
+  const message = `devlead: ignored a legacy record at session event ${String(event.seq)} (${type}): ${reason}; `
+    + 'the old Session\'s DevLead state is no longer valid and has been discarded; '
+    + 'further legacy records will be ignored without additional warnings'
+  if (legacyRecordLogger === undefined) console.warn(message)
+  else legacyRecordLogger.warn(message)
+}
 
 /**
  * Empty projection state: disabled, watching nothing, no notifications or
@@ -79,6 +113,7 @@ export function emptyDevLeadProjectionState(inheritedEventCount = 0): DevLeadPro
     notifications: [],
     reports: [],
     answers: [],
+    repairPending: [],
     failure: null,
     inheritedEventCount,
   }
@@ -183,6 +218,7 @@ const projectionReportSchema: ZodType<DevLeadProjectionReport> = zod.object({
   ...reportShape,
   questionStatus: zod.enum(['open', 'answered', 'expired', 'cancelled']).optional(),
   answerStatus: zod.enum(['admitted', 'claimed', 'presented', 'discarded', 'failed']).optional(),
+  repairPending: zod.boolean().optional(),
 }).strict().refine(
   report => report.questions === undefined || report.kind === 'question',
   { message: 'report questions are only valid when kind is "question"' },
@@ -190,9 +226,9 @@ const projectionReportSchema: ZodType<DevLeadProjectionReport> = zod.object({
   report => report.id === devLeadReportId(report.senderSessionId, report.turn, report.kind, report.message),
   { message: 'report id must match senderSessionId, turn, kind, and message' },
 ).refine(
-  report => (report.questionStatus === undefined && report.answerStatus === undefined)
+  report => (report.questionStatus === undefined && report.answerStatus === undefined && report.repairPending === undefined)
     || report.kind === 'question',
-  { message: 'derived question/answer status is only valid on question reports' },
+  { message: 'derived question/answer/repair status is only valid on question reports' },
 ).refine(
   report => report.answerStatus === undefined || report.questionStatus !== undefined,
   { message: 'answerStatus requires questionStatus' },
@@ -210,7 +246,7 @@ export const answerSchema: ZodType<DevLeadReportAnswer> = zod.object({
   messageId: zod.string().min(1),
   at: zod.number().int().nonnegative().max(DEVLEAD_MAX_INSTANT),
   status: zod.enum(['admitted', 'claimed', 'presented', 'discarded', 'failed']),
-  answerSeq: zod.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+  answerSeq: zod.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
   textHash: zod.string().regex(/^[0-9a-f]{64}$/u),
   answeredAt: zod.number().int().nonnegative().max(DEVLEAD_MAX_INSTANT).optional(),
   presentedAt: zod.number().int().nonnegative().max(DEVLEAD_MAX_INSTANT).optional(),
@@ -230,10 +266,10 @@ export const answerSchema: ZodType<DevLeadReportAnswer> = zod.object({
 /**
  * Newest answer lifecycle record of one question report. The highest
  * per-question admission sequence wins (a delayed discard of an older answer
- * appended after a newer re-answer must not reopen the question); records
- * without a sequence are legacy and tie at 0, where the later log position
- * wins, exactly the pre-sequence behavior. The newest record is authoritative
- * for `questionStatus`; older records are audit.
+ * appended after a newer re-answer must not reopen the question), with later
+ * log position breaking a same-sequence lifecycle tie. Legacy records without
+ * a sequence are ignored rather than coerced to zero. The newest record is
+ * authoritative for `questionStatus`; older records are audit.
  * @param answers - retained answer records, oldest first.
  * @param reportId - question report identity.
  * @returns the newest record, or undefined when the question has no answer.
@@ -245,11 +281,10 @@ export function latestAnswerOf(
   let newest: DevLeadReportAnswer | undefined
   let newestSeq = -1
   for (const answer of answers) {
-    if (answer.reportId !== reportId) continue
-    const seq = answer.answerSeq ?? 0
-    if (seq >= newestSeq) {
+    if (answer.reportId !== reportId || answer.answerSeq === undefined) continue
+    if (answer.answerSeq >= newestSeq) {
       newest = answer
-      newestSeq = seq
+      newestSeq = answer.answerSeq
     }
   }
   return newest
@@ -364,9 +399,10 @@ function retainAnswer(
   const newestOf = new Map<string, DevLeadReportAnswer>()
   for (const entry of next) {
     // Pin the same record `latestAnswerOf` derives: the highest admission
-    // sequence, with the later log position breaking a legacy tie.
+    // sequence, with the later log position breaking a same-sequence tie.
+    if (entry.answerSeq === undefined) continue
     const current = newestOf.get(entry.reportId)
-    if (current === undefined || (entry.answerSeq ?? 0) >= (current.answerSeq ?? 0)) {
+    if (current === undefined || current.answerSeq === undefined || entry.answerSeq >= current.answerSeq) {
       newestOf.set(entry.reportId, entry)
     }
   }
@@ -480,6 +516,10 @@ export const devLeadProjectionStateSchema: ZodType<DevLeadProjectionState> = zod
       answers => new Set(answers.map(answer => `${answer.reportId}\u0000${answer.messageId}\u0000${answer.status}\u0000${answer.at}`)).size === answers.length,
       { message: 'answer lifecycle facts must be unique' },
     ),
+  repairPending: zod.array(zod.string().min(1)).refine(
+    ids => new Set(ids).size === ids.length && ids.every((id, index) => index === 0 || ids[index - 1]! < id),
+    { message: 'repairPending question ids must be sorted and unique' },
+  ),
   failure: zod.string().min(1).nullable(),
   inheritedEventCount: zod.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
 }).strict() as ZodType<DevLeadProjectionState>
@@ -509,7 +549,12 @@ export const devLeadProjectionSchema: ZodType<DevLeadProjection> = zod.object({
  * (the `failure` field); otherwise every such change would publish a new,
  * deep-equal client value and redraw the browser.
  */
-const wireViews = new WeakMap<DevLeadProjectionState, DevLeadProjection>()
+const wireViews = new WeakMap<DevLeadProjectionState, { readonly view: DevLeadProjection; readonly repairKey: string }>()
+
+/** Repair flags are folded state, so a repair record drives normal publication. */
+function projectionRepairKey(state: DevLeadProjectionState): string {
+  return state.repairPending.join('\u0000')
+}
 
 /**
  * Project one wire view from fold state. The result is memoized per state
@@ -525,17 +570,20 @@ const wireViews = new WeakMap<DevLeadProjectionState, DevLeadProjection>()
  * @returns the client view value.
  */
 export function devLeadProjectionView(state: DevLeadProjectionState): DevLeadProjection {
+  const repairKey = projectionRepairKey(state)
   const cached = wireViews.get(state)
-  if (cached !== undefined) return cached
+  if (cached?.repairKey === repairKey) return cached.view
   let reports: readonly DevLeadProjectionReport[] = state.reports
   if (state.reports.some(report => report.kind === 'question')) {
     reports = state.reports.map((report): DevLeadProjectionReport => {
       if (report.kind !== 'question') return report
       const latest = latestAnswerOf(state.answers, report.id)
+      const repairPending = state.repairPending.includes(report.id)
       return {
         ...report,
         questionStatus: questionStatusOf(state.answers, report.id),
         ...(latest === undefined ? {} : { answerStatus: latest.status }),
+        ...(repairPending ? { repairPending: true } : {}),
       }
     })
   }
@@ -545,7 +593,7 @@ export function devLeadProjectionView(state: DevLeadProjectionState): DevLeadPro
     notifications: state.notifications,
     reports,
   }
-  wireViews.set(state, view)
+  wireViews.set(state, { view, repairKey })
   return view
 }
 
@@ -576,6 +624,11 @@ export function applyDevLeadProjection(
   if (event.seq < state.inheritedEventCount) return state
   const record = readRecord(event)
   if (record === undefined) return state
+  const legacyReason = legacyDevLeadRecordReason(record.type, record.data)
+  if (legacyReason !== undefined) {
+    ignoreLegacyRecord(event, record.type, legacyReason)
+    return state
+  }
   if (record.type === DEVLEAD_RESET_RECORD_TYPE) {
     try {
       decodeResetRecord(record.data)
@@ -618,6 +671,12 @@ export function applyDevLeadProjection(
         const reports = trimReports(state.reports, answers)
         return { ...state, answers, ...(reports === state.reports ? {} : { reports }) }
       }
+      case DEVLEAD_REPAIR_RECORD_TYPE: {
+        const repair = decodeRepairRecord(record.data)
+        return sameSessionIds(state.repairPending, repair.questionIds)
+          ? state
+          : { ...state, repairPending: repair.questionIds }
+      }
       default:
         return state
     }
@@ -648,7 +707,10 @@ function freezeProjection(
   }
   // Host-only failure change: reuse the previous wire view so the registry's
   // Object.is comparison does not publish an unchanged client value.
-  wireViews.set(failure, devLeadProjectionView(state))
+  wireViews.set(failure, {
+    view: devLeadProjectionView(state),
+    repairKey: projectionRepairKey(failure),
+  })
   return failure
 }
 
@@ -668,11 +730,9 @@ export const devLeadProjectionDefinition = {
     // conversation reads it: keep it out of every Session summary/list row.
     summary: false,
   },
-  // 5: latest-answer selection became admission-sequence aware (version 4
-  // added the answer lifecycle audit, version 3 the fork-inherited prefix
-  // length, version 2 reports); older cache rows are discarded and refolded
-  // from the durable log.
-  stateVersion: 5,
+  // 7: adds the runtime repair-pending set; v6 cache rows lack the required
+  // field and must be discarded and refolded from the durable log.
+  stateVersion: 7,
 } satisfies ProjectionDefinition<'devLead', DevLeadProjectionState>
 
 /**
@@ -746,6 +806,11 @@ export function applyDevLeadWatchProjection(
   if (event.seq < state.inheritedEventCount) return state
   const record = readRecord(event)
   if (record === undefined) return state
+  const legacyReason = legacyDevLeadRecordReason(record.type, record.data)
+  if (legacyReason !== undefined) {
+    ignoreLegacyRecord(event, record.type, legacyReason)
+    return state
+  }
   if (record.type === DEVLEAD_RESET_RECORD_TYPE) {
     try {
       decodeResetRecord(record.data)
@@ -780,6 +845,9 @@ export function applyDevLeadWatchProjection(
       case DEVLEAD_REPORT_ANSWER_RECORD_TYPE:
         decodeReportAnswerRecord(record.data)
         return state
+      case DEVLEAD_REPAIR_RECORD_TYPE:
+        decodeRepairRecord(record.data)
+        return state
       default:
         return state
     }
@@ -802,9 +870,9 @@ export const devLeadWatchProjectionDefinition = {
     viewSchema: devLeadWatchProjectionSchema,
     view: devLeadWatchProjectionView,
   },
-  // 2: adds the fork-inherited prefix length; version 1 was the initial
-  // summary representation.
-  stateVersion: 2,
+  // 3: legacy record versions and pre-sequence answers no longer freeze replay;
+  // version 2 added the fork-inherited prefix length.
+  stateVersion: 3,
 } satisfies ProjectionDefinition<'devLeadWatch', DevLeadWatchProjectionState>
 
 /**
@@ -880,6 +948,11 @@ export function applyDevLeadModeProjection(
   if (event.seq < state.inheritedEventCount) return state
   const record = readRecord(event)
   if (record === undefined) return state
+  const legacyReason = legacyDevLeadRecordReason(record.type, record.data)
+  if (legacyReason !== undefined) {
+    ignoreLegacyRecord(event, record.type, legacyReason)
+    return state
+  }
   if (record.type === DEVLEAD_RESET_RECORD_TYPE) {
     try {
       decodeResetRecord(record.data)
@@ -914,6 +987,9 @@ export function applyDevLeadModeProjection(
       case DEVLEAD_REPORT_ANSWER_RECORD_TYPE:
         decodeReportAnswerRecord(record.data)
         return state
+      case DEVLEAD_REPAIR_RECORD_TYPE:
+        decodeRepairRecord(record.data)
+        return state
       default:
         return state
     }
@@ -943,7 +1019,7 @@ export const devLeadModeProjectionDefinition = {
     viewSchema: devLeadModeProjectionSchema,
     view: devLeadModeProjectionView,
   },
-  // 2: adds the fork-inherited prefix length; version 1 was the initial durable
-  // representation of the compact mode selection.
-  stateVersion: 2,
+  // 3: legacy record versions and pre-sequence answers no longer freeze replay;
+  // version 2 added the fork-inherited prefix length.
+  stateVersion: 3,
 } satisfies ProjectionDefinition<'devLeadMode', DevLeadModeProjectionState>

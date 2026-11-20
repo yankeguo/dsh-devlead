@@ -62,8 +62,8 @@ export const DEVLEAD_ANSWER_DISCARD_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000
  * Whether a report was observed while the lead Agent was live (`live`) or cold
  * (`cold`). The origin must survive a restart because a cold-observed
  * background report is digest-only by policy and must never be injected by a
- * later outbox replay. Older rows without the field are treated as `cold` for
- * background reports (conservative: no late inject).
+ * later outbox replay. Version-3 rows always carry the field; legacy rows
+ * without it are rejected at the storage boundary and are never replayed.
  */
 export type DevLeadReportOrigin = 'live' | 'cold'
 
@@ -73,12 +73,8 @@ export interface DevLeadOutboxRecord {
   readonly report: DevLeadReport
   /** Epoch milliseconds when the row was first enqueued. */
   readonly enqueuedAt: number
-  /**
-   * Lead liveness when the report was admitted (Phase 1e fix). Optional so
-   * version-1/2 rows stay readable; replay treats a missing background origin
-   * as `cold` and never injects it.
-   */
-  readonly origin?: DevLeadReportOrigin
+  /** Lead liveness when the report was admitted, required for every v3 row. */
+  readonly origin: DevLeadReportOrigin
 }
 
 /** One tombstone for an archived holder that could not be disabled. */
@@ -174,7 +170,7 @@ const reportSchema = zod.object({
 const outboxSchema = zod.object({
   report: reportSchema,
   enqueuedAt: zod.number().int().nonnegative().max(DEVLEAD_MAX_INSTANT),
-  origin: zod.enum(['live', 'cold']).optional(),
+  origin: zod.enum(['live', 'cold']),
 }).strict()
 
 /** Tombstone row schema. */
@@ -198,10 +194,9 @@ const answerDiscardSchema = zod.object({
  */
 export const OUTBOX_SPEC = {
   name: OUTBOX_DOMAIN,
-  // 2 adds the answer_discards queue table; version-1 rows stay readable
-  // (their schemas are unchanged), so a restart never loses queued reports.
-  version: 2,
-  compatibleVersions: [1],
+  // 3 intentionally abandons v1/v2: pending rows must carry an explicit
+  // origin, so legacy origin-less reports cannot be replayed with new meaning.
+  version: 3,
   layout: 'per-record',
   invalidRecords: 'backup-and-skip',
   tables: {
@@ -270,20 +265,16 @@ export class DevLeadReportOutbox {
    * @param origin - lead liveness at admission, preserved across restarts.
    * @returns whether the row is durable.
    */
-  async put(report: DevLeadReport, origin?: DevLeadReportOrigin): Promise<boolean> {
+  async put(report: DevLeadReport, origin: DevLeadReportOrigin): Promise<boolean> {
     if (this.closed) return false
     const key = devLeadOutboxKey(report)
     try {
       const table = this.domain.table(OUTBOX_TABLE)
       const existing = table.get(key) as DevLeadOutboxRecord | undefined
-      // A same-key retry may omit the origin (older call sites): keep the row's
-      // recorded origin instead of silently downgrading it to the legacy
-      // default-cold replay path.
-      const effectiveOrigin = origin ?? existing?.origin
       await table.put(key, {
         report,
         enqueuedAt: existing?.enqueuedAt ?? Date.now(),
-        ...(effectiveOrigin === undefined ? {} : { origin: effectiveOrigin }),
+        origin,
       } satisfies DevLeadOutboxRecord)
       this.lastError = undefined
       return true
@@ -315,6 +306,14 @@ export class DevLeadReportOutbox {
    * @returns rows in storage iteration order.
    */
   entries(): DevLeadOutboxRecord[] {
+    // The open-time schema normally backups and skips legacy rows. Keep the
+    // replay boundary defensive too: an origin-less row exposed after open is
+    // visible to retention/reset for deletion, but is never delivered.
+    return this.storedEntries().filter(entry => entry.origin !== undefined)
+  }
+
+  /** Raw pending rows for maintenance paths that may delete legacy records. */
+  private storedEntries(): DevLeadOutboxRecord[] {
     if (this.closed) return []
     try {
       return [...this.domain.table(OUTBOX_TABLE).entries()]
@@ -338,7 +337,7 @@ export class DevLeadReportOutbox {
   ): Promise<number> {
     const cutoff = now - retentionMs
     const discardCutoff = now - answerDiscardRetentionMs
-    const stale = this.entries().filter(entry => entry.enqueuedAt < cutoff)
+    const stale = this.storedEntries().filter(entry => entry.enqueuedAt < cutoff)
     // Queued discards keep their own (longer) horizon: they are question-state
     // repairs, not deliverable reports, and losing one silently would leave a
     // question answered after a restart although the child dropped the answer.
@@ -372,7 +371,7 @@ export class DevLeadReportOutbox {
    * @returns number of removed rows.
    */
   async dropForLead(leadSessionId: string): Promise<number> {
-    const keys = this.entries()
+    const keys = this.storedEntries()
       .filter(entry => entry.report.leadSessionId === leadSessionId)
       .map(entry => devLeadOutboxKey(entry.report))
     if (keys.length === 0) return 0

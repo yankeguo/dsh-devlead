@@ -25,6 +25,7 @@ import type {
   DevLeadReportAnswer,
 } from '@yankeguo/dsh-devlead-protocol'
 import type { DevLeadMetrics } from './metrics.ts'
+import type { DevLeadChildAnswersState } from './child-answer-projection.ts'
 
 /** One tracked answer message and its observed inbox lifecycle. */
 export interface AnswerMemoryEntry {
@@ -41,9 +42,9 @@ export interface AnswerMemoryEntry {
   /** Instant of the newest lifecycle fact. */
   at: number
   /**
-   * Per-question admission sequence of this answer (0 for a legacy record
-   * without one). Different-answer comparisons use it — never the lifecycle
-   * `at`, which a late claim/presentation/discard advances past a newer answer.
+   * Per-question admission sequence of this answer. Different-answer
+   * comparisons use it — never the lifecycle `at`, which a late
+   * claim/presentation/discard advances past a newer answer.
    */
   readonly answerSeq: number
   /** First admission instant of the question; survives a reopen. */
@@ -83,10 +84,10 @@ function isTerminal(status: DevLeadAnswerStatus): boolean {
 }
 
 /**
- * Admission instant of one durable record for the legacy (no-sequence) tie
- * break: an `admitted` row's `at` is its admission; every other lifecycle row
- * carries the question's first admission in `answeredAt`. The lifecycle `at`
- * of a claim/presentation/discard never orders two different answers.
+ * Admission instant of one durable record for a same-sequence tie break: an
+ * `admitted` row's `at` is its admission; every other lifecycle row carries
+ * the question's first admission in `answeredAt`. The lifecycle `at` of a
+ * claim/presentation/discard never orders two different answers.
  * @param answer - durable answer lifecycle record.
  * @returns the admission instant the record represents.
  */
@@ -156,6 +157,9 @@ export class DevLeadAnswerTracker {
    * @param answer - newest durable answer lifecycle record of the question.
    */
   seed(answer: DevLeadReportAnswer): void {
+    // Pre-sequence durable rows are ignored by the fold as well; never revive
+    // one as sequence zero through a direct restart seed.
+    if (answer.answerSeq === undefined) return
     const key = questionKey(answer.leadSessionId, answer.reportId)
     const existing = this.byQuestion.get(key)
     if (existing !== undefined) {
@@ -178,11 +182,10 @@ export class DevLeadAnswerTracker {
       // A different answer message: the higher admission sequence wins. A late
       // lifecycle fact (claim/presentation/discard) of an older answer carries
       // that answer's lower sequence and can never replace a newer re-answer.
-      const incomingSeq = answer.answerSeq ?? 0
+      const incomingSeq = answer.answerSeq
       if (incomingSeq < existing.answerSeq) return
       if (incomingSeq === existing.answerSeq) {
-        // Legacy tie (both records predate the sequence): admission instants
-        // decide, never the lifecycle `at`.
+        // Same-sequence tie: admission instants decide, never lifecycle `at`.
         const incomingAdmittedAt = admittedAtOf(answer)
         if (existing.firstAdmittedAt > incomingAdmittedAt) return
         if (existing.firstAdmittedAt === incomingAdmittedAt) {
@@ -364,8 +367,7 @@ export function discardedAnswerOf(entry: AnswerMemoryEntry, at: number): DevLead
     messageId: entry.messageId,
     at,
     status: 'discarded',
-    // A legacy answer (sequence 0) keeps the pre-sequence record shape.
-    ...(entry.answerSeq === 0 ? {} : { answerSeq: entry.answerSeq }),
+    answerSeq: entry.answerSeq,
     textHash: entry.textHash,
     answeredAt: entry.firstAdmittedAt,
     ...(entry.idempotencyKey === undefined ? {} : { idempotencyKey: entry.idempotencyKey }),
@@ -384,6 +386,9 @@ export function discardedAnswerOf(entry: AnswerMemoryEntry, at: number): DevLead
  * @returns the equivalent memory entry.
  */
 export function entryOfRecord(answer: DevLeadReportAnswer): AnswerMemoryEntry {
+  if (answer.answerSeq === undefined) {
+    throw new Error('cannot project a legacy answer record without answerSeq')
+  }
   return {
     reportId: answer.reportId,
     leadSessionId: answer.leadSessionId,
@@ -391,7 +396,7 @@ export function entryOfRecord(answer: DevLeadReportAnswer): AnswerMemoryEntry {
     messageId: answer.messageId,
     status: answer.status,
     at: answer.at,
-    answerSeq: answer.answerSeq ?? 0,
+    answerSeq: answer.answerSeq,
     firstAdmittedAt: answer.answeredAt ?? answer.at,
     ...(answer.presentedAt === undefined ? {} : { presentedAt: answer.presentedAt }),
     ...(answer.idempotencyKey === undefined ? {} : { idempotencyKey: answer.idempotencyKey }),
@@ -555,6 +560,42 @@ export class DevLeadChildAnswerObserver {
     return derived
   }
 
+  /**
+   * Restore the observer from its plain-JSON projection, replacing any prior
+   * live/replay state. The projection's `complete` flag is deliberately left
+   * for the caller to judge. Already-derived discards are returned first;
+   * surviving cancellation candidates optionally finalize at this replay tail.
+   * @param state - validated child-answer projection value.
+   * @param options - `finalizeCandidates: false` keeps candidates restorable by
+   *   a later live event.
+   * @returns persisted discards followed by newly finalized candidates.
+   */
+  restore(
+    state: DevLeadChildAnswersState,
+    options: { readonly finalizeCandidates?: boolean } = {},
+  ): DerivedAnswerDiscard[] {
+    this.nextTurn = state.nextTurn.map(item => ({ ...item }))
+    this.nextStep = state.nextStep.map(item => ({ ...item }))
+    this.claimed.clear()
+    for (const item of state.claimed) {
+      this.claimed.set(item.id, { questionId: item.questionId, leadId: item.leadId, at: item.at })
+    }
+    this.cancelCandidates.clear()
+    for (const item of state.cancelCandidates) {
+      this.cancelCandidates.set(item.id, { questionId: item.questionId, leadId: item.leadId, at: item.at })
+    }
+    this.presented.clear()
+    for (const item of state.presented) this.presented.set(item.id, item.at)
+    const derived = state.discards.map(item => ({
+      messageId: item.messageId,
+      questionId: item.questionId,
+      leadId: item.leadId,
+      at: item.at,
+    }))
+    if (options.finalizeCandidates !== false) derived.push(...this.finalizeCandidates())
+    return derived
+  }
+
   /** Apply one event in live or replay mode. */
   private apply(event: SessionEvent, mode: 'live' | 'replay', suppress: boolean): DerivedAnswerDiscard[] {
     if (event.type === 'agent/inbox/spliced') {
@@ -669,8 +710,7 @@ export function recordOfEntry(entry: AnswerMemoryEntry): DevLeadReportAnswer {
     messageId: entry.messageId,
     at: entry.at,
     status: entry.status,
-    // A legacy answer (sequence 0) keeps the pre-sequence record shape.
-    ...(entry.answerSeq === 0 ? {} : { answerSeq: entry.answerSeq }),
+    answerSeq: entry.answerSeq,
     textHash: entry.textHash,
     answeredAt: entry.firstAdmittedAt,
     ...(entry.presentedAt === undefined ? {} : { presentedAt: entry.presentedAt }),

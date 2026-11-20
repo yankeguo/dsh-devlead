@@ -1961,7 +1961,7 @@ describe('corrupt replay warnings', () => {
     const harness = await bootHub({ batchMs: 400 })
     const lead = onlyLead(harness)
     const warn = vi.spyOn(harness.ctx.logger, 'warn')
-    const corrupt = { kind: 'devlead/watch', version: 1, sessions: 'no', at: T0 } as never
+    const corrupt = { kind: 'devlead/watch', version: 2, sessions: 'no', at: T0 } as never
     const replayWarnings = () => warn.mock.calls.filter(call => String(call[0]).includes('replay failed'))
     appendPluginRecord(lead.session, DEVLEAD_WATCH_RECORD_TYPE, corrupt)
     await flushMicrotasks()
@@ -1987,7 +1987,7 @@ describe('corrupt replay warnings', () => {
   it('bounds the remembered failure ids with FIFO eviction', async () => {
     const harness = await bootHub({ batchMs: 400, leads: [] })
     const warn = vi.spyOn(harness.ctx.logger, 'warn').mockImplementation(() => undefined)
-    const corrupt = { kind: 'devlead/watch', version: 1, sessions: 'no', at: T0 } as never
+    const corrupt = { kind: 'devlead/watch', version: 2, sessions: 'no', at: T0 } as never
     const ids: string[] = []
     for (let index = 0; index < DEVLEAD_MAX_WARNED_FAILURES + 4; index += 1) {
       const id = `corrupt-lead-${String(index)}`

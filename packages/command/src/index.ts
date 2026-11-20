@@ -330,6 +330,8 @@ function friendlyDevLeadError(error: DevLeadError): string {
     case 'DEVLEAD_ALREADY_ACTIVE':
       return error.message
     case 'DEVLEAD_NOT_SUPERVISED':
+    case 'DEVLEAD_FOREIGN_SUPERVISOR':
+    case 'DEVLEAD_MULTIPLE_SUPERVISORS':
     case 'DEVLEAD_REPORT_RATE_LIMITED':
     case 'DEVLEAD_DELIVERY_RATE_LIMITED':
       return error.message

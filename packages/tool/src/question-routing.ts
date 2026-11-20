@@ -24,12 +24,10 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
-import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { PreToolDecision } from '@deepseek-ai/dsh-tools'
-import { isDevLeadError } from '@yankeguo/dsh-devlead'
+import { isDevLeadError, isHumanDirectedTurn } from '@yankeguo/dsh-devlead'
 import type { DevLeadService } from '@yankeguo/dsh-devlead'
 import {
-  DEVLEAD_MESSAGE_KIND,
   DEVLEAD_QUESTIONS_MAX,
   DEVLEAD_QUESTION_FIELD_MAX,
   DEVLEAD_QUESTION_OPTIONS_MAX,
@@ -38,48 +36,10 @@ import {
 } from '@yankeguo/dsh-devlead-protocol'
 import type { DevLeadQuestion, DevLeadQuestionOption } from '@yankeguo/dsh-devlead-protocol'
 
+export { isHumanDirectedTurn }
+
 /** Exact tool name the Host's user-question surface registers. */
 export const ASK_USER_QUESTION_TOOL = 'ask_user_question'
-
-/**
- * Source kinds that record a human action in the child's current turn.
- * `user-question-reply` follows the human answering an earlier question and
- * `user-approval` follows a human approval/policy decision; both mean the
- * human is present and may answer the next question in place.
- */
-const HUMAN_SOURCE_KINDS = new Set(['user', 'user-question-reply', 'user-approval'])
-
-/** Source kinds that are injected context rather than an actionable prompt. */
-const NON_ACTIONABLE_SOURCE_KINDS = new Set([
-  'runtime-context',
-  'tool-registry',
-  'time-context',
-  'tmux-context',
-  'agent-instructions',
-  'working-directory',
-  'ptc-mode',
-  'plan-mode',
-  'session-reference',
-  'action-cards',
-  'webhook',
-])
-
-/** Prefixes of plugin-injected context sources (`hooks-claude-code`, `hooks-codex`, …). */
-const NON_ACTIONABLE_SOURCE_PREFIXES = ['hooks-']
-
-/**
- * Context forms that identify an injected message even when its producer kind
- * is new to this build: instructions, catalogs, runtime snapshots, notices,
- * recalled references, and relayed context are not prompts from a human.
- */
-const NON_ACTIONABLE_SOURCE_FORMS = new Set([
-  'instructions',
-  'catalog',
-  'snapshot',
-  'notice',
-  'recall',
-  'relay',
-])
 
 /** Denial after the question report was durably handed to the lead. */
 const FORWARDED_REASON = 'Direct user questions are disabled while this Session is watched by a DevLead. '
@@ -216,63 +176,6 @@ export function formatQuestionReport(args: unknown): QuestionReport | undefined 
 }
 
 /**
- * Whether the Agent's current turn was opened or steered directly by a human.
- *
- * The event log records the source of every user message. Only a human source
- * (`user`, `user-question-reply`, `user-approval`) makes the turn human-directed;
- * a DevLead relay (instruction/answer/correction) or action-required notice is
- * lead-directed, while a DevLead background context notice (no wake) is skipped
- * so it does not mask the human who opened the turn. Known context injections
- * and any source carrying a context form are skipped, so an injected
- * timestamp/instructions notice does not erase the human who opened the turn. An
- * unknown source kind stops the scan as lead-directed instead of guessing that a
- * human is present. If no actionable prompt is visible, the gate routes the
- * question to the lead.
- * @param agent - child Agent whose current turn is being inspected.
- * @returns whether the latest actionable user message came from a human.
- */
-export function isHumanDirectedTurn(agent: Agent): boolean {
-  const events = agent.session.snapshotEvents()
-  let turnStart = -1
-  for (let index = events.length - 1; index >= 0; index -= 1) {
-    if (events[index]?.type === 'turn/start') {
-      turnStart = index
-      break
-    }
-  }
-  if (turnStart < 0) return false
-  for (let index = events.length - 1; index > turnStart; index -= 1) {
-    const event = events[index]
-    if (event?.type !== 'user/message') continue
-    const source = (event.data as {
-      source?: { kind?: unknown; form?: unknown; lane?: unknown; wakeRequested?: unknown }
-    } | undefined)?.source
-    const kind = source?.kind
-    if (typeof kind !== 'string') return false
-    if (kind === DEVLEAD_MESSAGE_KIND) {
-      // A DevLead relay (instruction/answer/correction) or an action-required
-      // notice is lead-directed: the human is not the decision-maker here. A
-      // background context notice (no wake) is non-actionable injected context,
-      // so keep scanning past it for the human who opened the turn — otherwise
-      // a lead's background injection would mask the human and the gate would
-      // wrongly treat the turn as lead-directed.
-      const isBackground = source?.form === 'notice'
-        && source?.wakeRequested === false
-        && source?.lane === 'background'
-      if (isBackground) continue
-      return false
-    }
-    if (NON_ACTIONABLE_SOURCE_KINDS.has(kind)
-      || NON_ACTIONABLE_SOURCE_PREFIXES.some(prefix => kind.startsWith(prefix))) continue
-    const form = source?.form
-    if (typeof form === 'string' && NON_ACTIONABLE_SOURCE_FORMS.has(form)) continue
-    if (HUMAN_SOURCE_KINDS.has(kind)) return true
-    return false
-  }
-  return false
-}
-
-/**
  * Install the watched-Session question gate on the tool pipeline.
  *
  * The listener is root-scoped and checks the calling Agent, so it sees every
@@ -288,7 +191,7 @@ export function registerQuestionRouting(ctx: Context, devLead: DevLeadService): 
   ctx.on('tools/pre-execute', async (exec, next): Promise<PreToolDecision> => {
     if (exec.name !== ASK_USER_QUESTION_TOOL || exec.agent === undefined) return next()
     if (!devLead.isSupervised(exec.agent)) return next()
-    if (isHumanDirectedTurn(exec.agent)) return next()
+    if (devLead.isHumanDirectedTurn(exec.agent)) return next()
     const question = formatQuestionReport(exec.arguments)
     if (question === undefined) return { kind: 'deny', reason: UNREADABLE_REASON }
     let durable = true

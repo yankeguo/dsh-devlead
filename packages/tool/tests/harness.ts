@@ -18,7 +18,7 @@ import type {
   ToolRegistrationOptions,
   ToolRunContext,
 } from '@deepseek-ai/dsh-tools'
-import { DevLeadError } from '@yankeguo/dsh-devlead'
+import { DevLeadError, isHumanDirectedTurn } from '@yankeguo/dsh-devlead'
 import type { DevLeadReportDeliveryState } from '@yankeguo/dsh-devlead'
 import type {
   DevLeadAgentPresetCatalog,
@@ -286,6 +286,11 @@ export class FakeDevLead {
 
   isSupervised(agent: Agent): boolean {
     return this.supervised.has(agent.id) && !this.enabled.has(agent.id)
+  }
+
+  isHumanDirectedTurn(agent: Agent): boolean {
+    // Test-only fixture reader; production uses the Host-driven projection.
+    return isHumanDirectedTurn(agent.session.snapshotEvents())
   }
 
   view(agent: Agent): DevLeadProjection {

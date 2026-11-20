@@ -316,7 +316,7 @@ describe('excerptLine', () => {
 describe('protocol constants', () => {
   it('pins the shared vocabulary both faces compile against', () => {
     expect(DEVLEAD_PROJECTION_KEY).toBe('devLead')
-    expect(DEVLEAD_RECORD_VERSION).toBe(1)
+    expect(DEVLEAD_RECORD_VERSION).toBe(2)
     expect(DEVLEAD_DEFAULT_MAX_WATCHED).toBe(64)
     expect(DEVLEAD_DEFAULT_NOTIFICATION_RETENTION).toBe(64)
     expect(DEVLEAD_ERROR_EXCERPT_MAX).toBe(240)

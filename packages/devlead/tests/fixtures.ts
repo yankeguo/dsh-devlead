@@ -257,7 +257,7 @@ export function answer(overrides: AnswerOverrides = {}): DevLeadReportAnswer {
     messageId: overrides.messageId ?? 'msg-answer-1',
     at,
     status,
-    ...(overrides.answerSeq === undefined ? {} : { answerSeq: overrides.answerSeq }),
+    answerSeq: overrides.answerSeq ?? 1,
     textHash: answerTextHash(overrides.text ?? 'use staging'),
     answeredAt: overrides.answeredAt ?? at,
     ...(overrides.presentedAt === undefined ? {} : { presentedAt: overrides.presentedAt }),
@@ -267,6 +267,12 @@ export function answer(overrides: AnswerOverrides = {}): DevLeadReportAnswer {
     boundary: 'next-step',
     wakeRequested: true,
   }
+}
+
+/** Build the otherwise-valid pre-sequence answer shape for compatibility tests. */
+export function legacyAnswer(overrides: AnswerOverrides = {}): DevLeadReportAnswer {
+  const { answerSeq: _answerSeq, ...legacy } = answer(overrides)
+  return legacy as DevLeadReportAnswer
 }
 
 /**

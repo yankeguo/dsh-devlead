@@ -19,7 +19,7 @@ import SessionStore, { SessionId, SessionLogOffset, SessionSeq, appendPluginReco
 import { buildForkSeed } from '@deepseek-ai/dsh-session/fork'
 import type { Session, SessionEvent, SessionHeader, TurnEndReason } from '@deepseek-ai/dsh-session'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
-import type { SessionQueryEngine } from '@deepseek-ai/dsh-session-query'
+import type { SessionQueryEngine, SessionObservation } from '@deepseek-ai/dsh-session-query'
 import type { SessionTitleService, SessionTitleSnapshot } from '@deepseek-ai/dsh-session-title'
 import { WorkspaceActiveSessionError, WorkspaceId, WorkspaceUnknownSessionError } from '@deepseek-ai/dsh-workspace'
 import type { SessionActivity, Workspace, WorkspaceRegistry } from '@deepseek-ai/dsh-workspace'
@@ -31,6 +31,7 @@ import {
 import type { DevLeadNotification, DevLeadProjectionState } from '@yankeguo/dsh-devlead-protocol'
 import { decodeNotificationRecord, modeRecord, watchRecord } from '../src/domain.ts'
 import { applyDevLeadProjection, emptyDevLeadProjectionState } from '../src/fold.ts'
+import { applyDevLeadChildAnswers, emptyDevLeadChildAnswersState } from '../src/child-answer-projection.ts'
 import DevLeadService from '../src/index.ts'
 import type { WorktreeCheckout } from '../src/isolation.ts'
 import { DevLeadMetrics } from '../src/metrics.ts'
@@ -812,8 +813,12 @@ export class FakeSessionQuery {
   private readonly rows = new Map<string, FakePersistedSession>()
   /** When set, every corpus listing call rejects. */
   listError: Error | undefined
-  /** When set, every log/title read rejects. */
+  /** When set, every log/title/projection read rejects. */
   readError: Error | undefined
+  /** Optional gate holding cold answer-projection observations open. */
+  observeGate: Promise<void> | undefined
+  /** Number of cold answer-projection observations requested. */
+  observeSessionCalls = 0
   /** Number of corpus listings requested. */
   listSessionsCalls = 0
   /** Number of complete log reads requested. */
@@ -876,6 +881,28 @@ export class FakeSessionQuery {
       return []
     }
     return [...this.rows.values()].map(row => ({ header: row.header, live: false, persisted: true }))
+  }
+
+  /** Serve the bounded answer projection without exposing raw events to the service. */
+  async observeSession(sessionId: SessionId): Promise<SessionObservation> {
+    this.observeSessionCalls += 1
+    if (this.readError !== undefined) throw this.readError
+    if (this.observeGate !== undefined) await this.observeGate
+    const row = this.rows.get(String(sessionId))
+    if (row === undefined) throw new Error(`persisted Session ${String(sessionId)} does not exist`)
+    let answers = emptyDevLeadChildAnswersState()
+    for (const event of row.events) answers = applyDevLeadChildAnswers(answers, event)
+    const cursor = row.events.at(-1)?.seq ?? -1
+    return {
+      source: 'prepared',
+      header: row.header,
+      inheritedEventCount: row.inheritedEventCount,
+      events: [],
+      cursor,
+      projections: { asOfSeq: cursor, values: { devLeadChildAnswers: answers } },
+      retain: () => { throw new Error('retain is not needed by this fake') },
+      [Symbol.dispose]: () => undefined,
+    } as unknown as SessionObservation
   }
 
   /**
@@ -1558,7 +1585,9 @@ export async function bootService(options: BootServiceOptions = {}): Promise<Ser
   if (options.agentDefaultModel !== undefined) ctx.provide('agentDefaultModel', options.agentDefaultModel.asService())
   if (options.storageDomain !== undefined) ctx.provide('storageDomain' as never, options.storageDomain.asService() as never)
   options.beforeServicePlugin?.(ctx)
-  await ctx.plugin(DevLeadService, options.config ?? {})
+  // Historical fixtures use T0; keep legacy specs deterministic and opt into
+  // TTL explicitly in the dedicated expiry/replay cases.
+  await ctx.plugin(DevLeadService, { questionTtlMs: 0, ...options.config })
   liveContexts.push(ctx)
   return {
     ctx,
@@ -1675,7 +1704,7 @@ export async function bootHub(options: BootHubOptions = {}): Promise<HubHarness>
     const watchedIds = seed.watched ?? [String(watched.id)]
     appendPluginRecord(session, DEVLEAD_WATCH_RECORD_TYPE, watchRecord(watchedIds, T0))
     if (seed.corrupt === true) {
-      appendPluginRecord(session, DEVLEAD_MODE_RECORD_TYPE, { kind: 'devlead/mode', version: 1, enabled: 'yes', at: T0 } as never)
+      appendPluginRecord(session, DEVLEAD_MODE_RECORD_TYPE, { kind: 'devlead/mode', version: 2, enabled: 'yes', at: T0 } as never)
     }
     const agent = new FakeAgent(session)
     if (seed.register !== false) agents.add(agent)

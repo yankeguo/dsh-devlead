@@ -83,27 +83,30 @@ canonical 日志也包含 DSH `session/title` 事件。两个 tag 的
 `session-log-deepseek` 的 `enabled` 设为 `false` 或禁用对应上传插件。这里只披露 DSH 既有行为，
 DevLead 不新增上传，也不修改默认配置。
 
-### `Session.snapshotEvents()`（已 deprecated）
+### `Session.snapshotEvents()` 迁移已完成（Batch 1）
 
 rc.1 与 rc.5 的 `packages/core/session/README.md`「Read the log」和
 `packages/core/session/src/index.ts` 的 JSDoc 都把 `snapshotEvents()`（连同 `eventAt()` /
-`ownEvents()`）标为 deprecated：
+`ownEvents()`）标为 deprecated。两个 tag 都没有 sanctioned 的同步原始事件读取替代；官方方向是
+Session projection，cold 侧用 `observeSession()` 读取 projection，而不是把同步全日志扫描改成
+异步全日志扫描。只读源码核对使用 `git show dsh-v0.2.2-rc.1:<path>` / `rc.5:<path>`，未 checkout
+或修改 DSH。
 
-> existing logic may remain unmigrated for now, but new production calls are prohibited.
+当前生产调用为 **0**（测试 fixture 不计）：
 
-本仓库生产代码仍有 5 处调用（测试代码不计）：
+| 原调用 | 当前实现 |
+| --- | --- |
+| `inbox.ts` 反查 pending message 入队时间 | `devLeadInboxTimes`：只保存当前两个 pending lane 的 id/time，splice 移除即释放 |
+| `survivalProof` live/cold answer 证明 | `devLeadChildAnswers`：有界 JSON pending/claimed/candidate/presented/discard；live 用 `ProjectionHandle.stateOf`，cold 用 `observeSession().projections.values` |
+| `childLogEvents` | 已删除，不再读取原始事件 |
+| `replayChildObserver` | 从同一 child-answer projection 恢复 observer；bounded overflow 标 `complete:false`，survival 返回 unknown |
+| `question-routing.ts` 人类 turn 判定 | `devLeadTurnSource`，由 DevLeadService 同步读取，pre-tool gate 在不可确认时 fail closed |
 
-| 位置 | 当前用途 | 迁移方向 |
-| --- | --- | --- |
-| `packages/devlead/src/inbox.ts:141` | 从日志尾部反查 pending inbox 消息的 `agent/inbox/spliced` 入队时间 | 事件订阅/投影维护 message id → enqueue time，或查询引擎有界读 |
-| `packages/devlead/src/index.ts` 的 `survivalProof` | live child 缺 observer 时回放日志做 answer survival 证明 | 事件订阅重建 observer；cold 走查询引擎 |
-| `packages/devlead/src/index.ts` 的 `childLogEvents` | attached child 取完整快照，否则查询引擎读 log | 统一走查询引擎有界读/投影 |
-| `packages/devlead/src/index.ts` 的 `replayChildObserver` | 全量回放 child inbox 日志 | 增量事件订阅 + cold 查询引擎 |
-| `packages/tool/src/question-routing.ts:235` | 扫描当前 turn 的 `user/message` 判断是否人类发起 | turn/source 投影或按 turn 范围的有界查询 |
-
-该债务**本轮只记录、不改代码**。升级门禁：在 DSH `0.3.0`（当前 `engines.dsh` 上界）前迁移
-这些调用，或为每个调用点加能力检测与有界 fallback；若新 DSH 把 deprecated 升级为移除/硬禁止，
-必须先完成迁移再声明兼容。迁移时不要用另一个同样物化完整日志的新 reader 替换旧 reader。
+cold projection read 有 30 秒超时放弃、每 child single-flight、64 个 raw read 并发上限；超时后
+原始 Promise 仍被观察，重试不另起挂起查询。rc.1 没有 `inspectSession()`，因此 child-answer
+projection 带 `wire.summary:false` 以同时支持 rc.1 的 `observeSession()` 与 rc.5；它不进入 Session
+summary。剩余升级门禁是复核 projection / `observeSession` 契约及 wire 字段，不再允许新增任何
+deprecated reader 或其 alias。
 
 ## rc.5 web search 变更影响
 
@@ -206,6 +209,19 @@ wire projection 的 questionStatus/answerStatus 都是可选 additive 字段，�
    （`ctx.sessionProjectionCache`）；该 README 只描述 creation / turn-end / disposal 三个
    mandatory write point，没有把 `write()` 单独承诺为第三方插件契约。
 
+## 0.4.0 Batch 1 breaking changes
+
+- 当前 record `version:2`；v1 与无 `answerSeq` 的旧 answer 忽略并一次性 warning，旧 Session 的
+  DevLead 状态失效，不冻结；当前版本损坏仍冻结并可 `/devlead reset`。stateVersion 为 7/3/3。
+- `OUTBOX_SPEC` v3 无 `compatibleVersions`，`origin` 必填。旧 v1/v2 outbox、无 origin pending row、
+  旧 answer-discard 队列数据全部丢弃；旧 domain 无法打开时 warn + 禁用 durable domain，不 crash、
+  不静默写坏。`answer_discards` 30 天 retention 保留。
+- 非 answer 幂等改用独立 `devlead_idempotency` v1 domain，7 天 TTL；不再承诺重启后 memory window。
+  storage 不可用时只在进程内兜底并显式 warning。
+- 新增 `DEVLEAD_FOREIGN_SUPERVISOR` / `DEVLEAD_MULTIPLE_SUPERVISORS` 硬拒绝、`questionTtlMs`
+  （默认 24h，0 禁用）、cold open-question replay（每进程一次）、correction/background 每
+  child-turn 4/8 上限。`DevLeadProjectionReport.repairPending` 是 runtime 可选投影字段。
+
 ## 升级门禁
 
 升级 DSH（任一新 rc 或进入 0.3.0）前必须全部通过：
@@ -219,16 +235,19 @@ wire projection 的 questionStatus/answerStatus 都是可选 additive 字段，�
    `seq` / `time` / `data`）未变；写入仍是 `ignorable:true`、JSON snapshot 后同步 commit，
    `pluginRecordOf` 仍只提取 record 而由 owner 严格校验 payload。`packages/core/session/README.md`
    的调用方限制与 Session format migration best-effort 条款也必须重新核对。
-3. 核对 `Session.snapshotEvents()` 仍存在且快照/区间语义未变；若被移除或从 deprecated 升级为
-   硬禁止，先完成本页记录的迁移或能力检测，再声明兼容。
+3. 核对生产代码仍无 `Session.snapshotEvents()` / `eventAt()` / `ownEvents()` 或其 alias；
+   `devLeadInboxTimes` / `devLeadTurnSource` / `devLeadChildAnswers` projection 与 cold
+   `observeSession()` wire 契约仍存在。deprecated reader 被移除不应影响本仓库；projection/query
+   语义变化必须先修复并重新跑 cold-discard / hung-read 测试。
 4. 在 **rc.1 到目标版本的每个 rc** 跑兼容矩阵；不能只测最新版本。每个版本至少重跑
    [真实 E2E](#真实-e2e) 的 installed + patch `--no-worktree`，声明 worktree / Team 能力时跑
    完整组合；另跑 record facade 的正常/降级测试，验证实际加载的导出与首写/首读路径。临时安装、
    目标 typings 编译、三条命令与证据留存按下方[可执行 recipe](#逐-rc-可执行-recipe) 执行。
-5. 对旧日志做 record schema / migration 核对：六类 `plugin:devlead/*` 的 `kind` / `version` /
-   字段集、reset 解冻规则、strict decoder 与 projection stateVersion 必须一致。任何 record
-   schema 或迁移异常都按**可能不可恢复**处理：先备份原始日志、停止宣称兼容并评估显式迁移/
-   降级；不得把读取失败当作空日志，也不得用静默 reset 丢弃旧状态。
+5. 对旧日志做 record schema / migration 核对：七类 `plugin:devlead/*` 的 `kind` / `version` /
+   字段集、reset 解冻规则、strict decoder 与 projection stateVersion 必须一致。0.4.0 的既定策略是
+   v1 record、无 seq answer 与 v1/v2 outbox **显式丢弃**，不要误判为当前 schema 损坏而冻结；
+   当前 v2 损坏仍按**可能不可恢复**处理：先备份原始日志、冻结并提供 `/devlead reset`，不得把
+   读取失败当作空日志，也不得用静默 reset 丢弃当前状态。
 6. 核对能力矩阵依赖的 Host API（Team / worktree / inbox / stop / question routing）与
    projection / summary 契约仍存在。
 7. 发布前的完整重跑与三门真实 E2E 仍按 [PUBLISHING](PUBLISHING.md)；证据日志必须来自冻结的

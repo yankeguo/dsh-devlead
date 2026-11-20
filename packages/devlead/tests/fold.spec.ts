@@ -7,7 +7,7 @@
  * clock is involved.
  */
 
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import {
   DEVLEAD_ANSWER_RETENTION,
@@ -17,6 +17,8 @@ import {
   DEVLEAD_NOTIFICATION_RECORD_TYPE,
   DEVLEAD_OPEN_QUESTION_PIN_MAX,
   DEVLEAD_PROJECTION_KEY,
+  DEVLEAD_RECORD_VERSION,
+  DEVLEAD_REPAIR_RECORD_TYPE,
   DEVLEAD_REPORT_ANSWER_RECORD_TYPE,
   DEVLEAD_REPORT_RECORD_TYPE,
   DEVLEAD_REPORT_RETENTION,
@@ -24,7 +26,7 @@ import {
   DEVLEAD_WATCH_RECORD_TYPE,
 } from '@yankeguo/dsh-devlead-protocol'
 import type { DevLeadNotification, DevLeadProjection, DevLeadProjectionState } from '@yankeguo/dsh-devlead-protocol'
-import { reportAnswerRecord, resetRecord } from '../src/domain.ts'
+import { repairRecord, reportAnswerRecord, resetRecord } from '../src/domain.ts'
 import {
   applyDevLeadModeProjection,
   applyDevLeadProjection,
@@ -35,17 +37,21 @@ import {
   devLeadProjectionSchema,
   devLeadProjectionStateSchema,
   devLeadProjectionView,
+  devLeadWatchProjectionDefinition,
   emptyDevLeadProjectionState,
   emptyDevLeadWatchProjectionState,
+  initializeDevLeadFoldWarnings,
   latestAnswerOf,
   questionAnswerViewOf,
   questionStatusOf,
+  resetDevLeadFoldWarningsForTests,
 } from '../src/fold.ts'
 import {
   T0,
   answer,
   answerEvent,
   foreignPluginEvent,
+  legacyAnswer,
   modeEvent,
   notification,
   notificationEvent,
@@ -93,6 +99,7 @@ describe('empty state and projection definition', () => {
       notifications: [],
       reports: [],
       answers: [],
+      repairPending: [],
       failure: null,
       inheritedEventCount: 0,
     })
@@ -102,7 +109,9 @@ describe('empty state and projection definition', () => {
   it('exposes the registered projection unit contract', () => {
     expect(devLeadProjectionDefinition.key).toBe(DEVLEAD_PROJECTION_KEY)
     expect(devLeadProjectionDefinition.key).toBe('devLead')
-    expect(devLeadProjectionDefinition.stateVersion).toBe(5)
+    expect(devLeadProjectionDefinition.stateVersion).toBe(7)
+    expect(devLeadModeProjectionDefinition.stateVersion).toBe(3)
+    expect(devLeadWatchProjectionDefinition.stateVersion).toBe(3)
     expect(devLeadProjectionDefinition.apply).toBe(applyDevLeadProjection)
     expect(devLeadProjectionDefinition.init()).toEqual(emptyDevLeadProjectionState())
     // Every init call hands out an independent empty state: the registry seeds
@@ -154,7 +163,7 @@ describe('mode records', () => {
   it('freezes the fold on an invalid mode payload', () => {
     const state = fold([
       modeEvent(0, true),
-      patternMode(1, { kind: 'devlead/mode', version: 1, enabled: 'yes', at: T0 }),
+      patternMode(1, { kind: 'devlead/mode', version: DEVLEAD_RECORD_VERSION, enabled: 'yes', at: T0 }),
     ])
     expect(state.failure).toBe(
       `devlead replay failed at session event 1 (${DEVLEAD_MODE_RECORD_TYPE}): mode record enabled must be a boolean`,
@@ -165,12 +174,12 @@ describe('mode records', () => {
 
   it('rejects every malformed mode envelope', () => {
     const cases: Array<[string, SessionEvent]> = [
-      ['unsupported version', corruptModeRecord({ kind: 'devlead/mode', version: 2, enabled: true, at: T0 })],
-      ['unexpected kind', corruptModeRecord({ kind: 'devlead/watch', version: 1, enabled: true, at: T0 })],
+      ['unsupported version', corruptModeRecord({ kind: 'devlead/mode', version: DEVLEAD_RECORD_VERSION + 1, enabled: true, at: T0 })],
+      ['unexpected kind', corruptModeRecord({ kind: 'devlead/watch', version: DEVLEAD_RECORD_VERSION, enabled: true, at: T0 })],
       ['non-object payload', pluginRecordEvent(1, DEVLEAD_MODE_RECORD_TYPE, ['not', 'a', 'record'])],
       ['null payload', pluginRecordEvent(1, DEVLEAD_MODE_RECORD_TYPE, null)],
-      ['fractional timestamp', corruptModeRecord({ kind: 'devlead/mode', version: 1, enabled: true, at: 1.5 })],
-      ['negative timestamp', corruptModeRecord({ kind: 'devlead/mode', version: 1, enabled: true, at: -1 })],
+      ['fractional timestamp', corruptModeRecord({ kind: 'devlead/mode', version: DEVLEAD_RECORD_VERSION, enabled: true, at: 1.5 })],
+      ['negative timestamp', corruptModeRecord({ kind: 'devlead/mode', version: DEVLEAD_RECORD_VERSION, enabled: true, at: -1 })],
     ]
     for (const [label, event] of cases) {
       const state = fold([modeEvent(0, false), event])
@@ -212,11 +221,11 @@ describe('watch records', () => {
 
   it('rejects duplicate, empty, or non-string Session ids', () => {
     const cases: Array<[string, unknown]> = [
-      ['duplicate ids', { kind: 'devlead/watch', version: 1, sessions: ['a', 'a'], at: T0 }],
-      ['empty id', { kind: 'devlead/watch', version: 1, sessions: [''], at: T0 }],
-      ['non-string id', { kind: 'devlead/watch', version: 1, sessions: [1], at: T0 }],
-      ['non-array sessions', { kind: 'devlead/watch', version: 1, sessions: 'session-alpha', at: T0 }],
-      ['unsupported version', { kind: 'devlead/watch', version: 3, sessions: [], at: T0 }],
+      ['duplicate ids', { kind: 'devlead/watch', version: DEVLEAD_RECORD_VERSION, sessions: ['a', 'a'], at: T0 }],
+      ['empty id', { kind: 'devlead/watch', version: DEVLEAD_RECORD_VERSION, sessions: [''], at: T0 }],
+      ['non-string id', { kind: 'devlead/watch', version: DEVLEAD_RECORD_VERSION, sessions: [1], at: T0 }],
+      ['non-array sessions', { kind: 'devlead/watch', version: DEVLEAD_RECORD_VERSION, sessions: 'session-alpha', at: T0 }],
+      ['unsupported version', { kind: 'devlead/watch', version: DEVLEAD_RECORD_VERSION + 1, sessions: [], at: T0 }],
     ]
     for (const [label, payload] of cases) {
       const state = fold([pluginRecordEvent(1, DEVLEAD_WATCH_RECORD_TYPE, payload)])
@@ -363,13 +372,13 @@ describe('record strictness', () => {
     const cases: Array<[string, SessionEvent]> = [
       [
         'mode extra field',
-        corruptModeRecord({ kind: 'devlead/mode', version: 1, enabled: true, at: T0, extra: true }),
+        corruptModeRecord({ kind: 'devlead/mode', version: DEVLEAD_RECORD_VERSION, enabled: true, at: T0, extra: true }),
       ],
       [
         'watch extra field',
         pluginRecordEvent(1, DEVLEAD_WATCH_RECORD_TYPE, {
           kind: 'devlead/watch',
-          version: 1,
+          version: DEVLEAD_RECORD_VERSION,
           sessions: [],
           at: T0,
           extra: true,
@@ -379,7 +388,7 @@ describe('record strictness', () => {
         'notification record extra field',
         pluginRecordEvent(1, DEVLEAD_NOTIFICATION_RECORD_TYPE, {
           kind: 'devlead/notification',
-          version: 1,
+          version: DEVLEAD_RECORD_VERSION,
           notification: notification({ sessionId: 'session-alpha', turn: 1 }),
           extra: true,
         }),
@@ -388,7 +397,7 @@ describe('record strictness', () => {
         'notification value extra field',
         pluginRecordEvent(1, DEVLEAD_NOTIFICATION_RECORD_TYPE, {
           kind: 'devlead/notification',
-          version: 1,
+          version: DEVLEAD_RECORD_VERSION,
           notification: { ...notification({ sessionId: 'session-alpha', turn: 1 }), extra: true },
         }),
       ],
@@ -401,19 +410,19 @@ describe('record strictness', () => {
   })
 
   it('rejects a missing required field instead of coercing it', () => {
-    const state = fold([pluginRecordEvent(1, DEVLEAD_WATCH_RECORD_TYPE, { kind: 'devlead/watch', version: 1, at: T0 })])
+    const state = fold([pluginRecordEvent(1, DEVLEAD_WATCH_RECORD_TYPE, { kind: 'devlead/watch', version: DEVLEAD_RECORD_VERSION, at: T0 })])
     expect(state.failure).toContain('missing field "sessions"')
   })
 
   it('rejects an instant outside the representable Date range', () => {
     const beyond = 8_640_000_000_000_001
     const cases: Array<[string, SessionEvent]> = [
-      ['mode', corruptModeRecord({ kind: 'devlead/mode', version: 1, enabled: true, at: beyond })],
+      ['mode', corruptModeRecord({ kind: 'devlead/mode', version: DEVLEAD_RECORD_VERSION, enabled: true, at: beyond })],
       [
         'watch',
         pluginRecordEvent(1, DEVLEAD_WATCH_RECORD_TYPE, {
           kind: 'devlead/watch',
-          version: 1,
+          version: DEVLEAD_RECORD_VERSION,
           sessions: ['session-alpha'],
           at: beyond,
         }),
@@ -430,17 +439,93 @@ describe('record strictness', () => {
   })
 })
 
+describe('legacy record compatibility', () => {
+  const warnings: string[] = []
+
+  beforeEach(() => {
+    warnings.length = 0
+    resetDevLeadFoldWarningsForTests()
+    initializeDevLeadFoldWarnings({ warn: message => warnings.push(message) })
+  })
+
+  afterEach(() => resetDevLeadFoldWarningsForTests())
+
+  it('ignores old envelope versions in every projection with one warning, then folds current records', () => {
+    const oldVersion = DEVLEAD_RECORD_VERSION - 1
+    const events = [
+      modeEvent(0, true),
+      pluginRecordEvent(1, DEVLEAD_MODE_RECORD_TYPE, {
+        kind: 'devlead/mode', version: oldVersion, enabled: false, at: T0,
+      }),
+      pluginRecordEvent(2, DEVLEAD_WATCH_RECORD_TYPE, {
+        kind: 'devlead/watch', version: oldVersion, sessions: ['session-old'], at: T0,
+      }),
+      pluginRecordEvent(3, DEVLEAD_RESET_RECORD_TYPE, {
+        kind: 'devlead/reset', version: oldVersion, at: T0,
+      }),
+      watchEvent(4, ['session-current']),
+    ]
+    const state = fold(events)
+    expect(state.enabled).toBe(true)
+    expect(state.sessions).toEqual(['session-current'])
+    expect(state.failure).toBeNull()
+
+    const watchState = events.reduce(applyDevLeadWatchProjection, emptyDevLeadWatchProjectionState())
+    expect(watchState.sessions).toEqual(['session-current'])
+    expect(watchState.failure).toBeNull()
+    const modeState = events.reduce(applyDevLeadModeProjection, emptyDevLeadModeProjectionState())
+    expect(modeState.enabled).toBe(true)
+    expect(modeState.failure).toBeNull()
+
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0]).toContain('ignored a legacy record')
+    expect(warnings[0]).toContain(`version ${String(oldVersion)}`)
+  })
+
+  it('ignores a valid pre-sequence answer instead of folding it as sequence zero', () => {
+    const question = report({ kind: 'question', message: 'Which target?' })
+    const legacy = legacyAnswer({ reportId: question.id, messageId: 'msg-old', answerSeq: 0 })
+    const current = answer({ reportId: question.id, messageId: 'msg-current', answerSeq: 1 })
+    const events = [reportEvent(0, question), answerEvent(1, legacy), answerEvent(2, current)]
+    const state = fold(events)
+    expect(state.failure).toBeNull()
+    expect(state.answers).toEqual([current])
+    expect(latestAnswerOf(state.answers, question.id)?.messageId).toBe('msg-current')
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0]).toContain('answerSeq')
+
+    const watchState = events.reduce(applyDevLeadWatchProjection, emptyDevLeadWatchProjectionState())
+    expect(watchState.failure).toBeNull()
+    const modeState = events.reduce(applyDevLeadModeProjection, emptyDevLeadModeProjectionState())
+    expect(modeState.failure).toBeNull()
+    expect(warnings).toHaveLength(1)
+  })
+
+  it('freezes a no-seq answer carrying additional current-schema corruption', () => {
+    const question = report({ kind: 'question', message: 'Which target?' })
+    const damaged = pluginRecordEvent(1, DEVLEAD_REPORT_ANSWER_RECORD_TYPE, {
+      kind: 'devlead/report-answer',
+      version: DEVLEAD_RECORD_VERSION,
+      answer: { ...legacyAnswer({ reportId: question.id }), textHash: 'not-a-hash' },
+    })
+    const state = fold([reportEvent(0, question), damaged])
+    expect(state.failure).toContain(DEVLEAD_REPORT_ANSWER_RECORD_TYPE)
+    expect(state.answers).toEqual([])
+    expect(warnings).toEqual([])
+  })
+})
+
 describe('failure handling', () => {
   it('freezes the fold at the last valid state once a record is corrupt', () => {
     const events: SessionEvent[] = [
       modeEvent(0, true),
       watchEvent(1, ['session-alpha']),
       notificationEvent(2, notification({ sessionId: 'session-alpha', turn: 1 })),
-      pluginRecordEvent(3, DEVLEAD_MODE_RECORD_TYPE, { kind: 'devlead/mode', version: 9, enabled: true, at: T0 }),
+      pluginRecordEvent(3, DEVLEAD_MODE_RECORD_TYPE, { kind: 'devlead/mode', version: DEVLEAD_RECORD_VERSION + 1, enabled: true, at: T0 }),
     ]
     const failed = fold(events)
     expect(failed.failure).toBe(
-      `devlead replay failed at session event 3 (${DEVLEAD_MODE_RECORD_TYPE}): record "${DEVLEAD_MODE_RECORD_TYPE}" carries unsupported version 9`,
+      `devlead replay failed at session event 3 (${DEVLEAD_MODE_RECORD_TYPE}): record "${DEVLEAD_MODE_RECORD_TYPE}" carries unsupported version ${DEVLEAD_RECORD_VERSION + 1}`,
     )
     expect(failed.enabled).toBe(true)
     expect(failed.sessions).toEqual(['session-alpha'])
@@ -448,7 +533,7 @@ describe('failure handling', () => {
     // Every later event — valid or not — leaves the frozen state untouched.
     expect(apply(failed, modeEvent(4, false))).toBe(failed)
     expect(apply(failed, notificationEvent(5, notification({ sessionId: 'session-beta', turn: 1 })))).toBe(failed)
-    expect(apply(failed, corruptModeRecord({ kind: 'devlead/mode', version: 1, enabled: true, at: T0 }))).toBe(failed)
+    expect(apply(failed, corruptModeRecord({ kind: 'devlead/mode', version: DEVLEAD_RECORD_VERSION, enabled: true, at: T0 }))).toBe(failed)
   })
 
   it('records a failure for a corrupt first record', () => {
@@ -462,8 +547,8 @@ describe('failure handling', () => {
   })
 
   it('records only the first failure message', () => {
-    const first = fold([corruptModeRecord({ kind: 'devlead/mode', version: 2, enabled: true, at: T0 })])
-    const second = apply(first, corruptModeRecord({ kind: 'devlead/watch', version: 4, sessions: [], at: T0 }))
+    const first = fold([corruptModeRecord({ kind: 'devlead/mode', version: DEVLEAD_RECORD_VERSION + 1, enabled: true, at: T0 })])
+    const second = apply(first, corruptModeRecord({ kind: 'devlead/watch', version: DEVLEAD_RECORD_VERSION + 1, sessions: [], at: T0 }))
     expect(second.failure).toBe(first.failure)
   })
 
@@ -472,7 +557,7 @@ describe('failure handling', () => {
     const view = devLeadProjectionView(healthy)
     const failed = apply(
       healthy,
-      corruptModeRecord({ kind: 'devlead/mode', version: 1, enabled: 'yes', at: T0 }),
+      corruptModeRecord({ kind: 'devlead/mode', version: DEVLEAD_RECORD_VERSION, enabled: 'yes', at: T0 }),
     )
     expect(failed.failure).not.toBeNull()
     // The registry compares consecutive wire views with Object.is: an
@@ -572,7 +657,7 @@ describe('report records', () => {
       modeEvent(0, true),
       pluginRecordEvent(1, DEVLEAD_REPORT_RECORD_TYPE, {
         kind: 'devlead/report',
-        version: 1,
+        version: DEVLEAD_RECORD_VERSION,
         report: value,
       }),
     ])
@@ -812,7 +897,7 @@ describe('reset records', () => {
     const frozen = fold([
       modeEvent(0, true),
       watchEvent(1, ['session-alpha']),
-      corruptModeRecord({ kind: 'devlead/mode', version: 9, enabled: false, at: T0 }),
+      corruptModeRecord({ kind: 'devlead/mode', version: DEVLEAD_RECORD_VERSION + 1, enabled: false, at: T0 }),
     ])
     expect(frozen.failure).not.toBeNull()
     const recovered = apply(frozen, pluginRecordEvent(2, DEVLEAD_RESET_RECORD_TYPE, resetRecord(T0)))
@@ -824,11 +909,11 @@ describe('reset records', () => {
   })
 
   it('does not unfreeze on a malformed reset payload', () => {
-    const frozen = fold([corruptModeRecord({ kind: 'devlead/mode', version: 2, enabled: true, at: T0 })])
+    const frozen = fold([corruptModeRecord({ kind: 'devlead/mode', version: DEVLEAD_RECORD_VERSION + 1, enabled: true, at: T0 })])
     const firstFailure = frozen.failure
     const stillFrozen = apply(
       frozen,
-      pluginRecordEvent(1, DEVLEAD_RESET_RECORD_TYPE, { kind: 'devlead/reset', version: 1 }),
+      pluginRecordEvent(1, DEVLEAD_RESET_RECORD_TYPE, { kind: 'devlead/reset', version: DEVLEAD_RECORD_VERSION }),
     )
     // A corrupt marker must not be able to discard the evidence of a corrupt
     // log; only a structurally valid human-written reset recovers.
@@ -837,7 +922,7 @@ describe('reset records', () => {
   })
 
   it('freezes on a malformed reset record when the state was still valid', () => {
-    const failed = fold([pluginRecordEvent(0, DEVLEAD_RESET_RECORD_TYPE, { kind: 'devlead/reset', version: 1, at: -1 })])
+    const failed = fold([pluginRecordEvent(0, DEVLEAD_RESET_RECORD_TYPE, { kind: 'devlead/reset', version: DEVLEAD_RECORD_VERSION, at: -1 })])
     expect(failed.failure).toContain(`(${DEVLEAD_RESET_RECORD_TYPE})`)
     expect(failed.failure).toContain('reset record at')
   })
@@ -845,7 +930,7 @@ describe('reset records', () => {
   it('resets the summary-sized mode projection too', () => {
     const enabled = applyDevLeadModeProjection(
       emptyDevLeadModeProjectionState(),
-      pluginRecordEvent(0, DEVLEAD_MODE_RECORD_TYPE, { kind: 'devlead/mode', version: 1, enabled: true, at: T0 }),
+      pluginRecordEvent(0, DEVLEAD_MODE_RECORD_TYPE, { kind: 'devlead/mode', version: DEVLEAD_RECORD_VERSION, enabled: true, at: T0 }),
     )
     expect(enabled).toEqual({ enabled: true, failure: null, inheritedEventCount: 0 })
     const reset = applyDevLeadModeProjection(
@@ -1039,35 +1124,32 @@ describe('answer records (Phase 1d)', () => {
     expect(latestAnswerOf(state.answers, question.id)?.status).toBe('discarded')
   })
 
-  it('legacy records without a sequence keep log-order selection among themselves', () => {
+  it('latestAnswerOf ignores pre-sequence rows regardless of their log position', () => {
     const question = questionReport()
-    const events = [
-      reportEvent(0, question),
-      answerEvent(1, answer({ reportId: question.id, messageId: 'msg-1', at: T0 + 1 })),
-      answerEvent(2, answer({ reportId: question.id, messageId: 'msg-2', at: T0 + 2, answeredAt: T0 + 1 })),
-    ]
-    const state = fold(events)
-    expect(latestAnswerOf(state.answers, question.id)?.messageId).toBe('msg-2')
-    // A sequenced record outranks every legacy row regardless of position.
-    const sequenced = apply(state, answerEvent(3, answer({ reportId: question.id, messageId: 'msg-3', at: T0 + 3, answeredAt: T0 + 1, answerSeq: 1 })))
-    expect(latestAnswerOf(sequenced.answers, question.id)?.messageId).toBe('msg-3')
+    const legacy = legacyAnswer({ reportId: question.id, messageId: 'msg-old', answerSeq: 0 })
+    const current = answer({ reportId: question.id, messageId: 'msg-current', answerSeq: 1 })
+    expect(latestAnswerOf([legacy], question.id)).toBeUndefined()
+    expect(latestAnswerOf([legacy, current], question.id)).toBe(current)
+    expect(latestAnswerOf([current, legacy], question.id)).toBe(current)
   })
 
   it('rejects a malformed answerSeq through the strict decoder', () => {
     const question = questionReport()
-    const bad = pluginRecordEvent(2, DEVLEAD_REPORT_ANSWER_RECORD_TYPE, {
-      kind: 'devlead/report-answer',
-      version: 1,
-      answer: { ...answer({ reportId: question.id }), answerSeq: -1 },
-    })
-    const state = fold([reportEvent(0, question), bad])
-    expect(state.failure).toContain('answerSeq')
+    for (const answerSeq of [-1, undefined]) {
+      const bad = pluginRecordEvent(2, DEVLEAD_REPORT_ANSWER_RECORD_TYPE, {
+        kind: 'devlead/report-answer',
+        version: DEVLEAD_RECORD_VERSION,
+        answer: { ...answer({ reportId: question.id }), answerSeq },
+      })
+      const state = fold([reportEvent(0, question), bad])
+      expect(state.failure).toContain('answerSeq')
+    }
   })
 
-  it('falls back to the admission instant for a legacy admitted record without answeredAt', () => {
+  it('falls back to the admission instant for a current admitted record without answeredAt', () => {
     const question = questionReport()
-    const legacy = answer({ reportId: question.id, messageId: 'msg-1', at: T0 + 5 })
-    const { answeredAt: _answeredAt, ...withoutAnsweredAt } = legacy
+    const admitted = answer({ reportId: question.id, messageId: 'msg-1', at: T0 + 5 })
+    const { answeredAt: _answeredAt, ...withoutAnsweredAt } = admitted
     const state = fold([reportEvent(0, question), answerEvent(1, withoutAnsweredAt)])
     expect(questionAnswerViewOf(state, question.id)).toMatchObject({
       questionStatus: 'answered',
@@ -1091,7 +1173,7 @@ describe('answer records (Phase 1d)', () => {
     const question = questionReport()
     const malformed = pluginRecordEvent(2, DEVLEAD_REPORT_ANSWER_RECORD_TYPE, {
       kind: 'devlead/report-answer',
-      version: 1,
+      version: DEVLEAD_RECORD_VERSION,
       answer: { ...answer({ reportId: question.id }), textHash: 'not-a-hash' },
     })
     const events = [modeEvent(0, true), reportEvent(1, question), malformed]
@@ -1171,5 +1253,30 @@ describe('answer records (Phase 1d)', () => {
     expect(state.answers).toEqual([value])
     expect(state.failure).toBeNull()
     expect(reportAnswerRecord(value).kind).toBe('devlead/report-answer')
+  })
+})
+
+describe('runtime repair projection', () => {
+  it('publishes and clears repairPending through whole-value repair records', () => {
+    const question = report({ kind: 'question', message: 'Which target?' })
+    const initial = fold([reportEvent(0, question)])
+    const durable = devLeadProjectionView(initial)
+    expect(durable.reports[0]?.repairPending).toBeUndefined()
+    const pendingState = apply(initial, pluginRecordEvent(1, DEVLEAD_REPAIR_RECORD_TYPE, repairRecord('lead-1', [question.id], T0 + 1)))
+    const pending = devLeadProjectionView(pendingState)
+    expect(pending).not.toBe(durable)
+    expect(pending.reports[0]).toMatchObject({ questionStatus: 'open', repairPending: true })
+    expect(devLeadProjectionSchema.parse(pending)).toEqual(pending)
+    const settledState = apply(pendingState, pluginRecordEvent(2, DEVLEAD_REPAIR_RECORD_TYPE, repairRecord('lead-1', [], T0 + 2)))
+    const settled = devLeadProjectionView(settledState)
+    expect(settled.reports[0]?.repairPending).toBeUndefined()
+    expect(settled.reports[0]?.id).toBe(question.id)
+  })
+
+  it('rejects a pre-repair v6 cache row instead of restoring it', () => {
+    const { repairPending: _repairPending, ...v6 } = emptyDevLeadProjectionState()
+    expect(v6).not.toHaveProperty('repairPending')
+    expect(devLeadProjectionStateSchema.safeParse(v6).success).toBe(false)
+    expect(devLeadProjectionDefinition.stateVersion).toBe(7)
   })
 })

@@ -8,7 +8,8 @@ import { describe, expect, it } from 'vitest'
 import { DEVLEAD_MESSAGE_KIND } from '@yankeguo/dsh-devlead-protocol'
 import { DevLeadAnswerTracker, DevLeadChildAnswerObserver, entryOfRecord, recordOfEntry } from '../src/answers.ts'
 import { DevLeadMetrics } from '../src/metrics.ts'
-import { answer, sessionEvent } from './fixtures.ts'
+import type { DevLeadChildAnswersState } from '../src/child-answer-projection.ts'
+import { answer, legacyAnswer, sessionEvent } from './fixtures.ts'
 
 const LEAD = 'lead-1'
 const CHILD = 'child-1'
@@ -19,6 +20,18 @@ describe('DevLeadAnswerTracker seed (restart semantics)', () => {
     const tracker = new DevLeadAnswerTracker()
     tracker.seed(answer({ reportId: REPORT, leadSessionId: LEAD, sessionId: CHILD, messageId: 'm1', status: 'discarded', at: 10 }))
     expect(tracker.entryOfQuestion(LEAD, REPORT)?.status).toBe('discarded')
+  })
+
+  it('ignores pre-sequence records instead of seeding them as sequence zero', () => {
+    const tracker = new DevLeadAnswerTracker()
+    const current = answer({ reportId: REPORT, leadSessionId: LEAD, sessionId: CHILD, messageId: 'm-current', answerSeq: 1 })
+    const legacy = legacyAnswer({ reportId: REPORT, leadSessionId: LEAD, sessionId: CHILD, messageId: 'm-old', answerSeq: 0 })
+    tracker.seed(legacy)
+    expect(tracker.entryOfQuestion(LEAD, REPORT)).toBeUndefined()
+    tracker.seed(current)
+    tracker.seed(legacy)
+    expect(tracker.entryOfQuestion(LEAD, REPORT)?.messageId).toBe('m-current')
+    expect(() => entryOfRecord(legacy)).toThrow('without answerSeq')
   })
 
   it('does not rewind an observed presentation with a durable admitted record of the same message', () => {
@@ -240,36 +253,36 @@ describe('DevLeadAnswerTracker admission sequence (delayed lifecycle facts)', ()
     expect(tracker.entryOfQuestion(LEAD, REPORT)?.messageId).toBe('m2')
   })
 
-  it('legacy (no-sequence) ties compare admission instants, never lifecycle at', () => {
+  it('same-sequence ties compare admission instants, never lifecycle at', () => {
     const tracker = new DevLeadAnswerTracker()
     tracker.seed(answer({ reportId: REPORT, leadSessionId: LEAD, sessionId: CHILD, messageId: 'm1', status: 'admitted', at: 10 }))
     tracker.seed(answer({ reportId: REPORT, leadSessionId: LEAD, sessionId: CHILD, messageId: 'm2', status: 'admitted', at: 20, answeredAt: 10 }))
     expect(tracker.entryOfQuestion(LEAD, REPORT)?.messageId).toBe('m2')
-    // A legacy late discard of m1 carries the question's first admission in
-    // answeredAt, not its discard instant, so it cannot outrank the re-answer.
+    // A late discard of m1 carries the question's first admission in answeredAt,
+    // not its discard instant, so it cannot outrank the same-sequence re-answer.
     tracker.seed(answer({ reportId: REPORT, leadSessionId: LEAD, sessionId: CHILD, messageId: 'm1', status: 'discarded', at: 999, answeredAt: 10 }))
     expect(tracker.entryOfQuestion(LEAD, REPORT)?.messageId).toBe('m2')
   })
 
-  it('legacy same-instant admissions resolve by durable log position, lifecycle facts never do', () => {
+  it('same-sequence, same-instant admissions resolve by log position, lifecycle facts never do', () => {
     const tracker = new DevLeadAnswerTracker()
-    // Two legacy admissions in the same millisecond: the newer record (later
-    // log position, the one the caller seeds last) wins the tie.
+    // Two admissions in the same millisecond and sequence: the newer record
+    // (later log position, the one the caller seeds last) wins the tie.
     tracker.seed(answer({ reportId: REPORT, leadSessionId: LEAD, sessionId: CHILD, messageId: 'm1', status: 'admitted', at: 10 }))
     tracker.seed(answer({ reportId: REPORT, leadSessionId: LEAD, sessionId: CHILD, messageId: 'm2', status: 'admitted', at: 10, answeredAt: 10 }))
     expect(tracker.entryOfQuestion(LEAD, REPORT)?.messageId).toBe('m2')
-    // A legacy discard tied on the first admission instant never replaces it.
+    // A discard tied on the first admission instant never replaces it.
     tracker.seed(answer({ reportId: REPORT, leadSessionId: LEAD, sessionId: CHILD, messageId: 'm1', status: 'discarded', at: 999, answeredAt: 10 }))
     expect(tracker.entryOfQuestion(LEAD, REPORT)?.messageId).toBe('m2')
   })
 
-  it('a legacy late discard never outranks a claimed re-answer (log position authority)', () => {
+  it('a same-sequence late discard never outranks a claimed re-answer', () => {
     const tracker = new DevLeadAnswerTracker()
-    // Legacy re-answer m2 (no sequence), claimed by a pre-step.
+    // Same-sequence re-answer m2, claimed by a pre-step.
     tracker.seed(answer({ reportId: REPORT, leadSessionId: LEAD, sessionId: CHILD, messageId: 'm1', status: 'admitted', at: 10 }))
     tracker.seed(answer({ reportId: REPORT, leadSessionId: LEAD, sessionId: CHILD, messageId: 'm2', status: 'admitted', at: 20, answeredAt: 10 }))
     tracker.claimed(CHILD, 'm2', 25)
-    // The old answer's legacy discard drains late: its answeredAt is the
+    // The old answer's same-sequence discard drains late: its answeredAt is the
     // question's first admission, so the claimed re-answer keeps its position.
     tracker.seed(answer({ reportId: REPORT, leadSessionId: LEAD, sessionId: CHILD, messageId: 'm1', status: 'discarded', at: 999, answeredAt: 10 }))
     expect(tracker.entryOfQuestion(LEAD, REPORT)?.messageId).toBe('m2')
@@ -361,6 +374,45 @@ describe('DevLeadChildAnswerObserver (durable child-log reconstruction)', () => 
     expect(observer.replay(events)).toEqual([
       { messageId: 'm1', questionId: REPORT, leadId: LEAD, at: 40 },
       { messageId: 'm2', questionId: REPORT, leadId: LEAD, at: 60 },
+    ])
+  })
+
+  it('restores plain projection state and optionally finalizes its cancellation tail', () => {
+    const state: DevLeadChildAnswersState = {
+      nextTurn: [{ id: 'pending-turn', answer: { questionId: REPORT, leadId: LEAD } }],
+      nextStep: [{ id: 'pending-step' }],
+      claimed: [{ id: 'claimed', questionId: REPORT, leadId: LEAD, at: 10 }],
+      cancelCandidates: [{ id: 'cancelled', questionId: REPORT, leadId: LEAD, at: 20 }],
+      presented: [{ id: 'presented', at: 30 }],
+      discards: [{ messageId: 'already-discarded', questionId: REPORT, leadId: LEAD, at: 40, seq: 7 }],
+      // Completeness is a service-level admission decision, not observer state.
+      complete: false,
+    }
+    const persisted = { messageId: 'already-discarded', questionId: REPORT, leadId: LEAD, at: 40 }
+    const cancelled = { messageId: 'cancelled', questionId: REPORT, leadId: LEAD, at: 20 }
+
+    const observer = new DevLeadChildAnswerObserver()
+    expect(observer.restore(state, { finalizeCandidates: false })).toEqual([persisted])
+    expect(observer.isPending('pending-turn')).toBe(true)
+    expect(observer.isPending('pending-step')).toBe(true)
+    expect(observer.isClaimed('claimed')).toBe(true)
+    expect(observer.claimedAtOf('claimed')).toBe(10)
+    expect(observer.wasPresented('presented')).toBe(true)
+    expect(observer.presentedAtOf('presented')).toBe(30)
+    expect(observer.observe(sessionEvent(8, 'turn/end', { turn: 1, reason: { kind: 'completed' } }, 50))).toEqual([
+      { messageId: 'claimed', questionId: REPORT, leadId: LEAD, at: 50 },
+      cancelled,
+    ])
+    // Restored maps/lists are detached from the projection's immutable value.
+    expect(state.claimed).toHaveLength(1)
+    expect(state.cancelCandidates).toHaveLength(1)
+
+    const finalized = new DevLeadChildAnswerObserver()
+    expect(finalized.restore(state)).toEqual([persisted, cancelled])
+    // Finalization consumed the restored candidate; only the claimed answer is
+    // newly proved by the following turn/end.
+    expect(finalized.observe(sessionEvent(8, 'turn/end', { turn: 1, reason: { kind: 'completed' } }, 50))).toEqual([
+      { messageId: 'claimed', questionId: REPORT, leadId: LEAD, at: 50 },
     ])
   })
 

@@ -429,6 +429,8 @@ export interface DevLeadReportSummary {
   readonly answerStatus: string | undefined
   /** Dictionary key of the localized answer status, present exactly when {@link answerStatus} is. */
   readonly answerStatusKey: DevLeadAnswerStatusKey | undefined
+  /** Whether an unresolved repair makes this question's displayed lifecycle provisional. */
+  readonly repairPending: boolean
 }
 
 /**
@@ -464,6 +466,10 @@ export function reportSummary(report: DevLeadProjectionReport): DevLeadReportSum
   const isQuestion = report.kind === 'question'
   const questionStatus = isQuestion ? statusLine(report.questionStatus) : undefined
   const answerStatus = isQuestion ? statusLine(report.answerStatus) : undefined
+  // Batch 1 makes repairPending an optional projection field. The `in` narrow
+  // keeps this client compatible with the immediately preceding protocol type;
+  // only the literal boolean true is a provisional fact after the wire crossing.
+  const repairPending = isQuestion && 'repairPending' in report && report.repairPending === true
   const lifecycle = [questionStatus, answerStatus].filter(value => value !== undefined).join(' · ')
   const baseTooltip = isDevLeadReportKind(report.kind)
     ? reportLine(report)
@@ -480,6 +486,7 @@ export function reportSummary(report: DevLeadProjectionReport): DevLeadReportSum
     questionStatusKey: questionStatus === undefined ? undefined : questionStatusLabelKey(questionStatus),
     answerStatus,
     answerStatusKey: answerStatus === undefined ? undefined : answerStatusLabelKey(answerStatus),
+    repairPending,
   }
 }
 

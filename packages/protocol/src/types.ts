@@ -43,8 +43,11 @@ export const DEVLEAD_REPORT_ANSWER_RECORD_TYPE = 'plugin:devlead/report-answer'
  */
 export const DEVLEAD_RESET_RECORD_TYPE = 'plugin:devlead/reset'
 
+/** Whole-value runtime repair-pending question set used to publish UI state. */
+export const DEVLEAD_REPAIR_RECORD_TYPE = 'plugin:devlead/repair'
+
 /** Version stamped on every durable DevLead record. */
-export const DEVLEAD_RECORD_VERSION = 1
+export const DEVLEAD_RECORD_VERSION = 2
 
 /** Session projection key serving the DevLead view to the browser. */
 export const DEVLEAD_PROJECTION_KEY = 'devLead'
@@ -303,10 +306,10 @@ export interface DevLeadReportAnswer {
    * increments it, and every lifecycle fact of one answer carries that
    * answer's sequence. The newest answer is the highest sequence (not the
    * last appended row), so a delayed discard of an older answer can never
-   * outrank a newer re-answer. Absent on pre-sequence legacy records (treated
-   * as 0, ordered by log position among themselves).
+   * outrank a newer re-answer. Required since durable record version 2;
+   * version-1 records and unsequenced answers are discarded during replay.
    */
-  readonly answerSeq?: number
+  readonly answerSeq: number
   /** SHA-256 hex of the trimmed answer prompt, for same-text retry recognition. */
   readonly textHash: string
   /** First admission instant of the question; carried forward across reopens. */
@@ -412,6 +415,20 @@ export interface DevLeadResetRecord {
   readonly at: number
 }
 
+/** Whole-value runtime repair-pending question set driving UI publication. */
+export interface DevLeadRepairRecord {
+  /** Record discriminator. */
+  readonly kind: 'devlead/repair'
+  /** Durable payload version; the fold rejects any other value. */
+  readonly version: typeof DEVLEAD_RECORD_VERSION
+  /** Lead Session whose question repair state changed. */
+  readonly leadSessionId: string
+  /** Sorted unique question report ids whose repair is unresolved. */
+  readonly questionIds: readonly string[]
+  /** Epoch milliseconds of the runtime transition. */
+  readonly at: number
+}
+
 /** Union of every durable payload written under `plugin:devlead/*` records. */
 export type DevLeadRecord =
   | DevLeadModeRecord
@@ -420,6 +437,7 @@ export type DevLeadRecord =
   | DevLeadReportRecord
   | DevLeadReportAnswerRecord
   | DevLeadResetRecord
+  | DevLeadRepairRecord
 
 /** Strict Host fold state of one Session's DevLead records. */
 export interface DevLeadProjectionState {
@@ -437,6 +455,8 @@ export interface DevLeadProjectionState {
    * does not carry the audit (the read tools project the derived state).
    */
   readonly answers: readonly DevLeadReportAnswer[]
+  /** Sorted question report ids whose runtime repair is unresolved. */
+  readonly repairPending: readonly string[]
   /** First rejected persisted record, or null while the state is valid. */
   readonly failure: string | null
   /**
@@ -453,16 +473,17 @@ export interface DevLeadProjectionState {
  * reports, the fold-derived question/answer lifecycle. The derived pair is
  * additive (Phase 1e): an older bundle ignores it, and an older record without
  * answers folds as `questionStatus:'open'`. It reflects the durable audit only;
- * the runtime's finer in-memory claim/presentation observation stays on the
- * read-tool surface (`devlead_notifications`). The runtime-only `repairPending`
- * flag is likewise NOT part of this fold-derived row: the browser shows the last
- * durable status and the read tools expose the provisional repair state.
+ * the runtime's finer in-memory claim/presentation observation is overlaid by
+ * the domain service. An unresolved answer-discard repair adds `repairPending`
+ * so the browser can render the lifecycle as provisional rather than final.
  */
 export interface DevLeadProjectionReport extends DevLeadReport {
   /** Question lifecycle derived from the durable answer audit (question reports only). */
   readonly questionStatus?: DevLeadQuestionStatus
   /** Newest durable answer lifecycle status (question reports only). */
   readonly answerStatus?: DevLeadAnswerStatus
+  /** Whether an unresolved runtime repair makes this question lifecycle provisional. */
+  readonly repairPending?: boolean
 }
 
 /** Client view published through the `devLead` Session projection. */

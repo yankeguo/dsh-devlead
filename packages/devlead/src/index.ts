@@ -77,6 +77,7 @@ import type {
 } from '@yankeguo/dsh-devlead-protocol'
 import {
   DEVLEAD_MODE_RECORD_TYPE,
+  DEVLEAD_REPAIR_RECORD_TYPE,
   DEVLEAD_REPORT_ANSWER_RECORD_TYPE,
   DEVLEAD_RESET_RECORD_TYPE,
   DEVLEAD_WATCH_RECORD_TYPE,
@@ -85,6 +86,7 @@ import {
   createDevLeadPromptMessage,
   devLeadReport,
   modeRecord,
+  repairRecord,
   reportAnswerRecord,
   resetRecord,
   watchRecord,
@@ -124,6 +126,21 @@ import {
 } from './inbox.ts'
 import { DevLeadReportOutbox } from './outbox.ts'
 import type { DevLeadAnswerDiscardRow, DevLeadReportOrigin } from './outbox.ts'
+import { DevLeadPromptIdempotencyStore, DEVLEAD_PROMPT_IDEMPOTENCY_RETENTION_MS } from './idempotency.ts'
+import {
+  devLeadChildAnswersProjectionDefinition,
+  devLeadChildAnswersStateSchema,
+  childAnswerClaimedAt,
+  childAnswerPending,
+  childAnswerPresentedAt,
+} from './child-answer-projection.ts'
+import type { DevLeadChildAnswersState } from './child-answer-projection.ts'
+import {
+  devLeadInboxTimesProjectionDefinition,
+  devLeadTurnSourceProjectionDefinition,
+  inboxEnqueuedAtOf,
+} from './runtime-projections.ts'
+import type { DevLeadInboxTimesState, DevLeadTurnSourceState } from './runtime-projections.ts'
 import {
   applyDevLeadProjection,
   devLeadModeProjectionDefinition,
@@ -132,6 +149,8 @@ import {
   devLeadProjectionView,
   emptyDevLeadProjectionState,
   latestAnswerOf,
+  questionStatusOf,
+  initializeDevLeadFoldWarnings,
 } from './fold.ts'
 import {
   alreadyActiveMessage,
@@ -189,6 +208,7 @@ export {
   emptyDevLeadWatchProjectionState,
 } from './fold.ts'
 export type { DevLeadModeProjectionState, DevLeadWatchProjectionState } from './fold.ts'
+export { isHumanDirectedTurn } from './runtime-projections.ts'
 export { renderDevLeadNotice } from './notification.ts'
 export type { DevLeadNotificationConfig, DevLeadPersistedLead, DevLeadReportDeliveryState } from './notification.ts'
 export { childReportLane } from './message-policy.ts'
@@ -225,6 +245,8 @@ export interface Config {
   wakeColdSession?: boolean
   /** Agent preset used by Sessions this lead creates when the request names none. */
   defaultAgentPreset?: string
+  /** Open-question lifetime in milliseconds; default 24h, 0 disables expiry. */
+  questionTtlMs?: number
 }
 
 /**
@@ -330,6 +352,17 @@ const REPAIR_BARRIER_TIMEOUT_MS = 30_000
  */
 const ANSWER_DISCARD_DRAIN_TIMEOUT_MS = 30_000
 
+/** Default open-question lifetime. Answered questions never retroactively expire. */
+const DEFAULT_QUESTION_TTL_MS = 24 * 60 * 60 * 1_000
+
+/** Lead→child correction and background admission budgets per child turn. */
+const MAX_CORRECTIONS_PER_CHILD_TURN = 4
+const MAX_BACKGROUND_PER_CHILD_TURN = 8
+
+/** Bound one cold projection read; abandoned raw reads stay single-flight. */
+const CHILD_ANSWER_READ_TIMEOUT_MS = 30_000
+const MAX_CHILD_ANSWER_READS = 64
+
 /** Maximum per-child answer-log observers retained; FIFO eviction bounds them. */
 const MAX_CHILD_ANSWER_OBSERVERS = 512
 
@@ -394,6 +427,7 @@ export const Config: z<Config> = z.object({
   maxListedSessions: z.number().step(1).min(1).default(200),
   wakeColdSession: z.boolean().default(true),
   defaultAgentPreset: z.string().default(''),
+  questionTtlMs: z.number().step(1).min(0).max(Number.MAX_SAFE_INTEGER).default(DEFAULT_QUESTION_TTL_MS),
 })
 
 /** Fully materialized deployment configuration, with Loader defaults applied. */
@@ -413,6 +447,8 @@ export interface DevLeadSettings {
   readonly wakeColdSession: boolean
   /** Agent preset used by created Sessions when the request names none. */
   readonly defaultAgentPreset: string | undefined
+  /** Open-question lifetime in milliseconds; zero disables expiry. */
+  readonly questionTtlMs: number
 }
 
 /**
@@ -444,6 +480,10 @@ function resolveConfig(config: Config): DevLeadSettings {
   if (typeof wakeColdSession !== 'boolean') throw new TypeError('wakeColdSession must be a boolean')
   const defaultAgentPreset = config.defaultAgentPreset ?? ''
   if (typeof defaultAgentPreset !== 'string') throw new TypeError('defaultAgentPreset must be a string')
+  const questionTtlMs = config.questionTtlMs ?? DEFAULT_QUESTION_TTL_MS
+  if (!Number.isSafeInteger(questionTtlMs) || questionTtlMs < 0) {
+    throw new TypeError('questionTtlMs must be a non-negative safe integer')
+  }
   return {
     notificationBatchMs,
     actionRequiredBatchMs,
@@ -451,6 +491,7 @@ function resolveConfig(config: Config): DevLeadSettings {
     maxListedSessions,
     wakeColdSession,
     defaultAgentPreset: defaultAgentPreset.trim().length === 0 ? undefined : defaultAgentPreset.trim(),
+    questionTtlMs,
   }
 }
 
@@ -688,6 +729,10 @@ export class DevLeadService extends Service {
 
   /** Awaited registration of the `devLead` projection unit. */
   private projectionHandle!: ProjectionHandle<DevLeadProjectionState>
+  /** Host-driven projections replacing deprecated synchronous event readers. */
+  private turnSourceHandle!: ProjectionHandle<DevLeadTurnSourceState>
+  private inboxTimesHandle!: ProjectionHandle<DevLeadInboxTimesState>
+  private childAnswersHandle!: ProjectionHandle<DevLeadChildAnswersState>
 
   /** Watched-session notification hub, started with the service. */
   private hub!: DevLeadNotificationHub
@@ -778,6 +823,32 @@ export class DevLeadService extends Service {
    * (the answer record), not this window.
    */
   private readonly idempotencyWindow = new Map<string, IdempotencyWindowEntry>()
+
+  /** Durable non-answer receipt table; memory window remains the explicit fallback. */
+  private idempotencyStore: DevLeadPromptIdempotencyStore | undefined
+  private idempotencyOpening: Promise<void> | undefined
+  private idempotencyInjection: { dispose(): void } | undefined
+
+  /** Successful correction/background admissions per lead/target/child turn. */
+  private readonly promptBudgets = new Map<string, {
+    readonly childTurn: number
+    correction: number
+    background: number
+  }>()
+
+  /** Open questions replayed once after this process's cold-lead recovery. */
+  private readonly replayedOpenQuestions = new Set<string>()
+  /** Replay candidates retained while their pair is at the action capacity. */
+  private readonly pendingOpenQuestionReplay = new Map<string, DevLeadPersistedLead>()
+  private replayingOpenQuestions = false
+  /** Lead repair projections being synchronously updated (append re-entry guard). */
+  private readonly repairingProjection = new Set<string>()
+  /** Leads whose runtime repair state should be reconciled after relevant events. */
+  private readonly repairProjectionLeads = new Set<string>()
+
+  /** Raw cold projection reads stay single-flight even after a caller times out. */
+  private readonly childAnswerReads = new Map<string, Promise<DevLeadChildAnswersState | undefined>>()
+  private readonly warnedChildAnswerReads = new Set<string>()
 
   /**
    * Targets whose inbox is being cleared by this service's own interrupt stop.
@@ -915,7 +986,11 @@ export class DevLeadService extends Service {
 
   protected async [Service.init](): Promise<void> {
     initializeRecordApi(this.ctx.logger)
+    initializeDevLeadFoldWarnings(this.ctx.logger)
     this.projectionHandle = await this.ctx.sessionProjections.register(devLeadProjectionDefinition)
+    this.turnSourceHandle = await this.ctx.sessionProjections.register(devLeadTurnSourceProjectionDefinition)
+    this.inboxTimesHandle = await this.ctx.sessionProjections.register(devLeadInboxTimesProjectionDefinition)
+    this.childAnswersHandle = await this.ctx.sessionProjections.register(devLeadChildAnswersProjectionDefinition)
     // Summary-sized companion of the digest unit: Session-list rows carry the
     // mode selection without the retained notifications. No handle is needed:
     // only the digest unit folds directly (`stateOf`) for the notification hub.
@@ -932,6 +1007,7 @@ export class DevLeadService extends Service {
         actionBatchMs: this.resolved.actionRequiredBatchMs,
       },
       this.metrics,
+      () => this.replayOpenQuestions([...this.pendingOpenQuestionReplay.values()]),
     )
     this.hub.start()
     // The readiness retry machinery outlives init; make sure a plugin unload
@@ -951,15 +1027,21 @@ export class DevLeadService extends Service {
         }
         this.outboxInjection?.dispose()
         this.outboxInjection = undefined
+        this.idempotencyInjection?.dispose()
+        this.idempotencyInjection = undefined
         // Awaited by cordis: the storage facility releases the domain name only
         // after a full close, so a reload must not race the next instance's open
         // into an `already-open` refusal that silently degrades durable reports.
         // A late storage mount can still have an open in flight: wait for it to
         // settle so the just-opened handle is closed here, not leaked.
         const opening = this.outboxOpening
+        const idempotencyOpening = this.idempotencyOpening
         return (async () => {
-          await opening?.catch(() => undefined)
-          await this.outbox?.close()
+          await Promise.all([
+            opening?.catch(() => undefined),
+            idempotencyOpening?.catch(() => undefined),
+          ])
+          await Promise.all([this.outbox?.close(), this.idempotencyStore?.close()])
         })()
       }
     }.bind(this), 'devlead: cold rehydration')
@@ -1034,6 +1116,7 @@ export class DevLeadService extends Service {
           // A disposed child's observer is stale; the next activation rebuilds
           // it by a full replay of the (possibly grown) log.
           this.childAnswerObservers.delete(String(agent.id))
+          this.syncRepairProjections()
           return undefined
         }),
       ]
@@ -1045,13 +1128,14 @@ export class DevLeadService extends Service {
     // `agent/created` listener only fires for later creations).
     for (const agent of this.ctx.agents.list()) this.seedAnswersForAgent(agent)
     await this.openOutbox()
+    await this.openIdempotencyStore()
     await this.restoreAnswerDiscards()
-    if (this.outbox === undefined) {
+    if (this.outbox === undefined || this.idempotencyStore === undefined) {
       // The storage facility often mounts after the DevLead service in the
       // default composition. Retry once it becomes available, then replay any
       // rows that were already written by an earlier Host incarnation.
       this.outboxInjection = this.ctx.inject(['storageDomain' as never], () => {
-        void this.openOutbox().then(async () => {
+        void Promise.all([this.openOutbox(), this.openIdempotencyStore()]).then(async () => {
           await this.restoreAnswerDiscards()
           return this.replayOutbox()
         })
@@ -1113,7 +1197,9 @@ export class DevLeadService extends Service {
     const queryReady = this.ctx.get('sessionQuery') !== undefined
     // The live-attach fallback needs no corpus service, so it always runs now.
     try {
-      this.hub.rehydrate(this.liveAttachLeads())
+      const attached = this.liveAttachLeads()
+      this.hub.rehydrate(attached)
+      this.replayOpenQuestions(attached)
     } catch (error: unknown) {
       this.ctx.logger.warn(`devlead: cold lead rehydration failed: ${thrownMessage(error)}`)
     }
@@ -1150,6 +1236,7 @@ export class DevLeadService extends Service {
       // older scan snapshot over it would revert a watch change and drop its
       // queued notifications. Only cold leads are rehydrated.
       this.hub.rehydrate(scan.leads.filter(record => this.ctx.agents.get(toSessionId(record.sessionId)) === undefined))
+      this.replayOpenQuestions(scan.leads)
     } catch (error: unknown) {
       this.ctx.logger.warn(`devlead: cold lead rehydration failed: ${thrownMessage(error)}`)
     }
@@ -1428,6 +1515,14 @@ export class DevLeadService extends Service {
     return state.failure === null && state.enabled
   }
 
+  /** Whether the current turn's latest actionable prompt came from a human. */
+  isHumanDirectedTurn(agent: Agent): boolean {
+    if (this.ctx.agents.get(agent.id) !== agent) return false
+    // Fail closed when the source cannot be established: watched children route
+    // the question to their lead instead of bypassing supervision.
+    return this.turnSourceHandle.stateOf(agent.session).humanDirected
+  }
+
   /**
    * Read the current DevLead view of one live Session.
    * @param agent - exact live lead Agent.
@@ -1436,7 +1531,15 @@ export class DevLeadService extends Service {
    */
   view(agent: Agent): DevLeadProjection {
     this.assertLive(agent)
-    return devLeadProjectionView(this.strictStateOf(agent.session))
+    const projection = devLeadProjectionView(this.strictStateOf(agent.session))
+    return {
+      ...projection,
+      reports: projection.reports.map((report) => {
+        if (report.kind !== 'question') return report
+        const view = this.questionAnswerView(agent, report.id)
+        return view === undefined ? report : { ...report, ...view }
+      }),
+    }
   }
 
   /**
@@ -1560,6 +1663,7 @@ export class DevLeadService extends Service {
     this.pendingAnswerDiscards.delete(sessionId)
     this.deferredAnswerDiscards.delete(sessionId)
     this.deferredDiscardRepairs.delete(sessionId)
+    this.repairingQuestions.delete(sessionId)
     this.ignoredArchived.delete(sessionId)
   }
 
@@ -1867,7 +1971,7 @@ export class DevLeadService extends Service {
       const entry = this.answers.entryOfMessage(sessionId, messageId)
       if (entry === undefined) return undefined
       return entry.status === 'claimed' ? 'claimed' : entry.status === 'admitted' ? 'admitted' : undefined
-    })
+    }, messageId => inboxEnqueuedAtOf(this.inboxTimesHandle.stateOf(target.session), messageId))
   }
 
   /**
@@ -2156,6 +2260,7 @@ export class DevLeadService extends Service {
     return await this.withTargetAdmission(targetId, async () => {
       signal?.throwIfAborted()
       const leadId = String(agent.id)
+      this.assertPromptSupervision(agent, targetId)
       // An ANSWER admission always waits for any queued or in-flight discard
       // drain: the question guards below must see the reopened state, and an
       // older discard must reach the durable audit before a newer answer record
@@ -2234,6 +2339,11 @@ export class DevLeadService extends Service {
               questionStatus: 'answered',
               answerStatus: answerStatus === 'claimed' || answerStatus === 'presented' ? answerStatus : 'admitted',
             }
+          } else if (view?.questionStatus === 'expired' || view?.questionStatus === 'cancelled') {
+            question = {
+              questionStatus: view.questionStatus,
+              ...(view.answerStatus === undefined ? {} : { answerStatus: view.answerStatus }),
+            }
           } else {
             const answerStatus = view?.answerStatus
             question = {
@@ -2283,19 +2393,43 @@ export class DevLeadService extends Service {
       const windowKey = intent !== 'answer' && idempotencyKey !== undefined
         ? `${leadId}\u0000${targetId}\u0000${idempotencyKey}`
         : undefined
-      if (windowKey !== undefined) {
-        const previous = this.idempotencyWindow.get(windowKey)
-        if (previous !== undefined) {
-          if (previous.textHash !== answerTextHash(text)) {
+      if (windowKey !== undefined && idempotencyKey !== undefined) {
+        if (this.idempotencyStore === undefined && this.ctx.get('storageDomain') !== undefined) {
+          throw new DevLeadError(
+            `durable idempotency storage is unavailable; no prompt was delivered for idempotency_key "${idempotencyKey}" `
+            + 'into Session "${targetId}" — retry after storage recovers instead of risking a duplicate',
+            'DEVLEAD_SESSION_UNAVAILABLE',
+          )
+        }
+        const read = this.idempotencyStore?.read(leadId, targetId, idempotencyKey)
+        if (read?.status === 'unreadable') {
+          throw new DevLeadError(
+            `could not read idempotency_key "${idempotencyKey}" for Session "${targetId}" (${read.reason}); `
+            + 'no prompt was delivered — retry after storage recovers instead of risking a duplicate',
+            'DEVLEAD_SESSION_UNAVAILABLE',
+          )
+        }
+        let durablePrevious = read?.status === 'found' ? read.receipt : undefined
+        if (durablePrevious !== undefined
+          && Date.now() - durablePrevious.at >= DEVLEAD_PROMPT_IDEMPOTENCY_RETENTION_MS) {
+          await this.idempotencyStore?.delete(leadId, targetId, idempotencyKey)
+          durablePrevious = undefined
+        }
+        const memoryPrevious = this.idempotencyWindow.get(windowKey)
+        const textHash = durablePrevious?.textHash ?? memoryPrevious?.textHash
+        const previousDelivery = durablePrevious?.delivery ?? memoryPrevious?.delivery
+        if (textHash !== undefined && previousDelivery !== undefined) {
+          if (textHash !== answerTextHash(text)) {
             throw new DevLeadError(
               `idempotency_key "${idempotencyKey}" was already used for a different prompt into Session "${targetId}"; `
               + 'use a new key or resend the original prompt text',
               'DEVLEAD_INVALID_INPUT',
             )
           }
-          return { sessionId: targetId, watched: watchedNow(), resumed: false, interrupted: false, delivery: previous.delivery }
+          return { sessionId: targetId, watched: watchedNow(), resumed: false, interrupted: false, delivery: previousDelivery }
         }
       }
+      this.assertPromptBudget(leadId, targetId, intent, liveTarget)
       // Validate the cold-resume capability before the watch mutation, so a Host
       // that cannot resume the Session does not leave a half-applied watch.
       if (!resolved.live && this.ctx.get('sessionController') === undefined) {
@@ -2352,7 +2486,8 @@ export class DevLeadService extends Service {
         const recorded = await this.recordAnswerAdmission(agent, targetId, questionId, text, idempotencyKey, admission.delivery)
         answerWarning = recorded.warning
       }
-      if (windowKey !== undefined) {
+      let idempotencyWarning: string | undefined
+      if (windowKey !== undefined && idempotencyKey !== undefined) {
         this.idempotencyWindow.delete(windowKey)
         this.idempotencyWindow.set(windowKey, { textHash: answerTextHash(text), delivery })
         while (this.idempotencyWindow.size > MAX_IDEMPOTENCY_WINDOW) {
@@ -2360,7 +2495,25 @@ export class DevLeadService extends Service {
           if (oldest === undefined) break
           this.idempotencyWindow.delete(oldest)
         }
+        if (this.idempotencyStore !== undefined) {
+          const durable = await this.idempotencyStore.put({
+            leadSessionId: leadId,
+            targetSessionId: targetId,
+            key: idempotencyKey,
+            textHash: answerTextHash(text),
+            at: Date.now(),
+            delivery,
+          })
+          if (!durable) {
+            idempotencyWarning = 'the prompt was admitted but its idempotency receipt could not be persisted; '
+              + 'the process-local retry window still applies, but a Host restart may allow a duplicate'
+          }
+        } else {
+          idempotencyWarning = 'durable idempotency storage is unavailable; the prompt receipt is process-local '
+            + 'and a Host restart may allow a duplicate retry'
+        }
       }
+      this.recordPromptBudget(leadId, targetId, intent, liveTarget)
       return {
         sessionId: targetId,
         watched: watchedNow(),
@@ -2368,7 +2521,9 @@ export class DevLeadService extends Service {
         interrupted: admission.interrupted,
         ...(admission.retainedInputs === undefined ? {} : { retainedInputs: admission.retainedInputs }),
         delivery,
-        ...(answerWarning === undefined ? {} : { warning: answerWarning }),
+        ...(answerWarning === undefined && idempotencyWarning === undefined
+          ? {}
+          : { warning: [answerWarning, idempotencyWarning].filter(value => value !== undefined).join('; ') }),
       }
     })
   }
@@ -2511,6 +2666,26 @@ export class DevLeadService extends Service {
     return state.notifications.slice(-effective)
   }
 
+  /** Open the durable non-answer idempotency table once, with safe fallback. */
+  private async openIdempotencyStore(): Promise<void> {
+    if (this.disposed || this.idempotencyStore !== undefined || this.idempotencyOpening !== undefined) return
+    const run = (async () => {
+      const store = await DevLeadPromptIdempotencyStore.open(this.ctx)
+      if (store === undefined) return
+      if (this.disposed) {
+        await store.close()
+        return
+      }
+      this.idempotencyStore = store
+    })()
+    this.idempotencyOpening = run
+    try {
+      await run
+    } finally {
+      this.idempotencyOpening = undefined
+    }
+  }
+
   /** Open the optional durable outbox once and load its archived-holder tombstones. */
   private async openOutbox(): Promise<void> {
     if (this.disposed) return
@@ -2583,9 +2758,9 @@ export class DevLeadService extends Service {
           continue
         }
         let delivered = false
-        // A missing origin is a legacy row: treat background as cold-observed
-        // so a replay can never turn a digest-only report into a late inject.
-        const origin: DevLeadReportOrigin = entry.origin ?? 'cold'
+        // OUTBOX_SPEC v3 guarantees origin; legacy rows are discarded at the
+        // storage/read boundary rather than being assigned new semantics.
+        const origin: DevLeadReportOrigin = entry.origin
         try {
           delivered = (await this.hub?.persistReport(report, origin)) ?? false
         } catch (error: unknown) {
@@ -2743,6 +2918,29 @@ export class DevLeadService extends Service {
     return this.activeSessionId !== undefined && candidates.includes(this.activeSessionId)
       ? this.activeSessionId
       : undefined
+  }
+
+  /** Hard prompt-side supervision gate; report routing deliberately stays unchanged. */
+  private assertPromptSupervision(agent: Agent, targetId: string): void {
+    if (this.hub === undefined) return
+    const archived = new Set(
+      (this.ctx.get('workspaceRegistry')?.archivedSessionIds ?? []).map(id => String(id)),
+    )
+    const callersId = String(agent.id)
+    const watchers = this.hub.supervisorsOf(targetId).filter(id => !archived.has(id))
+    if (watchers.length === 0 || (watchers.length === 1 && watchers[0] === callersId)) return
+    if (watchers.length > 1) {
+      throw new DevLeadError(
+        `Session "${targetId}" has conflicting DevLead supervisors (${watchers.join(', ')}); `
+        + 'disable DevLead mode or remove the conflicting watch before prompting it',
+        'DEVLEAD_MULTIPLE_SUPERVISORS',
+      )
+    }
+    throw new DevLeadError(
+      `Session "${targetId}" is already supervised by another DevLead Session ("${watchers[0] ?? ''}"); `
+      + 'continue it from that lead or remove its watch first',
+      'DEVLEAD_FOREIGN_SUPERVISOR',
+    )
   }
 
   /**
@@ -3490,9 +3688,51 @@ export class DevLeadService extends Service {
       const state = this.projectionHandle.stateOf(session)
       if (state.failure !== null) continue
       const sessionId = String(session.id)
-      if (state.enabled && state.sessions.length > 0) leads.push({ sessionId, watched: [...state.sessions] })
+      if (state.enabled && state.sessions.length > 0) {
+        leads.push({ sessionId, watched: [...state.sessions], reports: state.reports, answers: state.answers })
+      }
     }
     return leads
+  }
+
+  /** Replay open questions within the same action cap; capacity retains the tail. */
+  private replayOpenQuestions(leads: readonly DevLeadPersistedLead[]): void {
+    for (const lead of leads) this.pendingOpenQuestionReplay.set(lead.sessionId, lead)
+    if (this.replayingOpenQuestions) return
+    this.replayingOpenQuestions = true
+    try {
+      for (const [leadId, lead] of this.pendingOpenQuestionReplay) {
+        this.repairProjectionLeads.add(leadId)
+        this.syncRepairProjection(leadId)
+        // A capacity wait may span a real answer admission. Re-read the current
+        // projection instead of replaying the cold scan's stale open snapshot.
+        const session = this.ctx.sessions.get(toSessionId(leadId))
+        const state = session === undefined ? undefined : this.projectionHandle.stateOf(session)
+        if (state !== undefined && !state.enabled) {
+          this.pendingOpenQuestionReplay.delete(leadId)
+          continue
+        }
+        const reports = state?.reports ?? lead.reports ?? []
+        const answers = state?.answers ?? lead.answers ?? []
+        let remaining = 0
+        for (const report of reports) {
+          if (report.kind !== 'question') continue
+          if (questionStatusOf(answers, report.id) !== 'open' || this.questionExpired(report, answers)) continue
+          const key = `${leadId}\u0000${report.id}`
+          if (this.replayedOpenQuestions.has(key)) continue
+          const outcome = this.hub.replayQuestion(report)
+          if (outcome === 'unavailable') continue
+          if (outcome === 'queued') {
+            this.replayedOpenQuestions.add(key)
+            continue
+          }
+          remaining += 1
+        }
+        if (remaining === 0) this.pendingOpenQuestionReplay.delete(leadId)
+      }
+    } finally {
+      this.replayingOpenQuestions = false
+    }
   }
 
   /**
@@ -3515,20 +3755,20 @@ export class DevLeadService extends Service {
   private async persistedLeadRecords(
     scanPersisted: boolean,
   ): Promise<{ readonly leads: DevLeadPersistedLead[]; readonly active: DevLeadActiveSession[] }> {
-    const leads = new Map<string, readonly string[]>()
+    const leads = new Map<string, DevLeadPersistedLead>()
     const active: DevLeadActiveSession[] = []
     const archived = new Set(
       (this.ctx.get('workspaceRegistry')?.archivedSessionIds ?? []).map(id => String(id)),
     )
-    const remember = (sessionId: string, sessions: readonly string[]): void => {
-      if (sessionId.length === 0 || sessions.length === 0) return
-      leads.set(sessionId, [...sessions])
+    const remember = (lead: DevLeadPersistedLead): void => {
+      if (lead.sessionId.length === 0 || lead.watched.length === 0) return
+      leads.set(lead.sessionId, lead)
     }
     const result = (): { readonly leads: DevLeadPersistedLead[]; readonly active: DevLeadActiveSession[] } => ({
-      leads: [...leads].map(([sessionId, watched]) => ({ sessionId, watched })),
+      leads: [...leads.values()],
       active,
     })
-    for (const lead of this.liveAttachLeads()) remember(lead.sessionId, lead.watched)
+    for (const lead of this.liveAttachLeads()) remember(lead)
     if (!scanPersisted) {
       // Live-attach fallback only: without the optional persistence binding the
       // query engine cannot list a persisted corpus, so a cold scan would read
@@ -3613,7 +3853,7 @@ export class DevLeadService extends Service {
         createdAt: record.header.createdAt,
         enabledAt: lastEnabledAt(events) ?? 0,
       })
-      remember(sessionId, state.sessions)
+      remember({ sessionId, watched: [...state.sessions], reports: state.reports, answers: state.answers })
     }
     if (capped) {
       this.ctx.logger.warn(
@@ -4154,6 +4394,46 @@ export class DevLeadService extends Service {
     }
   }
 
+  /** Current child-turn budget key and counters for one lead/target pair. */
+  private promptBudget(leadId: string, targetId: string, target: Agent | undefined) {
+    const key = `${leadId}\u0000${targetId}`
+    const session = target?.session ?? this.ctx.sessions.get(toSessionId(targetId))
+    const childTurn = session === undefined ? 0 : this.ctx.agents.turnBoundaryOf(session).lastTurn
+    const previous = this.promptBudgets.get(key)
+    const current = previous !== undefined && previous.childTurn === childTurn
+      ? previous
+      : { childTurn, correction: 0, background: 0 }
+    return { key, current }
+  }
+
+  /** Reject correction/background floods before watch/resume/admission side effects. */
+  private assertPromptBudget(leadId: string, targetId: string, intent: DevLeadPromptIntent, target: Agent | undefined): void {
+    if (intent !== 'correction' && intent !== 'background') return
+    const { current } = this.promptBudget(leadId, targetId, target)
+    const count = intent === 'correction' ? current.correction : current.background
+    const maximum = intent === 'correction' ? MAX_CORRECTIONS_PER_CHILD_TURN : MAX_BACKGROUND_PER_CHILD_TURN
+    if (count < maximum) return
+    throw new DevLeadError(
+      `this lead/child pair already admitted ${String(count)} ${intent} prompt(s) in child turn ${String(current.childTurn)}; `
+      + `the per-turn limit is ${String(maximum)} — wait for the next child turn or merge the context`,
+      'DEVLEAD_DELIVERY_RATE_LIMITED',
+    )
+  }
+
+  /** Count only successful first admissions; idempotent replays return earlier. */
+  private recordPromptBudget(leadId: string, targetId: string, intent: DevLeadPromptIntent, target: Agent | undefined): void {
+    if (intent !== 'correction' && intent !== 'background') return
+    const { key, current } = this.promptBudget(leadId, targetId, target)
+    if (intent === 'correction') current.correction += 1
+    else current.background += 1
+    this.promptBudgets.set(key, current)
+    while (this.promptBudgets.size > MAX_IDEMPOTENCY_WINDOW) {
+      const oldest = this.promptBudgets.keys().next().value
+      if (oldest === undefined) break
+      this.promptBudgets.delete(oldest)
+    }
+  }
+
   /**
    * Serialize one target's prompt admission stages behind any in-flight call
    * for the same target, so concurrent calls land in the child inbox in call
@@ -4269,7 +4549,7 @@ export class DevLeadService extends Service {
       // answer advances past a newer re-answer. A legacy tie (both records
       // predate the sequence) falls back to admission instants, and a remaining
       // tie keeps the durable record (the append-only audit is authoritative).
-      const recordSeq = record.answerSeq ?? 0
+      const recordSeq = record.answerSeq
       if (entry.answerSeq !== recordSeq) return entry.answerSeq > recordSeq ? recordOfEntry(entry) : record
       return entry.firstAdmittedAt > admittedAtOf(record) ? recordOfEntry(entry) : record
     }
@@ -4302,6 +4582,19 @@ export class DevLeadService extends Service {
     return record
   }
 
+  /** Lazy TTL: only a still-open question expires; answered is never rewritten. */
+  private questionExpired(
+    report: DevLeadReport,
+    answers: readonly DevLeadReportAnswer[],
+    now = Date.now(),
+    open = questionStatusOf(answers, report.id) === 'open',
+  ): boolean {
+    return this.resolved.questionTtlMs > 0
+      && report.kind === 'question'
+      && open
+      && now - report.at >= this.resolved.questionTtlMs
+  }
+
   /**
    * Read the derived question/answer state of one question report from the
    * merged durable + in-memory answer fact.
@@ -4318,14 +4611,20 @@ export class DevLeadService extends Service {
     const leadId = String(agent.id)
     const repairPending = this.questionRepairPending(leadId, reportId)
     const fact = this.resolvedAnswer(agent, reportId)
-    if (fact === undefined) return { questionStatus: 'open', ...(repairPending ? { repairPending: true } : {}) }
+    if (fact === undefined) {
+      return {
+        questionStatus: this.questionExpired(report, state.answers) ? 'expired' : 'open',
+        ...(repairPending ? { repairPending: true } : {}),
+      }
+    }
     // A legacy durable record may lack `answeredAt`; an active answer's own
     // admission instant is the fallback (a discarded/failed answer without one
     // exposes no answeredAt, exactly like the fold's durable view).
     const answeredAt = fact.answeredAt
       ?? (fact.status === 'admitted' || fact.status === 'claimed' || fact.status === 'presented' ? fact.at : undefined)
+    const open = fact.status === 'discarded' || fact.status === 'failed'
     return {
-      questionStatus: fact.status === 'discarded' || fact.status === 'failed' ? 'open' : 'answered',
+      questionStatus: open && this.questionExpired(report, state.answers, Date.now(), true) ? 'expired' : open ? 'open' : 'answered',
       answerStatus: fact.status,
       answerMessageId: fact.messageId,
       ...(answeredAt === undefined ? {} : { answeredAt }),
@@ -4585,6 +4884,7 @@ export class DevLeadService extends Service {
       })
     }
     this.scheduleAnswerDiscardRetry()
+    this.syncRepairProjection(leadId)
   }
 
   /** Arm the periodic retry of queued discards that could not drain yet. */
@@ -4624,7 +4924,7 @@ export class DevLeadService extends Service {
       rows.push(row)
       byLead.set(row.answer.leadSessionId, rows)
     }
-    const logCache = new Map<string, readonly SessionEvent[] | undefined>()
+    const logCache = new Map<string, DevLeadChildAnswersState | undefined>()
     for (const [leadId, rows] of byLead) {
       rows.sort((left, right) => left.enqueuedAt - right.enqueuedAt)
       if (rows.length > MAX_PENDING_ANSWER_DISCARDS) {
@@ -4668,6 +4968,7 @@ export class DevLeadService extends Service {
         void this.reconcileAnswerDiscards(leadId)
       }
     }
+    this.syncRepairProjections()
   }
 
   /**
@@ -4704,7 +5005,7 @@ export class DevLeadService extends Service {
     if (state.failure !== null) return false
     const latest = latestAnswerOf(state.answers, discard.reportId)
     if (latest === undefined) return false
-    if (latest.messageId !== discard.messageId && (latest.answerSeq ?? 0) >= (discard.answerSeq ?? 0)) return true
+    if (latest.messageId !== discard.messageId && (latest.answerSeq) >= (discard.answerSeq)) return true
     return latest.messageId === discard.messageId
       && (latest.status === 'discarded' || latest.status === 'failed')
       && latest.at !== discard.at
@@ -4727,7 +5028,7 @@ export class DevLeadService extends Service {
    */
   private async survivalProof(
     discard: DevLeadReportAnswer,
-    logCache: Map<string, readonly SessionEvent[] | undefined>,
+    logCache: Map<string, DevLeadChildAnswersState | undefined>,
   ): Promise<SurvivalOutcome> {
     const childId = discard.sessionId
     const child = this.ctx.agents.get(toSessionId(childId))
@@ -4735,38 +5036,31 @@ export class DevLeadService extends Service {
       if (locatedInputs(child).some(entry => String(entry.message.id) === discard.messageId)) {
         return { status: 'admitted', at: Date.now() }
       }
-      let observer = this.childAnswerObservers.get(childId)
-      if (observer === undefined) {
-        // Live child without an observer (disposed or evicted): fall back to a
-        // replay of its attached log so survival is still checkable.
-        observer = this.newChildObserver(childId)
-        observer.replay(child.session.snapshotEvents())
-      }
-      const presentedAt = observer.presentedAtOf(discard.messageId)
+      const state = this.childAnswersHandle.stateOf(child.session)
+      if (!state.complete) return { status: 'unknown' }
+      const presentedAt = childAnswerPresentedAt(state, discard.messageId)
       if (presentedAt !== undefined) return { status: 'presented', at: presentedAt }
-      const claimedAt = observer.claimedAtOf(discard.messageId)
+      const claimedAt = childAnswerClaimedAt(state, discard.messageId)
       if (claimedAt !== undefined && discard.at < claimedAt) return { status: 'claimed', at: claimedAt }
       const entry = this.answers.entryOfMessage(childId, discard.messageId)
       if (entry?.status === 'presented') return { status: 'presented', at: entry.presentedAt ?? entry.at }
       if (entry?.status === 'claimed' && discard.at < entry.at) return { status: 'claimed', at: entry.at }
       return undefined
     }
-    let events = logCache.get(childId)
-    if (events === undefined && !logCache.has(childId)) {
-      events = await this.childLogEvents(childId)
-      logCache.set(childId, events)
+    let state = logCache.get(childId)
+    if (state === undefined && !logCache.has(childId)) {
+      state = await this.childAnswerState(childId)
+      logCache.set(childId, state)
     }
-    // The child's reality is unreadable (cold, no attached log, no/failing query
-    // engine): the outcome is UNKNOWN, not a genuine discard. Callers must keep
-    // the question provisional and retry, never accept a stale open as final.
-    if (events === undefined) return { status: 'unknown' }
-    const observer = this.newChildObserver(childId)
-    observer.replay(events)
-    const presentedAt = observer.presentedAtOf(discard.messageId)
+    // Unreadable or bounded-overflow history is UNKNOWN, never a genuine
+    // discard: keep the question provisional and retry without accepting a
+    // stale open as final.
+    if (state === undefined || !state.complete) return { status: 'unknown' }
+    const presentedAt = childAnswerPresentedAt(state, discard.messageId)
     if (presentedAt !== undefined) return { status: 'presented', at: presentedAt }
-    const claimedAt = observer.claimedAtOf(discard.messageId)
+    const claimedAt = childAnswerClaimedAt(state, discard.messageId)
     if (claimedAt !== undefined && discard.at < claimedAt) return { status: 'claimed', at: claimedAt }
-    if (observer.isPending(discard.messageId)) return { status: 'admitted', at: Date.now() }
+    if (childAnswerPending(state, discard.messageId)) return { status: 'admitted', at: Date.now() }
     return undefined
   }
 
@@ -4791,14 +5085,48 @@ export class DevLeadService extends Service {
       this.repairingQuestions.set(leadId, set)
     }
     set.add(reportId)
+    this.syncRepairProjection(leadId)
   }
 
   /** Clear one question's repair-pending mark once the repair resolves. */
   private clearRepairPending(leadId: string, reportId: string): void {
     const set = this.repairingQuestions.get(leadId)
-    if (set === undefined) return
-    set.delete(reportId)
-    if (set.size === 0) this.repairingQuestions.delete(leadId)
+    if (set !== undefined) {
+      set.delete(reportId)
+      if (set.size === 0) this.repairingQuestions.delete(leadId)
+    }
+    this.syncRepairProjection(leadId)
+  }
+
+  /** Publish the current runtime repair set through a normal projection record. */
+  private syncRepairProjection(leadId: string): void {
+    if (this.disposed || this.repairingProjection.has(leadId)) return
+    this.repairProjectionLeads.add(leadId)
+    const session = this.ctx.sessions.get(toSessionId(leadId))
+    if (session === undefined) return
+    const state = this.projectionHandle.stateOf(session)
+    if (state.failure !== null) return
+    const questionIds = [...this.pendingRepairIds(leadId)].sort()
+    if (state.repairPending.length === questionIds.length
+      && state.repairPending.every((id, index) => id === questionIds[index])) return
+    this.repairingProjection.add(leadId)
+    try {
+      appendRecordOrThrow(session, DEVLEAD_REPAIR_RECORD_TYPE, repairRecord(leadId, questionIds, Date.now()))
+    } catch (error: unknown) {
+      this.ctx.logger.warn(`devlead: could not publish question repair state for lead "${leadId}": ${thrownMessage(error)}`)
+    } finally {
+      this.repairingProjection.delete(leadId)
+    }
+  }
+
+  /** Reconcile all known leads after an event that can change repair inputs. */
+  private syncRepairProjections(): void {
+    for (const leadId of this.repairProjectionLeads) this.syncRepairProjection(leadId)
+  }
+
+  /** Ensure this lead's browser projection can derive provisional repair state. */
+  private ensureRepairResolver(leadId: string): void {
+    this.repairProjectionLeads.add(leadId)
   }
 
   /**
@@ -4812,6 +5140,7 @@ export class DevLeadService extends Service {
    * @returns the set of unresolved question report ids.
    */
   private pendingRepairIds(leadId: string): Set<string> {
+    this.ensureRepairResolver(leadId)
     const ids = new Set(this.repairingQuestions.get(leadId) ?? [])
     for (const entry of this.deferredDiscardRepairs.get(leadId) ?? []) ids.add(entry.stale.reportId)
     // A queued discard whose child is unreadable is an UNKNOWN reopen: provisional
@@ -4833,7 +5162,7 @@ export class DevLeadService extends Service {
         const latest = new Map<string, DevLeadReportAnswer>()
         for (const answer of state.answers) {
           const current = latest.get(answer.reportId)
-          if (current === undefined || (answer.answerSeq ?? 0) >= (current.answerSeq ?? 0)) {
+          if (current === undefined || (answer.answerSeq) >= (current.answerSeq)) {
             latest.set(answer.reportId, answer)
           }
         }
@@ -4853,20 +5182,70 @@ export class DevLeadService extends Service {
   }
 
   /**
-   * Read one child's durable log: the attached Session snapshot when present,
-   * else the persisted log through the optional Session query engine.
-   * @param childId - child Session identity.
-   * @returns the committed events, or undefined when unreadable.
+   * Read the bounded answer projection of an attached or cold child. Cold reads
+   * use `observeSession` (never raw events), are single-flight per child, and
+   * time out without starting another hung backend read. A timed-out caller
+   * gets UNKNOWN while the one raw read remains observed until it settles.
    */
-  private async childLogEvents(childId: string): Promise<readonly SessionEvent[] | undefined> {
+  private async childAnswerState(childId: string): Promise<DevLeadChildAnswersState | undefined> {
     const session = this.ctx.sessions.get(toSessionId(childId))
-    if (session !== undefined) return session.snapshotEvents()
+    if (session !== undefined) return this.childAnswersHandle.stateOf(session)
     const query = this.ctx.get('sessionQuery')
     if (query === undefined) return undefined
+    let raw = this.childAnswerReads.get(childId)
+    let abortRaw: (() => void) | undefined
+    if (raw === undefined) {
+      if (this.childAnswerReads.size >= MAX_CHILD_ANSWER_READS) {
+        if (!this.warnedChildAnswerReads.has(childId)) {
+          this.warnedChildAnswerReads.add(childId)
+          this.ctx.logger.warn(`devlead: cold child answer projection reads reached ${String(MAX_CHILD_ANSWER_READS)}; "${childId}" is temporarily unreadable`)
+        }
+        return undefined
+      }
+      const controller = new AbortController()
+      abortRaw = () => controller.abort()
+      raw = (async () => {
+        try {
+          const observation = await query.observeSession(toSessionId(childId), {
+            signal: controller.signal,
+            projectionMode: 'all',
+          })
+          try {
+            const value = observation.projections?.values.devLeadChildAnswers
+            return value === undefined ? undefined : devLeadChildAnswersStateSchema.parse(value)
+          } finally {
+            observation[Symbol.dispose]()
+          }
+        } catch (error: unknown) {
+          if (!this.warnedChildAnswerReads.has(childId)) {
+            this.warnedChildAnswerReads.add(childId)
+            this.ctx.logger.warn(`devlead: could not read cold child "${childId}" answer projection: ${thrownMessage(error)}`)
+          }
+          return undefined
+        }
+      })()
+      this.childAnswerReads.set(childId, raw)
+      void raw.then(() => {
+        if (this.childAnswerReads.get(childId) === raw) this.childAnswerReads.delete(childId)
+      })
+    }
+    const controller = new AbortController()
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const abandoned = new Promise<undefined>((resolve) => {
+      timer = setTimeout(() => {
+        controller.abort()
+        abortRaw?.()
+        if (!this.warnedChildAnswerReads.has(childId)) {
+          this.warnedChildAnswerReads.add(childId)
+          this.ctx.logger.warn(`devlead: cold child "${childId}" answer projection read exceeded ${String(CHILD_ANSWER_READ_TIMEOUT_MS)}ms; abandoned this wait without starting a duplicate read`)
+        }
+        resolve(undefined)
+      }, CHILD_ANSWER_READ_TIMEOUT_MS)
+    })
     try {
-      return (await query.readSession(toSessionId(childId))).events
-    } catch {
-      return undefined
+      return await Promise.race([raw, abandoned])
+    } finally {
+      if (timer !== undefined) clearTimeout(timer)
     }
   }
 
@@ -5064,7 +5443,7 @@ export class DevLeadService extends Service {
     }
     const latest = latestAnswerOf(state.answers, stale.reportId)
     const sameMessage = latest !== undefined && latest.messageId === stale.messageId
-    const sameSeq = sameMessage && (latest.answerSeq ?? 0) === (stale.answerSeq ?? 0)
+    const sameSeq = sameMessage && (latest.answerSeq) === (stale.answerSeq)
     if (sameMessage && (latest.status === 'discarded' || latest.status === 'failed')) {
       // Only repair the SAME stale terminal. A newer terminal fact (later at,
       // or a different status/sequence) is a genuine discard that supersedes.
@@ -5083,7 +5462,7 @@ export class DevLeadService extends Service {
         messageId: latest.messageId,
         at,
         status: fresh.status,
-        ...(latest.answerSeq === undefined ? {} : { answerSeq: latest.answerSeq }),
+        answerSeq: latest.answerSeq,
         textHash: latest.textHash,
         answeredAt: latest.answeredAt ?? latest.at,
         ...(fresh.status === 'presented' ? { presentedAt: fresh.at } : {}),
@@ -5156,6 +5535,7 @@ export class DevLeadService extends Service {
     }
     this.deferredDiscardRepairs.set(stale.leadSessionId, deduped)
     this.scheduleAnswerDiscardRetry()
+    this.syncRepairProjection(stale.leadSessionId)
   }
 
   /**
@@ -5167,6 +5547,7 @@ export class DevLeadService extends Service {
     const queue = this.deferredDiscardRepairs.get(leadId)
     if (queue === undefined || queue.length === 0) return
     this.deferredDiscardRepairs.delete(leadId)
+    this.syncRepairProjection(leadId)
     for (const entry of queue) {
       await this.repairStaleDurableDiscard(entry.stale)
     }
@@ -5189,11 +5570,11 @@ export class DevLeadService extends Service {
     const latest = new Map<string, DevLeadReportAnswer>()
     for (const answer of state.answers) {
       const current = latest.get(answer.reportId)
-      if (current === undefined || (answer.answerSeq ?? 0) >= (current.answerSeq ?? 0)) {
+      if (current === undefined || (answer.answerSeq) >= (current.answerSeq)) {
         latest.set(answer.reportId, answer)
       }
     }
-    const logCache = new Map<string, readonly SessionEvent[] | undefined>()
+    const logCache = new Map<string, DevLeadChildAnswersState | undefined>()
     for (const record of latest.values()) {
       if (record.status !== 'discarded' && record.status !== 'failed') continue
       // Mark pending as soon as a latest terminal is scanned, so the view flags
@@ -5225,7 +5606,7 @@ export class DevLeadService extends Service {
    * @param childId - child Session identity that just became live.
    */
   private async reconcileQueuedDiscardsForChild(childId: string): Promise<void> {
-    const logCache = new Map<string, readonly SessionEvent[] | undefined>()
+    const logCache = new Map<string, DevLeadChildAnswersState | undefined>()
     for (const [leadId, queue] of [...this.pendingAnswerDiscards]) {
       const kept: DevLeadReportAnswer[] = []
       for (const discard of queue) {
@@ -5268,10 +5649,12 @@ export class DevLeadService extends Service {
     if (queue === undefined || queue.length === 0) return
     this.pendingAnswerDiscards.delete(leadId)
     this.drainingAnswerDiscards.set(leadId, queue)
+    this.syncRepairProjection(leadId)
     try {
       await this.drainAnswerDiscardsNow(leadId, queue)
     } finally {
       this.drainingAnswerDiscards.delete(leadId)
+      this.syncRepairProjection(leadId)
     }
   }
 
@@ -5299,11 +5682,11 @@ export class DevLeadService extends Service {
     }
     const appended: DevLeadReportAnswer[] = []
     const failed: DevLeadReportAnswer[] = []
-    const logCache = new Map<string, readonly SessionEvent[] | undefined>()
+    const logCache = new Map<string, DevLeadChildAnswersState | undefined>()
     for (const discard of queue) {
       const entry = this.answers.entryOfQuestion(leadId, discard.reportId)
       const supersededByMemory = entry !== undefined && entry.messageId !== discard.messageId
-        && entry.answerSeq >= (discard.answerSeq ?? 0)
+        && entry.answerSeq >= (discard.answerSeq)
       if (supersededByMemory || this.leadSideObsolete(discard)) {
         this.dropObsoleteDiscard(discard)
         continue
@@ -5489,7 +5872,7 @@ export class DevLeadService extends Service {
   private rememberDerivedDiscard(record: DevLeadReportAnswer, at: number): void {
     const current = this.answers.entryOfQuestion(record.leadSessionId, record.reportId)
     if (current !== undefined && current.messageId !== record.messageId
-      && current.answerSeq >= (record.answerSeq ?? 0)) return
+      && current.answerSeq >= (record.answerSeq)) return
     const discarded: DevLeadReportAnswer = {
       reportId: record.reportId,
       leadSessionId: record.leadSessionId,
@@ -5497,7 +5880,7 @@ export class DevLeadService extends Service {
       messageId: record.messageId,
       at,
       status: 'discarded',
-      ...(record.answerSeq === undefined ? {} : { answerSeq: record.answerSeq }),
+      answerSeq: record.answerSeq,
       textHash: record.textHash,
       answeredAt: record.answeredAt ?? record.at,
       ...(record.idempotencyKey === undefined ? {} : { idempotencyKey: record.idempotencyKey }),
@@ -5513,7 +5896,7 @@ export class DevLeadService extends Service {
       messageId: record.messageId,
       status: 'discarded',
       at,
-      answerSeq: record.answerSeq ?? 0,
+      answerSeq: record.answerSeq,
       firstAdmittedAt: record.answeredAt ?? record.at,
       ...(record.idempotencyKey === undefined ? {} : { idempotencyKey: record.idempotencyKey }),
       textHash: record.textHash,
@@ -5586,6 +5969,7 @@ export class DevLeadService extends Service {
     for (const discard of derived) {
       this.discardPendingAnswer(sessionId, discard.messageId, discard.questionId, discard.leadId, discard.at)
     }
+    this.syncRepairProjections()
   }
 
   /** Build one child observer whose eviction warnings reach the Host logger. */
@@ -5622,10 +6006,15 @@ export class DevLeadService extends Service {
   private replayChildObserver(session: Session): DerivedAnswerDiscard[] {
     const sessionId = String(session.id)
     const observer = this.newChildObserver(sessionId)
-    const derived = observer.replay(session.snapshotEvents(), {
-      finalizeCandidates: !this.interrupting.has(sessionId),
+    const state = this.childAnswersHandle.stateOf(session)
+    const derived = observer.restore(state, {
+      finalizeCandidates: state.complete && !this.interrupting.has(sessionId),
     })
     this.rememberChildObserver(sessionId, observer)
+    if (!state.complete) {
+      this.ctx.logger.warn(`devlead: child answer projection for Session "${sessionId}" exceeded its bounded history; survival remains unknown instead of accepting a partial replay`)
+      return []
+    }
     return derived
   }
 
@@ -5663,7 +6052,7 @@ export class DevLeadService extends Service {
       const latest = new Map<string, DevLeadReportAnswer>()
       for (const answer of state.answers) {
         const current = latest.get(answer.reportId)
-        if (current === undefined || (answer.answerSeq ?? 0) >= (current.answerSeq ?? 0)) {
+        if (current === undefined || (answer.answerSeq) >= (current.answerSeq)) {
           latest.set(answer.reportId, answer)
         }
       }
@@ -5684,7 +6073,7 @@ export class DevLeadService extends Service {
       const latest = new Map<string, DevLeadReportAnswer>()
       for (const answer of ownState.answers) {
         const current = latest.get(answer.reportId)
-        if (current === undefined || (answer.answerSeq ?? 0) >= (current.answerSeq ?? 0)) {
+        if (current === undefined || (answer.answerSeq) >= (current.answerSeq)) {
           latest.set(answer.reportId, answer)
         }
       }
@@ -5709,6 +6098,8 @@ export class DevLeadService extends Service {
     // after a failed append/flush). This runs even when the mode is currently
     // disabled, so a disabled→enabled transition never strands the queue.
     void this.reconcileAnswerDiscards(sessionId)
+    this.repairProjectionLeads.add(sessionId)
+    this.syncRepairProjection(sessionId)
   }
 
   /**

@@ -211,6 +211,7 @@ describe('configuration', () => {
       maxListedSessions: 5,
       wakeColdSession: true,
       defaultAgentPreset: 'reviewer',
+      questionTtlMs: 0,
     })
   })
 
@@ -222,6 +223,7 @@ describe('configuration', () => {
       maxListedSessions: 200,
       wakeColdSession: true,
       defaultAgentPreset: '',
+      questionTtlMs: 24 * 60 * 60 * 1_000,
     })
     expect(() => Config({ notificationBatchMs: -1 })).toThrow()
     expect(() => Config({ maxWatchedSessions: 0 })).toThrow()
@@ -241,6 +243,8 @@ describe('configuration', () => {
       { maxListedSessions: 0 },
       { wakeColdSession: 'yes' },
       { defaultAgentPreset: 1 },
+      { questionTtlMs: -1 },
+      { questionTtlMs: 1.5 },
     ]
     for (const config of cases) {
       expect(() => new DevLeadService(new Context(), config as DevLeadConfig), JSON.stringify(config)).toThrow(TypeError)
@@ -283,6 +287,7 @@ describe('mode selection', () => {
       notifications: [],
       reports: [],
       answers: [],
+      repairPending: [],
       failure: null,
       inheritedEventCount: 0,
     })
@@ -293,7 +298,7 @@ describe('mode selection', () => {
     await harness.service.setEnabled(harness.lead.agent, true)
     expect(harness.service.isEnabled(harness.lead.agent)).toBe(true)
     expect(harness.service.view(harness.lead.agent).enabled).toBe(true)
-    expect(durableModeRecords(harness)).toEqual([{ kind: 'devlead/mode', version: 1, enabled: true, at: expect.any(Number) }])
+    expect(durableModeRecords(harness)).toEqual([{ kind: 'devlead/mode', version: 2, enabled: true, at: expect.any(Number) }])
     await harness.service.setEnabled(harness.lead.agent, true)
     expect(durableModeRecords(harness)).toHaveLength(1)
     await harness.service.setEnabled(harness.lead.agent, false)
@@ -1437,7 +1442,7 @@ describe('mid-turn reports', () => {
       seedLead: (session) => {
         appendPluginRecord(session, DEVLEAD_MODE_RECORD_TYPE, {
           kind: 'devlead/mode',
-          version: 1,
+          version: 2,
           enabled: 'yes',
           at: T0,
         } as never)
@@ -1782,7 +1787,7 @@ describe('watch set', () => {
     expect(added).toEqual({ sessionId: 'child-alpha', watched: true, sessions: ['child-alpha'] })
     expect(harness.service.view(harness.lead.agent).sessions).toEqual(['child-alpha'])
     expect(durableWatchRecords(harness)).toEqual([
-      { kind: 'devlead/watch', version: 1, sessions: ['child-alpha'], at: expect.any(Number) },
+      { kind: 'devlead/watch', version: 2, sessions: ['child-alpha'], at: expect.any(Number) },
     ])
     const removed = await harness.service.watchSession(harness.lead.agent, 'child-alpha', false)
     expect(removed).toEqual({ sessionId: 'child-alpha', watched: false, sessions: [] })
@@ -1902,7 +1907,7 @@ describe('projection failure handling', () => {
     const harness = await bootService({ enabled: true })
     appendPluginRecord(harness.leadSession, DEVLEAD_MODE_RECORD_TYPE, {
       kind: 'devlead/mode',
-      version: 1,
+      version: 2,
       enabled: 'yes',
       at: T0,
     } as never)
@@ -1946,6 +1951,7 @@ describe('projection failure handling', () => {
       notifications: [],
       reports: [],
       answers: [],
+      repairPending: [],
       failure: null,
       inheritedEventCount: 0,
     })
@@ -4557,7 +4563,7 @@ describe('cold lead rehydration', () => {
       seed: (session) => {
         appendPluginRecord(session, DEVLEAD_MODE_RECORD_TYPE, {
           kind: 'devlead/mode',
-          version: 1,
+          version: 2,
           enabled: 'yes',
           at: T0,
         } as never)
@@ -4655,7 +4661,7 @@ describe('reset recovery through the notification hub', () => {
     const harness = await bootService({ enabled: true, sessionIds: ['child-alpha'], watched: ['child-alpha'], config: { notificationBatchMs: 0 } })
     appendPluginRecord(harness.leadSession, DEVLEAD_MODE_RECORD_TYPE, {
       kind: 'devlead/mode',
-      version: 1,
+      version: 2,
       enabled: 'yes',
       at: T0,
     } as never)
@@ -5953,7 +5959,8 @@ describe('cold-discard durability (Phase 1d review round 2)', () => {
     const commitTarget = harness.leadSession as unknown as { commit: (...args: unknown[]) => unknown }
     const realCommit = commitTarget.commit.bind(harness.leadSession)
     const spy = vi.spyOn(commitTarget, 'commit').mockImplementation((...args: unknown[]) => {
-      if (failures > 0) {
+      const type = (args[0] as { type?: unknown } | undefined)?.type ?? args[0]
+      if (failures > 0 && type === DEVLEAD_REPORT_ANSWER_RECORD_TYPE) {
         failures -= 1
         throw new Error('disk full')
       }
@@ -7199,10 +7206,17 @@ describe('cold-discard review round 5 (deferred re-prove, repair barrier, health
     const target = new FakeAgent(requireSession(harness, 'target'))
     scriptPending(target, 'm1', questionId, 'r5-append-fail-lead')
     harness.agents.add(target)
-    const spy = vi.spyOn(harness.leadSession as unknown as { commit: (...args: unknown[]) => unknown }, 'commit')
-      .mockImplementationOnce(() => {
+    const commitTarget = harness.leadSession as unknown as { commit: (...args: unknown[]) => unknown }
+    const realCommit = commitTarget.commit.bind(harness.leadSession)
+    let failRepairAppend = true
+    const spy = vi.spyOn(commitTarget, 'commit').mockImplementation((...args: unknown[]) => {
+      const type = (args[0] as { type?: unknown } | undefined)?.type ?? args[0]
+      if (failRepairAppend && type === DEVLEAD_REPORT_ANSWER_RECORD_TYPE) {
+        failRepairAppend = false
         throw new Error('disk full')
-      })
+      }
+      return realCommit(...args)
+    })
     harness.ctx.emit('agent/created', { agent: target.agent, source: 'resume' })
     await nextTask()
     spy.mockRestore()
@@ -7274,10 +7288,17 @@ describe('cold-discard review round 5 (deferred re-prove, repair barrier, health
     scriptPending(target, 'm2', question2.id, 'r5-permsg-lead')
     harness.agents.add(target)
     // Fail the FIRST repair append (m1) once; the second repair (m2) succeeds.
-    const spy = vi.spyOn(harness.leadSession as unknown as { commit: (...args: unknown[]) => unknown }, 'commit')
-      .mockImplementationOnce(() => {
+    const commitTarget = harness.leadSession as unknown as { commit: (...args: unknown[]) => unknown }
+    const realCommit = commitTarget.commit.bind(harness.leadSession)
+    let failRepairAppend = true
+    const spy = vi.spyOn(commitTarget, 'commit').mockImplementation((...args: unknown[]) => {
+      const type = (args[0] as { type?: unknown } | undefined)?.type ?? args[0]
+      if (failRepairAppend && type === DEVLEAD_REPORT_ANSWER_RECORD_TYPE) {
+        failRepairAppend = false
         throw new Error('disk full')
-      })
+      }
+      return realCommit(...args)
+    })
     harness.ctx.emit('agent/created', { agent: target.agent, source: 'resume' })
     await nextTask()
     spy.mockRestore()
@@ -7762,18 +7783,19 @@ describe('cold-discard closure round 8 (in-flight drain, genuine settle failure 
     const query = new FakeSessionQuery()
     // Make the child log read hang: this is exactly the window where the drain
     // detached the row from the pending map but has not classified it unknown.
-    const realReadSession = query.readSession.bind(query)
+    const realObserveSession = query.observeSession.bind(query)
     let releaseRead!: () => void
     const readGate = new Promise<void>((resolve) => { releaseRead = resolve })
     let readStarted = false
     let hangRead = true
-    query.readSession = async (sessionId) => {
+    query.observeSession = async (sessionId) => {
+      query.observeSessionCalls += 1
       if (hangRead) {
         hangRead = false
         readStarted = true
         await readGate
       }
-      return realReadSession(sessionId)
+      return realObserveSession(sessionId)
     }
     const harness = await bootService({
       leadId,
@@ -7889,8 +7911,17 @@ describe('cold-discard closure round 8 (in-flight drain, genuine settle failure 
     target.session.append('agent/inbox/spliced', { target: 'next-step', start: 0, inserted: [message] })
     harness.agents.add(target)
     // Fail the repair append once: the failure map now has an entry for m1.
-    const spy = vi.spyOn(harness.leadSession as unknown as { commit: (...args: unknown[]) => unknown }, 'commit')
-      .mockImplementationOnce(() => { throw new Error('disk full') })
+    const commitTarget = harness.leadSession as unknown as { commit: (...args: unknown[]) => unknown }
+    const realCommit = commitTarget.commit.bind(harness.leadSession)
+    let failRepairAppend = true
+    const spy = vi.spyOn(commitTarget, 'commit').mockImplementation((...args: unknown[]) => {
+      const type = (args[0] as { type?: unknown } | undefined)?.type ?? args[0]
+      if (failRepairAppend && type === DEVLEAD_REPORT_ANSWER_RECORD_TYPE) {
+        failRepairAppend = false
+        throw new Error('disk full')
+      }
+      return realCommit(...args)
+    })
     harness.ctx.emit('agent/created', { agent: target.agent, source: 'resume' })
     await nextTask()
     spy.mockRestore()
@@ -7919,18 +7950,19 @@ describe('cold-discard closure round 9 (bounded in-flight drain wait)', () => {
   async function bootInFlightDrain(leadId: string) {
     const question = devLeadReport({ senderSessionId: 'target', leadSessionId: leadId, turn: 1, kind: 'question', message: 'Which target?', at: T0 })
     const query = new FakeSessionQuery()
-    const realReadSession = query.readSession.bind(query)
+    const realObserveSession = query.observeSession.bind(query)
     let releaseRead!: () => void
     const readGate = new Promise<void>((resolve) => { releaseRead = resolve })
     let readStarted = false
     let hangRead = true
-    query.readSession = async (sessionId) => {
+    query.observeSession = async (sessionId) => {
+      query.observeSessionCalls += 1
       if (hangRead) {
         hangRead = false
         readStarted = true
         await readGate
       }
-      return realReadSession(sessionId)
+      return realObserveSession(sessionId)
     }
     const harness = await bootService({
       leadId,
@@ -8048,6 +8080,15 @@ describe('cold-discard closure round 9 (bounded in-flight drain wait)', () => {
       await vi.advanceTimersByTimeAsync(30_001)
       const error = await expectCodeAsync(() => prompt, 'DEVLEAD_SESSION_UNAVAILABLE')
       expect(error.message).toContain('answer-discard drain did not settle (timed out)')
+      // A retry shares the same abandoned raw projection read instead of
+      // accumulating another permanently pending query/promise.
+      const retry = harness.service.promptSession(harness.lead.agent, 'target', 'use prod', {
+        intent: 'answer', questionId: fixture.question.id,
+      })
+      void retry.catch(() => undefined)
+      await vi.advanceTimersByTimeAsync(30_001)
+      await expectCodeAsync(() => retry, 'DEVLEAD_SESSION_UNAVAILABLE')
+      expect(harness.sessionQuery?.observeSessionCalls).toBe(1)
       // The timeout abandoned only the wait: the drain keeps running and
       // completes once the read is released, with no unhandled rejection.
       fixture.releaseRead()

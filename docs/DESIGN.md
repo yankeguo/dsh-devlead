@@ -12,6 +12,45 @@
 `dsh-infini-goal`——只算线索，不作为依据；每条 DSH API 行为都以官方源码或已安装的
 `@deepseek-ai/*` 声明为准。
 
+## 0.4.0 Batch 1 当前契约（覆盖后文 Phase 1/2 的 Proposed 口径）
+
+本批按「正确性 > 兼容性」执行，后文早期 Phase 1 memory-only、legacy fallback、Phase 2 Proposed
+仅作历史设计背景；当前实现以本节为准。版本号、tag 与发布不属于本批。
+
+1. **record / storage breaking**：所有 `plugin:devlead/*` 当前 record 都是 `version:2`。
+   v1 record 与无 `answerSeq` 的 answer 明确忽略并丢弃，进程级一次性 warning 说明旧 Session 的
+   DevLead 状态失效；不得冻结 projection。当前 v2 的字段/schema 损坏仍设置 `failure` 并冻结，
+   `/devlead reset` 恢复。`devLead` / `devLeadMode` / `devLeadWatch` stateVersion 为 7 / 3 / 3。
+   `OUTBOX_SPEC` 为 v3、无 `compatibleVersions`，pending `origin:'live'|'cold'` 必填；旧 v1/v2
+   domain、无 origin row 与旧 discard 队列数据丢弃。domain 打不开时 warn 并禁用 durable domain，
+   不 crash、不写入；`answer_discards` 仍单独保留 30 天。
+2. **deprecated reader 清零**：生产不再调用 `Session.snapshotEvents()` / `eventAt()` /
+   `ownEvents()`。`devLeadInboxTimes` 只保存当前 pending inbox 的 id→入队时间；
+   `devLeadTurnSource` 折出当前 turn 最新 actionable source；`devLeadChildAnswers` 以有界 JSON
+   状态折出 pending/claimed/cancel-candidate/presented/discard，cold 侧通过 `observeSession()`
+   的 projection wire value 读取，绝不以异步全日志物化替代同步全日志物化。bounded overflow 与
+   读取失败均为 `unknown`，不能把不完整历史当成真实 discard。
+3. **prompt 正确性**：foreign supervisor 返回 `DEVLEAD_FOREIGN_SUPERVISOR`，多 supervisor
+   冲突返回 `DEVLEAD_MULTIPLE_SUPERVISORS`，在任何 watch/resume/admission 副作用前拒绝；report
+   侧 `supervisorOf` 规则不变。非 answer 的 `(lead,target,idempotency_key)` receipt 持久在独立
+   `devlead_idempotency` domain 的 `receipts` 表，保存 textHash/delivery/at，7 天 TTL + 启动清理；
+   同 key 同文本返回原 receipt，不同文本冲突。receipt read 的 absent 与 unreadable/corrupt 严格分离，
+   后者以及 composed storage 打不开时均在 admission 前 `DEVLEAD_SESSION_UNAVAILABLE` fail closed，
+   不允许重复副作用；只有 Host 未组合 storage 时才显式 warning 后走进程内窗口。
+4. **question / 背压 / drain**：`questionTtlMs` 默认 86400000，`0` 禁用；只让当前仍 open 的
+   question 在 `now - report.at >= TTL` 时 lazy 变为 `expired`，answered 不 retroactive 过期，
+   过期 answer 返回 `DEVLEAD_QUESTION_NOT_FOUND`。cold 恢复对 durable、open、未过期 question
+   重新进入既有 action-required lane，同一 lead/question 每进程最多 replay 一次；replay 与普通
+   action report 共用 16/pair 容量，满载时保留未 replay 集合并随 lane 释放续投，不抛错丢弃；每次续投
+   前重读当前 lead reports/answers，等待期间已 answered 的 question 不再 replay。lead→child
+   correction/background 每 pair 每 child-turn 上限为 4/8，超限结构化
+   `DEVLEAD_DELIVERY_RATE_LIMITED`，幂等 replay 不占新配额。cold answer projection 读取 30s
+   超时放弃，单 child single-flight、全局 64 个 raw read 上限；放弃后原始 Promise 被观察且不得
+   因重试继续累积，answer 可重试。
+5. **UI 投影**：`DevLeadProjectionReport` 增加可选 `repairPending`。runtime 的 pending 集合以
+   whole-value `plugin:devlead/repair`（v2）驱动 fold 与 Host publication，mark/clear 双向都会推送；
+   不改变 durable tool 输出字段，DevLeadBar 在 question 生命周期后追加 `provisional` / 「暂定」。
+
 ## 1. 产品定位
 
 - **DevLead 会话 = 普通会话 + 一个持久开关**。打开开关后，该会话额外获得一组
@@ -137,16 +176,18 @@ DSH 的所有读取路径会保留并重放这些记录，但不会把它们投�
 
 | 记录类型 | payload | 语义 |
 | --- | --- | --- |
-| `plugin:devlead/mode` | `DevLeadModeRecord` | 整个开关状态（`{ kind, version:1, enabled, at }`） |
+| `plugin:devlead/mode` | `DevLeadModeRecord` | 整个开关状态（`{ kind, version:2, enabled, at }`） |
 | `plugin:devlead/watch` | `DevLeadWatchRecord` | **完整**关注集合（`{ sessions: string[] }`，whole-value 替换） |
 | `plugin:devlead/notification` | `DevLeadNotificationRecord` | 追加一条通知（`{ notification }`） |
 | `plugin:devlead/report` | `DevLeadReportRecord` | 追加一条已关注会话的中途汇报（`{ report }`） |
 | `plugin:devlead/report-answer` | `DevLeadReportAnswerRecord` | 追加一条 answer 生命周期事实（admitted / discarded / failed 与 repair；字段与派生规则见 §4.4.6） |
-| `plugin:devlead/reset` | `DevLeadResetRecord` | 丢弃该会话**更早**的全部 DevLead 记录，三个 projection 回到空状态（`{ kind, version:1, at }`；见下） |
+| `plugin:devlead/reset` | `DevLeadResetRecord` | 丢弃该会话**更早**的全部 DevLead 记录，三个 projection 回到空状态（`{ kind, version:2, at }`；见下） |
+| `plugin:devlead/repair` | `DevLeadRepairRecord` | runtime repair-pending question 的 whole-value 集合，驱动 UI projection 双向发布 |
 
-- 记录 payload 必须 JSON-safe、带 `kind` + `version`；fold 对未知 `kind`/`version` **以及
-  多余/缺失字段**一律拒绝（严格字段集解码，见 `domain.ts`）。持久插件记录是折叠的唯一信任
-  边界：手工编辑 / 迁移后的日志必须让 replay 失败（`failure`），而不是被静默丢弃或强制转换。
+- 记录 payload 必须 JSON-safe、带 `kind` + `version`；fold 对未知 `kind`、当前版本的
+  多余/缺失字段一律拒绝（严格字段集解码，见 `domain.ts`）。v1 等旧版本 record 是 §0.4.0
+  规定的显式丢弃例外，不冻结；当前 v2 的手工损坏 / 迁移错误必须让 replay 失败（`failure`），
+  而不是被静默强制转换。
 - **`reset` 是唯一在冻结检查之前应用的记录**：合法 reset 让三个 projection（`devLead`、
   `devLeadMode`、`devLeadWatch`）都从 `init` 重新开始（`enabled:false`、空关注集合、空 digest、`failure:null`），
   因此一条先前损坏的 `plugin:devlead/*` 记录不再永久锁死该会话。reset 自身也做同样严格的
@@ -164,10 +205,11 @@ DSH 的所有读取路径会保留并重放这些记录，但不会把它们投�
   非空；`turn` 允许 0（命令调用常发生在首个 turn 之前）。最多保留 64 条 report，按 `id` 去重。
 - 新类型 `plugin:devlead/report` 对旧版本是未知插件记录：旧 fold 忽略、不冻结，因此回滚不会
   因新记录损坏日志；旧版本也读不到 report（预期降级）。`devLead` projection 的
-  `stateVersion` 现为 5（2 新增 `reports`，3 新增 fork 继承前缀长度，4 新增 answer audit，
-  5 改为按 `answerSeq` 选 latest answer），`devLeadWatch` 为 2、
-  `devLeadMode` 为 2（都新增 fork 继承前缀长度）；旧 projection-cache 行会失效并从 durable
-  log 重新 fold。
+  `stateVersion` 现为 7（2 新增 `reports`，3 新增 fork 继承前缀长度，4 新增 answer audit，
+  5 改为按 `answerSeq` 选 latest answer，6 丢弃旧 record/无 seq answer 并要求 seq，7 新增
+  repair-pending 集合并使旧 cache row 失效重折），
+  `devLeadWatch` / `devLeadMode` 均为 3（旧 record 不再冻结）；旧 projection-cache 行会失效并从
+  durable log 重新 fold。
 - 每次变更都是**先追加日志，后发通知**。
 - 通知条数在 projection 里按常量 `DEVLEAD_DEFAULT_NOTIFICATION_RETENTION`（64）截断：
   fold 必须是**纯函数**，不能依赖部署 config，否则重放会分叉。
@@ -1795,9 +1837,10 @@ Phase 1 前的 hub 只有一个 `pending` / `pendingReports` 队列和一个全�
 | `devlead_archive_session` | enabled live lead | 非 self | 现有规则 | 现有错误 |
 
 `DEVLEAD_DELIVERY_RATE_LIMITED` 已在 Phase 1b 随 16/pair Q1 pending cap 实现，并同步加入
-`DevLeadErrorCode` union、§8 表格与错误翻译测试。以下错误码仍是 **Proposed**，当前 §8 没有：
-`DEVLEAD_FOREIGN_SUPERVISOR`、`DEVLEAD_MULTIPLE_SUPERVISORS`、`DEVLEAD_QUESTION_NOT_FOUND`、
-`DEVLEAD_QUESTION_ALREADY_ANSWERED`。实现时执行同样的 union/文档/翻译门禁；在实现前不要用这些码。
+`DevLeadErrorCode` union、§8 表格与错误翻译测试。Batch 1 已把
+`DEVLEAD_FOREIGN_SUPERVISOR` / `DEVLEAD_MULTIPLE_SUPERVISORS` 加入同一 union、command 翻译与
+prompt 硬门禁；`DEVLEAD_QUESTION_NOT_FOUND` / `DEVLEAD_QUESTION_ALREADY_ANSWERED` 继续用于
+question 路由。
 
 **多 lead**
 
@@ -1806,17 +1849,15 @@ Phase 1 前的 hub 只有一个 `pending` / `pendingReports` 队列和一个全�
 - 没有唯一 supervisor 时，question gate 的 `isSupervised` 为 false，native
   `ask_user_question` 会放行——child 被视为「无人监督」，问题在 child 自己的 UI 里问人类。
   这是现有行为，不是静默失败；文档要写明。
-- **prompt 侧建议新增规则（Proposed）**。注意 `supervisorOf` 在「没有 watcher」和「多个
+- **prompt 侧 Batch 1 硬门禁（已实现）**。注意 `supervisorOf` 在「没有 watcher」和「多个
   watcher 且没有 incumbent」两种情况下都返回 `undefined`，所以必须同时看
   `hub.supervisorsOf(target)` 的原始 active watcher 数（排除 archived），不能只用
   `supervisorOf`：
   - watcher 数 = 0 → 允许；`watch:true` 建立调用者的关注关系。
   - watcher 数 = 1 且就是 caller → 允许。
   - watcher 数 = 1 且是另一个 lead → 拒绝 `DEVLEAD_FOREIGN_SUPERVISOR`。
-  - watcher 数 > 1：若 `supervisorOf(target) === caller`（caller 是 active incumbent）→
-    允许；否则拒绝 `DEVLEAD_MULTIPLE_SUPERVISORS`，提示人类关闭其中一个 lead。
-  - Phase 1 只在日志里 warning，不新增结果字段；Phase 2 默认硬拒绝，配置
-    `enforcePromptSupervisor:false` 可回退。
+  - watcher 数 > 1 → 一律拒绝 `DEVLEAD_MULTIPLE_SUPERVISORS`，即使 caller 是 active incumbent；
+    先由人类关闭一个 lead 或解除冲突关注，不提供 warning/config 回退。
 - **不能 prompt 另一个 DevLead Session**：target `isEnabled === true` 时拒绝
   `DEVLEAD_INVALID_INPUT`，防止 lead-to-lead 循环。当前只拒绝 self；这是 Proposed 变更。
 - subagent Session 已经不在 `collectSessionIds` / `resolveSessionReference` 的可寻址集合里，
@@ -1829,8 +1870,8 @@ Phase 1 前的 hub 只有一个 `pending` / `pendingReports` 队列和一个全�
 | --- | --- | --- |
 | child 普通 report | 每 turn 4 条（现有） | `DEVLEAD_REPORT_RATE_LIMITED` |
 | child question | 不受 4 条限制；仍受 4000 码点、同轮同 kind+message 幂等、action-required pending 上限约束 | `DEVLEAD_DELIVERY_RATE_LIMITED`，不静默丢弃 |
-| lead correction | 每 target 每 lead turn 4 条 | `DEVLEAD_DELIVERY_RATE_LIMITED` |
-| lead background | 每 target 每 lead turn 8 条；pending 16 | 降级 digest-only 或限流 |
+| lead correction | 每 target 每 child turn 4 条 | `DEVLEAD_DELIVERY_RATE_LIMITED`；幂等 replay 不占新配额 |
+| lead background | 每 target 每 child turn 8 条 | `DEVLEAD_DELIVERY_RATE_LIMITED`，不静默丢弃；幂等 replay 不占新配额 |
 | lead pending（每 pair） | 32 条（action-required 16 / background 16） | `DEVLEAD_DELIVERY_RATE_LIMITED` |
 | question answer | 每 question 1 条 | `DEVLEAD_QUESTION_ALREADY_ANSWERED` |
 | notification digest | 现有行数/retention | 截断 + digest |

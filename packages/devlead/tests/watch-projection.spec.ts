@@ -32,7 +32,7 @@ describe('devLeadWatch projection', () => {
   it('starts empty and exposes its unit contract', () => {
     expect(emptyDevLeadWatchProjectionState()).toEqual({ sessions: [], failure: null, inheritedEventCount: 0 })
     expect(devLeadWatchProjectionDefinition.key).toBe(DEVLEAD_WATCH_PROJECTION_KEY)
-    expect(devLeadWatchProjectionDefinition.stateVersion).toBe(2)
+    expect(devLeadWatchProjectionDefinition.stateVersion).toBe(3)
     expect(devLeadWatchProjectionDefinition.init()).toEqual(emptyDevLeadWatchProjectionState())
     expect(devLeadWatchProjectionDefinition.apply).toBe(applyDevLeadWatchProjection)
   })
@@ -77,7 +77,7 @@ describe('devLeadWatch projection', () => {
     const frozen = fold([
       pluginRecordEvent(1, DEVLEAD_WATCH_RECORD_TYPE, {
         kind: 'devlead/watch',
-        version: 1,
+        version: 2,
         sessions: ['session-a', 'session-a'],
         at: T0,
       }),

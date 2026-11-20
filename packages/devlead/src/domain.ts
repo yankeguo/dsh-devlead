@@ -32,6 +32,7 @@ import {
   DEVLEAD_QUESTION_FIELD_MAX,
   DEVLEAD_QUESTION_OPTIONS_MAX,
   DEVLEAD_RECORD_VERSION,
+  DEVLEAD_REPAIR_RECORD_TYPE,
   DEVLEAD_REPORT_ANSWER_RECORD_TYPE,
   DEVLEAD_REPORT_MESSAGE_MAX,
   DEVLEAD_REPORT_RECORD_TYPE,
@@ -53,6 +54,7 @@ import type {
   DevLeadNotificationRecord,
   DevLeadQuestion,
   DevLeadQuestionOption,
+  DevLeadRepairRecord,
   DevLeadReport,
   DevLeadReportAnswer,
   DevLeadReportAnswerRecord,
@@ -75,6 +77,7 @@ export {
   DEVLEAD_QUESTION_FIELD_MAX,
   DEVLEAD_QUESTION_OPTIONS_MAX,
   DEVLEAD_RECORD_VERSION,
+  DEVLEAD_REPAIR_RECORD_TYPE,
   DEVLEAD_REPORT_ANSWER_RECORD_TYPE,
   DEVLEAD_REPORT_MESSAGE_MAX,
   DEVLEAD_REPORT_RECORD_TYPE,
@@ -92,6 +95,7 @@ export type {
   DevLeadNotificationRecord,
   DevLeadQuestion,
   DevLeadQuestionOption,
+  DevLeadRepairRecord,
   DevLeadReport,
   DevLeadReportAnswer,
   DevLeadReportAnswerRecord,
@@ -163,6 +167,8 @@ declare module '@deepseek-ai/dsh-session/types' {
     'plugin:devlead/report-answer': DevLeadReportAnswerRecord
     /** Reset marker discarding every earlier DevLead record of the Session. */
     'plugin:devlead/reset': DevLeadResetRecord
+    /** Whole-value runtime repair-pending question set for UI publication. */
+    'plugin:devlead/repair': DevLeadRepairRecord
   }
 }
 
@@ -263,6 +269,17 @@ export function modeRecord(enabled: boolean, at: number): DevLeadModeRecord {
  */
 export function watchRecord(sessions: readonly string[], at: number): DevLeadWatchRecord {
   return { kind: 'devlead/watch', version: DEVLEAD_RECORD_VERSION, sessions, at }
+}
+
+/** Build one whole-value runtime repair-pending record. */
+export function repairRecord(leadSessionId: string, questionIds: readonly string[], at: number): DevLeadRepairRecord {
+  return {
+    kind: 'devlead/repair',
+    version: DEVLEAD_RECORD_VERSION,
+    leadSessionId,
+    questionIds: [...new Set(questionIds)].sort(),
+    at,
+  }
 }
 
 /**
@@ -472,6 +489,50 @@ function expectFields(
   }
   for (const key of required) {
     if (!(key in value)) throw new Error(`${label} is missing field ${JSON.stringify(key)}`)
+  }
+}
+
+/** Owned record types whose legacy payloads may be skipped during replay. */
+const DEVLEAD_RECORD_TYPES = new Set<string>([
+  DEVLEAD_MODE_RECORD_TYPE,
+  DEVLEAD_WATCH_RECORD_TYPE,
+  DEVLEAD_NOTIFICATION_RECORD_TYPE,
+  DEVLEAD_REPORT_RECORD_TYPE,
+  DEVLEAD_REPORT_ANSWER_RECORD_TYPE,
+  DEVLEAD_RESET_RECORD_TYPE,
+  DEVLEAD_REPAIR_RECORD_TYPE,
+])
+
+/**
+ * Recognize a persisted record that belongs to a pre-breaking-change schema.
+ * Older envelope versions are skipped wholesale. At the current envelope
+ * version, only an otherwise fully valid answer record whose sole schema drift
+ * is the absent `answerSeq` is legacy; any other damage remains corruption.
+ * @param type - persisted plugin record type.
+ * @param value - persisted payload.
+ * @returns a short reason when the fold must ignore the record.
+ */
+export function legacyDevLeadRecordReason(type: string, value: unknown): string | undefined {
+  if (!DEVLEAD_RECORD_TYPES.has(type) || typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return undefined
+  }
+  const version = (value as { version?: unknown }).version
+  if (Number.isSafeInteger(version) && (version as number) >= 0 && (version as number) < DEVLEAD_RECORD_VERSION) {
+    return `record version ${String(version)} predates version ${String(DEVLEAD_RECORD_VERSION)}`
+  }
+  if (type !== DEVLEAD_REPORT_ANSWER_RECORD_TYPE || version !== DEVLEAD_RECORD_VERSION) return undefined
+  try {
+    const record = expectRecord(value, type)
+    expectFields(record, 'report answer record', ['kind', 'version', 'answer'])
+    expectEnvelope(record, type, 'devlead/report-answer')
+    const answer = expectRecord(record.answer, 'report answer')
+    if ('answerSeq' in answer) return undefined
+    decodeReportAnswerValue(answer, true)
+    return 'answer schema predates the required answerSeq field'
+  } catch {
+    // A no-seq record with any additional drift is not recognizable as the old
+    // schema. The strict current decoder below will report and freeze it.
+    return undefined
   }
 }
 
@@ -764,7 +825,7 @@ const ANSWER_STATUSES: readonly DevLeadAnswerStatus[] = ['admitted', 'claimed', 
  * @returns the decoded answer fact.
  * @throws when the value is not a valid answer fact.
  */
-export function decodeReportAnswer(value: unknown): DevLeadReportAnswer {
+function decodeReportAnswerValue(value: unknown, allowLegacyMissingSeq: boolean): DevLeadReportAnswer {
   const record = expectRecord(value, DEVLEAD_REPORT_ANSWER_RECORD_TYPE)
   const label = 'report answer'
   expectFields(record, label, [
@@ -775,8 +836,8 @@ export function decodeReportAnswer(value: unknown): DevLeadReportAnswer {
     'at',
     'status',
     'textHash',
+    ...allowLegacyMissingSeq ? [] : ['answerSeq'],
   ], [
-    'answerSeq',
     'answeredAt',
     'presentedAt',
     'idempotencyKey',
@@ -797,11 +858,11 @@ export function decodeReportAnswer(value: unknown): DevLeadReportAnswer {
   if (typeof record.textHash !== 'string' || !/^[0-9a-f]{64}$/u.test(record.textHash)) {
     throw new Error(`${label} textHash must be a lowercase SHA-256 hex digest`)
   }
-  if (record.answerSeq !== undefined
+  if ((!allowLegacyMissingSeq || record.answerSeq !== undefined)
     && (typeof record.answerSeq !== 'number'
       || !Number.isSafeInteger(record.answerSeq)
       || record.answerSeq < 0)) {
-    throw new Error(`${label} answerSeq must be a non-negative safe integer when present`)
+    throw new Error(`${label} answerSeq must be a non-negative safe integer`)
   }
   const answeredAt = record.answeredAt === undefined
     ? undefined
@@ -835,7 +896,9 @@ export function decodeReportAnswer(value: unknown): DevLeadReportAnswer {
     at: decodeInstant(record.at, `${label} at`),
     status,
     textHash: record.textHash,
-    ...(record.answerSeq === undefined ? {} : { answerSeq: record.answerSeq }),
+    // The legacy probe may see undefined; that value is only used to classify
+    // and skip the old record. The strict decoder above requires a real seq.
+    answerSeq: record.answerSeq as number,
     ...(answeredAt === undefined ? {} : { answeredAt }),
     ...(presentedAt === undefined ? {} : { presentedAt }),
     ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
@@ -844,6 +907,17 @@ export function decodeReportAnswer(value: unknown): DevLeadReportAnswer {
     ...(record.boundary === undefined ? {} : { boundary: record.boundary }),
     ...(record.wakeRequested === undefined ? {} : { wakeRequested: record.wakeRequested }),
   }
+}
+
+/**
+ * Decode one current answer lifecycle value. `answerSeq` is required; the fold
+ * recognizes and skips the complete pre-sequence shape before calling this.
+ * @param value - persisted answer fact.
+ * @returns the decoded answer fact.
+ * @throws when the value is not a valid current answer fact.
+ */
+export function decodeReportAnswer(value: unknown): DevLeadReportAnswer {
+  return decodeReportAnswerValue(value, false)
 }
 
 /**
@@ -933,6 +1007,29 @@ export function decodeNotificationRecord(value: unknown): DevLeadNotification {
   expectFields(record, label, ['kind', 'version', 'notification'])
   expectEnvelope(record, DEVLEAD_NOTIFICATION_RECORD_TYPE, 'devlead/notification')
   return decodeNotification(record.notification)
+}
+
+/** Decode one whole-value runtime repair-pending record. */
+export function decodeRepairRecord(value: unknown): DevLeadRepairRecord {
+  const record = expectRecord(value, DEVLEAD_REPAIR_RECORD_TYPE)
+  const label = 'repair record'
+  expectFields(record, label, ['kind', 'version', 'leadSessionId', 'questionIds', 'at'])
+  expectEnvelope(record, DEVLEAD_REPAIR_RECORD_TYPE, 'devlead/repair')
+  if (typeof record.leadSessionId !== 'string' || record.leadSessionId.length === 0) {
+    throw new Error(`${label} leadSessionId must be a non-empty string`)
+  }
+  if (!Array.isArray(record.questionIds)
+    || record.questionIds.some(id => typeof id !== 'string' || id.length === 0)
+    || new Set(record.questionIds).size !== record.questionIds.length) {
+    throw new Error(`${label} questionIds must be unique non-empty strings`)
+  }
+  return {
+    kind: 'devlead/repair',
+    version: DEVLEAD_RECORD_VERSION,
+    leadSessionId: record.leadSessionId,
+    questionIds: [...record.questionIds].sort(),
+    at: decodeInstant(record.at, `${label} at`),
+  }
 }
 
 /**

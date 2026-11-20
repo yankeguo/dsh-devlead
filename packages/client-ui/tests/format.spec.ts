@@ -286,6 +286,7 @@ describe('reportSummary', () => {
       questionStatusKey: undefined,
       answerStatus: undefined,
       answerStatusKey: undefined,
+      repairPending: false,
     })
   })
 
@@ -414,6 +415,26 @@ const QUESTION_REPORT: DevLeadProjectionReport = {
 }
 
 describe('reportSummary lifecycle', () => {
+  it('marks a repair-pending question as provisional without changing its raw statuses', () => {
+    // Batch 1 adds this optional wire field to DevLeadProjectionReport. Keep
+    // the fixture structural until that protocol change lands on the mainline.
+    const provisional = { ...QUESTION_REPORT, repairPending: true } as DevLeadProjectionReport
+    const summary = reportSummary(provisional)
+    expect(summary.repairPending).toBe(true)
+    expect(summary.questionStatus).toBe('open')
+    expect(summary.questionStatusKey).toBe('report.question.open')
+    expect(summary.tooltip).toBe(`${reportLine(QUESTION_REPORT)} (open)`)
+  })
+
+  it('treats an absent, false, or drifted repair flag as settled', () => {
+    expect(reportSummary(QUESTION_REPORT).repairPending).toBe(false)
+    expect(reportSummary({ ...QUESTION_REPORT, repairPending: false } as DevLeadProjectionReport).repairPending).toBe(false)
+    for (const repairPending of ['true', 1, null]) {
+      const drifted = { ...QUESTION_REPORT, repairPending } as unknown as DevLeadProjectionReport
+      expect(reportSummary(drifted).repairPending).toBe(false)
+    }
+  })
+
   it('renders the fold-derived question/answer pair of a question report', () => {
     const summary = reportSummary({ ...QUESTION_REPORT, questionStatus: 'answered', answerStatus: 'presented' })
     expect(summary).toMatchObject({
@@ -472,10 +493,16 @@ describe('reportSummary lifecycle', () => {
   it('ignores stray lifecycle fields on non-question rows', () => {
     // The fold derives the pair for question reports only; a stray status on
     // another kind is wire drift, not a question fact.
-    const stray = { ...BASE_REPORT, questionStatus: 'open', answerStatus: 'presented' } as DevLeadProjectionReport
+    const stray = {
+      ...BASE_REPORT,
+      questionStatus: 'open',
+      answerStatus: 'presented',
+      repairPending: true,
+    } as DevLeadProjectionReport
     const summary = reportSummary(stray)
     expect(summary.questionStatus).toBeUndefined()
     expect(summary.answerStatus).toBeUndefined()
+    expect(summary.repairPending).toBe(false)
     expect(summary.tooltip).toBe(reportLine(BASE_REPORT))
   })
 

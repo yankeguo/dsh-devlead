@@ -59,7 +59,7 @@ describe('mode projection unit contract', () => {
   it('registers under its own key with the default summary membership', () => {
     expect(devLeadModeProjectionDefinition.key).toBe(DEVLEAD_MODE_PROJECTION_KEY)
     expect(devLeadModeProjectionDefinition.key).toBe('devLeadMode')
-    expect(devLeadModeProjectionDefinition.stateVersion).toBe(2)
+    expect(devLeadModeProjectionDefinition.stateVersion).toBe(3)
     expect(devLeadModeProjectionDefinition.apply).toBe(applyDevLeadModeProjection)
     expect(devLeadModeProjectionDefinition.init()).toEqual(emptyDevLeadModeProjectionState())
     // Every init call hands out an independent empty state: the registry seeds
@@ -120,9 +120,9 @@ describe('mode fold', () => {
 
   it('freezes the last valid selection when an owned record is corrupt', () => {
     const cases = [
-      corruptEvent(1, DEVLEAD_MODE_RECORD_TYPE, { kind: 'devlead/mode', version: 1, enabled: 'yes', at: T0 }),
-      corruptEvent(1, DEVLEAD_WATCH_RECORD_TYPE, { kind: 'devlead/watch', version: 1, sessions: 'no', at: T0 }),
-      corruptEvent(1, DEVLEAD_NOTIFICATION_RECORD_TYPE, { kind: 'devlead/notification', version: 1, notification: {} }),
+      corruptEvent(1, DEVLEAD_MODE_RECORD_TYPE, { kind: 'devlead/mode', version: 2, enabled: 'yes', at: T0 }),
+      corruptEvent(1, DEVLEAD_WATCH_RECORD_TYPE, { kind: 'devlead/watch', version: 2, sessions: 'no', at: T0 }),
+      corruptEvent(1, DEVLEAD_NOTIFICATION_RECORD_TYPE, { kind: 'devlead/notification', version: 2, notification: {} }),
     ]
     for (const corrupt of cases) {
       const state = fold([modeEvent(0, true), corrupt])

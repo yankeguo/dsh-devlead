@@ -2201,6 +2201,11 @@ describe('watched Session question routing', () => {
     } as unknown as ReturnType<typeof makeAgent>
   }
 
+  /** Explicit event input of the pure turn-source fold. */
+  function childAgentEvents(id: string, sources: readonly SourceFixture[]): Parameters<typeof isHumanDirectedTurn>[0] {
+    return childAgent(id, sources).session.snapshotEvents()
+  }
+
   it('formats a question batch for the lead', () => {
     const report = formatQuestionReport({
       questions: [
@@ -2263,9 +2268,9 @@ describe('watched Session question routing', () => {
   })
 
   it('recognizes a human-directed turn and ignores injected context', () => {
-    expect(isHumanDirectedTurn(childAgent('child-human', ['user']))).toBe(true)
-    expect(isHumanDirectedTurn(childAgent('child-lead', ['devlead']))).toBe(false)
-    expect(isHumanDirectedTurn(childAgent('child-steered', ['user', 'runtime-context']))).toBe(true)
+    expect(isHumanDirectedTurn(childAgentEvents('child-human', ['user']))).toBe(true)
+    expect(isHumanDirectedTurn(childAgentEvents('child-lead', ['devlead']))).toBe(false)
+    expect(isHumanDirectedTurn(childAgentEvents('child-steered', ['user', 'runtime-context']))).toBe(true)
     // A context injection after the human prompt must not erase the human.
     for (const context of [
       'time-context',
@@ -2279,38 +2284,38 @@ describe('watched Session question routing', () => {
       'webhook',
       'hooks-claude-code',
     ]) {
-      expect(isHumanDirectedTurn(childAgent(`child-${context}`, ['user', context])), context).toBe(true)
+      expect(isHumanDirectedTurn(childAgentEvents(`child-${context}`, ['user', context])), context).toBe(true)
     }
     // Human-origin replies are still the human, even though their kinds are not `user`.
-    expect(isHumanDirectedTurn(childAgent('child-question-reply', ['user', 'user-question-reply']))).toBe(true)
-    expect(isHumanDirectedTurn(childAgent('child-approval', ['user', 'user-approval']))).toBe(true)
+    expect(isHumanDirectedTurn(childAgentEvents('child-question-reply', ['user', 'user-question-reply']))).toBe(true)
+    expect(isHumanDirectedTurn(childAgentEvents('child-approval', ['user', 'user-approval']))).toBe(true)
     // An unknown producer kind fails closed instead of guessing a human is present.
-    expect(isHumanDirectedTurn(childAgent('child-unknown', ['user', 'some-future-source']))).toBe(false)
-    expect(isHumanDirectedTurn(childAgent('child-unknown-only', ['some-future-source']))).toBe(false)
+    expect(isHumanDirectedTurn(childAgentEvents('child-unknown', ['user', 'some-future-source']))).toBe(false)
+    expect(isHumanDirectedTurn(childAgentEvents('child-unknown-only', ['some-future-source']))).toBe(false)
     // An unknown kind carrying a context form is still recognizable as injected.
-    expect(isHumanDirectedTurn(childAgent('child-form', ['user', { kind: 'future-context', form: 'snapshot' }])))
+    expect(isHumanDirectedTurn(childAgentEvents('child-form', ['user', { kind: 'future-context', form: 'snapshot' }])))
       .toBe(true)
     // A lead relay remains actionable, even when a human message precedes it.
-    expect(isHumanDirectedTurn(childAgent('child-lead-steered', ['user', 'devlead']))).toBe(false)
+    expect(isHumanDirectedTurn(childAgentEvents('child-lead-steered', ['user', 'devlead']))).toBe(false)
     // A human steering after the lead relay is present in the child.
-    expect(isHumanDirectedTurn(childAgent('child-human-steered', ['devlead', 'user']))).toBe(true)
+    expect(isHumanDirectedTurn(childAgentEvents('child-human-steered', ['devlead', 'user']))).toBe(true)
   })
 
   it('skips a lead background notice so it does not mask the human who opened the turn', () => {
     const background = { kind: 'devlead', form: 'notice', wakeRequested: false, lane: 'background' }
     // A background injection after the human prompt must not erase the human.
-    expect(isHumanDirectedTurn(childAgent('child-bg-after-human', ['user', background]))).toBe(true)
+    expect(isHumanDirectedTurn(childAgentEvents('child-bg-after-human', ['user', background]))).toBe(true)
     // Background alone is non-actionable context: no human is present.
-    expect(isHumanDirectedTurn(childAgent('child-bg-only', [background]))).toBe(false)
+    expect(isHumanDirectedTurn(childAgentEvents('child-bg-only', [background]))).toBe(false)
     // An action-required devlead notice is lead-directed, not skipped context.
     const action = { kind: 'devlead', form: 'notice', wakeRequested: true, lane: 'action-required' }
-    expect(isHumanDirectedTurn(childAgent('child-action-after-human', ['user', action]))).toBe(false)
+    expect(isHumanDirectedTurn(childAgentEvents('child-action-after-human', ['user', action]))).toBe(false)
     // An answer relay is lead-directed too.
     const answer = { kind: 'devlead', form: 'relay', intent: 'answer', questionId: 'q', wakeRequested: true }
-    expect(isHumanDirectedTurn(childAgent('child-answer-after-human', ['user', answer]))).toBe(false)
+    expect(isHumanDirectedTurn(childAgentEvents('child-answer-after-human', ['user', answer]))).toBe(false)
     // A devlead notice without the background markers is treated as lead-directed.
     const plainNotice = { kind: 'devlead', form: 'notice' }
-    expect(isHumanDirectedTurn(childAgent('child-plain-notice', ['user', plainNotice]))).toBe(false)
+    expect(isHumanDirectedTurn(childAgentEvents('child-plain-notice', ['user', plainNotice]))).toBe(false)
   })
 
   it('forwards a watched child question and denies the direct UI call', async () => {
