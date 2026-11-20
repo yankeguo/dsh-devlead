@@ -5255,11 +5255,14 @@ describe('answer restart and durability (Phase 1d review fixes)', () => {
         const q = devLeadReport({ senderSessionId: 'target', leadSessionId: String(session.id), turn: 1, kind: 'question', message: 'Which target?', at: T0 })
         questionId = q.id
         appendPluginRecord(session, DEVLEAD_REPORT_RECORD_TYPE, reportRecord(q))
-        appendPluginRecord(session, DEVLEAD_REPORT_ANSWER_RECORD_TYPE, reportAnswerRecord(answer({ reportId: q.id, messageId: 'm1', status: 'admitted', at: T0 })))
-        appendPluginRecord(session, DEVLEAD_REPORT_ANSWER_RECORD_TYPE, reportAnswerRecord(answer({ reportId: q.id, messageId: 'm1', status: 'discarded', at: T0 + 1, answeredAt: T0 })))
+        appendPluginRecord(session, DEVLEAD_REPORT_ANSWER_RECORD_TYPE, reportAnswerRecord(answer({ reportId: q.id, leadSessionId: String(session.id), sessionId: 'target', messageId: 'm1', status: 'admitted', at: T0 })))
+        appendPluginRecord(session, DEVLEAD_REPORT_ANSWER_RECORD_TYPE, reportAnswerRecord(answer({ reportId: q.id, leadSessionId: String(session.id), sessionId: 'target', messageId: 'm1', status: 'discarded', at: T0 + 1, answeredAt: T0 })))
       },
     })
     harness.agents.add(new FakeAgent(requireSession(harness, 'target')))
+    // Let the activation repair pass settle: the empty child log proves no
+    // survival, so the genuine discard resolves (no provisional repairPending).
+    await nextTask()
     expect(harness.service.questionAnswerView(harness.lead.agent, questionId)).toEqual({
       questionStatus: 'open',
       answerStatus: 'discarded',
@@ -6519,16 +6522,18 @@ describe('cold-discard review round 4 (claimed survival, durable repair)', () =>
     target.session.append('agent/inbox/spliced', { target: 'next-step', start: 0, inserted: [message] })
     target.claimNextStep({ present: false, turn: 1 })
     await flushMicrotasks()
-    // The drain now sees the claimed answer: the row is dropped, and the false
-    // discard already in the lead log is repaired to claimed.
+    // The drain now sees the claimed answer: the row is dropped, and a claimed
+    // repair fact is appended. But the flush permanently fails, so the tracker
+    // is NOT advanced (no premature answered): the view stays provisional open
+    // with repairPending until a flush succeeds.
     harness.ctx.emit('agent/created', { agent: harness.lead.agent, source: 'resume' })
     await nextTask()
     expect(discardRows(storage)).toEqual([])
-    expect(harness.service.questionAnswerView(harness.lead.agent, questionId)).toMatchObject({
-      questionStatus: 'answered',
-      answerMessageId: 'm1',
-    })
     expect(answerRecords(harness).at(-1)).toMatchObject({ messageId: 'm1', status: 'claimed', answerSeq: 1 })
+    const view = harness.service.questionAnswerView(harness.lead.agent, questionId)
+    expect(view).toMatchObject({ questionStatus: 'open', answerMessageId: 'm1', repairPending: true })
+    expect(harness.service.answerDiscardHealth().pendingRepairs['claimed-queue-lead']).toBe(1)
+    expect(harness.service.answerDiscardHealth().lastRepairFailure).toContain('flush')
   })
 
   it('a stale row restored against a cold child log with a claimed answer is dropped', async () => {
@@ -7044,43 +7049,248 @@ describe('cold-discard review round 5 (deferred re-prove, repair barrier, health
     expect(health.lastRepairFailure).toBeUndefined()
   })
 
-  it('a drop-only drain clears the discard failure but not a still-failing repair', async () => {
-    const storage = new FakeStorageDomain()
-    const questionId = devLeadReport({ senderSessionId: 'target', leadSessionId: 'r5-coexist-lead', turn: 1, kind: 'question', message: 'Which target?', at: T0 }).id
+  it('a repair failure is per-message: another message’s successful repair does not clear it', async () => {
+    const questionId = devLeadReport({ senderSessionId: 'target', leadSessionId: 'r5-permsg-lead', turn: 1, kind: 'question', message: 'Which target?', at: T0 }).id
+    const question2 = devLeadReport({ senderSessionId: 'target', leadSessionId: 'r5-permsg-lead', turn: 2, kind: 'question', message: 'Second target?', at: T0 })
     const harness = await bootService({
-      leadId: 'r5-coexist-lead',
+      leadId: 'r5-permsg-lead',
       enabled: true,
       sessionIds: ['target'],
       watched: ['target'],
-      storageDomain: storage,
-      seedLead: (session) => { seedStaleAudit(session, 'r5-coexist-lead') },
+      registerLeadAgent: false,
+      seedLead: (session) => {
+        seedStaleAudit(session, 'r5-permsg-lead')
+        appendPluginRecord(session, DEVLEAD_REPORT_RECORD_TYPE, reportRecord(question2))
+        appendPluginRecord(session, DEVLEAD_REPORT_ANSWER_RECORD_TYPE, reportAnswerRecord(answer({
+          reportId: question2.id, leadSessionId: 'r5-permsg-lead', sessionId: 'target', messageId: 'm2', status: 'admitted', at: T0, answerSeq: 1,
+        })))
+        appendPluginRecord(session, DEVLEAD_REPORT_ANSWER_RECORD_TYPE, reportAnswerRecord(answer({
+          reportId: question2.id, leadSessionId: 'r5-permsg-lead', sessionId: 'target', messageId: 'm2', status: 'discarded', at: T0 + 1, answeredAt: T0, answerSeq: 1,
+        })))
+      },
     })
     await nextTask()
-    let failFlush = true
-    harness.ctx.on('session/flush', (session) => {
-      if (failFlush && String(session.id) === 'r5-coexist-lead') throw new Error('flush down')
-    })
     const target = new FakeAgent(requireSession(harness, 'target'))
-    scriptPending(target, 'm1', questionId, 'r5-coexist-lead')
+    scriptPending(target, 'm1', questionId, 'r5-permsg-lead')
+    scriptPending(target, 'm2', question2.id, 'r5-permsg-lead')
     harness.agents.add(target)
+    // Fail the FIRST repair append (m1) once; the second repair (m2) succeeds.
+    const spy = vi.spyOn(harness.leadSession as unknown as { commit: (...args: unknown[]) => unknown }, 'commit')
+      .mockImplementationOnce(() => {
+        throw new Error('disk full')
+      })
     harness.ctx.emit('agent/created', { agent: target.agent, source: 'resume' })
     await nextTask()
-    // The repair append landed but its flush failed: lastRepairFailure pending.
-    expect(harness.service.answerDiscardHealth().lastRepairFailure).toContain('flush')
-    // Queue a discard of the same answer; its flush also fails: lastFailure set.
-    const message = target.inbox.nextStep.find(entry => String(entry.id) === 'm1')!
-    target.inbox.remove('m1')
-    harness.ctx.emit('agent/inbox/discarded', { agent: target.agent, message })
-    await flushMicrotasks()
-    expect(harness.service.answerDiscardHealth().lastFailure).toContain('flush')
-    // The answer survived (restore re-inserts it): the next drain drops the row
-    // without appending (clearing lastFailure), while the repair still fails.
-    target.inbox.append('next-step', message)
+    spy.mockRestore()
+    // Register the lead for reads (no activation emit yet).
+    harness.agents.add(harness.lead)
+    // m1's repair failed (append) and is deferred; m2's repair succeeded. The
+    // per-message failure map keeps m1's failure despite m2's success.
+    const health = harness.service.answerDiscardHealth()
+    expect(health.lastRepairFailure).toContain('m1')
+    expect(health.lastRepairFailure).toContain('append')
+    expect(health.pendingRepairs['r5-permsg-lead']).toBe(1)
+    expect(harness.service.questionAnswerView(harness.lead.agent, questionId)?.repairPending).toBe(true)
+    // m2 resolved: its view is answered, not provisional.
+    expect(harness.service.questionAnswerView(harness.lead.agent, question2.id)).toMatchObject({ questionStatus: 'answered', answerMessageId: 'm2' })
+    expect(harness.service.questionAnswerView(harness.lead.agent, question2.id)?.repairPending).toBeUndefined()
+    // Retrying m1's repair (lead activation) succeeds and clears its failure.
+    harness.agents.add(harness.lead)
     harness.ctx.emit('agent/created', { agent: harness.lead.agent, source: 'resume' })
     await nextTask()
-    const health = harness.service.answerDiscardHealth()
-    expect(health.lastFailure).toBeUndefined()
-    expect(health.lastRepairFailure).toContain('flush')
-    expect(health.pendingRepairs['r5-coexist-lead']).toBe(1)
+    const after = harness.service.answerDiscardHealth()
+    expect(after.lastRepairFailure).toBeUndefined()
+    expect(after.pendingRepairs).toEqual({})
+    expect(harness.service.questionAnswerView(harness.lead.agent, questionId)).toMatchObject({ questionStatus: 'answered', answerMessageId: 'm1' })
+  })
+})
+
+describe('cold-discard review round 6 (tool passthrough, barrier closure, unknown)', () => {
+  /** One runtime-stamped answer message with a controlled identity. */
+  function answerMessage(messageId: string, questionId: string, leadId: string) {
+    return queuedMessage(messageId, {
+      kind: 'devlead',
+      form: 'relay',
+      intent: 'answer',
+      questionId,
+      senderSessionId: leadId,
+      wakeRequested: true,
+    }, `[DEV LEAD ANSWER to question ${questionId}]\nuse staging`)
+  }
+
+  /** Seed the lead's durable question + admitted m1 + a stale discarded m1. */
+  function seedStaleAudit(session: Session, leadId: string): string {
+    const q = devLeadReport({ senderSessionId: 'target', leadSessionId: leadId, turn: 1, kind: 'question', message: 'Which target?', at: T0 })
+    appendPluginRecord(session, DEVLEAD_REPORT_RECORD_TYPE, reportRecord(q))
+    appendPluginRecord(session, DEVLEAD_REPORT_ANSWER_RECORD_TYPE, reportAnswerRecord(answer({
+      reportId: q.id, leadSessionId: leadId, sessionId: 'target', messageId: 'm1', status: 'admitted', at: T0, answerSeq: 1,
+    })))
+    appendPluginRecord(session, DEVLEAD_REPORT_ANSWER_RECORD_TYPE, reportAnswerRecord(answer({
+      reportId: q.id, leadSessionId: leadId, sessionId: 'target', messageId: 'm1', status: 'discarded', at: T0 + 1, answeredAt: T0, answerSeq: 1,
+    })))
+    return q.id
+  }
+
+  /** Script a pending answer into a live target's inbox AND durable log. */
+  function scriptPending(target: FakeAgent, messageId: string, questionId: string, leadId: string): void {
+    const message = answerMessage(messageId, questionId, leadId)
+    target.inbox.append('next-step', message)
+    target.session.append('agent/inbox/spliced', { target: 'next-step', start: 0, inserted: [message] })
+  }
+
+  it('a failed repair keeps the view provisional and rejects an immediate answer admission (retryable)', async () => {
+    const questionId = devLeadReport({ senderSessionId: 'target', leadSessionId: 'r6-reject-lead', turn: 1, kind: 'question', message: 'Which target?', at: T0 }).id
+    const harness = await bootService({
+      leadId: 'r6-reject-lead',
+      enabled: true,
+      sessionIds: ['target'],
+      watched: ['target'],
+      registerLeadAgent: false,
+      seedLead: (session) => { seedStaleAudit(session, 'r6-reject-lead') },
+    })
+    await nextTask()
+    const target = new FakeAgent(requireSession(harness, 'target'))
+    scriptPending(target, 'm1', questionId, 'r6-reject-lead')
+    harness.agents.add(target)
+    // The repair append permanently fails: the repair stays pending.
+    const spy = vi.spyOn(harness.leadSession as unknown as { commit: (...args: unknown[]) => unknown }, 'commit')
+      .mockImplementation(() => {
+        throw new Error('disk full')
+      })
+    harness.ctx.emit('agent/created', { agent: target.agent, source: 'resume' })
+    await nextTask()
+    harness.agents.add(harness.lead)
+    const view = harness.service.questionAnswerView(harness.lead.agent, questionId)
+    expect(view).toMatchObject({ questionStatus: 'open', repairPending: true })
+    expect(harness.service.answerDiscardHealth().pendingRepairs['r6-reject-lead']).toBe(1)
+    // An immediate answer admission is refused with a retryable code, not
+    // accepted against the provisional open (no duplicate answer).
+    await expectCodeAsync(
+      () => harness.service.promptSession(harness.lead.agent, 'target', 'use prod', { intent: 'answer', questionId }),
+      'DEVLEAD_SESSION_UNAVAILABLE',
+    )
+    spy.mockRestore()
+  })
+
+  it('prompt admission awaits more than eight chained repairs to completion', async () => {
+    const leadId = 'r6-many-lead'
+    const questionIds: string[] = []
+    const harness = await bootService({
+      leadId,
+      enabled: true,
+      sessionIds: ['target'],
+      watched: ['target'],
+      registerLeadAgent: false,
+      seedLead: (session) => {
+        for (let index = 0; index < 10; index += 1) {
+          const q = devLeadReport({ senderSessionId: 'target', leadSessionId: leadId, turn: index + 1, kind: 'question', message: `Question ${index}?`, at: T0 })
+          questionIds.push(q.id)
+          appendPluginRecord(session, DEVLEAD_REPORT_RECORD_TYPE, reportRecord(q))
+          appendPluginRecord(session, DEVLEAD_REPORT_ANSWER_RECORD_TYPE, reportAnswerRecord(answer({
+            reportId: q.id, leadSessionId: leadId, sessionId: 'target', messageId: `m${index}`, status: 'admitted', at: T0, answerSeq: 1, text: 'use staging',
+          })))
+          appendPluginRecord(session, DEVLEAD_REPORT_ANSWER_RECORD_TYPE, reportAnswerRecord(answer({
+            reportId: q.id, leadSessionId: leadId, sessionId: 'target', messageId: `m${index}`, status: 'discarded', at: T0 + 1, answeredAt: T0, answerSeq: 1, text: 'use staging',
+          })))
+        }
+      },
+    })
+    await nextTask()
+    const target = new FakeAgent(requireSession(harness, 'target'))
+    for (let index = 0; index < 10; index += 1) {
+      scriptPending(target, `m${index}`, questionIds[index]!, leadId)
+    }
+    harness.agents.add(target)
+    // Gate the first lead flush so the repair pass blocks mid-flight.
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    let gated = true
+    harness.ctx.on('session/flush', async (session) => {
+      if (gated && String(session.id) === leadId) {
+        gated = false
+        await gate
+      }
+    })
+    harness.ctx.emit('agent/created', { agent: target.agent, source: 'resume' })
+    await flushMicrotasks()
+    harness.agents.add(harness.lead)
+    // Prompt one question while the repair pass is blocked: it must await the
+    // whole chain (all ten repairs), not a fixed round cap.
+    let settled = false
+    const prompt = harness.service.promptSession(harness.lead.agent, 'target', 'use prod', { intent: 'answer', questionId: questionIds[0]! })
+      .then((value) => { settled = true; return value }, (error) => { settled = true; throw error })
+    await flushMicrotasks()
+    expect(settled).toBe(false)
+    release()
+    await expectCodeAsync(() => prompt, 'DEVLEAD_QUESTION_ALREADY_ANSWERED')
+    // Every question's repair settled: all answered, none provisional.
+    for (const questionId of questionIds) {
+      const view = harness.service.questionAnswerView(harness.lead.agent, questionId)
+      expect(view).toMatchObject({ questionStatus: 'answered' })
+      expect(view?.repairPending).toBeUndefined()
+    }
+    expect(harness.service.answerDiscardHealth().pendingRepairs).toEqual({})
+  })
+
+  it('a cold child with no query/log is unknown: view repairPending and prompt refused', async () => {
+    const questionId = devLeadReport({ senderSessionId: 'target', leadSessionId: 'r6-unknown-lead', turn: 1, kind: 'question', message: 'Which target?', at: T0 }).id
+    const harness = await bootService({
+      leadId: 'r6-unknown-lead',
+      enabled: true,
+      sessionIds: ['target'],
+      watched: ['target'],
+      seedLead: (session) => { seedStaleAudit(session, 'r6-unknown-lead') },
+    })
+    await nextTask()
+    // Detach the child log and compose no query engine: the child's reality is
+    // unreadable, so the stale discard's repair is UNKNOWN, not a final open.
+    const realGet = harness.ctx.sessions.get.bind(harness.ctx.sessions)
+    const spy = vi.spyOn(harness.ctx.sessions, 'get')
+      .mockImplementation((id: Parameters<typeof realGet>[0]) => String(id) === 'target' ? undefined : realGet(id))
+    harness.ctx.emit('agent/created', { agent: harness.lead.agent, source: 'resume' })
+    await nextTask()
+    const view = harness.service.questionAnswerView(harness.lead.agent, questionId)
+    expect(view).toMatchObject({ questionStatus: 'open', repairPending: true })
+    expect(harness.service.answerDiscardHealth().pendingRepairs['r6-unknown-lead']).toBe(1)
+    await expectCodeAsync(
+      () => harness.service.promptSession(harness.lead.agent, 'target', 'use prod', { intent: 'answer', questionId }),
+      'DEVLEAD_SESSION_UNAVAILABLE',
+    )
+    spy.mockRestore()
+  })
+
+  it('pendingRepairs counts an in-flight repair (not only deferred ones)', async () => {
+    const questionId = devLeadReport({ senderSessionId: 'target', leadSessionId: 'r6-inflight-lead', turn: 1, kind: 'question', message: 'Which target?', at: T0 }).id
+    const harness = await bootService({
+      leadId: 'r6-inflight-lead',
+      enabled: true,
+      sessionIds: ['target'],
+      watched: ['target'],
+      registerLeadAgent: false,
+      seedLead: (session) => { seedStaleAudit(session, 'r6-inflight-lead') },
+    })
+    await nextTask()
+    const target = new FakeAgent(requireSession(harness, 'target'))
+    scriptPending(target, 'm1', questionId, 'r6-inflight-lead')
+    harness.agents.add(target)
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    let gated = true
+    harness.ctx.on('session/flush', async (session) => {
+      if (gated && String(session.id) === 'r6-inflight-lead') {
+        gated = false
+        await gate
+      }
+    })
+    harness.ctx.emit('agent/created', { agent: target.agent, source: 'resume' })
+    await flushMicrotasks()
+    harness.agents.add(harness.lead)
+    // The repair append landed and its flush is blocked: in-flight, not deferred.
+    expect(harness.service.answerDiscardHealth().pendingRepairs['r6-inflight-lead']).toBe(1)
+    expect(harness.service.questionAnswerView(harness.lead.agent, questionId)?.repairPending).toBe(true)
+    release()
+    await nextTask()
+    expect(harness.service.answerDiscardHealth().pendingRepairs).toEqual({})
+    expect(harness.service.questionAnswerView(harness.lead.agent, questionId)).toMatchObject({ questionStatus: 'answered', answerMessageId: 'm1' })
   })
 })

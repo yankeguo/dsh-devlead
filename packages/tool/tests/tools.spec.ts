@@ -770,6 +770,25 @@ describe('report kind vocabulary', () => {
     expect(value.questions?.[0]?.options?.[0]?.description).toBe('safe')
     expect(reportValue(base)).not.toHaveProperty('questions')
   })
+
+  it('passes repairPending through the additive report schema and reportValue', () => {
+    expect(REPORT_SCHEMA.properties.repairPending).toMatchObject({ type: 'boolean' })
+    const base: DevLeadReport = {
+      id: 'report-question',
+      kind: 'question',
+      message: 'Which target?',
+      senderSessionId: 'child-1',
+      leadSessionId: 'lead-1',
+      turn: 1,
+      at: 1_700_000_000_000,
+    }
+    const provisional = reportValue(base, { questionStatus: 'open', answerStatus: 'discarded', answerMessageId: 'm1', repairPending: true })
+    expect(provisional).toMatchObject({ questionStatus: 'open', answerStatus: 'discarded', repairPending: true })
+    // Absent repairPending is omitted (not emitted as false).
+    expect(reportValue(base, { questionStatus: 'answered', answerStatus: 'admitted' })).not.toHaveProperty('repairPending')
+    const harness = boot()
+    expectValidOutput(harness, 'devlead_report', { report: provisional, durable: true, queued: false })
+  })
 })
 
 describe('interrupt inbox vocabulary', () => {
@@ -2807,6 +2826,22 @@ describe('question/answer state exposure (Phase 1d)', () => {
     expect((value as { reports: Array<Record<string, unknown>> }).reports[0])
       .toEqual({ ...questionReport, questionStatus: 'open' })
     expectValidOutput(harness, 'devlead_notifications', value)
+  })
+
+  it('surfaces repairPending to devlead_notifications and devlead_get_session consumers', async () => {
+    const harness = boot()
+    harness.devLead.reportDigest = [questionReport]
+    harness.devLead.questionAnswer = { questionStatus: 'open', answerStatus: 'discarded', answerMessageId: 'm1', repairPending: true }
+    const notifications = await harness.call('devlead_notifications')
+    expect((notifications as { reports: Array<Record<string, unknown>> }).reports[0])
+      .toEqual({ ...questionReport, questionStatus: 'open', answerStatus: 'discarded', answerMessageId: 'm1', repairPending: true })
+    expectValidOutput(harness, 'devlead_notifications', notifications)
+    const session = await harness.call('devlead_get_session', { session: 'session-1' })
+    const reports = (session as { reports?: Array<Record<string, unknown>> }).reports
+    if (reports !== undefined) {
+      expect(reports[0]).toMatchObject({ repairPending: true })
+      expectValidOutput(harness, 'devlead_get_session', session)
+    }
   })
 
   it('passes queuedInput intent/questionId/wakeRequested/deliveryState through devlead_get_session', async () => {

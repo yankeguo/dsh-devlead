@@ -282,6 +282,7 @@ export const REPORT_SCHEMA = {
     answerMessageId: { type: 'string', description: 'Host message identity of the newest answer, when one exists.' },
     answeredAt: { type: 'integer', description: 'Epoch milliseconds of the first answer admission, when the question was ever answered (survives a reopen).' },
     presentedAt: { type: 'integer', description: 'Epoch milliseconds the newest answer entered an entered step, when observed.' },
+    repairPending: { type: 'boolean', description: 'A durable-discard repair of this question is in flight, deferred, or unresolved (child state unreadable). The questionStatus/answerStatus are provisional until it settles; do not treat a stale open as finally answerable, and retry the answer later.' },
   },
 } as const
 
@@ -411,6 +412,7 @@ export function reportValue(report: DevLeadReport, answerView?: DevLeadQuestionA
       ...answerView.answerMessageId === undefined ? {} : { answerMessageId: answerView.answerMessageId },
       ...answerView.answeredAt === undefined ? {} : { answeredAt: answerView.answeredAt },
       ...answerView.presentedAt === undefined ? {} : { presentedAt: answerView.presentedAt },
+      ...answerView.repairPending === undefined ? {} : { repairPending: answerView.repairPending },
     },
     ...report.summary === undefined ? {} : { summary: report.summary },
     ...report.questions === undefined ? {} : {
