@@ -1829,6 +1829,11 @@ export class FakeStorageDomain {
       this.domains.set(name, domain)
     } else {
       domain.opened = true
+      // The real backend materializes every declared table on each open, so a
+      // spec version that adds a table finds it empty on an existing domain.
+      for (const tableName of tableNames) {
+        if (!domain.tables.has(tableName)) domain.tables.set(tableName, new FakeStorageTable())
+      }
     }
     // Open-time record validation, mirroring the real storage-domain facility:
     // every existing record is parsed with the declared valueSchema; a

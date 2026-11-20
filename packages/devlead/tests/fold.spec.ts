@@ -102,7 +102,7 @@ describe('empty state and projection definition', () => {
   it('exposes the registered projection unit contract', () => {
     expect(devLeadProjectionDefinition.key).toBe(DEVLEAD_PROJECTION_KEY)
     expect(devLeadProjectionDefinition.key).toBe('devLead')
-    expect(devLeadProjectionDefinition.stateVersion).toBe(4)
+    expect(devLeadProjectionDefinition.stateVersion).toBe(5)
     expect(devLeadProjectionDefinition.apply).toBe(applyDevLeadProjection)
     expect(devLeadProjectionDefinition.init()).toEqual(emptyDevLeadProjectionState())
     // Every init call hands out an independent empty state: the registry seeds
@@ -1002,6 +1002,77 @@ describe('answer records (Phase 1d)', () => {
     const admitted = answer({ reportId: question.id })
     const state = fold([reportEvent(0, question), answerEvent(1, admitted), answerEvent(2, admitted)])
     expect(state.answers).toEqual([admitted])
+  })
+
+  it('selects the latest answer by admission sequence, not append order (delayed old discard)', () => {
+    const question = questionReport()
+    // The old answer's discard drains AFTER the newer re-answer was admitted:
+    // append order would make the discard latest, the sequence keeps the
+    // re-answer authoritative.
+    const events = [
+      reportEvent(0, question),
+      answerEvent(1, answer({ reportId: question.id, messageId: 'msg-1', at: T0 + 1, answerSeq: 1 })),
+      answerEvent(2, answer({ reportId: question.id, messageId: 'msg-2', at: T0 + 2, answeredAt: T0 + 1, answerSeq: 2, text: 'use prod' })),
+      answerEvent(3, answer({ reportId: question.id, messageId: 'msg-1', status: 'discarded', at: T0 + 9, answeredAt: T0 + 1, answerSeq: 1 })),
+    ]
+    const state = fold(events)
+    expect(latestAnswerOf(state.answers, question.id)?.messageId).toBe('msg-2')
+    expect(questionStatusOf(state.answers, question.id)).toBe('answered')
+    expect(questionAnswerViewOf(state, question.id)).toMatchObject({
+      questionStatus: 'answered',
+      answerStatus: 'admitted',
+      answerMessageId: 'msg-2',
+      answeredAt: T0 + 1,
+    })
+    expect(devLeadProjectionStateSchema.safeParse(state).success).toBe(true)
+  })
+
+  it('a same-sequence lifecycle fact still advances the question state (discard of the only answer)', () => {
+    const question = questionReport()
+    const events = [
+      reportEvent(0, question),
+      answerEvent(1, answer({ reportId: question.id, messageId: 'msg-1', at: T0 + 1, answerSeq: 1 })),
+      answerEvent(2, answer({ reportId: question.id, messageId: 'msg-1', status: 'discarded', at: T0 + 2, answeredAt: T0 + 1, answerSeq: 1 })),
+    ]
+    const state = fold(events)
+    expect(questionStatusOf(state.answers, question.id)).toBe('open')
+    expect(latestAnswerOf(state.answers, question.id)?.status).toBe('discarded')
+  })
+
+  it('legacy records without a sequence keep log-order selection among themselves', () => {
+    const question = questionReport()
+    const events = [
+      reportEvent(0, question),
+      answerEvent(1, answer({ reportId: question.id, messageId: 'msg-1', at: T0 + 1 })),
+      answerEvent(2, answer({ reportId: question.id, messageId: 'msg-2', at: T0 + 2, answeredAt: T0 + 1 })),
+    ]
+    const state = fold(events)
+    expect(latestAnswerOf(state.answers, question.id)?.messageId).toBe('msg-2')
+    // A sequenced record outranks every legacy row regardless of position.
+    const sequenced = apply(state, answerEvent(3, answer({ reportId: question.id, messageId: 'msg-3', at: T0 + 3, answeredAt: T0 + 1, answerSeq: 1 })))
+    expect(latestAnswerOf(sequenced.answers, question.id)?.messageId).toBe('msg-3')
+  })
+
+  it('rejects a malformed answerSeq through the strict decoder', () => {
+    const question = questionReport()
+    const bad = pluginRecordEvent(2, DEVLEAD_REPORT_ANSWER_RECORD_TYPE, {
+      kind: 'devlead/report-answer',
+      version: 1,
+      answer: { ...answer({ reportId: question.id }), answerSeq: -1 },
+    })
+    const state = fold([reportEvent(0, question), bad])
+    expect(state.failure).toContain('answerSeq')
+  })
+
+  it('falls back to the admission instant for a legacy admitted record without answeredAt', () => {
+    const question = questionReport()
+    const legacy = answer({ reportId: question.id, messageId: 'msg-1', at: T0 + 5 })
+    const { answeredAt: _answeredAt, ...withoutAnsweredAt } = legacy
+    const state = fold([reportEvent(0, question), answerEvent(1, withoutAnsweredAt)])
+    expect(questionAnswerViewOf(state, question.id)).toMatchObject({
+      questionStatus: 'answered',
+      answeredAt: T0 + 5,
+    })
   })
 
   it('clears answers on reset', () => {

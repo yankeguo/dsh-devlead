@@ -261,6 +261,33 @@ requires Node ≥ 24.9):
 | `0.2.2-rc.5` | same, `--flow patch` | **188/188** (same round) |
 | `0.2.2-rc.5` | `node scripts/e2e-smoke.mjs --flow installed` (Phase 1e message lanes, pinned totals) | **221/221** (218 PASS + 3 SKIP; background no-wake, action/review steers, merge suppression, explicit action cap, metrics) |
 | `0.2.2-rc.5` | same, `--flow patch` | **221/221** (same round) |
+| `0.2.2-rc.5` | `node scripts/e2e-smoke.mjs --flow installed` (Phase 1d cold-discard durable round, pinned totals) | **188/188** (185 PASS + 3 SKIP; durable discard queue spec v2 on the real storage backend) |
+| `0.2.2-rc.5` | same, `--flow patch` | **188/188** (same round) |
+| `0.2.2-rc.5` | same, `--no-worktree --flow patch` | **165/165** (same round, phase 2 skipped) |
+| `0.2.2-rc.5` | `node scripts/e2e-smoke.mjs --flow installed` (Phase 1d cold-discard review round 3, pinned totals) | **188/188** (185 PASS + 3 SKIP; canceled+restore-safe discard reconstruction) |
+| `0.2.2-rc.5` | same, `--flow patch` | **188/188** (same round) |
+| `0.2.2-rc.5` | same, `--no-worktree --flow patch` | **165/165** (same round, phase 2 skipped) |
+| `0.2.2-rc.5` | `node scripts/e2e-smoke.mjs --flow installed` (Phase 1d cold-discard review round 4, pinned totals) | **188/188** (185 PASS + 3 SKIP; claimed survival + durable discard repair) |
+| `0.2.2-rc.5` | same, `--flow patch` | **188/188** (same round) |
+| `0.2.2-rc.5` | same, `--no-worktree --flow patch` | **165/165** (same round, phase 2 skipped) |
+| `0.2.2-rc.5` | `node scripts/e2e-smoke.mjs --flow installed` (Phase 1d cold-discard review round 5, pinned totals) | **188/188** (185 PASS + 3 SKIP; deferred re-prove + repair barrier) |
+| `0.2.2-rc.5` | same, `--flow patch` | **188/188** (same round) |
+| `0.2.2-rc.5` | same, `--no-worktree --flow patch` | **165/165** (same round, phase 2 skipped) |
+| `0.2.2-rc.5` | `node scripts/e2e-smoke.mjs --flow installed` (Phase 1d cold-discard closure round 6, pinned totals) | **188/188** (185 PASS + 3 SKIP; tool repairPending + barrier closure + unknown) |
+| `0.2.2-rc.5` | same, `--flow patch` | **188/188** (same round) |
+| `0.2.2-rc.5` | same, `--no-worktree --flow patch` | **165/165** (same round, phase 2 skipped) |
+| `0.2.2-rc.5` | `node scripts/e2e-smoke.mjs --flow installed` (Phase 1d cold-discard closure round 7, pinned totals) | **188/188** (185 PASS + 3 SKIP; queued-unknown repairPending + real >8-repair barrier chain) |
+| `0.2.2-rc.5` | same, `--flow patch` | **188/188** (same round) |
+| `0.2.2-rc.5` | same, `--no-worktree --flow patch` | **165/165** (same round, phase 2 skipped) |
+| `0.2.2-rc.5` | `node scripts/e2e-smoke.mjs --flow installed` (Phase 1d cold-discard closure round 8, pinned totals) | **188/188** (185 PASS + 3 SKIP; in-flight drain visibility + awaited admission) |
+| `0.2.2-rc.5` | same, `--flow patch` | **188/188** (same round) |
+| `0.2.2-rc.5` | same, `--no-worktree --flow patch` | **165/165** (same round, phase 2 skipped) |
+| `0.2.2-rc.5` | `node scripts/e2e-smoke.mjs --flow installed` (Phase 1d cold-discard closure round 9, pinned totals) | **188/188** (185 PASS + 3 SKIP; bounded in-flight drain wait + abort releases admission) |
+| `0.2.2-rc.5` | same, `--flow patch` | **188/188** (same round) |
+| `0.2.2-rc.5` | same, `--no-worktree --flow patch` | **165/165** (same round, phase 2 skipped) |
+| `0.2.2-rc.5` | `pnpm e2e --flow installed --no-build` (Phase 1e × cold-discard r3–r9 merge, pinned totals) | **221/221** (218 PASS + 3 SKIP; merged tree rerun, phase 3 128 + phase 1e 31) |
+| `0.2.2-rc.5` | `pnpm e2e` (patch, merge round) | **221/221** (same round) |
+| `0.2.2-rc.5` | `pnpm e2e --no-worktree --no-build` (merge round) | **198/198** (same round, phase 2 skipped) |
 
 The 0.3.0 prerelease candidates (0.3.0-rc.1 / 0.3.0-rc.2, not yet promoted as stable) include question routing
 and queued inbox inputs. The Phase 1c harness rounds add the question-gate and `devlead_report` question
@@ -286,8 +313,11 @@ round adds a dedicated lane instance: progress/fyi background injects that leave
 low-cardinality metrics snapshot. Per-phase check
 totals are pinned (27 / 12 / 23 / 128 / 31, baseline DSH 0.2.2-rc.5; a deleted check fails the phase), PASS and
 SKIP are reported separately, and the installed/patch full flows report **221/221** each (218 PASS + 3
-credential-less SKIP; `--no-worktree`: **198/198**). A pre-release rerun of the full combination is still
-required by the publishing guide.
+credential-less SKIP; `--no-worktree`: **198/198**). The Phase 1e × cold-discard r3–r9 merge round
+reran every gate on the merged tree and kept the same pinned totals (30 test files / 1330 tests;
+installed/patch **221/221** each, `--no-worktree` **198/198**; see
+[merge evidence](docs/e2e-evidence/phase1e-merge.md)). A pre-release rerun of the full combination
+is still required by the publishing guide.
 
 Three positive model-selection checks per flow are reported as SKIP on this credential-less
 Host (the real reason is printed); the negative model path and `devlead_list_models` run on every
@@ -555,11 +585,11 @@ rather than implying the directory is unregistered.
 | `devlead_use_workspace` | `path` (required, absolute), `title?`, `create?` (default false: a missing directory is an error; `true` creates it with `mkdir -p` after the human asked) | `{ workspace }` |
 | `devlead_list_sessions` | `workspace?` (id, registered path, or exact title), `watched_only?`, `limit?` | `{ sessions, watched }` |
 | `devlead_create_session` | `workspace?` (id, registered path, or exact title), `prompt?`, `title?`, `watch?` (default true), `preset?` (Host-defined id; blank/omitted falls back to the plugin default then the Host default), `isolation?` (default `none`; `worktree` = best-effort isolated checkout), `provider?`+`model?` (paired; optional `reasoning_effort?`), `agent_teams?` | creation result (including the `isolation` outcome, and the applied `model`/`agentTeams` when requested) |
-| `devlead_get_session` | `session` (required) | `{ session, reports?, queuedInputs? }` — when reading this lead itself, `reports` carries its 5 newest retained reports (question reports include `questionStatus`/`answerStatus`; every report carries its diagnostic `lane` and in-memory `deliveryState`); while the target is live, `queuedInputs` lists its pending inbox inputs (id, boundary, source kind/form/sender, text excerpt, enqueue time, and for DevLead messages `intent`/`questionId`/`wakeRequested`, plus a tracked answer's `deliveryState`) so stale or duplicate queued instructions can be identified before they run |
-| `devlead_prompt_session` | `session`, `prompt` (required), `intent?` (default `instruction`; `answer` requires `question_id` and steers the next step, `correction` steers, `background` injects without a wake), `question_id?` (only with `answer`), `idempotency_key?` (max 200 code points; same key + same text returns the original receipt), `watch?` (default true), `interrupt?` (default false: queue behind the running turn; `true` = stop the running turn and Host-reported subagent/job/schedule work, discard queued input per `interrupt_inbox`, then admit a new turn; idle/cold = no-op; illegal with `background`), `interrupt_inbox?` (default `clear-all`; `keep` restores every pending input after the stop, `clear-own` restores everything except this lead's own instruction/correction relays and background notices but **keeps pending answers**; `clear-all` discards answers and reopens their questions; restored inputs keep their id and queue order ahead of the replacement prompt; ignored without `interrupt` and for idle/cold targets) | prompt result including `interrupted`, `retainedInputs` when a retention policy ran, and a `delivery` receipt `{ primitive, boundary, wakeRequested, messageId, questionId?, idempotencyKey? }` (admission receipt, not a presented confirmation; no internal lane) |
+| `devlead_get_session` | `session` (required) | `{ session, reports?, queuedInputs? }` — when reading this lead itself, `reports` carries its 5 newest retained reports (question reports include `questionStatus`/`answerStatus`, and carry `repairPending:true` while a durable-discard repair is in flight/deferred, so their status stays provisional; every report carries its diagnostic `lane` and in-memory `deliveryState`); while the target is live, `queuedInputs` lists its pending inbox inputs (id, boundary, source kind/form/sender, text excerpt, enqueue time, and for DevLead messages `intent`/`questionId`/`wakeRequested`, plus a tracked answer's `deliveryState`) so stale or duplicate queued instructions can be identified before they run |
+| `devlead_prompt_session` | `session`, `prompt` (required), `intent?` (default `instruction`; `answer` requires `question_id` and steers the next step, `correction` steers, `background` injects without a wake), `question_id?` (only with `answer`), `idempotency_key?` (max 200 code points; the key only marks a replay — retry recognition is same text, and same key + same text returns the original receipt), `watch?` (default true), `interrupt?` (default false: queue behind the running turn; `true` = stop the running turn and Host-reported subagent/job/schedule work, discard queued input per `interrupt_inbox`, then admit a new turn; idle/cold = no-op; illegal with `background`), `interrupt_inbox?` (default `clear-all`; `keep` restores every pending input after the stop, `clear-own` restores everything except this lead's own instruction/correction relays and background notices but **keeps pending answers**; `clear-all` discards answers and reopens their questions; restored inputs keep their id and queue order ahead of the replacement prompt; ignored without `interrupt` and for idle/cold targets) | prompt result including `interrupted`, `retainedInputs` when a retention policy ran, a `delivery` receipt `{ primitive, boundary, wakeRequested, messageId, questionId?, idempotencyKey? }` (admission receipt, not a presented confirmation; no internal lane), and `warning?` when an answer's durable record could not be written/flushed (the delivery already happened; the question state may not survive a restart) |
 | `devlead_retract_input` | `session`, `input_id` (required; the id `queuedInputs` reports) | `{ sessionId, inputId, retracted }` — withdraw one queued inbox input before it runs; this lead's own instruction/correction relays and background notices are retractable, an **answer is refused** (removing it would desynchronize the question state; use `interrupt:true` + `interrupt_inbox:"clear-all"` to discard one and reopen its question); human/scheduled/other producers' inputs are refused; idempotent (`retracted: false` when already consumed or withdrawn); target must be live and not the lead itself |
 | `devlead_watch_session` | `session`, `watching` (required bool) | watch mutation result |
-| `devlead_notifications` | `limit?` (default 20, applied to each digest separately) | `{ notifications, reports, watched }` — notification rows carry `wakeSuppressedByReportId`/`wakeSuppressionReason` when their wake was merged into an action-required wake (the transition is still retained); report rows carry their diagnostic `lane` (`background` for progress/fyi, `action-required` for blocked/decision/question) and in-memory `deliveryState` (`pending`/`delivered`/`digest-only`; absent after a restart — not a presented confirmation); question reports carry `questionStatus` (`open`/`answered`/`expired`/`cancelled`) and, when answered, `answerStatus` (`admitted`/`claimed`/`presented`/`discarded`/`failed`) plus `answerMessageId`/`answeredAt`/`presentedAt`; filter open questions with `questionStatus === "open"` (answered ≠ presented; only presented is delivery completion) |
+| `devlead_notifications` | `limit?` (default 20, applied to each digest separately) | `{ notifications, reports, watched }` — notification rows carry `wakeSuppressedByReportId`/`wakeSuppressionReason` when their wake was merged into an action-required wake (the transition is still retained); report rows carry their diagnostic `lane` (`background` for progress/fyi, `action-required` for blocked/decision/question) and in-memory `deliveryState` (`pending`/`delivered`/`digest-only`; absent after a restart — not a presented confirmation); question reports carry `questionStatus` (`open`/`answered`/`expired`/`cancelled`) and, when answered, `answerStatus` (`admitted`/`claimed`/`presented`/`discarded`/`failed`) plus `answerMessageId`/`answeredAt`/`presentedAt`; `repairPending:true` marks a question whose durable-discard repair is unresolved (status provisional until it settles); filter open questions with `questionStatus === "open"` (answered ≠ presented; only presented is delivery completion) |
 | `devlead_report` | `message` (required, plain text, max 4000 code points), `kind?` (`progress` default / `blocked` / `decision` / `question` / `fyi`), `summary?` (max 200) | `{ report, durable, queued, warning?, turnEndRequested?, questionId?, guidance? }` — visible only in a watched non-lead Session; one-way, never waits for a reply; only for a long-running task's mid-turn milestones (the settled turn already notifies the lead, so no routine progress / final summary; short or linear tasks should not call it). The kind selects the lane: `progress`/`fyi` are non-urgent background context injected without waking the lead (cold lead or full budget → digest-only); `blocked`/`decision` steer the lead's next step under `[DEV LEAD ACTION REQUIRED]` and share the bounded action-required pending queue (overflow → `DEVLEAD_DELIVERY_RATE_LIMITED`); a durably forwarded `question` sets `turnEndRequested:true` (a turn-end request, not an immediate close) and is answered in a new turn via `devlead_prompt_session` or by steering the child's next step; a memory-only question requests no turn end and its warning asks for a restatement in the final assistant message |
 | `devlead_remove_workspace` | `workspace` (required: id, registered path, or exact title) | `{ workspace, removed }` (pre-removal snapshot) |
 | `devlead_archive_session` | `session` (required), `stop_running?` (default false) | `{ sessionId, archived: true, stopped }` |
@@ -642,14 +672,34 @@ The `intent` selects the delivery primitive through the runtime policy table (th
 picks a transport): `instruction` (default) queues a next-turn boundary; `answer` (with
 `question_id`) and `correction` steer the next step; `background` injects context without
 requesting a wake. An answer is validated against the lead's durable question report: an open
-question accepts a new answer, an answered question accepts only a same-text/same-`idempotency_key`
-retry (which returns the original receipt without a second delivery), and a different answer fails
-`DEVLEAD_QUESTION_ALREADY_ANSWERED`; an unknown/foreign/expired/cancelled question fails
+question accepts a new answer, an answered question accepts only a same-text retry (the
+`idempotency_key` only marks a replay — same key + same text returns the original receipt without
+a second delivery; a different text conflicts even under the same key), and a different answer
+fails `DEVLEAD_QUESTION_ALREADY_ANSWERED`; an unknown/foreign/expired/cancelled question fails
 `DEVLEAD_QUESTION_NOT_FOUND`. Admission writes a durable `plugin:devlead/report-answer` record
 (`admitted`), and the runtime observes the answer's inbox lifecycle in memory — `claimed` when a
 proposed pre-step takes it, `presented` only when it enters an entered step's `user/message`, and
 `discarded` (reopening the question) on a rejected pre-step, an inbox discard, or a `clear-all`
-interrupt. `questionStatus` (`open`/`answered`) and `answerStatus` are separate: answered does not
+interrupt. Discards are durable: a discard that cannot reach the lead's log yet (cold/detached
+lead, failed append or flush) is queued in the storage-domain outbox and drained when the lead
+becomes live, before the next prompt, and on a retry timer; after a Host restart the queue is
+rehydrated, and the child's durable inbox log independently reconstructs discards (canceled
+splices, claimed-but-never-presented answers) even while the lead stays cold. A canceled splice
+that a `keep`/`clear-own` restore re-inserts is never discarded — the restore, a claim by an
+unsettled pre-step, or a real presentation revokes the cancellation, and every drain/rehydrate
+checks the answer still left the inbox before writing. A false discard that an earlier Host
+incarnation already wrote into the lead's log is repaired with a durable repair fact once the
+child's log proves the answer survived, so the question stays answered across restarts. A
+deferred repair re-proves survival when it runs and never overwrites a newer genuine discard;
+an answer admission waits for any queued or in-flight discard drain (bounded by a 30s deadline and
+the caller's cancellation; other intents wait only for their own queued rows) and then awaits the
+repair barrier until no repair is in flight, then refuses a still-pending repair with a retryable
+error (and the view/tool output flags `repairPending`); a timed-out or cancelled wait releases the
+target admission while the drain finishes in the background, and rows owned by a drain are published
+as unresolved for the whole pass, so a stale `open` — or a queued discard whose cold child is
+unreadable — cannot admit a duplicate answer. Each
+answer carries a per-question admission sequence, so a delayed discard of an older answer never
+outranks a newer re-answer. `questionStatus` (`open`/`answered`) and `answerStatus` are separate: answered does not
 mean presented. The result's `delivery` receipt reports the actual primitive/boundary/wake and the
 stable `messageId`; it is an admission receipt, not a presented confirmation, and exposes no
 internal lane. steer is next-step priority, not preemption or isolation: the current model
@@ -1113,7 +1163,9 @@ audit round reran rc.5 on the then-current harness (`--no-worktree` 123/123, ful
 the queued-input round reran rc.5 on its harness: `--no-worktree` **127/127** and the
 installed/patch full flows **150/150** each; the Phase 1c evidence round pinned **174/174** and the
 Phase 1d answer-routing round pinned **188/188**, and the Phase 1e message-lane round pinned
-**221/221** (installed/patch full flows each). The probe is a private
+**221/221** (installed/patch full flows each). The Phase 1e × cold-discard r3–r9 merge round reran
+the same pins on the merged tree: **221/221** each full flow and **198/198** `--no-worktree`. The
+probe is a private
 test-only package under `scripts/e2e-probe/`, not a published or workspace package. The profile
 mutations happen only in the throwaway profile under `os.tmpdir()`; no pnpm install, network, or
 lockfile change is involved.

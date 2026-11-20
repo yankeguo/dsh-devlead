@@ -232,8 +232,35 @@ durable `team/mode`）。模型 API（`modelCatalog`、`Agent.model.select`、`m
 | `0.2.2-rc.5` | 同上，`--flow patch` | **188/188**（同轮） |
 | `0.2.2-rc.5` | `node scripts/e2e-smoke.mjs --flow installed`（Phase 1e message lanes，pin 总数） | **221/221**（218 PASS + 3 SKIP；background 不唤醒、action/review steer、合并抑制、显式 action 上限、指标） |
 | `0.2.2-rc.5` | 同上，`--flow patch` | **221/221**（同轮） |
+| `0.2.2-rc.5` | `node scripts/e2e-smoke.mjs --flow installed`（Phase 1d cold-discard durable 轮，pin 总数） | **188/188**（185 PASS + 3 SKIP；durable discard 队列 spec v2 走真实 storage backend） |
+| `0.2.2-rc.5` | 同上，`--flow patch` | **188/188**（同轮） |
+| `0.2.2-rc.5` | 同上，`--no-worktree --flow patch` | **165/165**（同轮，跳过 phase 2） |
+| `0.2.2-rc.5` | `node scripts/e2e-smoke.mjs --flow installed`（Phase 1d cold-discard 复核轮 3，pin 总数） | **188/188**（185 PASS + 3 SKIP；canceled+restore 安全的 discard 重建） |
+| `0.2.2-rc.5` | 同上，`--flow patch` | **188/188**（同轮） |
+| `0.2.2-rc.5` | 同上，`--no-worktree --flow patch` | **165/165**（同轮，跳过 phase 2） |
+| `0.2.2-rc.5` | `node scripts/e2e-smoke.mjs --flow installed`（Phase 1d cold-discard 复核轮 4，pin 总数） | **188/188**（185 PASS + 3 SKIP；claimed survival + durable discard 修复） |
+| `0.2.2-rc.5` | 同上，`--flow patch` | **188/188**（同轮） |
+| `0.2.2-rc.5` | 同上，`--no-worktree --flow patch` | **165/165**（同轮，跳过 phase 2） |
+| `0.2.2-rc.5` | `node scripts/e2e-smoke.mjs --flow installed`（Phase 1d cold-discard 复核轮 5，pin 总数） | **188/188**（185 PASS + 3 SKIP；deferred re-prove + repair barrier） |
+| `0.2.2-rc.5` | 同上，`--flow patch` | **188/188**（同轮） |
+| `0.2.2-rc.5` | 同上，`--no-worktree --flow patch` | **165/165**（同轮，跳过 phase 2） |
+| `0.2.2-rc.5` | `node scripts/e2e-smoke.mjs --flow installed`（Phase 1d cold-discard 收口轮 6，pin 总数） | **188/188**（185 PASS + 3 SKIP；tool repairPending + barrier 收口 + unknown） |
+| `0.2.2-rc.5` | 同上，`--flow patch` | **188/188**（同轮） |
+| `0.2.2-rc.5` | 同上，`--no-worktree --flow patch` | **165/165**（同轮，跳过 phase 2） |
+| `0.2.2-rc.5` | `node scripts/e2e-smoke.mjs --flow installed`（Phase 1d cold-discard 收口轮 7，pin 总数） | **188/188**（185 PASS + 3 SKIP；queued-unknown repairPending + 真实 >8 repair barrier 链） |
+| `0.2.2-rc.5` | 同上，`--flow patch` | **188/188**（同轮） |
+| `0.2.2-rc.5` | 同上，`--no-worktree --flow patch` | **165/165**（同轮，跳过 phase 2） |
+| `0.2.2-rc.5` | `node scripts/e2e-smoke.mjs --flow installed`（Phase 1d cold-discard 收口轮 8，pin 总数） | **188/188**（185 PASS + 3 SKIP；in-flight drain 可见性 + 等待 admission） |
+| `0.2.2-rc.5` | 同上，`--flow patch` | **188/188**（同轮） |
+| `0.2.2-rc.5` | 同上，`--no-worktree --flow patch` | **165/165**（同轮，跳过 phase 2） |
+| `0.2.2-rc.5` | `node scripts/e2e-smoke.mjs --flow installed`（Phase 1d cold-discard 收口轮 9，pin 总数） | **188/188**（185 PASS + 3 SKIP；有界 in-flight drain 等待 + abort 释放 admission） |
+| `0.2.2-rc.5` | 同上，`--flow patch` | **188/188**（同轮） |
+| `0.2.2-rc.5` | 同上，`--no-worktree --flow patch` | **165/165**（同轮，跳过 phase 2） |
+| `0.2.2-rc.5` | `pnpm e2e --flow installed --no-build`（Phase 1e × cold-discard r3–r9 合并，pin 总数） | **221/221**（218 PASS + 3 SKIP；合并树重跑，phase 3 128 + phase 1e 31） |
+| `0.2.2-rc.5` | `pnpm e2e`（patch，合并轮） | **221/221**（同轮） |
+| `0.2.2-rc.5` | `pnpm e2e --no-worktree --no-build`（合并轮） | **198/198**（同轮，跳过 phase 2） |
 
-0.3.0 的 prerelease 候选（0.3.0-rc.1 / rc.2，尚未 promote 为稳定版）含 question 路由与排队 inbox 输入。Phase 1c 的 harness 轮新增 question-gate 与 `devlead_report` question checks（结构化多问题 payload 深比对、完整 wake payload 深比对、action-required wake admission、conclude/durable/memory-only 路径，以及只证明恢复可写性、不宣称自动 replay 的 recovery report），并新增两条**真实 prompted child turn**：用 scripted `llm/stream` 脚本驱动真实 agent-loop turn/step/tool 事件（无需 provider 凭据）——conclude 的 question batch 之后，已提交的 next-step marker 仍会在后续真实 step 中执行、先于唯一 completed `turn/end`；被 gate deny 的 `ask_user_question` 不会阻止模型继续运行（用例 33）。Phase 1d 轮新增一条真实 scripted child turn：lead 在 glob dispatch 期间用 `intent:"answer"` **steer 回答运行中的 child**（答案在后续真实 step 中 presented、先于唯一 completed `turn/end`；同键/同文本重试返回原 receipt；不同答案冲突；durable answer record 与派生视图报 answered/presented），以及 answer inbox 生命周期（queuedInputs 的 intent/questionId/wakeRequested/deliveryState、retract 拒绝 answer 但接受 background/instruction、运行中 child interrupt `clear-own` 保留 pending answer 而 `clear-all` 丢弃并重新 open question，经真实 `workspace/session-stop` fan-out）。Phase 1e 轮新增独立的 lane 实例：progress/fyi background inject 让 idle lead 保持 idle（不唤醒、不开新 turn），读工具输出带 `lane`/`deliveryState`；blocked/decision 以 `[DEV LEAD ACTION REQUIRED]` steer 携带完整 message；真实 completed turn 走 `[DEV LEAD NOTIFICATION]` followup，真实 adapter 失败 turn 走 `[DEV LEAD REVIEW REQUIRED]` steer；question+turn-end 合并抑制字段；共享 16-pending action 上限溢出显式返回 `DEVLEAD_DELIVERY_RATE_LIMITED`；低基数指标快照。每阶段 check 总数已 pin（27 / 12 / 23 / 128 / 31，基线 DSH 0.2.2-rc.5；删 check 会使该阶段失败），PASS 与 SKIP 分开输出；rc.5 的 installed/patch 完整双流各报 **221/221**（218 PASS + 3 条无凭据 SKIP；`--no-worktree`：**198/198**）。发布前仍需按发布指南重跑完整组合。
+0.3.0 的 prerelease 候选（0.3.0-rc.1 / rc.2，尚未 promote 为稳定版）含 question 路由与排队 inbox 输入。Phase 1c 的 harness 轮新增 question-gate 与 `devlead_report` question checks（结构化多问题 payload 深比对、完整 wake payload 深比对、action-required wake admission、conclude/durable/memory-only 路径，以及只证明恢复可写性、不宣称自动 replay 的 recovery report），并新增两条**真实 prompted child turn**：用 scripted `llm/stream` 脚本驱动真实 agent-loop turn/step/tool 事件（无需 provider 凭据）——conclude 的 question batch 之后，已提交的 next-step marker 仍会在后续真实 step 中执行、先于唯一 completed `turn/end`；被 gate deny 的 `ask_user_question` 不会阻止模型继续运行（用例 33）。Phase 1d 轮新增一条真实 scripted child turn：lead 在 glob dispatch 期间用 `intent:"answer"` **steer 回答运行中的 child**（答案在后续真实 step 中 presented、先于唯一 completed `turn/end`；同键/同文本重试返回原 receipt；不同答案冲突；durable answer record 与派生视图报 answered/presented），以及 answer inbox 生命周期（queuedInputs 的 intent/questionId/wakeRequested/deliveryState、retract 拒绝 answer 但接受 background/instruction、运行中 child interrupt `clear-own` 保留 pending answer 而 `clear-all` 丢弃并重新 open question，经真实 `workspace/session-stop` fan-out）。Phase 1e 轮新增独立的 lane 实例：progress/fyi background inject 让 idle lead 保持 idle（不唤醒、不开新 turn），读工具输出带 `lane`/`deliveryState`；blocked/decision 以 `[DEV LEAD ACTION REQUIRED]` steer 携带完整 message；真实 completed turn 走 `[DEV LEAD NOTIFICATION]` followup，真实 adapter 失败 turn 走 `[DEV LEAD REVIEW REQUIRED]` steer；question+turn-end 合并抑制字段；共享 16-pending action 上限溢出显式返回 `DEVLEAD_DELIVERY_RATE_LIMITED`；低基数指标快照。每阶段 check 总数已 pin（27 / 12 / 23 / 128 / 31，基线 DSH 0.2.2-rc.5；删 check 会使该阶段失败），PASS 与 SKIP 分开输出；rc.5 的 installed/patch 完整双流各报 **221/221**（218 PASS + 3 条无凭据 SKIP；`--no-worktree`：**198/198**）。Phase 1e × cold-discard r3–r9 合并轮在合并树上重跑全部门禁并保持同一组 pin（30 个测试文件 / 1330 tests；installed/patch 各 **221/221**，`--no-worktree` **198/198**；见[合并证据](docs/e2e-evidence/phase1e-merge.md)）。发布前仍需按发布指南重跑完整组合。
 
 每条 flow 有 3 条正向模型选择检查因本机无 provider 凭据记为 SKIP（打印真实原因）；负向
 model 路径与 `devlead_list_models` 在每个版本都真实运行。单元测试使用 rc.1 devDependencies，
@@ -462,11 +489,11 @@ id 与 path，绝不静默取第一个；此时改用 id 或路径。未知引�
 | `devlead_use_workspace` | `path`（必填，绝对路径）、`title?`、`create?`（默认 false：缺目录报错；人类明确要求时传 true 才 `mkdir -p`） | `{ workspace }` |
 | `devlead_list_sessions` | `workspace?`（id、注册路径或精确 title）、`watched_only?`、`limit?` | `{ sessions, watched }` |
 | `devlead_create_session` | `workspace?`（id、注册路径或精确 title）、`prompt?`、`title?`、`watch?`（默认 true）、`preset?`（Host 定义的 id；空白/省略时先回退插件默认 preset，再回退 Host 默认）、`isolation?`（默认 `none`；`worktree` = 尽力提供隔离检出）、`provider?`+`model?`（成对；可选 `reasoning_effort?`）、`agent_teams?` | 创建结果（含 `isolation` 结果；请求时含已应用的 `model`/`agentTeams`） |
-| `devlead_get_session` | `session`（必填） | `{ session, reports?, queuedInputs? }`——读取本 lead 自身时，`reports` 携带最近 5 条保留汇报（question report 带 `questionStatus`/`answerStatus`；每条报告带诊断字段 `lane` 与内存观测 `deliveryState`）；目标 live 时，`queuedInputs` 列出其排队 inbox 输入（id、boundary、来源 kind/form/sender、文本摘要、入队时间，DevLead 消息带 `intent`/`questionId`/`wakeRequested`，被跟踪 answer 带 `deliveryState`），便于在过期/重复的排队指示执行前识别它们 |
-| `devlead_prompt_session` | `session`、`prompt`（必填）、`intent?`（默认 `instruction`；`answer` 需 `question_id` 并 steer 下一步，`correction` steer，`background` 注入但不唤醒）、`question_id?`（仅 `answer`）、`idempotency_key?`（≤200 code points；同键同文本返回原 receipt）、`watch?`（默认 true）、`interrupt?`（默认 false：排在运行中 turn 之后；`true` = 停掉运行中 turn 与 Host 报告的 subagent/job/schedule 工作、按 `interrupt_inbox` 丢弃排队输入，再投递新 turn；空闲/冷会话为 no-op；`background` 时非法）、`interrupt_inbox?`（默认 `clear-all`；`keep` 在停止后恢复全部排队输入，`clear-own` 恢复除本 lead 自投 instruction/correction relay 与 background notice 外的全部、但**保留 pending answer**；`clear-all` 丢弃 answer 并重新 open 其 question；恢复的输入保留原 id 与队列顺序、排在替换 prompt 之前；无 `interrupt` 或空闲/冷目标时忽略） | 续写结果（含 `interrupted`；保留策略实际执行时含 `retainedInputs`；必填 `delivery` receipt `{ primitive, boundary, wakeRequested, messageId, questionId?, idempotencyKey? }`——admission 回执，不是 presented 确认，无内部 lane） |
+| `devlead_get_session` | `session`（必填） | `{ session, reports?, queuedInputs? }`——读取本 lead 自身时，`reports` 携带最近 5 条保留汇报（question report 带 `questionStatus`/`answerStatus`，durable-discard repair 未落定（in-flight/deferred）时带 `repairPending:true`、其状态视为暂定；每条报告带诊断字段 `lane` 与内存观测 `deliveryState`）；目标 live 时，`queuedInputs` 列出其排队 inbox 输入（id、boundary、来源 kind/form/sender、文本摘要、入队时间，DevLead 消息带 `intent`/`questionId`/`wakeRequested`，被跟踪 answer 带 `deliveryState`），便于在过期/重复的排队指示执行前识别它们 |
+| `devlead_prompt_session` | `session`、`prompt`（必填）、`intent?`（默认 `instruction`；`answer` 需 `question_id` 并 steer 下一步，`correction` steer，`background` 注入但不唤醒）、`question_id?`（仅 `answer`）、`idempotency_key?`（≤200 code points；key 只标记 replay——重试识别按同文本，同键同文本返回原 receipt）、`watch?`（默认 true）、`interrupt?`（默认 false：排在运行中 turn 之后；`true` = 停掉运行中 turn 与 Host 报告的 subagent/job/schedule 工作、按 `interrupt_inbox` 丢弃排队输入，再投递新 turn；空闲/冷会话为 no-op；`background` 时非法）、`interrupt_inbox?`（默认 `clear-all`；`keep` 在停止后恢复全部排队输入，`clear-own` 恢复除本 lead 自投 instruction/correction relay 与 background notice 外的全部、但**保留 pending answer**；`clear-all` 丢弃 answer 并重新 open 其 question；恢复的输入保留原 id 与队列顺序、排在替换 prompt 之前；无 `interrupt` 或空闲/冷目标时忽略） | 续写结果（含 `interrupted`；保留策略实际执行时含 `retainedInputs`；必填 `delivery` receipt `{ primitive, boundary, wakeRequested, messageId, questionId?, idempotencyKey? }`——admission 回执，不是 presented 确认，无内部 lane；answer 的 durable 记录写入/flush 失败时含 `warning?`——投递已发生，question 状态可能不抗重启） |
 | `devlead_retract_input` | `session`、`input_id`（必填；`queuedInputs` 报告的 id） | `{ sessionId, inputId, retracted }`——在执行前撤回一条排队 inbox 输入；本 lead 自投的 instruction/correction relay 与 background notice 可撤，**answer 拒绝撤回**（撤回会让 question 状态与 child inbox 不一致；要丢弃 answer 并重新 open question 用 `interrupt:true` + `interrupt_inbox:"clear-all"`）；人类/scheduled/其他来源的输入会被拒绝；幂等（已消费或已撤回时 `retracted: false`）；目标必须 live 且不能是 lead 自身 |
 | `devlead_watch_session` | `session`、`watching`（必填 bool） | watch 变更结果 |
-| `devlead_notifications` | `limit?`（默认 20，分别作用于通知与汇报两个 digest） | `{ notifications, reports, watched }`——通知行在其唤醒被合并进 action-required 唤醒时带 `wakeSuppressedByReportId`/`wakeSuppressionReason`（转场本身仍保留，未被吞掉）；报告行带诊断字段 `lane`（progress/fyi 为 `background`，blocked/decision/question 为 `action-required`）与内存观测 `deliveryState`（`pending`/`delivered`/`digest-only`；重启后缺省——不是 presented 确认）；question report 带 `questionStatus`（`open`/`answered`/`expired`/`cancelled`），已回答时带 `answerStatus`（`admitted`/`claimed`/`presented`/`discarded`/`failed`）及 `answerMessageId`/`answeredAt`/`presentedAt`；用 `questionStatus === "open"` 过滤待答问题（answered ≠ presented，只有 presented 才是投递完成） |
+| `devlead_notifications` | `limit?`（默认 20，分别作用于通知与汇报两个 digest） | `{ notifications, reports, watched }`——通知行在其唤醒被合并进 action-required 唤醒时带 `wakeSuppressedByReportId`/`wakeSuppressionReason`（转场本身仍保留，未被吞掉）；报告行带诊断字段 `lane`（progress/fyi 为 `background`，blocked/decision/question 为 `action-required`）与内存观测 `deliveryState`（`pending`/`delivered`/`digest-only`；重启后缺省——不是 presented 确认）；question report 带 `questionStatus`（`open`/`answered`/`expired`/`cancelled`），已回答时带 `answerStatus`（`admitted`/`claimed`/`presented`/`discarded`/`failed`）及 `answerMessageId`/`answeredAt`/`presentedAt`；`repairPending:true` 表示该 question 的 durable-discard repair 尚未落定（状态暂定）；用 `questionStatus === "open"` 过滤待答问题（answered ≠ presented，只有 presented 才是投递完成） |
 | `devlead_report` | `message`（必填，纯文本，上限 4000 code points）、`kind?`（默认 `progress` / `blocked` / `decision` / `question` / `fyi`）、`summary?`（上限 200） | `{ report, durable, queued, warning?, turnEndRequested?, questionId?, guidance? }`——只在已关注的非 lead 会话可见；单向，不等待回复；只用于长任务的途中关键节点（turn 结束本就通知 lead，故不播报常规进度/最终总结，短任务/线性任务默认不调用）。kind 决定投递 lane：`progress`/`fyi` 是非紧急背景上下文，注入 lead 但不唤醒（冷 lead 或预算满时仅保留 digest）；`blocked`/`decision` 以 `[DEV LEAD ACTION REQUIRED]` steer lead 的下一步，共享有界的 action-required pending 队列（溢出返回 `DEVLEAD_DELIVERY_RATE_LIMITED`）；durable 转发的 `question` 会设置 `turnEndRequested:true`（请求结束 turn，不是立即关闭），由 lead 在新 turn 里用 `devlead_prompt_session` 回答，或在 child 仍运行时 steer 其下一步；仅内存的 question 不请求结束 turn，warning 要求在最终 assistant 消息里重述问题 |
 | `devlead_remove_workspace` | `workspace`（必填：id、注册路径或精确 title） | `{ workspace, removed }`（注销前快照） |
 | `devlead_archive_session` | `session`（必填）、`stop_running?`（默认 false） | `{ sessionId, archived: true, stopped }` |
@@ -530,12 +557,28 @@ subagent 后代、杀掉所属 job、删除活跃 schedule 行，并默认丢弃
 `intent` 经运行时策略表选择投递原语（模型不选 transport）：`instruction`（默认）排一个
 next-turn 边界；`answer`（带 `question_id`）与 `correction` steer 下一步；`background` 注入
 上下文但不请求唤醒。answer 会对照 lead 的 durable question report 校验：open question 接受新
-answer；已 answered 的 question 只接受同文本/同 `idempotency_key` 的幂等重试（返回原 receipt、
-不重复投递），不同 answer 报 `DEVLEAD_QUESTION_ALREADY_ANSWERED`；未知/非本 lead/已过期/已取消
-的 question 报 `DEVLEAD_QUESTION_NOT_FOUND`。admission 写一条 durable
+answer；已 answered 的 question 只接受同文本重试（`idempotency_key` 只标记 replay——同键同文本
+返回原 receipt、不重复投递；不同文本即使同键也冲突），不同 answer 报
+`DEVLEAD_QUESTION_ALREADY_ANSWERED`；未知/非本 lead/已过期/已取消的 question 报
+`DEVLEAD_QUESTION_NOT_FOUND`。admission 写一条 durable
 `plugin:devlead/report-answer` 记录（`admitted`），运行时在内存观测 answer 的 inbox 生命周期——
 被 proposed pre-step 取出时 `claimed`，只有进入 entered step 的 `user/message` 才 `presented`，
 pre-step 被 reject/inbox discard/`clear-all` interrupt 时 `discarded`（重新 open question）。
+discard 是 durable 的：暂时写不进 lead log 的 discard（lead cold/detached、append 或 flush 失败）
+进入 storage-domain outbox 队列，在 lead 变 live 时、下一次 prompt 前以及重试定时器上 drain；
+Host 重启后队列会 rehydrate，child 的 durable inbox log 也能在 lead 仍 cold 时独立重建 discard
+（canceled splice、claimed 但从未 presented 的 answer）。被 `keep`/`clear-own` restore 重新插回的
+canceled splice 绝不会被 discard——restore、未 settled pre-step 的 claim 或真实 presentation
+撤销该 cancellation，且每次 drain/rehydrate 都先确认 answer 确实已离开 inbox 才写。若早期 Host
+incarnation 已把 false discard 写进 lead log，child log 证明 answer 存活后会追加一条 durable
+repair fact 修复，question 跨重启仍 answered。deferred repair 执行时重新 re-prove survival，
+绝不覆盖更新的 genuine discard；answer admission 会等待 queued 或 in-flight discard drain
+（30s deadline + caller cancellation；其它 intent 只等自己 queued 的 rows），再 await repair
+barrier 直到无 in-flight，仍 pending 则以可重试错误拒绝（view/tool 输出标 repairPending）；
+超时/取消只释放 admission，drain 在后台继续；drain 拥有的 row 在整个 pass 期间作为 unresolved
+暴露，child 不可读时仍在队列里的 discard row 也计入 repairPending，避免 stale open 或不可读的
+cold child 放进重复 answer。每条 answer 带 per-question admission
+sequence，旧 answer 的延迟 discard 不会压过更新的 re-answer。
 `questionStatus`（`open`/`answered`）与 `answerStatus` 是两套状态：answered 不等于 presented。
 结果的 `delivery` receipt 报告实际 primitive/boundary/wake 与稳定 `messageId`；它是 admission
 回执，不是 presented 确认，也不暴露内部 lane。steer 是 next-step 优先，不是抢占，也不保证隔离：
@@ -905,7 +948,8 @@ Session），rc.2–rc.5 走 Team 成功路径；rc.4 / rc.5 的 installed 与 p
 **143/143**。0.2.6+ 审计轮曾按当时 harness 重跑 rc.5（`--no-worktree` 123/123、完整双流 146/146）；
 排队输入轮按其 harness 重跑 rc.5：`--no-worktree` **127/127**，installed/patch 完整双流各
 **150/150**；Phase 1c 证据轮 pin **174/174**，Phase 1d answer routing 轮 pin **188/188**，
-Phase 1e message-lane 轮 pin **221/221**（installed/patch 完整双流各）。probe 是
+Phase 1e message-lane 轮 pin **221/221**（installed/patch 完整双流各）；Phase 1e × cold-discard
+r3–r9 合并轮在合并树上重跑同一组 pin：两条完整流各 **221/221**、`--no-worktree` **198/198**。probe 是
 `scripts/e2e-probe/` 下的私有测试包，不发布、不属于 workspace 包；profile 变更只发生在
 `os.tmpdir()` 下的一次性 profile，不涉及 pnpm install / 网络 / lockfile。
 

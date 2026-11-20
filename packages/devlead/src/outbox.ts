@@ -14,6 +14,12 @@
  * unarchived/opened occupant is still reconciled and its tombstone cleared when
  * the mode-off succeeds.
  *
+ * A third table queues answer discards whose lead log could not accept them
+ * yet (cold/detached lead, failed append, failed flush). The queue survives a
+ * Host restart while the lead stays cold; a row is removed only after the
+ * discard record was appended to the lead log and flushed, so a crash never
+ * leaves the durable audit claiming an answer the child inbox already dropped.
+ *
  * The storage-domain service is optional: a Host that composes no storage keeps
  * the existing in-memory fallback and reports `durable: false` to the child.
  *
@@ -32,15 +38,25 @@ import {
   DEVLEAD_REPORT_SUMMARY_MAX,
   devLeadReportId,
 } from '@yankeguo/dsh-devlead-protocol'
-import type { DevLeadReport, DevLeadReportKind } from '@yankeguo/dsh-devlead-protocol'
+import type { DevLeadReport, DevLeadReportAnswer, DevLeadReportKind } from '@yankeguo/dsh-devlead-protocol'
+import { answerSchema } from './fold.ts'
 
 /** Domain/table names (must match the storage backend's safe-name rule). */
 const OUTBOX_DOMAIN = 'devlead_report_outbox'
 const OUTBOX_TABLE = 'pending'
 const IGNORED_TABLE = 'ignored'
+const ANSWER_DISCARD_TABLE = 'answer_discards'
 
 /** Durable outbox row retention; uncollected rows older than this are discarded. */
 export const DEVLEAD_REPORT_OUTBOX_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000
+
+/**
+ * Queued answer-discard retention, deliberately longer than the report outbox
+ * horizon: a dropped discard row means a question may stay answered after a
+ * restart even though the child inbox already lost the answer. Pruning past
+ * this horizon is an explicit warning, never the silent report sweep.
+ */
+export const DEVLEAD_ANSWER_DISCARD_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000
 
 /** One persisted outbox row. */
 export interface DevLeadOutboxRecord {
@@ -56,6 +72,19 @@ export interface DevLeadIgnoredHolder {
   readonly sessionId: string
   /** Epoch milliseconds when the tombstone was written. */
   readonly at: number
+}
+
+/**
+ * One queued answer discard whose lead log could not accept it yet (cold or
+ * detached lead, failed append, or failed flush). The row survives a Host
+ * restart while the lead stays cold; the drain removes it only after the
+ * discard record was appended to the lead log AND flushed.
+ */
+export interface DevLeadAnswerDiscardRow {
+  /** The discard lifecycle fact to append to the lead's answer audit. */
+  readonly answer: DevLeadReportAnswer
+  /** Epoch milliseconds when the row was first enqueued. */
+  readonly enqueuedAt: number
 }
 
 /** Structural storage-domain table surface used by the outbox. */
@@ -138,6 +167,12 @@ const ignoredSchema = zod.object({
   at: zod.number().int().nonnegative().max(DEVLEAD_MAX_INSTANT),
 }).strict()
 
+/** Queued answer-discard row schema (the fold's exact answer record schema). */
+const answerDiscardSchema = zod.object({
+  answer: answerSchema,
+  enqueuedAt: zod.number().int().nonnegative().max(DEVLEAD_MAX_INSTANT),
+}).strict()
+
 /**
  * Domain declaration opened lazily through `ctx.storageDomain`. Exported so
  * regression tests can parse stored rows with the exact `valueSchema` the real
@@ -147,18 +182,27 @@ const ignoredSchema = zod.object({
  */
 export const OUTBOX_SPEC = {
   name: OUTBOX_DOMAIN,
-  version: 1,
+  // 2 adds the answer_discards queue table; version-1 rows stay readable
+  // (their schemas are unchanged), so a restart never loses queued reports.
+  version: 2,
+  compatibleVersions: [1],
   layout: 'per-record',
   invalidRecords: 'backup-and-skip',
   tables: {
     pending: { valueSchema: outboxSchema },
     ignored: { valueSchema: ignoredSchema },
+    answer_discards: { valueSchema: answerDiscardSchema },
   },
 } as const
 
 /** Stable path-safe table key for one report (lead-scoped so id reuse across leads cannot collide). */
 export function devLeadOutboxKey(report: DevLeadReport): string {
   return Buffer.from(`${report.leadSessionId}\u0000${report.id}`, 'utf8').toString('base64url')
+}
+
+/** Stable path-safe queue key for one answer discard (one row per answer message). */
+export function devLeadAnswerDiscardKey(answer: DevLeadReportAnswer): string {
+  return Buffer.from(`${answer.leadSessionId}\u0000${answer.reportId}\u0000${answer.messageId}`, 'utf8').toString('base64url')
 }
 
 /** Stable path-safe table key for one session id. */
@@ -265,21 +309,38 @@ export class DevLeadReportOutbox {
    * @param retentionMs - maximum age, defaulting to the outbox retention.
    * @returns number of removed rows.
    */
-  async prune(now: number = Date.now(), retentionMs: number = DEVLEAD_REPORT_OUTBOX_RETENTION_MS): Promise<number> {
+  async prune(
+    now: number = Date.now(),
+    retentionMs: number = DEVLEAD_REPORT_OUTBOX_RETENTION_MS,
+    answerDiscardRetentionMs: number = DEVLEAD_ANSWER_DISCARD_RETENTION_MS,
+  ): Promise<number> {
     const cutoff = now - retentionMs
+    const discardCutoff = now - answerDiscardRetentionMs
     const stale = this.entries().filter(entry => entry.enqueuedAt < cutoff)
-    if (stale.length === 0) return 0
+    // Queued discards keep their own (longer) horizon: they are question-state
+    // repairs, not deliverable reports, and losing one silently would leave a
+    // question answered after a restart although the child dropped the answer.
+    const staleDiscards = this.answerDiscards().filter(row => row.enqueuedAt < discardCutoff)
+    if (stale.length === 0 && staleDiscards.length === 0) return 0
+    let removed = 0
     try {
-      const removed = await this.domain.table(OUTBOX_TABLE).deleteMany(stale.map(entry => devLeadOutboxKey(entry.report)))
-      if (removed > 0) {
+      if (stale.length > 0) {
+        removed += await this.domain.table(OUTBOX_TABLE).deleteMany(stale.map(entry => devLeadOutboxKey(entry.report)))
         this.ctx.logger.warn(
-          `devlead: discarded ${String(removed)} undelivered report(s) older than the ${String(retentionMs)} ms outbox retention`,
+          `devlead: discarded ${String(stale.length)} undelivered report(s) older than the ${String(retentionMs)} ms outbox retention`,
+        )
+      }
+      if (staleDiscards.length > 0) {
+        removed += await this.domain.table(ANSWER_DISCARD_TABLE).deleteMany(staleDiscards.map(row => devLeadAnswerDiscardKey(row.answer)))
+        this.ctx.logger.warn(
+          `devlead: pruned ${String(staleDiscards.length)} queued answer discard(s) older than the ${String(answerDiscardRetentionMs)} ms answer-discard retention; `
+          + 'their questions may stay answered after a restart although the child inbox dropped the answers',
         )
       }
       return removed
     } catch (error: unknown) {
       this.ctx.logger.warn(`devlead: could not prune the durable report outbox: ${error instanceof Error ? error.message : String(error)}`)
-      return 0
+      return removed
     }
   }
 
@@ -297,6 +358,76 @@ export class DevLeadReportOutbox {
       return await this.domain.table(OUTBOX_TABLE).deleteMany(keys)
     } catch (error: unknown) {
       this.ctx.logger.warn(`devlead: could not drop outbox reports for lead "${leadSessionId}": ${error instanceof Error ? error.message : String(error)}`)
+      return 0
+    }
+  }
+
+  /**
+   * Persist one queued answer discard before the lead log can accept it.
+   * @param answer - the discard lifecycle fact to queue.
+   * @returns whether the row is durable.
+   */
+  async putAnswerDiscard(answer: DevLeadReportAnswer): Promise<boolean> {
+    if (this.closed) return false
+    const key = devLeadAnswerDiscardKey(answer)
+    try {
+      const table = this.domain.table(ANSWER_DISCARD_TABLE)
+      const existing = table.get(key) as DevLeadAnswerDiscardRow | undefined
+      await table.put(key, {
+        answer,
+        enqueuedAt: existing?.enqueuedAt ?? Date.now(),
+      } satisfies DevLeadAnswerDiscardRow)
+      return true
+    } catch (error: unknown) {
+      this.ctx.logger.warn(`devlead: could not durably queue the discard of answer "${answer.messageId}": ${error instanceof Error ? error.message : String(error)}`)
+      return false
+    }
+  }
+
+  /**
+   * Remove one queued answer discard after its record was appended and flushed.
+   * @param answer - the drained discard fact.
+   * @returns whether the row is gone (or was already absent).
+   */
+  async deleteAnswerDiscard(answer: DevLeadReportAnswer): Promise<boolean> {
+    if (this.closed) return false
+    try {
+      return await this.domain.table(ANSWER_DISCARD_TABLE).delete(devLeadAnswerDiscardKey(answer))
+    } catch (error: unknown) {
+      this.ctx.logger.warn(`devlead: could not remove the drained answer discard "${answer.messageId}" from the queue: ${error instanceof Error ? error.message : String(error)}`)
+      return false
+    }
+  }
+
+  /**
+   * Snapshot every queued answer discard.
+   * @returns rows in storage iteration order.
+   */
+  answerDiscards(): DevLeadAnswerDiscardRow[] {
+    if (this.closed) return []
+    try {
+      return [...this.domain.table(ANSWER_DISCARD_TABLE).entries()]
+        .map(([, value]) => value as DevLeadAnswerDiscardRow)
+    } catch (error: unknown) {
+      this.ctx.logger.warn(`devlead: could not read the durable answer discard queue: ${error instanceof Error ? error.message : String(error)}`)
+      return []
+    }
+  }
+
+  /**
+   * Drop every queued answer discard of one lead, used by `/devlead reset`.
+   * @param leadSessionId - lead identity.
+   * @returns number of removed rows.
+   */
+  async dropAnswerDiscardsForLead(leadSessionId: string): Promise<number> {
+    const keys = this.answerDiscards()
+      .filter(row => row.answer.leadSessionId === leadSessionId)
+      .map(row => devLeadAnswerDiscardKey(row.answer))
+    if (keys.length === 0) return 0
+    try {
+      return await this.domain.table(ANSWER_DISCARD_TABLE).deleteMany(keys)
+    } catch (error: unknown) {
+      this.ctx.logger.warn(`devlead: could not drop queued answer discards for lead "${leadSessionId}": ${error instanceof Error ? error.message : String(error)}`)
       return 0
     }
   }

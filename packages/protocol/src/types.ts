@@ -298,6 +298,15 @@ export interface DevLeadReportAnswer {
   readonly at: number
   /** Lifecycle status recorded by this fact. */
   readonly status: DevLeadAnswerStatus
+  /**
+   * Per-question admission sequence: the first answer is 1, every re-answer
+   * increments it, and every lifecycle fact of one answer carries that
+   * answer's sequence. The newest answer is the highest sequence (not the
+   * last appended row), so a delayed discard of an older answer can never
+   * outrank a newer re-answer. Absent on pre-sequence legacy records (treated
+   * as 0, ordered by log position among themselves).
+   */
+  readonly answerSeq?: number
   /** SHA-256 hex of the trimmed answer prompt, for same-text retry recognition. */
   readonly textHash: string
   /** First admission instant of the question; carried forward across reopens. */
@@ -343,6 +352,13 @@ export interface DevLeadQuestionAnswerView {
   readonly answeredAt?: number
   /** Instant the newest answer was presented, when observed. */
   readonly presentedAt?: number
+  /**
+   * A durable-discard repair of this question is in flight or deferred: the
+   * derived `questionStatus` may still reflect a stale terminal discard that
+   * the child's log disproves. Consumers should treat the status as provisional
+   * until the repair settles (the runtime awaits it before answer admission).
+   */
+  readonly repairPending?: boolean
 }
 
 /** Durable record payload selecting DevLead mode for one Session. */

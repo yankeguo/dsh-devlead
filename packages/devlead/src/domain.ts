@@ -776,6 +776,7 @@ export function decodeReportAnswer(value: unknown): DevLeadReportAnswer {
     'status',
     'textHash',
   ], [
+    'answerSeq',
     'answeredAt',
     'presentedAt',
     'idempotencyKey',
@@ -795,6 +796,12 @@ export function decodeReportAnswer(value: unknown): DevLeadReportAnswer {
   const status = record.status as DevLeadAnswerStatus
   if (typeof record.textHash !== 'string' || !/^[0-9a-f]{64}$/u.test(record.textHash)) {
     throw new Error(`${label} textHash must be a lowercase SHA-256 hex digest`)
+  }
+  if (record.answerSeq !== undefined
+    && (typeof record.answerSeq !== 'number'
+      || !Number.isSafeInteger(record.answerSeq)
+      || record.answerSeq < 0)) {
+    throw new Error(`${label} answerSeq must be a non-negative safe integer when present`)
   }
   const answeredAt = record.answeredAt === undefined
     ? undefined
@@ -828,6 +835,7 @@ export function decodeReportAnswer(value: unknown): DevLeadReportAnswer {
     at: decodeInstant(record.at, `${label} at`),
     status,
     textHash: record.textHash,
+    ...(record.answerSeq === undefined ? {} : { answerSeq: record.answerSeq }),
     ...(answeredAt === undefined ? {} : { answeredAt }),
     ...(presentedAt === undefined ? {} : { presentedAt }),
     ...(idempotencyKey === undefined ? {} : { idempotencyKey }),

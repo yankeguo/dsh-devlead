@@ -791,6 +791,25 @@ describe('report kind vocabulary', () => {
     expect(value.questions?.[0]?.options?.[0]?.description).toBe('safe')
     expect(reportValue(base)).not.toHaveProperty('questions')
   })
+
+  it('passes repairPending through the additive report schema and reportValue', () => {
+    expect(REPORT_SCHEMA.properties.repairPending).toMatchObject({ type: 'boolean' })
+    const base: DevLeadReport = {
+      id: 'report-question',
+      kind: 'question',
+      message: 'Which target?',
+      senderSessionId: 'child-1',
+      leadSessionId: 'lead-1',
+      turn: 1,
+      at: 1_700_000_000_000,
+    }
+    const provisional = reportValue(base, { questionStatus: 'open', answerStatus: 'discarded', answerMessageId: 'm1', repairPending: true })
+    expect(provisional).toMatchObject({ questionStatus: 'open', answerStatus: 'discarded', repairPending: true })
+    // Absent repairPending is omitted (not emitted as false).
+    expect(reportValue(base, { questionStatus: 'answered', answerStatus: 'admitted' })).not.toHaveProperty('repairPending')
+    const harness = boot()
+    expectValidOutput(harness, 'devlead_report', { report: provisional, durable: true, queued: false })
+  })
 })
 
 describe('interrupt inbox vocabulary', () => {
@@ -2863,6 +2882,36 @@ describe('question/answer state exposure (Phase 1d)', () => {
     // The hub remembers no delivery state for this report: the key stays absent.
     expect(row).not.toHaveProperty('deliveryState')
     expectValidOutput(harness, 'devlead_notifications', value)
+  })
+
+  it('surfaces repairPending to devlead_notifications and devlead_get_session consumers', async () => {
+    const harness = boot()
+    harness.devLead.reportDigest = [questionReport]
+    harness.devLead.questionAnswer = { questionStatus: 'open', answerStatus: 'discarded', answerMessageId: 'm1', repairPending: true }
+    const notifications = await harness.call('devlead_notifications')
+    // Phase 1e adds the per-report diagnostic lane to every read-tool row; the
+    // cold-discard repair flag rides the same row and both must survive the merge.
+    expect((notifications as { reports: Array<Record<string, unknown>> }).reports[0])
+      .toEqual({
+        ...questionReport,
+        questionStatus: 'open',
+        answerStatus: 'discarded',
+        answerMessageId: 'm1',
+        repairPending: true,
+        lane: 'action-required',
+      })
+    expectValidOutput(harness, 'devlead_notifications', notifications)
+    // get_session adds reports only when reading the lead itself: point the
+    // session fixture at the agent's own id so the question report is present.
+    harness.devLead.session = { ...SESSION, sessionId: harness.agent.id }
+    const session = await harness.call('devlead_get_session', { session: harness.agent.id })
+    const reports = (session as { reports?: Array<Record<string, unknown>> }).reports
+    // Assert explicitly the report is present and carries the provisional flag —
+    // never silently skip.
+    expect(reports).toBeDefined()
+    expect(reports!.length).toBeGreaterThan(0)
+    expect(reports![0]).toMatchObject({ repairPending: true })
+    expectValidOutput(harness, 'devlead_get_session', session)
   })
 
   it('passes queuedInput intent/questionId/wakeRequested/deliveryState through devlead_get_session', async () => {
