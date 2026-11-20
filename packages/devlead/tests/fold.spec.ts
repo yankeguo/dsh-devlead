@@ -1273,10 +1273,21 @@ describe('runtime repair projection', () => {
     expect(settled.reports[0]?.id).toBe(question.id)
   })
 
-  it('rejects a pre-repair v6 cache row instead of restoring it', () => {
-    const { repairPending: _repairPending, ...v6 } = emptyDevLeadProjectionState()
-    expect(v6).not.toHaveProperty('repairPending')
-    expect(devLeadProjectionStateSchema.safeParse(v6).success).toBe(false)
+  it('rejects a pre-repair v5 cache row instead of restoring it', () => {
+    const { repairPending: _repairPending, ...v5 } = emptyDevLeadProjectionState()
+    expect(v5).not.toHaveProperty('repairPending')
+    expect(devLeadProjectionStateSchema.safeParse(v5).success).toBe(false)
     expect(devLeadProjectionDefinition.stateVersion).toBe(7)
+  })
+
+  it('freezes on a corrupt repair record instead of publishing partial state', () => {
+    const state = apply(emptyDevLeadProjectionState(), pluginRecordEvent(0, DEVLEAD_REPAIR_RECORD_TYPE, {
+      kind: 'devlead/repair',
+      version: 2,
+      leadSessionId: 'lead-1',
+      questionIds: ['duplicate', 'duplicate'],
+      at: T0,
+    }))
+    expect(state.failure).toContain(DEVLEAD_REPAIR_RECORD_TYPE)
   })
 })

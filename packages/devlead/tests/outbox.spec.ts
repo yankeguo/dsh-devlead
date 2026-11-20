@@ -193,6 +193,8 @@ describe('DevLeadReportOutbox', () => {
     await expect(DevLeadReportOutbox.open(ctx)).resolves.toBeUndefined()
     expect(warn.mock.calls.some(call => String(call[0]).includes('durable report outbox unavailable')
       && String(call[0]).includes('version 2 is incompatible'))).toBe(true)
+    await expect(DevLeadReportOutbox.open(ctx)).resolves.toBeUndefined()
+    expect(warn).toHaveBeenCalledTimes(1)
     // The failed open is a disabled/empty durable path, not a destructive
     // migration: no row is rewritten, backed up, or silently replaced.
     expect(storage.table('devlead_report_outbox', 'pending').records.get(key)).toEqual(legacy)

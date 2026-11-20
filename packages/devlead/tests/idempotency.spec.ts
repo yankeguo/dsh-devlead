@@ -98,7 +98,7 @@ describe('DevLeadPromptIdempotencyStore', () => {
     const storage = new FakeStorageDomain()
     const now = Date.now()
     const old = receipt({ key: 'old', at: now - DEVLEAD_PROMPT_IDEMPOTENCY_RETENTION_MS - 1 })
-    const fresh = receipt({ key: 'fresh', at: now - DEVLEAD_PROMPT_IDEMPOTENCY_RETENTION_MS + 1 })
+    const fresh = receipt({ key: 'fresh', at: now })
     const handle = await storage.open(PROMPT_IDEMPOTENCY_SPEC)
     await handle.table('receipts').put(devLeadPromptIdempotencyKey(old.leadSessionId, old.targetSessionId, old.key), old)
     await handle.table('receipts').put(devLeadPromptIdempotencyKey(fresh.leadSessionId, fresh.targetSessionId, fresh.key), fresh)
@@ -116,7 +116,7 @@ describe('DevLeadPromptIdempotencyStore', () => {
     expect(PROMPT_IDEMPOTENCY_SPEC.name).toBe('devlead_idempotency')
     expect(PROMPT_IDEMPOTENCY_SPEC.version).toBe(1)
     expect(PROMPT_IDEMPOTENCY_SPEC.layout).toBe('per-record')
-    expect(PROMPT_IDEMPOTENCY_SPEC.invalidRecords).toBe('backup-and-skip')
+    expect(PROMPT_IDEMPOTENCY_SPEC).not.toHaveProperty('invalidRecords')
     expect(PROMPT_IDEMPOTENCY_SPEC.tables.receipts.valueSchema).toBeDefined()
 
     const key = devLeadPromptIdempotencyKey('lead/一', 'target?二', 'key/+ 三')
@@ -127,24 +127,24 @@ describe('DevLeadPromptIdempotencyStore', () => {
     expect(PROMPT_IDEMPOTENCY_SPEC.tables.receipts.valueSchema.safeParse({ ...receipt(), textHash: 'not-a-hash' }).success).toBe(false)
   })
 
-  it('backs up and skips corrupt records at open instead of crashing', async () => {
+  it('rejects at-rest corruption at open instead of treating it as absent', async () => {
     const storage = new FakeStorageDomain()
     const first = await DevLeadPromptIdempotencyStore.open(storageContext(storage))
-    const valid = receipt({ key: 'valid' })
     const corrupt = receipt({ key: 'corrupt' })
-    await first!.put(valid)
     await first!.put(corrupt)
     await first!.close()
     const table = storage.table('devlead_idempotency', 'receipts')
     const corruptKey = devLeadPromptIdempotencyKey(corrupt.leadSessionId, corrupt.targetSessionId, corrupt.key)
     const malformed = { ...corrupt, textHash: 'broken' }
     table.records.set(corruptKey, malformed)
+    const ctx = storageContext(storage)
+    const warn = vi.spyOn(ctx.logger, 'warn')
 
-    const second = await DevLeadPromptIdempotencyStore.open(storageContext(storage))
-    expect(second).toBeDefined()
-    expect(second!.get(valid.leadSessionId, valid.targetSessionId, valid.key)).toEqual(valid)
-    expect(second!.get(corrupt.leadSessionId, corrupt.targetSessionId, corrupt.key)).toBeUndefined()
-    expect(table.backups.get(corruptKey)).toEqual(malformed)
+    const second = await DevLeadPromptIdempotencyStore.open(ctx)
+    expect(second).toBeUndefined()
+    expect(warn.mock.calls.some(call => String(call[0]).includes('durable prompt idempotency unavailable'))).toBe(true)
+    expect(table.records.get(corruptKey)).toEqual(malformed)
+    expect(table.backups.size).toBe(0)
   })
 
   it('degrades an unreadable individual record to an absent receipt with a warning', async () => {

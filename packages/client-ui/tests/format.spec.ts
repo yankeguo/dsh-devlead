@@ -423,7 +423,7 @@ describe('reportSummary lifecycle', () => {
     expect(summary.repairPending).toBe(true)
     expect(summary.questionStatus).toBe('open')
     expect(summary.questionStatusKey).toBe('report.question.open')
-    expect(summary.tooltip).toBe(`${reportLine(QUESTION_REPORT)} (open)`)
+    expect(summary.tooltip).toBe(`${reportLine(QUESTION_REPORT)} (open · provisional)`)
   })
 
   it('treats an absent, false, or drifted repair flag as settled', () => {

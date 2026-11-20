@@ -133,6 +133,7 @@ import {
   childAnswerClaimedAt,
   childAnswerPending,
   childAnswerPresentedAt,
+  childAnswerUnknown,
 } from './child-answer-projection.ts'
 import type { DevLeadChildAnswersState } from './child-answer-projection.ts'
 import {
@@ -754,6 +755,9 @@ export class DevLeadService extends Service {
    */
   private rehydrated = false
 
+  /** Whether the current lead/watch index is complete enough for prompt authorization. */
+  private supervisionIndexComplete = false
+
   /** In-flight rehydration attempt, so concurrent readiness triggers share it. */
   private rehydrating: Promise<void> | undefined
 
@@ -1178,6 +1182,13 @@ export class DevLeadService extends Service {
       await run
     } finally {
       this.rehydrating = undefined
+      if (!this.rehydrated && !this.supervisionIndexComplete && !this.disposed) {
+        // The confirmation timer may have fired while a slow scan was in
+        // flight. Re-arm only after that scan settles, or a transient failure
+        // could otherwise leave no retry outstanding forever.
+        this.disposeRehydrationRetry()
+        this.armRehydrationRetry(true)
+      }
     }
   }
 
@@ -1195,6 +1206,11 @@ export class DevLeadService extends Service {
   private async runRehydration(): Promise<void> {
     if (this.rehydrated || this.disposed) return
     const queryReady = this.ctx.get('sessionQuery') !== undefined
+    if (queryReady || this.ctx.get('sessionPersistence') !== undefined) {
+      // A corpus exists now: the previous live-only authorization is stale
+      // until the new readiness barrier and complete scan finish.
+      this.supervisionIndexComplete = false
+    }
     // The live-attach fallback needs no corpus service, so it always runs now.
     try {
       const attached = this.liveAttachLeads()
@@ -1204,6 +1220,11 @@ export class DevLeadService extends Service {
       this.ctx.logger.warn(`devlead: cold lead rehydration failed: ${thrownMessage(error)}`)
     }
     if (!queryReady) {
+      if (this.ctx.get('sessionPersistence') === undefined) {
+        // No persisted corpus exists yet: live prompting is allowed, but keep
+        // the retry armed so a late binding can install a cold supervisor.
+        this.supervisionIndexComplete = true
+      }
       this.armRehydrationRetry(false)
       return
     }
@@ -1217,19 +1238,25 @@ export class DevLeadService extends Service {
     await new Promise<void>((resolve) => { setTimeout(resolve, 0) })
     if (this.rehydrated) return
     if (this.ctx.get('sessionQuery') === undefined) {
+      if (this.ctx.get('sessionPersistence') === undefined) {
+        this.supervisionIndexComplete = true
+      }
       this.armRehydrationRetry(false)
       return
     }
     if (this.ctx.get('sessionPersistence') === undefined) {
       // A Host that never composes persistence has no cold corpus to recover; a
       // Host that composes it later is picked up by the armed inject retry.
+      this.supervisionIndexComplete = true
       this.armRehydrationRetry(true)
       return
     }
-    await this.awaitCorpusReady()
+    const corpusReady = await this.awaitCorpusReady()
     if (this.rehydrated || this.disposed) return
+    let scanComplete = false
     try {
-      const scan = await this.persistedLeadRecords(true)
+      const scan = await this.persistedLeadRecords(true, corpusReady)
+      scanComplete = scan.complete
       this.recoveredActive = [...scan.active]
       // A lead resumed while the scan was in flight already has an
       // authoritative live index (`agent/created` → `syncLead`); replaying the
@@ -1241,7 +1268,9 @@ export class DevLeadService extends Service {
       this.ctx.logger.warn(`devlead: cold lead rehydration failed: ${thrownMessage(error)}`)
     }
     if (this.disposed) return
-    this.finalizeRehydration()
+    this.supervisionIndexComplete = corpusReady && scanComplete
+    if (this.supervisionIndexComplete) this.finalizeRehydration()
+    else this.armRehydrationRetry(true)
   }
 
   /**
@@ -1254,14 +1283,14 @@ export class DevLeadService extends Service {
    * up is observably inconsistent. The barrier is best-effort — after the bound
    * it warns once and lets the scan proceed.
    */
-  private async awaitCorpusReady(): Promise<void> {
+  private async awaitCorpusReady(): Promise<boolean> {
     const deadline = Date.now() + REHYDRATION_READINESS_TIMEOUT_MS
     let probe = await this.probeCorpus(deadline)
     while (!this.disposed && probe?.verifiable === true && probe.ids === undefined && Date.now() < deadline) {
       await this.readinessSleep(REHYDRATION_READINESS_POLL_MS)
       probe = await this.probeCorpus(deadline)
     }
-    if (this.disposed) return
+    if (this.disposed) return false
     const ids = probe?.ids
     if (ids === undefined) {
       if (probe?.verifiable === true) {
@@ -1270,9 +1299,9 @@ export class DevLeadService extends Service {
           + `${REHYDRATION_READINESS_TIMEOUT_MS}ms; cold lead rehydration proceeds best-effort`,
         )
       }
-      return
+      return false
     }
-    if (ids.size === 0) return
+    if (ids.size === 0) return true
     let consistent = false
     while (!this.disposed && Date.now() < deadline) {
       const listed = await this.listedPersistedSessionIds(deadline)
@@ -1282,7 +1311,7 @@ export class DevLeadService extends Service {
       }
       await this.readinessSleep(REHYDRATION_READINESS_POLL_MS)
     }
-    if (this.disposed) return
+    if (this.disposed) return false
     if (!consistent) {
       // One last check: the corpus may have become consistent during the final
       // poll's wait.
@@ -1293,6 +1322,7 @@ export class DevLeadService extends Service {
         'devlead: the persisted Session corpus is still warming up; cold lead rehydration proceeds best-effort',
       )
     }
+    return consistent
   }
 
   /**
@@ -1430,9 +1460,10 @@ export class DevLeadService extends Service {
    * @param queryReady - whether `sessionQuery` was composed when the scan ran.
    */
   private armRehydrationRetry(queryReady: boolean): void {
-    if (this.rehydrated || this.rehydrationRetry !== undefined) return
+    if (this.disposed || this.rehydrated || this.rehydrationRetry !== undefined) return
     const disposers: Array<() => unknown> = []
     const retry = (): undefined => {
+      if (this.disposed) return undefined
       if (this.rehydrated) {
         this.disposeRehydrationRetry()
         return undefined
@@ -1446,11 +1477,19 @@ export class DevLeadService extends Service {
     }
     const injection = this.ctx.inject(['sessionPersistence'], retry)
     disposers.push(() => injection.dispose())
+    const cacheInjection = this.ctx.inject(['sessionProjectionCache' as never], retry)
+    disposers.push(() => cacheInjection.dispose())
     if (!queryReady) {
       // The query engine may load after this service in an unusual composition
       // order; a lifecycle event is the deterministic signal to re-check.
       disposers.push(this.ctx.on('agent/created', retry))
       disposers.push(this.ctx.on('session/event', retry))
+    } else if (!this.supervisionIndexComplete) {
+      // An incomplete scan must be recoverable after transient read/cache
+      // failures, not become a permanent prompt ban.
+      const timer = setTimeout(retry, 250)
+      timer.unref?.()
+      disposers.push(() => clearTimeout(timer))
     }
     this.rehydrationRetry = disposers
     this.ctx.logger.debug(
@@ -2922,6 +2961,13 @@ export class DevLeadService extends Service {
 
   /** Hard prompt-side supervision gate; report routing deliberately stays unchanged. */
   private assertPromptSupervision(agent: Agent, targetId: string): void {
+    if (!this.supervisionIndexComplete) {
+      throw new DevLeadError(
+        `cannot prove the complete DevLead supervisor set for Session "${targetId}" yet; `
+        + 'no prompt was delivered — wait for cold-lead rehydration/projection cache recovery and retry',
+        'DEVLEAD_SESSION_UNAVAILABLE',
+      )
+    }
     if (this.hub === undefined) return
     const archived = new Set(
       (this.ctx.get('workspaceRegistry')?.archivedSessionIds ?? []).map(id => String(id)),
@@ -3754,8 +3800,10 @@ export class DevLeadService extends Service {
    */
   private async persistedLeadRecords(
     scanPersisted: boolean,
-  ): Promise<{ readonly leads: DevLeadPersistedLead[]; readonly active: DevLeadActiveSession[] }> {
+    corpusReady = true,
+  ): Promise<{ readonly leads: DevLeadPersistedLead[]; readonly active: DevLeadActiveSession[]; readonly complete: boolean }> {
     const leads = new Map<string, DevLeadPersistedLead>()
+    let complete = corpusReady
     const active: DevLeadActiveSession[] = []
     const archived = new Set(
       (this.ctx.get('workspaceRegistry')?.archivedSessionIds ?? []).map(id => String(id)),
@@ -3764,15 +3812,17 @@ export class DevLeadService extends Service {
       if (lead.sessionId.length === 0 || lead.watched.length === 0) return
       leads.set(lead.sessionId, lead)
     }
-    const result = (): { readonly leads: DevLeadPersistedLead[]; readonly active: DevLeadActiveSession[] } => ({
+    const result = (): { readonly leads: DevLeadPersistedLead[]; readonly active: DevLeadActiveSession[]; readonly complete: boolean } => ({
       leads: [...leads.values()],
       active,
+      complete,
     })
     for (const lead of this.liveAttachLeads()) remember(lead)
     if (!scanPersisted) {
       // Live-attach fallback only: without the optional persistence binding the
       // query engine cannot list a persisted corpus, so a cold scan would read
       // nothing and must not burn the unknown-read budget.
+      complete = complete && this.ctx.get('sessionPersistence') === undefined
       if (this.ctx.get('sessionQuery') === undefined) {
         this.ctx.logger.debug('devlead: no Session query engine is composed; cold lead rehydration scans live Sessions only')
       }
@@ -3784,9 +3834,13 @@ export class DevLeadService extends Service {
       return result()
     }
     const query = this.ctx.get('sessionQuery')
-    if (query === undefined) return result()
+    if (query === undefined) {
+      complete = complete && this.ctx.get('sessionPersistence') === undefined
+      return result()
+    }
     const cache = projectionCacheOf(this.ctx)
     if (cache === undefined) {
+      complete = false
       this.ctx.logger.warn(
         'devlead: this Host composes no Session projection cache, so cold lead rehydration reads no persisted logs; '
         + 'only live lead Sessions are rehydrated',
@@ -3797,6 +3851,7 @@ export class DevLeadService extends Service {
     try {
       records = await query.listSessions()
     } catch (error: unknown) {
+      complete = false
       this.ctx.logger.warn(`devlead: could not list persisted Sessions for cold lead rehydration: ${thrownMessage(error)}`)
       return result()
     }
@@ -3811,10 +3866,13 @@ export class DevLeadService extends Service {
       // Occupancy needs enabled-with-empty-watch too, so use the active
       // verdict rather than the lead-indexing one that deliberately skips it.
       const prefilter = devLeadActivePrefilterOf(cache, record.header)
-      if (prefilter === 'inactive') continue
-      if (prefilter === 'unknown') {
+      // Negative cache rows are not authorization proof: a stale false could
+      // hide a foreign supervisor. Read exact logs for inactive/unknown rows
+      // under the same bounded budget instead of trusting the negative.
+      if (prefilter !== 'active') {
         if (unknownReads >= MAX_COLD_LEAD_LOG_READS) {
           capped = true
+          complete = false
           continue
         }
         unknownReads += 1
@@ -3826,6 +3884,7 @@ export class DevLeadService extends Service {
         events = snapshot.events
         inheritedEventCount = snapshot.inheritedEventCount
       } catch (error: unknown) {
+        complete = false
         if (!warnedRead) {
           warnedRead = true
           this.ctx.logger.warn(`devlead: could not read a cold lead candidate Session log: ${thrownMessage(error)}`)
@@ -3838,6 +3897,7 @@ export class DevLeadService extends Service {
         if (state.failure !== null) break
       }
       if (state.failure !== null) {
+        complete = false
         if (!warnedCorrupt) {
           warnedCorrupt = true
           this.ctx.logger.warn(`devlead: skipping a cold lead candidate with a corrupt DevLead replay: ${state.failure}`)
@@ -5037,7 +5097,7 @@ export class DevLeadService extends Service {
         return { status: 'admitted', at: Date.now() }
       }
       const state = this.childAnswersHandle.stateOf(child.session)
-      if (!state.complete) return { status: 'unknown' }
+      if (childAnswerUnknown(state, discard.messageId)) return { status: 'unknown' }
       const presentedAt = childAnswerPresentedAt(state, discard.messageId)
       if (presentedAt !== undefined) return { status: 'presented', at: presentedAt }
       const claimedAt = childAnswerClaimedAt(state, discard.messageId)
@@ -5055,7 +5115,7 @@ export class DevLeadService extends Service {
     // Unreadable or bounded-overflow history is UNKNOWN, never a genuine
     // discard: keep the question provisional and retry without accepting a
     // stale open as final.
-    if (state === undefined || !state.complete) return { status: 'unknown' }
+    if (state === undefined || childAnswerUnknown(state, discard.messageId)) return { status: 'unknown' }
     const presentedAt = childAnswerPresentedAt(state, discard.messageId)
     if (presentedAt !== undefined) return { status: 'presented', at: presentedAt }
     const claimedAt = childAnswerClaimedAt(state, discard.messageId)
@@ -6008,12 +6068,11 @@ export class DevLeadService extends Service {
     const observer = this.newChildObserver(sessionId)
     const state = this.childAnswersHandle.stateOf(session)
     const derived = observer.restore(state, {
-      finalizeCandidates: state.complete && !this.interrupting.has(sessionId),
+      finalizeCandidates: !this.interrupting.has(sessionId),
     })
     this.rememberChildObserver(sessionId, observer)
-    if (!state.complete) {
-      this.ctx.logger.warn(`devlead: child answer projection for Session "${sessionId}" exceeded its bounded history; survival remains unknown instead of accepting a partial replay`)
-      return []
+    if (state.overflow.claimed || state.overflow.cancelCandidates || state.overflow.presented || state.overflow.discards) {
+      this.ctx.logger.warn(`devlead: child answer projection for Session "${sessionId}" evicted bounded history; only messages without other survival evidence remain unprovable`)
     }
     return derived
   }

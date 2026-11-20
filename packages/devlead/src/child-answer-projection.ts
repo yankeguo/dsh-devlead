@@ -57,6 +57,14 @@ export interface ChildAnswerDiscardFact extends ChildAnswerRef {
   readonly seq: number
 }
 
+/** Families that evicted observations; only unresolvable messages are unknown. */
+export interface DevLeadChildAnswerOverflow {
+  readonly claimed: boolean
+  readonly cancelCandidates: boolean
+  readonly presented: boolean
+  readonly discards: boolean
+}
+
 /** Complete Host/wire state of the bounded child-answer fold. */
 export interface DevLeadChildAnswersState {
   readonly nextTurn: readonly ChildAnswerPendingItem[]
@@ -65,8 +73,8 @@ export interface DevLeadChildAnswersState {
   readonly cancelCandidates: readonly ChildAnswerTimedItem[]
   readonly presented: readonly ChildAnswerPresentedItem[]
   readonly discards: readonly ChildAnswerDiscardFact[]
-  /** False after any bounded family evicted a fact; survival must be unknown. */
-  readonly complete: boolean
+  /** Per-family eviction markers; never a global liveness failure. */
+  readonly overflow: DevLeadChildAnswerOverflow
 }
 
 /** Empty child-answer state. */
@@ -78,7 +86,7 @@ export function emptyDevLeadChildAnswersState(): DevLeadChildAnswersState {
     cancelCandidates: [],
     presented: [],
     discards: [],
-    complete: true,
+    overflow: { claimed: false, cancelCandidates: false, presented: false, discards: false },
   }
 }
 
@@ -120,7 +128,12 @@ export const devLeadChildAnswersStateSchema: ZodType<DevLeadChildAnswersState> =
   cancelCandidates: zod.array(timedSchema),
   presented: zod.array(presentedSchema),
   discards: zod.array(discardSchema),
-  complete: zod.boolean(),
+  overflow: zod.object({
+    claimed: zod.boolean(),
+    cancelCandidates: zod.boolean(),
+    presented: zod.boolean(),
+    discards: zod.boolean(),
+  }).strict(),
 }).strict() as ZodType<DevLeadChildAnswersState>
 
 /** Extract runtime-stamped answer metadata from one inserted message. */
@@ -139,15 +152,15 @@ function withoutId<T extends { readonly id: string }>(items: readonly T[], id: s
   return items.filter(item => item.id !== id)
 }
 
-/** Upsert one bounded id-keyed observation, returning completeness separately. */
+/** Upsert one bounded id-keyed observation and report only its family's overflow. */
 function upsert<T extends { readonly id: string }>(
   items: readonly T[],
   value: T,
-  complete: boolean,
-): { readonly items: T[]; readonly complete: boolean } {
+  overflow: boolean,
+): { readonly items: T[]; readonly overflow: boolean } {
   const next = [...withoutId(items, value.id), value]
-  if (next.length <= DEVLEAD_CHILD_ANSWER_OBSERVATION_MAX) return { items: next, complete }
-  return { items: next.slice(next.length - DEVLEAD_CHILD_ANSWER_OBSERVATION_MAX), complete: false }
+  if (next.length <= DEVLEAD_CHILD_ANSWER_OBSERVATION_MAX) return { items: next, overflow }
+  return { items: next.slice(next.length - DEVLEAD_CHILD_ANSWER_OBSERVATION_MAX), overflow: true }
 }
 
 /**
@@ -183,18 +196,18 @@ export function applyDevLeadChildAnswers(
     const nextLane = [...lane.slice(0, start), ...inserted, ...lane.slice(start + count)]
     let claimed = state.claimed
     let cancelCandidates = state.cancelCandidates
-    let complete = state.complete
+    let overflow = state.overflow
     for (const item of removed) {
       claimed = withoutId(claimed, item.id)
       if (item.answer === undefined) continue
       if (data.outcome === 'canceled') {
-        const updated = upsert(cancelCandidates, { id: item.id, ...item.answer, at: event.time }, complete)
+        const updated = upsert(cancelCandidates, { id: item.id, ...item.answer, at: event.time }, overflow.cancelCandidates)
         cancelCandidates = updated.items
-        complete = updated.complete
+        overflow = { ...overflow, cancelCandidates: updated.overflow }
       } else {
-        const updated = upsert(claimed, { id: item.id, ...item.answer, at: event.time }, complete)
+        const updated = upsert(claimed, { id: item.id, ...item.answer, at: event.time }, overflow.claimed)
         claimed = updated.items
-        complete = updated.complete
+        overflow = { ...overflow, claimed: updated.overflow }
       }
     }
     for (const item of inserted) {
@@ -206,19 +219,26 @@ export function applyDevLeadChildAnswers(
       [target]: nextLane,
       claimed,
       cancelCandidates,
-      complete,
+      overflow,
     }
   }
   if (event.type === 'user/message') {
     const id = String((event.data as { id?: unknown } | null)?.id ?? '')
     if (id.length === 0) return state
-    const updated = upsert(state.presented, { id, at: event.time }, state.complete)
+    const answer = answerMetaOf(event.data)
+    const related = answer !== undefined
+      || state.claimed.some(item => item.id === id)
+      || state.cancelCandidates.some(item => item.id === id)
+    // Ordinary user messages do not consume the bounded answer-presentation
+    // budget; otherwise a chatty child would permanently poison repair state.
+    if (!related) return state
+    const updated = upsert(state.presented, { id, at: event.time }, state.overflow.presented)
     return {
       ...state,
       claimed: withoutId(state.claimed, id),
       cancelCandidates: withoutId(state.cancelCandidates, id),
       presented: updated.items,
-      complete: updated.complete,
+      overflow: { ...state.overflow, presented: updated.overflow },
     }
   }
   if (event.type === 'turn/end') {
@@ -237,7 +257,10 @@ export function applyDevLeadChildAnswers(
       discards: discards.length <= DEVLEAD_CHILD_ANSWER_OBSERVATION_MAX
         ? discards
         : discards.slice(discards.length - DEVLEAD_CHILD_ANSWER_OBSERVATION_MAX),
-      complete: state.complete && discards.length <= DEVLEAD_CHILD_ANSWER_OBSERVATION_MAX,
+      overflow: {
+        ...state.overflow,
+        discards: state.overflow.discards || discards.length > DEVLEAD_CHILD_ANSWER_OBSERVATION_MAX,
+      },
     }
   }
   return state
@@ -254,7 +277,7 @@ export const devLeadChildAnswersProjectionDefinition = {
     view: (state: DevLeadChildAnswersState) => state,
     summary: false,
   },
-  stateVersion: 1,
+  stateVersion: 2,
 } satisfies ProjectionDefinition<'devLeadChildAnswers', DevLeadChildAnswersState>
 
 /** Pending-id lookup used by survival proofs. */
@@ -270,6 +293,20 @@ export function childAnswerClaimedAt(state: DevLeadChildAnswersState, messageId:
 /** Presentation instant of one answer. */
 export function childAnswerPresentedAt(state: DevLeadChildAnswersState, messageId: string): number | undefined {
   return state.presented.find(item => item.id === messageId)?.at
+}
+
+/**
+ * Whether an evicted family prevents this specific message's proof. Other
+ * messages and later admissions continue normally; there is no global latch.
+ */
+export function childAnswerUnknown(state: DevLeadChildAnswersState, messageId: string): boolean {
+  if (childAnswerPending(state, messageId)) return false
+  if (childAnswerPresentedAt(state, messageId) !== undefined) return false
+  if (childAnswerClaimedAt(state, messageId) !== undefined) return false
+  return state.overflow.claimed
+    || state.overflow.cancelCandidates
+    || state.overflow.presented
+    || state.overflow.discards
 }
 
 /** Finalize all replay-tail cancellation candidates without mutating the fold. */

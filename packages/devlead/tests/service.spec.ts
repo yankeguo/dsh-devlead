@@ -4317,7 +4317,7 @@ describe('cold lead rehydration', () => {
     expect(messageText(resumed!.followups[0]!)).toContain('— turn 1 completed')
   })
 
-  it('skips a persisted Session the projection cache pre-filters as disabled', async () => {
+  it('exact-folds a stale-negative cache row and rehydrates the enabled lead', async () => {
     const controller = new FakeSessionController()
     const query = new FakeSessionQuery()
     const cache = new FakeProjectionCache()
@@ -4334,13 +4334,22 @@ describe('cold lead rehydration', () => {
       sessionController: controller,
       config: { notificationBatchMs: 0 },
     })
-    // The fast path never reads the complete log of a row that positively says
-    // "disabled".
-    expect(query.readSessionCalls).toBe(0)
+    // Authorization never trusts a negative cache row: exact-fold it so a
+    // stale-negative cannot hide a foreign supervisor.
+    expect(query.readSessionCalls).toBe(1)
+    controller.resolveHandler = () => {
+      const agent = attachPersistedLead(harness.ctx, harness.agents, {
+        sessionId: 'disabled-lead',
+        watched: ['cold-watched-child'],
+      })
+      return { agent: agent.agent }
+    }
     appendTurnEnd(requireSession(harness, 'cold-watched-child'), 1)
     await flushMicrotasks(512)
-    expect(controller.resolveCalls).toEqual([])
-    expect(harness.lead.followups).toHaveLength(0)
+    expect(controller.resolveCalls.map(String)).toContain('disabled-lead')
+    const resumed = harness.agents.resolve('disabled-lead')
+    expect(resumed).toBeDefined()
+    expect(notificationRecords(resumed!.session)).toHaveLength(1)
   })
 
   it('needs an exact fold for an enabled cache row whose log carries no enabled record', async () => {
@@ -4583,8 +4592,10 @@ describe('cold lead rehydration', () => {
     harness.ctx.provide('sessionPersistence', persistence)
     appendTurnEnd(requireSession(harness, 'cold-watched-child'), 1)
     await nextTask()
-    // 1 known-enabled candidate + at most 64 unclassified logs.
-    expect(query.readSessionCalls).toBe(65)
+    // Each attempt is capped at 1 known-enabled + 64 unclassified reads;
+    // transient failures may schedule another bounded attempt.
+    expect(query.readSessionCalls).toBeGreaterThanOrEqual(65)
+    expect(query.readSessionCalls % 65).toBe(0)
     expect(warn.mock.calls.some(call => String(call[0]).includes('corrupt DevLead replay'))).toBe(true)
     expect(warn.mock.calls.some(call => String(call[0]).includes('stopped reading unclassified'))).toBe(true)
     warn.mockRestore()

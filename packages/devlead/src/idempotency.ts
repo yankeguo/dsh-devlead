@@ -95,14 +95,14 @@ const receiptSchema = zod.object({
 }).strict()
 
 /**
- * Version-1 domain declaration. Corrupt rows are backed up and skipped at open
- * rather than making the whole optional idempotency facility unavailable.
+ * Version-1 domain declaration. The default invalid-record policy rejects the
+ * open: at-rest corruption must fail closed, never become an absent receipt
+ * that permits a duplicate side effect after restart.
  */
 export const PROMPT_IDEMPOTENCY_SPEC = {
   name: IDEMPOTENCY_DOMAIN,
   version: 1,
   layout: 'per-record',
-  invalidRecords: 'backup-and-skip',
   tables: {
     receipts: { valueSchema: receiptSchema },
   },

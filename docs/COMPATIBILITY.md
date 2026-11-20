@@ -217,8 +217,11 @@ wire projection 的 questionStatus/answerStatus 都是可选 additive 字段，�
   旧 answer-discard 队列数据全部丢弃；旧 domain 无法打开时 warn + 禁用 durable domain，不 crash、
   不静默写坏。`answer_discards` 30 天 retention 保留。
 - 非 answer 幂等改用独立 `devlead_idempotency` v1 domain，7 天 TTL；不再承诺重启后 memory window。
-  storage 不可用时只在进程内兜底并显式 warning。
-- 新增 `DEVLEAD_FOREIGN_SUPERVISOR` / `DEVLEAD_MULTIPLE_SUPERVISORS` 硬拒绝、`questionTtlMs`
+  composed storageDomain 打不开或 receipt corrupt/unreadable 时 fail closed；只有 Host 未组合
+  storageDomain 时才在进程内兜底并显式 warning。
+- 新增 `DEVLEAD_FOREIGN_SUPERVISOR` / `DEVLEAD_MULTIPLE_SUPERVISORS` 硬拒绝；无 cache、capped
+  unknown、stale-negative 或读取失败使 supervisor 集合不可证明时，prompt 以
+  `DEVLEAD_SESSION_UNAVAILABLE` fail closed。`questionTtlMs`
   （默认 24h，0 禁用）、cold open-question replay（每进程一次）、correction/background 每
   child-turn 4/8 上限。`DevLeadProjectionReport.repairPending` 是 runtime 可选投影字段。
 

@@ -41,6 +41,9 @@ import {
 import type { DevLeadReport, DevLeadReportAnswer, DevLeadReportKind } from '@yankeguo/dsh-devlead-protocol'
 import { answerSchema } from './fold.ts'
 
+/** One open-failure warning per service context (retry-safe without duplicate logs). */
+const warnedOpenContexts = new WeakSet<Context>()
+
 /** Domain/table names (must match the storage backend's safe-name rule). */
 const OUTBOX_DOMAIN = 'devlead_report_outbox'
 const OUTBOX_TABLE = 'pending'
@@ -254,7 +257,10 @@ export class DevLeadReportOutbox {
       const domain = await facility.open(OUTBOX_SPEC)
       return new DevLeadReportOutbox(ctx, domain)
     } catch (error: unknown) {
-      ctx.logger.warn(`devlead: durable report outbox unavailable: ${error instanceof Error ? error.message : String(error)}`)
+      if (!warnedOpenContexts.has(ctx)) {
+        warnedOpenContexts.add(ctx)
+        ctx.logger.warn(`devlead: durable report outbox unavailable: ${error instanceof Error ? error.message : String(error)}`)
+      }
       return undefined
     }
   }

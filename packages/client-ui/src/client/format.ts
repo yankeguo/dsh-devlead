@@ -470,7 +470,9 @@ export function reportSummary(report: DevLeadProjectionReport): DevLeadReportSum
   // keeps this client compatible with the immediately preceding protocol type;
   // only the literal boolean true is a provisional fact after the wire crossing.
   const repairPending = isQuestion && 'repairPending' in report && report.repairPending === true
-  const lifecycle = [questionStatus, answerStatus].filter(value => value !== undefined).join(' · ')
+  const lifecycle = [questionStatus, answerStatus, repairPending ? 'provisional' : undefined]
+    .filter(value => value !== undefined)
+    .join(' · ')
   const baseTooltip = isDevLeadReportKind(report.kind)
     ? reportLine(report)
     : `${who} — report ${String(report.kind)}`

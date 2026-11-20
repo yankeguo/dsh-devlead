@@ -385,8 +385,8 @@ describe('DevLeadChildAnswerObserver (durable child-log reconstruction)', () => 
       cancelCandidates: [{ id: 'cancelled', questionId: REPORT, leadId: LEAD, at: 20 }],
       presented: [{ id: 'presented', at: 30 }],
       discards: [{ messageId: 'already-discarded', questionId: REPORT, leadId: LEAD, at: 40, seq: 7 }],
-      // Completeness is a service-level admission decision, not observer state.
-      complete: false,
+      // Overflow is a service-level per-message admission decision, not observer state.
+      overflow: { claimed: true, cancelCandidates: true, presented: true, discards: true },
     }
     const persisted = { messageId: 'already-discarded', questionId: REPORT, leadId: LEAD, at: 40 }
     const cancelled = { messageId: 'cancelled', questionId: REPORT, leadId: LEAD, at: 20 }

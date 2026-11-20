@@ -12,6 +12,7 @@ import {
   childAnswerClaimedAt,
   childAnswerPending,
   childAnswerPresentedAt,
+  childAnswerUnknown,
   DEVLEAD_CHILD_ANSWER_OBSERVATION_MAX,
   devLeadChildAnswersStateSchema,
   emptyDevLeadChildAnswersState,
@@ -103,7 +104,7 @@ describe('child answer projection', () => {
     expect(devLeadChildAnswersStateSchema.parse(state)).toEqual(state)
   })
 
-  it('derives rejected-claim discards at turn/end and fails closed on overflow', () => {
+  it('derives rejected-claim discards and scopes overflow to unprovable messages', () => {
     let state = emptyDevLeadChildAnswersState()
     state = applyDevLeadChildAnswers(state, event(0, 'agent/inbox/spliced', {
       target: 'next-step', start: 0, inserted: [answerMessage('m1')],
@@ -116,8 +117,20 @@ describe('child answer projection', () => {
       { messageId: 'm1', questionId: 'question-1', leadId: 'lead-1', at: T0 + 2, seq: 2 },
     ])
     for (let index = 0; index <= DEVLEAD_CHILD_ANSWER_OBSERVATION_MAX; index += 1) {
-      state = applyDevLeadChildAnswers(state, event(3 + index, 'user/message', { id: `presented-${String(index)}` }))
+      state = applyDevLeadChildAnswers(state, event(3 + index, 'user/message', answerMessage(`presented-${String(index)}`)))
     }
-    expect(state.complete).toBe(false)
+    expect(state.overflow.presented).toBe(true)
+    expect(childAnswerUnknown(state, 'evicted-before-bound')).toBe(true)
+    expect(state.presented).toHaveLength(DEVLEAD_CHILD_ANSWER_OBSERVATION_MAX)
+  })
+
+  it('ignores ordinary user messages for answer-presentation accounting', () => {
+    let state = emptyDevLeadChildAnswersState()
+    for (let index = 0; index <= DEVLEAD_CHILD_ANSWER_OBSERVATION_MAX; index += 1) {
+      state = applyDevLeadChildAnswers(state, event(index, 'user/message', { id: `ordinary-${String(index)}` }))
+    }
+    expect(state.presented).toHaveLength(0)
+    expect(state.overflow.presented).toBe(false)
+    expect(childAnswerUnknown(state, 'ordinary-0')).toBe(false)
   })
 })

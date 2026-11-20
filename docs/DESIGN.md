@@ -203,8 +203,9 @@ DSH 的所有读取路径会保留并重放这些记录，但不会把它们投�
 - report 的 `id` 必须等于 `devLeadReportId(senderSessionId, turn, kind, message)`；`kind` 是
   `progress|blocked|decision|question|fyi`；`message` 1–4000 码点，`summary` 1–200 码点，sender/lead id
   非空；`turn` 允许 0（命令调用常发生在首个 turn 之前）。最多保留 64 条 report，按 `id` 去重。
-- 新类型 `plugin:devlead/report` 对旧版本是未知插件记录：旧 fold 忽略、不冻结，因此回滚不会
-  因新记录损坏日志；旧版本也读不到 report（预期降级）。`devLead` projection 的
+- 回滚兼容性按 record 类型区分：旧 fold 对未知类型忽略，但对它已知的 `plugin:devlead/*`
+  类型遇到新 v2 payload 会 freeze，需要 `/devlead reset`；旧版本读不到 report（预期降级），
+  不能宣称“回滚不会因新记录损坏日志”。`devLead` projection 的
   `stateVersion` 现为 7（2 新增 `reports`，3 新增 fork 继承前缀长度，4 新增 answer audit，
   5 改为按 `answerSeq` 选 latest answer，6 丢弃旧 record/无 seq answer 并要求 seq，7 新增
   repair-pending 集合并使旧 cache row 失效重折），
@@ -755,7 +756,10 @@ DevLead 无需额外工具调用即可判断是否要介入。
    以 `DEVLEAD_SESSION_UNAVAILABLE` 可重试退出，只放弃等待（drain 后台继续，race 输掉后挂
    no-op catch 防 unhandled），`withTargetAdmission` 的 finally 释放 target tail。`questionAnswerView` 对 repair in-flight/deferred/unknown
    的 question 标 `repairPending:true`（protocol view 可选字段，tool `REPORT_SCHEMA`/`reportValue`
-   透传给 get_session/notifications 消费者），UI 不把 stale terminal 当最终 open。`DevLeadProjectionReport`（wire projection 行）**不包含** `repairPending`：该字段是 service/runtime 观测，只有 tool 输出（`devlead_notifications`/`devlead_get_session`）暴露；浏览器 strip 显示最后 durable 状态，provisional 判断以 tool 读取为准。这是已知的 Phase 2 投影缺口（若要把 repair 状态带进浏览器，需要把 runtime repair 状态并入 projection）。
+   透传给 get_session/notifications 消费者），UI 不把 stale terminal 当最终 open。Batch 1 已补齐
+   `DevLeadProjectionReport` 的可选 `repairPending`：runtime 集合经 whole-value
+   `plugin:devlead/repair` 驱动 wire projection，浏览器 strip 与 tool 读取都能显示 provisional；
+   它不是 answer 的 durable 完成证明。
    resolvedAnswer 对 same-message presented 优先于 durable terminal，claimed/admitted 与
    durable terminal 按 at 比较（更晚 live fact 胜出）；seed 对 admitted 也要求 terminal.at
    严格更晚才覆盖。
@@ -1858,6 +1862,11 @@ question 路由。
   - watcher 数 = 1 且是另一个 lead → 拒绝 `DEVLEAD_FOREIGN_SUPERVISOR`。
   - watcher 数 > 1 → 一律拒绝 `DEVLEAD_MULTIPLE_SUPERVISORS`，即使 caller 是 active incumbent；
     先由人类关闭一个 lead 或解除冲突关注，不提供 warning/config 回退。
+  - 无 projection cache、unknown/capped 扫描、stale-negative、读取失败或语料未就绪导致 supervisor
+    集合不可证明完整 → `DEVLEAD_SESSION_UNAVAILABLE`，不投递；stale-negative 不再作为负判定信任，
+    必须 exact-fold，避免 foreign supervisor 隐身。无持久语料的 Host 仍按 live-only 可用。每次有 corpus
+    的重扫先清回不完整状态，只有完整扫描才 finalize；不完整扫描在 finally 重新调度 250ms/optional-service
+    重试，慢失败后可恢复，不形成永久 prompt 禁令。
 - **不能 prompt 另一个 DevLead Session**：target `isEnabled === true` 时拒绝
   `DEVLEAD_INVALID_INPUT`，防止 lead-to-lead 循环。当前只拒绝 self；这是 Proposed 变更。
 - subagent Session 已经不在 `collectSessionIds` / `resolveSessionReference` 的可寻址集合里，
