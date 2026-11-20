@@ -16,6 +16,61 @@
     覆盖 phase 2。
   - rc.4 只改 DeepSeek 流式拒答的 LLM 错误码；DevLead 不分类该错误码。
   - rc.5 只改 web search provider 选择（见下）；DevLead 不读取或调用该 API。
+- `plugin records`（`appendPluginRecord` / `PluginRecordMap`）：rc.1–rc.5 均存在；这是
+  **experimental、调用方受限**的扩展点，不是公开契约，Session format migration 为
+  best-effort（详见下节）。DevLead 的全部 durable 状态都依赖它。
+
+## 实验性扩展点与 deprecated API 债务
+
+### plugin records（全部 durable 状态的基础）
+
+DevLead 的全部 durable 状态——`plugin:devlead/mode` / `watch` / `notification` / `report` /
+`report-answer` / `reset`——都通过
+`appendPluginRecord(session, type, payload)` 写入，并在
+`@deepseek-ai/dsh-session/types` 的 `PluginRecordMap` 中声明。rc.1 与 rc.5 的原文一致
+（`dsh-v0.2.2-rc.1` / `dsh-v0.2.2-rc.5` 的 `packages/core/session/README.md`
+「Write experimental plugin records」）：
+
+> `appendPluginRecord(session, type, data)` appends one plugin record for a package under
+> `packages/experimental/`; ... **Plugins outside this repository must not call it either**,
+> although no repository check can inspect them.
+
+同一节还要求记录写入 `PluginRecordMap`，并说明该 map 是实验性包声明自身状态的机制；
+`docs/subsystems/session.md`「Plugin records」重复了这一限定；
+`docs/experimental-persistence-catalog.md` 写明这些记录不进入 `SessionEventMap`、persistence
+schema 指纹或 compatibility history，且 format migrations retain them on a best-effort basis；
+`packages/core/session/README.md`「Write experimental plugin records」末段也写明 Session format
+migration keeps them on a best-effort basis。因此：
+
+- rc.1–rc.5 都提供该 API，但它是 **experimental、调用方受限**的扩展点，不是公开稳定契约。
+- 本仓库的使用是**务实 workaround**（第三方插件无法扩充仓库内生成的 `SessionEventMap`
+  词表），**没有稳定性或迁移保证**。
+- 若上游移除、收紧或改变 `appendPluginRecord` / `PluginRecordMap` / `pluginRecordOf`，
+  DevLead 的 durable 状态可能降级为仅内存、部分不可恢复或完全不可恢复；不能假设升级后旧
+  记录仍可无损读取。
+- 升级 DSH 前必须跑下节「升级门禁」；不得以“rc.1–rc.5 都有”替代稳定性判断。
+
+### `Session.snapshotEvents()`（已 deprecated）
+
+rc.1 与 rc.5 的 `packages/core/session/README.md`「Read the log」和
+`packages/core/session/src/index.ts` 的 JSDoc 都把 `snapshotEvents()`（连同 `eventAt()` /
+`ownEvents()`）标为 deprecated：
+
+> existing logic may remain unmigrated for now, but new production calls are prohibited.
+
+本仓库生产代码仍有 5 处调用（测试代码不计）：
+
+| 位置 | 当前用途 | 迁移方向 |
+| --- | --- | --- |
+| `packages/devlead/src/inbox.ts:141` | 从日志尾部反查 pending inbox 消息的 `agent/inbox/spliced` 入队时间 | 事件订阅/投影维护 message id → enqueue time，或查询引擎有界读 |
+| `packages/devlead/src/index.ts:4734` | live child 缺 observer 时回放日志做 answer survival 证明 | 事件订阅重建 observer；cold 走查询引擎 |
+| `packages/devlead/src/index.ts:4854` | `childLogEvents`：attached child 取完整快照，否则查询引擎读 log | 统一走查询引擎有界读/投影 |
+| `packages/devlead/src/index.ts:5616` | `replayChildObserver` 全量回放 child inbox 日志 | 增量事件订阅 + cold 查询引擎 |
+| `packages/tool/src/question-routing.ts:235` | 扫描当前 turn 的 `user/message` 判断是否人类发起 | turn/source 投影或按 turn 范围的有界查询 |
+
+该债务**本轮只记录、不改代码**。升级门禁：在 DSH `0.3.0`（当前 `engines.dsh` 上界）前迁移
+这些调用，或为每个调用点加能力检测与有界 fallback；若新 DSH 把 deprecated 升级为移除/硬禁止，
+必须先完成迁移再声明兼容。迁移时不要用另一个同样物化完整日志的新 reader 替换旧 reader。
 
 ## rc.5 web search 变更影响
 
@@ -48,11 +103,13 @@ rc.5 的 `dsh-web` 在未配置 `web.searchProvider` 时按模型路由选择：
 | watched 子会话问题路由（`tools/pre-execute` + `question` report） | 支持 | 支持 | 支持 | 支持 | 支持 |
 | Phase 1d answer routing（`intent`/`question_id`/`idempotency_key` + answer/correction steer + answer record + `delivery`） | 支持 | 支持 | 支持 | 支持 | 支持 |
 | Phase 1e message lanes（T2 review steer / P3/P4 action steer / P1/P2 background inject 不唤醒 + notifications/get_session 全量输出 + 指标） | 支持 | 支持 | 支持 | 支持 | 支持 |
+| plugin records（`appendPluginRecord` / `PluginRecordMap`；全部 durable 状态） | 存在‡ | 存在‡ | 存在‡ | 存在‡ | 存在‡ |
 | 可选 worktree 隔离 | 可选 bundle | 可选 bundle | 可选 bundle | 可选 bundle | 可选 bundle |
 | `agent_teams: true` | 不可用\* | 支持† | 支持† | 支持† | 支持† |
 
 \* rc.1 无 `dsh-agent-team`；DevLead 通过 duck-typed `ctx.get('agentTeams')` 探测，不静态 import。
 † Host 必须组合 agent-team；默认 `dsh-base` 从 rc.2 起包含。
+‡ 实验性、调用方受限；rc.1–rc.5 原文一致，非公开契约，Session format migration best-effort（见上节）。
 
 Workspace 三寻址（`resolveWorkspaceReference`：id → 注册路径 → trim 后大小写敏感的精确 title）
 版本无关：rc.1–rc.5 的 WorkspaceRegistry 都允许不同 canonical path 共用 display title，同 title
@@ -92,6 +149,46 @@ driver wake；rc.1 起声明，idle 只 queued 不开 turn）。lane 识别只�
 新增输出字段（wakeSuppressedByReportId/wakeSuppressionReason、report lane/deliveryState）与
 wire projection 的 questionStatus/answerStatus 都是可选 additive 字段，旧 bundle/旧记录兼容。
 指标是进程内低基数 counters，不依赖 Host API。
+
+## 公开但少文档的 core service 假设
+
+以下两条行为在 DSH 包 README / 代码中公开，但没有被承诺为稳定的第三方插件契约；DevLead 把它们
+当作已实现的隐式假设，并各自保留 fallback。这里只文档化，不改行为：
+
+1. **`ctx.get('sessionPersistence').list()` 作为 query 语料就绪信号。** 真实 Session query
+   engine 通过自己的 scheduled `ctx.inject` 绑定 `sessionPersistence`；在绑定完成前
+   `sessionQuery.listSessions()` 可能只返回 live 行。DevLead 在冷重建前比较 persistence
+   `list()` 的 stored Session id 集合与 query listing：最多等 2s（100ms 轮询），一致后做唯一
+   一次权威扫描；超时只 warning 并 best-effort 继续，缺少该可选服务时跳过屏障。依据：
+   `@deepseek-ai/dsh-session-persistence` README（`list()` 返回 one snapshot per visible
+   stored session）与 rc.1–rc.5 的 `session-query` optional binding 行为。假设是 `list()`
+   完整且 id 与 query listing 可比；DSH 没有把它文档化为“就绪探针”。
+2. **`sessionProjectionCache` eager checkpoint。** 冷重建与全局单活准入用
+   `cachedSnapshot(header)` 的 `devLead` 行做零 I/O 预筛：`enabled:false` 直接跳过日志、
+   `enabled:true` 才是候选、无法分类则精确 fold。负判定的安全性依赖 DevLead 在 mode/watch/
+   reset 的 durable 写入后主动 `await cache.write(session)`，以及 DSH 的缓存契约“the log
+   leads and the cache follows ... never ahead of it”。若服务没有 `write` 或写入失败，
+   DevLead warning 后走精确 fold；无法分类的行有 64 条全量日志读取上限。依据：
+   `@deepseek-ai/dsh-session-projection-cache` README 与 `docs/capability-seams.md`
+   （`ctx.sessionProjectionCache`）；该 README 只描述 creation / turn-end / disposal 三个
+   mandatory write point，没有把 `write()` 单独承诺为第三方插件契约。
+
+## 升级门禁
+
+升级 DSH（任一新 rc 或进入 0.3.0）前必须全部通过：
+
+1. `pnpm verify` 与 `pnpm check:packages`（类型检查仍按最旧 rc.1 devDeps）。
+2. 在目标 DSH 上重跑[真实 E2E](#真实-e2e)：`--no-worktree` 至少覆盖 installed + patch；
+   声明 worktree / Team 能力时跑完整组合。发布前的完整重跑仍按 [PUBLISHING](PUBLISHING.md)。
+3. 核对实验性扩展点：`appendPluginRecord` / `PluginRecordMap` / `pluginRecordOf` 仍存在，
+   `packages/core/session/README.md` 的调用方限制与 Session format migration best-effort 条款
+   未变；若变化，先评估 durable 状态的迁移/降级路径。
+4. 核对 `Session.snapshotEvents()` 仍存在且语义未变；若被移除或从 deprecated 升级为硬禁止，
+   先完成本页记录的迁移或能力检测。
+5. 核对能力矩阵依赖的 Host API（Team / worktree / inbox / stop / question routing）与
+   projection / summary 契约仍存在。
+
+任一项失败或上游 API 语义变化时，不得宣称兼容；应修复、显式降级并在本页与 README 记录。
 
 ## 真实 E2E
 
@@ -164,6 +261,8 @@ lane/deliveryState、blocked/decision action steer、真实 T1 followup / T2 rev
 
 ## 维护注意
 
+- 每次 DSH 升级先走「升级门禁」，再跑本页命令；plugin records 与 `Session.snapshotEvents()`
+  是两条明确的非稳定依赖，不要把它们当作已发布契约。
 - 每次 DSH rc 升级先跑本页命令；如果 rc.5+ 改动 `data-row-key`、slot id 或
   `--dsh-sidebar-paint-inset`，需同步 client-ui 的 CSS 与 i18n 测试。
 - 不要为了 rc.5 把 `engines.dsh` 缩窄到 `>=0.2.2-rc.5`；目标仍是 rc.1–rc.5。

@@ -46,12 +46,20 @@
 | 14 个主工具 + 1 个汇报工具 | 注册/列出/关闭 Workspace，列出 Host 模型与 Agent preset，创建（继承或固定模型/Agent Teams）/读取/续写/归档/恢复/关注 Session，查看/撤回排队 inbox 输入，读取通知/汇报摘要；已关注的非 DevLead 会话可用 `devlead_report` 单向汇报（见[模型工具](#模型工具)） |
 | 人类命令 | `/devlead`（状态）、`/devlead on\|off`、`/devlead reset`（损坏状态恢复）、`/devlead watch\|unwatch <session>`；会话支持完整 id 或唯一前缀 |
 | 通知回路 | 已关注会话的 `turn/end` 写入持久通知记录并按 lane 投递：completed/forked 按合并窗口唤醒 DevLead，失败/被打断的 turn 以立即 steer 送达 review 唤醒，blocked/decision/question 报告走 action-required steer，progress/fyi 报告注入 background 上下文但不唤醒（冷 lead 默认 resume，background 除外）；关注关系索引在 Host 重启后从持久记录重建，已 dispose 的 lead 继续观察（见[通知机制](#通知机制)） |
-| 事件溯源 | 模式/关注集合/通知/中途汇报/reset 全部是可忽略的 `plugin:devlead/*` 记录，严格回放校验，可跨重启 / 恢复（fork 会复制日志，但被继承的记录不参与 fold，forked subagent 不会继承模式） |
+| 事件溯源 | 模式/关注集合/通知/中途汇报/answer 记录/reset 全部是可忽略的 `plugin:devlead/*` 记录，严格回放校验，可跨重启 / 恢复（fork 会复制日志，但被继承的记录不参与 fold，forked subagent 不会继承模式） |
 | 损坏状态恢复 | 损坏的 `plugin:devlead/*` 记录会冻结 fold；人类专属 `/devlead reset`（或冻结时的 `/devlead off`）追加 `plugin:devlead/reset` 记录，让三个 projection 回到默认 disabled 状态（见[通知机制](#通知机制)） |
 | Session projection | `devLead` projection（`{ enabled, sessions, notifications, reports }`）把状态同步到浏览器，无需自定义 Remote API；summary 级的 `devLeadMode`（`{ enabled }`）与 `devLeadWatch`（`{ sessions }`）随每个 Session 列表行下发，供侧边栏渲染激活 lead 与已关注标记 |
 | 界面 | composer 工具条里带 DevLead 文本的图标按钮是 top-level Session 的唯一开关，两态都存在（关闭态发 `/devlead on`、开启态发 `/devlead off`）；开启后 composer 上方出现只读 DevLeadBar：已关注会话数/运行中数、最近一条通知；状态条不带开关；激活 lead 行有强调色 ring（无行尾图标），已关注行有弱化准星图标 |
 | 权限模型 | 模式开关只能由人类命令/UI 触发；通知是运行时提示而非人类指令（见[权限模型](#权限模型)） |
 | 一键安装 | bundle 的 `cordis.patch.yml` 插入全部 4 个运行时插件行，也可单独安装某个包 |
+
+> **实验性扩展点依赖。** DevLead 的全部 durable 状态都通过 DSH 实验性、调用方受限的
+> plugin-record API（`appendPluginRecord` + `PluginRecordMap`）保存。rc.1 与 rc.5 的原文都写明
+> 该 API 只供 `packages/experimental/` 下的包使用，且“Plugins outside this repository must
+> not call it either”；记录是 ignorable 的，Session format migration 只做 **best-effort**。
+> 第三方插件无法扩充 `SessionEventMap`，所以本仓库把它当作务实 workaround，而**不是稳定契约**：
+> 上游移除或改变语义可能让持久状态降级为仅内存或不可恢复。升级 DSH 前见
+> [DSH 版本兼容矩阵](#dsh-版本兼容矩阵) 与 [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md)。
 
 ## 界面
 
@@ -185,8 +193,16 @@ staged 发布辅助脚本（`stage-release.mjs`、`promote-release.mjs`、`trust
 | `devlead_list_agent_presets` | 支持 | 支持 | 支持 | 支持 | 支持 | `dsh-web-app` 从 rc.1 起组合 agent-presets；每个版本都通过真实 roster 验证（`standard` 为默认） |
 | 派发模型选择 + `reasoning_effort`（`agent.model.select`） | 支持 | 支持 | 支持 | 支持 | 支持 | 仅 Session 级；不改 profile 默认 |
 | `devlead_list_models`（`sessionController.modelCatalog()`） | 支持 | 支持 | 支持 | 支持 | 支持 | 只读精简目录 |
+| plugin records（`appendPluginRecord` / `PluginRecordMap`；全部 durable 状态） | 存在‡ | 存在‡ | 存在‡ | 存在‡ | 存在‡ | ‡ 实验性、调用方受限；rc.1–rc.5 都存在，但非公开契约，Session format migration 为 best-effort |
 | 可选 worktree 隔离 | 可选 bundle | 可选 bundle | 可选 bundle | 可选 bundle | 可选 bundle | E2E 阶段 2 在 rc.4 / rc.5 上用官方实验 forge bundle 验证 happy path |
 | `agent_teams: true` | **不支持** — `DEVLEAD_TEAM_UNAVAILABLE`，不创建 Session | 支持\* | 支持\* | 支持\* | 支持\* | \*Host 需组合 `agent-team`；`dsh-base` 从 rc.2 起默认包含。`false`/省略在 rc.1 正常工作 |
+
+**已知兼容债务。** 生产代码仍有 5 处调用已 deprecated 的 `Session.snapshotEvents()`：
+`packages/devlead/src/inbox.ts:141`、`packages/devlead/src/index.ts:4734` / `:4854` / `:5616`、
+`packages/tool/src/question-routing.ts:235`。DSH rc.1 与 rc.5 原文为“existing logic may remain
+unmigrated for now, but new production calls are prohibited.” 迁移方向是事件订阅 / Session
+projection / 查询引擎有界读。在 DSH 0.3.0（`engines.dsh` 上界）前迁移这些调用，或加能力检测与
+有界 fallback；本轮只记录债务，不改代码。见 [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md)。
 
 rc.4 已发布到 npm（该版本的全部 `@deepseek-ai/*` 包；npm 的 `latest` tag 仍指向
 `0.2.2-rc.1`，rc.4 在 `next` tag 下，也可按精确版本安装）。它是一个小修复版本：upgrade guide
@@ -842,6 +858,10 @@ config 是整体替换）。
   的会话仍可用完整 id 或唯一前缀寻址（core 的身份解析是穷尽的，不受列表上限限制）。命令的
   候选列表与歧义提示基于有界列表 + 关注集合，但任何前缀在 watch/unwatch 变更前还会用 core
   的穷尽 resolver 确认唯一性。
+- **不修改 DSH 上游**：只消费已发布 `@deepseek-ai/*` 包与 peer 范围；不 fork、不 vendor、
+  不 patch、不要求修改版 DSH。Phase 3 曾提的 upstream ordinary-Session mailbox / ephemeral
+  context / blocking-question primitive / turn-boundary hooks 都是历史提案，2026-11-20 起
+  out of scope。唯一依赖的上游扩展点是上面的实验性 plugin-record API。
 - **不做 git 仓库创建 / clone / 通用 worktree 管理**：用 shell 工具完成，然后注册 Workspace。
   上文的可选隔离只借用已组合的实验性 DSH worktree 服务；**插件本身不执行任何 Git 操作**——
   不创建仓库、不 clone / fetch / merge、不管理分支。隔离开出的分支由 lead 安排审阅与

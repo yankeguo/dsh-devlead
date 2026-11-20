@@ -58,12 +58,22 @@ Documentation: [Design notes (中文)](docs/DESIGN.md) · [Publishing guide (中
 | 14 lead tools + 1 report tool | Register/list/remove Workspaces, list Host models and Agent presets, create (model/Agent Teams inherited or pinned)/read/continue/archive/restore/watch Sessions, inspect/retract queued inbox inputs, read the notification/report digest; watched non-lead Sessions can send a one-way `devlead_report` update (see [Model tools](#model-tools)) |
 | Human commands | `/devlead` (status), `/devlead on\|off`, `/devlead reset` (damaged-state recovery), `/devlead watch\|unwatch <session>`; sessions are addressable by full id or unique prefix |
 | Notification loop | A watched session's `turn/end` writes a durable notification and delivers it by lane: completed/forked turns wake an indexed DevLead through a coalescing window, failed/interrupted turns steer an immediate review wake, blocked/decision/question reports steer action-required wakes, and progress/fyi reports inject background context without a wake (cold leads are resumed by default except for background); the watch index is rebuilt from durable records after a Host restart, and a disposed lead keeps observing (see [Notification loop](#notification-loop)) |
-| Event sourcing | Mode / watch set / notifications / reports / reset are ignorable `plugin:devlead/*` records with strict replay validation; survive restart / resume (a fork copies the log but inherited records are ignored, so a forked subagent never inherits the mode) |
+| Event sourcing | Mode / watch set / notifications / reports / answer records / reset are ignorable `plugin:devlead/*` records with strict replay validation; survive restart / resume (a fork copies the log but inherited records are ignored, so a forked subagent never inherits the mode) |
 | Damaged-state recovery | A corrupt `plugin:devlead/*` record freezes the fold, but the human-only `/devlead reset` (or `/devlead off` on a frozen fold) appends a `plugin:devlead/reset` record that restarts all three projections from the default disabled state (see [Notification loop](#notification-loop)) |
 | Session projection | The `devLead` projection (`{ enabled, sessions, notifications, reports }`) syncs state to the browser without a custom Remote API; summary-sized companions `devLeadMode` (`{ enabled }`) and `devLeadWatch` (`{ sessions }`) ride every Session-list summary so sidebar rows can render the active lead and watched marks |
 | UI | A labelled composer-toolbar DevLead toggle (icon + text) is present in both states of a top-level Session and sends `/devlead on` or `/devlead off`. On: a status-only DevLeadBar above the composer shows the watched/running counts and the latest notification; the bar has no switch, so turning the mode off never hides the control that did it. The active lead row gets an accent ring (no trailing glyph), and watched Session rows get a quiet target glyph |
 | Permission model | The mode switch can only be triggered by human commands/UI; notifications are runtime notices, not human instructions (see [Permission model](#permission-model)) |
 | One-command install | The bundle's `cordis.patch.yml` inserts all 4 runtime plugin rows; individual packages can also be installed separately |
+
+> **Experimental DSH extension dependency.** All durable DevLead state is stored through DSH's
+> experimental, caller-restricted plugin-record API (`appendPluginRecord` + `PluginRecordMap`).
+> DSH rc.1 and rc.5 both say the writer is for packages under `packages/experimental/` and that
+> "Plugins outside this repository must not call it either"; the records are ignorable and
+> Session format migration keeps them **best-effort**. DevLead uses it as a pragmatic workaround
+> because third-party plugins cannot extend `SessionEventMap`. It is **not a stable contract**:
+> an upstream removal or semantic change can degrade the state to memory-only or make it
+> unrecoverable. See [DSH version compatibility](#dsh-version-compatibility) and
+> [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) before upgrading DSH.
 
 ## UI
 
@@ -212,7 +222,18 @@ accept every 0.2.2 release candidate instead of reporting unmet peers on rc.2+.
 | Dispatch model selection + `reasoning_effort` (`agent.model.select`) | yes | yes | yes | yes | yes | Session-level only; never rewrites the profile default |
 | `devlead_list_models` (`sessionController.modelCatalog()`) | yes | yes | yes | yes | yes | read-only compact catalog |
 | Optional worktree isolation | optional bundle | optional bundle | optional bundle | optional bundle | optional bundle | E2E phase 2 verifies the happy path with the official experimental forge bundle on rc.4 and rc.5 |
+| Plugin records (`appendPluginRecord` / `PluginRecordMap`; all durable state) | present‡ | present‡ | present‡ | present‡ | present‡ | ‡ experimental and caller-restricted; present in rc.1–rc.5 but not a public contract, and Session format migration is best-effort |
 | `agent_teams: true` | **no** — `DEVLEAD_TEAM_UNAVAILABLE`, no Session created | yes\* | yes\* | yes\* | yes\* | \*Host must compose `agent-team`; `dsh-base` includes it from rc.2. `false`/omitted work on rc.1 |
+
+**Known compatibility debt.** Production code still calls the deprecated
+`Session.snapshotEvents()` at `packages/devlead/src/inbox.ts:141`,
+`packages/devlead/src/index.ts:4734` / `:4854` / `:5616`, and
+`packages/tool/src/question-routing.ts:235`. DSH rc.1 and rc.5 mark that reader deprecated:
+"existing logic may remain unmigrated for now, but new production calls are prohibited." The
+migration direction is event subscription / Session projection / bounded reads through the
+Session query engine. Before DSH 0.3.0 (the `engines.dsh` upper bound), migrate these calls or add
+capability detection with a bounded fallback; this round documents the debt and changes no code.
+See [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) for the gate.
 
 rc.4 exists on npm as every `@deepseek-ai/*` package for that release (npm's `latest` dist-tag
 still points at `0.2.2-rc.1`; rc.4 is the `next` tag and is available by exact version). It is a
@@ -1040,6 +1061,12 @@ without it keeps the default single-checkout behavior and reports `unavailable`.
   prefix (core identity resolution is exhaustive and not capped by the listing limit). The
   command lists candidates and ambiguity hints from the bounded listing + watch set, then confirms
   any prefix with the core resolver before a watch mutation.
+- **No DSH upstream modification:** DevLead consumes published `@deepseek-ai/*` packages through
+  its peer range; it does not fork, vendor, patch, or require a modified DSH. The Phase-3 ideas
+  about an upstream ordinary-Session mailbox / ephemeral context / blocking-question primitive /
+  turn-boundary hooks are historical proposals and out of scope (2026-11-20 user constraint). The
+  only upstream extension point it relies on is the experimental plugin-record API described
+  above.
 - **No Git repository creation / clone / general worktree management:** use shell tools, then
   register the Workspace. The optional per-Session isolation described above only borrows an
   already-composed experimental DSH worktree service; the plugin itself performs no Git

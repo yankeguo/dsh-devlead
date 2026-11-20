@@ -93,12 +93,33 @@ resolution 把「profile `node_modules` 下指向 profiles 树之外的符号链
 **可忽略的插件记录** `appendPluginRecord(session, type, payload)`，类型名必须以 `plugin:` 开头。
 DSH 的所有读取路径会保留并重放这些记录，但不会把它们投射到模型可见的对话面。
 
+> **实验性扩展点依赖披露（2026-11-20）**：本节列出的全部 durable 状态——`mode` / `watch` /
+> `notification` / `report` / `report-answer` / `reset`——都建立在 DSH 的
+> `appendPluginRecord(session, type, payload)` 与 `PluginRecordMap` 声明上。DSH
+> `0.2.2-rc.1` 与 `0.2.2-rc.5` 的 `packages/core/session/README.md`「Write experimental plugin
+> records」明确：该 API 只供 `packages/experimental/` 下的包使用，`verify-plugin-record-callers`
+> 会拒绝仓库内其它 production caller，并写明 **“Plugins outside this repository must not call it
+> either”**；`docs/subsystems/session.md`「Plugin records」把 `PluginRecordMap` 定义为实验性包
+> 声明自身状态的机制，`docs/experimental-persistence-catalog.md` 说明这些记录不进入
+> `SessionEventMap`、persistence schema 指纹或 compatibility history，Session format migration
+> 只做 **best-effort**。第三方插件又无法扩充 DSH 仓库内生成的 `SessionEventMap` 词表，因此本
+> 仓库对它的使用是**务实的 workaround，不是公开稳定契约，也没有稳定性或迁移保证**。本地只在
+> `packages/devlead/src/domain.ts:152` 对 `@deepseek-ai/dsh-session/types` 做 `PluginRecordMap`
+> 模块增强，运行时从 `@deepseek-ai/dsh-session` 公开入口使用 `appendPluginRecord` /
+> `pluginRecordOf`；二者都来自已发布 npm 包，`types` 子路径也是 DSH 原文指定的声明入口，不是
+> 私有深层导入。若上游移除、收紧或改变 `appendPluginRecord` / `PluginRecordMap` /
+> `pluginRecordOf`，DevLead 的持久状态可能降级为仅内存、部分不可恢复或完全不可恢复；升级
+> DSH 前必须按 [COMPATIBILITY](COMPATIBILITY.md#升级门禁) 重跑兼容门禁，不得假设旧记录一定
+> 能随格式迁移保留。下方的严格字段解码仍是最后一道防线：迁移后语义不明的日志必须让 replay
+> 失败，而不是被静默转换。
+
 | 记录类型 | payload | 语义 |
 | --- | --- | --- |
 | `plugin:devlead/mode` | `DevLeadModeRecord` | 整个开关状态（`{ kind, version:1, enabled, at }`） |
 | `plugin:devlead/watch` | `DevLeadWatchRecord` | **完整**关注集合（`{ sessions: string[] }`，whole-value 替换） |
 | `plugin:devlead/notification` | `DevLeadNotificationRecord` | 追加一条通知（`{ notification }`） |
 | `plugin:devlead/report` | `DevLeadReportRecord` | 追加一条已关注会话的中途汇报（`{ report }`） |
+| `plugin:devlead/report-answer` | `DevLeadReportAnswerRecord` | 追加一条 answer 生命周期事实（admitted / discarded / failed 与 repair；字段与派生规则见 §4.4.6） |
 | `plugin:devlead/reset` | `DevLeadResetRecord` | 丢弃该会话**更早**的全部 DevLead 记录，三个 projection 回到空状态（`{ kind, version:1, at }`；见下） |
 
 - 记录 payload 必须 JSON-safe、带 `kind` + `version`；fold 对未知 `kind`/`version` **以及
@@ -1572,8 +1593,9 @@ If you need the human, ask them first with ask_user_question, then relay.
 - 收益有限：child 在 tool result 之后仍然要发一次 model request；bridge 省的是 turn
   边界（turn/end + turn/start + prompt 重组），不是一次模型推理。样本里全 idle question
   往返 10–30s 主要是两次模型 turn，bridge 可能只省几秒。
-- 结论：**MVP 不做**；Phase 3 如果指标显示 turn boundary 仍占主导，再做一个受
-  capability flag 保护的 bridge，并保留「turn-end + 新 turn」作为永远可用的 fallback。
+- 结论：**MVP 不做**；Phase 3 如果指标显示 turn boundary 仍占主导，再做一个**插件内**、受
+  capability flag 保护的 bridge，并保留「turn-end + 新 turn」作为永远可用的 fallback。该
+  条件性计划不涉及任何 DSH 上游改动。
 
 **自然语言提问**
 
@@ -1711,7 +1733,7 @@ Phase 1 前的 hub 只有一个 `pending` / `pendingReports` 队列和一个全�
 
 | 场景 | 行为 | fallback |
 | --- | --- | --- |
-| steer 到达时 turn 正在关闭 | 通常留在 next-step，DSH `hasPending` 开新 turn claim；但在 `turn()` 返回 false 到 `kick` 的 `finally` 把 phase 设为 idle 的窄窗口里，可能等到下一次外部 wake | 不是丢失；MVP 接受这个窄窗口，Phase 3 的 turn-boundary hook / upstream mailbox 才给强保证 |
+| steer 到达时 turn 正在关闭 | 通常留在 next-step，DSH `hasPending` 开新 turn claim；但在 `turn()` 返回 false 到 `kick` 的 `finally` 把 phase 设为 idle 的窄窗口里，可能等到下一次外部 wake | 不是丢失；MVP 接受这个窄窗口。曾考虑的 Phase 3 turn-boundary hook / upstream mailbox 自 2026-11-20 起已 out of scope（§11），本仓库不承诺该强保证 |
 | followup 到达时 turn 正在关闭 | 留在 next-turn；通常下一个 turn claim；同样可能有窄窗口 | 不是丢失；不要承诺「turn 结束后必然立即开下一 turn」 |
 | inject 到达时 turn 正在关闭 | 可能延长当前 activity，或留在 pending | idle 不请求 wake；digest 保底 |
 | answer 在 pre-step 被 reject | answerStatus `discarded`；消息未成为 `user/message` | questionStatus 回 `open`；lead 重答 |
@@ -1856,7 +1878,7 @@ Phase 1 前的 hub 只有一个 `pending` / `pendingReports` 队列和一个全�
 | answer 在 pre-step 被 reject | answerStatus discarded；question 回 open | `answerStatus:'discarded'` | lead 重答 |
 | answer 被 discard | question 回 open | `answerStatus:'discarded'` | lead 重答 |
 | interrupt `clear-all` 清掉 answer | answer discard；question open | `retainedInputs` | lead 重答 |
-| followup/steer turn-close race | admitted 后可能等下一次外部 wake | `delivery.boundary` | 不是丢失；Phase 3 强保证 |
+| followup/steer turn-close race | admitted 后可能等下一次外部 wake | `delivery.boundary` | 不是丢失；上游 turn-boundary hook 已 out of scope（§11），当前接受该窄窗口 |
 | outbox replay 重复 | 按 report id 去重 | at-least-once | digest 权威 |
 | `idempotency_key` 重复（Phase 2） | 返回原 receipt | 幂等 | 无 |
 
@@ -2056,7 +2078,13 @@ Phase 1 前的 hub 只有一个 `pending` / `pendingReports` 队列和一个全�
 | Phase 1e delta 复核修复（cold origin，已完成） | 修复 2 个 cold 语义 major：A1 cold-observed background 经 outbox/persistReport replay 会被 inject——outbox row 增加可选 `origin:'live'|'cold'` 并跨重启传给 `persistReport`，cold-origin background 只 append receipt + digest-only，绝不 route；`report()`/`persistReport()` 的 live 判定改为 Agent 是否存在（不再以 attached Session 代替）；缺省 origin 的旧 background row 按 cold 处理。A2 cold-observed background receipt append 失败无 retry——新增 `coldReportFailures` 并入同一个 1s × 8 有界 retry，重试只补 durable receipt + digest-only，cap 后 warning；action-required cold wake 语义不变。附带：`backgroundRetryAttempts` 在成功/无工作/drop/agent-undefined 时 reset（新 burst 完整 8 次）、background timer `unref()`。 | 否 | 新增 attach-only cold、cold receipt retry、cold cap、outbox origin、跨重启 replay 不 inject、attempts reset 测试；negative control 回退 source 后 5 条新测试失败；`pnpm verify`（30 文件 / 1345 tests）+ `pnpm check:packages` + rc.5 installed/patch 各 221/221、`--no-worktree` 198/198；时间线见 `docs/e2e-evidence/phase1e-cold-origin.md` |
 | Phase 1e cold-origin replay 收口（已完成） | 修复 delta 复审残留：A1 hub 侧新增 `coldQueuedReports` marker——cold queue 的 background report 即使 Agent 变 live，无 origin 的 hub-direct `persistReport` 仍按 cold 处理（只 append + digest-only，绝不 route）；marker 在 settle/drop/dedupe/degrade/watch 变化时清除、不 arm timer；`origin:'live'` 在 attach-only cold 时只补 receipt + digest-only。A2 `persistReport` 的 cold append catch 转入 `queueColdReportFailure`（1s × 8，只补 receipt），service `replayOutbox` 失败分支 arm 有界 delayed replay 并最终清 outbox row。Nit：新失败入队 reset burst（同 burst 新失败完整 8 次）；`outbox.put` 省略 origin 时保留 existing origin；README/DESIGN 记录 legacy/回滚口径。 | 否 | 新增 attach-only 无 origin persist、cold receipt retry、live-origin cold、same-burst budget、outbox same-key origin、service replay failure 测试；negative control 回退 source 后 5 条失败；`pnpm verify`（30 文件 / 1351 tests）+ `pnpm check:packages` + rc.5 installed/patch 各 221/221、`--no-worktree` 198/198；时间线见 `docs/e2e-evidence/phase1e-cold-origin-final.md` |
 | Phase 2 | `idempotency_key` durable、claimed/presented/discarded 的 durable replay/backfill、replay open question、multi-lead 硬门禁、answer TTL、background 背压、`possibleQuestion`、blocking bridge 指标评估（不写原型） | 否 | 全量 + 兼容性 + 指标复盘 |
-| Phase 3 | 仅当 Phase 2 指标支持时：blocking bridge 原型（capability flag）；以及 DSH 上游通用 ordinary-Session mailbox / ephemeral context / blocking question primitive / turn-boundary hooks | 部分是 | 上游设计 review；dsh-devlead 保留 fallback |
+| Phase 3（条件性，仅插件内） | 仅当 Phase 2 指标支持时：**插件内** blocking bridge 原型（capability flag；不涉及 DSH 上游改动）。原列的 DSH 上游通用 ordinary-Session mailbox / ephemeral context / blocking question primitive / turn-boundary hooks 是**历史提案、非本仓库目标（2026-11-20 用户明确约束，out of scope）** | 否 | blocking bridge 指标评估（条件性计划）；不启动上游设计 review，不修改/不 patch DSH |
+
+**Phase 3 上游提案（历史，out of scope）**：上表 Phase 3 行原先列入的 DSH 上游通用
+ordinary-Session mailbox / ephemeral context / blocking question primitive / turn-boundary
+hooks 是 2026-11-20 之前的设计提案；用户于 2026-11-20 明确约束**不修改、不 patch DSH 上游**，
+因此这些上游改造不是本仓库目标，不进入路线图，也不作为发布/兼容承诺。保留的只有插件内
+blocking bridge 指标评估这一条件性计划，不涉及上游改动。
 
 **MVP**：Phase 1a–1e。全部在 `dsh-devlead` 内完成，不改 DSH 源码、不改工具数量、不新增
 DSH peer 依赖。最小可交付闭环是 1b + 1c + 1d：question 快、answer 能 steer、双 wake 规则
@@ -2082,7 +2110,7 @@ DSH peer 依赖。最小可交付闭环是 1b + 1c + 1d：question 快、answer 
 
 - 不在 MVP/Phase 1–2 实现 blocking bridge / wait tool；只有 Phase 2 指标支持时，Phase 3
   才做受 capability flag 保护的原型。
-- 不做通用跨插件 message bus（DSH 上游）。
+- 不做通用跨插件 message bus（DSH 上游）；也不修改/不 patch DSH 上游（§11）。
 - 不做「真正 ephemeral context」；`background` 仍是 durable user-role context，只是不请求
   driver wake。
 - 不改变 `interrupt` 的 cancel 语义，不承诺 steer 能抢占 model request/tool batch。
@@ -2099,7 +2127,7 @@ DSH peer 依赖。最小可交付闭环是 1b + 1c + 1d：question 快、answer 
 | 3 | `devlead_report` question 直接设置 `turnEndRequested`，还是新增专用 ask 工具？ | 直接设置；不新增工具。若模型经常误用 question 结束 turn，再评估 | 人类 |
 | 4 | `progress`/`fyi` 不再唤醒是否可接受？ | 可接受；只用于非紧急背景，需要行动用 blocked/decision。README/policy 要写清 | 人类 |
 | 5 | prompt 侧 foreign/multiple supervisor 是 Phase 1 warning 还是直接硬拒绝？ | Phase 1 只日志 warning，不新增字段；Phase 2 默认硬拒绝，可配置回退 | 人类 |
-| 6 | blocking bridge 是否值得做？ | 先不做；Phase 2 末用指标判断 turn boundary 是否仍是主因。只有指标支持才进 Phase 3 原型，且必须带 timeout、取消、fallback | 人类 |
+| 6 | blocking bridge 是否值得做？ | 先不做；Phase 2 末用指标判断 turn boundary 是否仍是主因。只有指标支持才进 Phase 3 的插件内原型，且必须带 timeout、取消、fallback；不涉及 DSH 上游改动 | 人类 |
 | 7 | 自然语言 question 是否加 `possibleQuestion` 启发式？ | Phase 2 加标记但不改变 transport；避免误判打断 | 人类 |
 | 8 | 结构化 questions 是否也进 `devlead_report` 的 tool schema？ | 不进；gate 内部结构化，`devlead_report` 保持文本，避免 schema 膨胀 | 人类 |
 | 9 | `action-required` pending 上限（16/pair）和 background 上限（8/turn、16/pair）是否合适？ | 先用保守默认，E2E/真实使用后调；question 溢出必须显式报错 | 人类 |
@@ -2635,6 +2663,11 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
 
 ## 11. 非目标（本版本）
 
+- **不修改、不 patch DSH 上游**（2026-11-20 用户硬约束）：只消费已发布的 `@deepseek-ai/*`
+  npm 包与 `engines.dsh` / peer 范围；不维护 DSH fork、不 vendor、不提交上游 patch、不要求
+  上游新增 primitive。Phase 3 原列的 ordinary-Session mailbox / ephemeral context / blocking
+  question primitive / turn-boundary hooks 只是历史提案，已标为 out of scope（§4.4.12），
+  不是路线图或发布承诺。
 - 不做 git 仓库创建/clone/通用 worktree 管理（用 shell 工具完成，然后注册 Workspace）。
   可选的 per-Session 隔离（§4.3）只借用已组合的实验性 DSH worktree 服务：插件本身不执行任何
   Git 操作——不创建仓库、不 clone/fetch/merge、不管理分支；隔离分支的审阅与 merge/cherry-pick
@@ -2655,6 +2688,13 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
 本轮全面审计（对照官方 DSH `0.2.2-rc.1` 源码逐项核验 API 语义）发现并修复的问题、行为变更与
 验证证据记录在 [`AUDIT.md`](AUDIT.md)；0.2.0 的决策、落地位置与验证见同一文件的 §10 与
 [`releases/v0.2.0.md`](releases/v0.2.0.md)。
+
+**2026-11-20 文档修复（本轮）**：只读依赖审计确认本仓库未修改 DSH 上游（DSH clone clean、
+上游 HEAD、无 patch/vendor/submodule；所有 DSH 依赖均为已发布 npm devDeps 类型 + peer range，
+无未发布/深层导入）。据此补充：§3 披露 `appendPluginRecord` / `PluginRecordMap` 的实验性、
+调用方受限依赖；§4.4.12 与 §11 把上游 primitive 标为历史提案并记录「不修改/不 patch DSH
+上游」硬约束；[COMPATIBILITY](COMPATIBILITY.md) 记录 `Session.snapshotEvents()` 的 deprecated
+债务与升级门禁。本轮只改文档，未改 `packages/`、版本或 DSH。
 
 **可选插件的硬依赖审计**：本套件面向默认 DSH Web 组合（`dsh-base` + `dsh-web-app`）构建，
 不硬依赖任何实验性 bundle 或第三方插件；Workspace registry / Session controller / 标题服务
