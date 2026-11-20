@@ -2108,6 +2108,20 @@ hooks 是 2026-11-20 之前的设计提案；用户于 2026-11-20 明确约束**
 因此这些上游改造不是本仓库目标，不进入路线图，也不作为发布/兼容承诺。保留的只有插件内
 blocking bridge 指标评估这一条件性计划，不涉及上游改动。
 
+**F spike（从 DSH 核心事件派生 mode / watch / reset）— no-go（2026-11-20）**：一次性 spike
+`dsh-0af20aa2-d0de @ a7009b9`（产物已按用户决定丢弃，仅保留本条结论）评估删除 mode/watch/reset
+plugin records、改由已发布的 `command/*` / `tool/*` 核心事件派生。顺序 happy path 可以派生，
+但以下 6 个实质反例使「保持现有产品行为与 fold 等价」不成立：
+
+1. 命令 handler 在 mutation 后、`command/done` 前读回 projection 渲染结果；删 record 后读回旧值，等待 done 又无法生成 post-mutation 文本，形成循环依赖。
+2. 命令没有结构化 domain outcome：`command/run.args` 只是原始输入，`command/done` 只有人类可读 text，watch 的唯一前缀只能依赖运行时 resolver。
+3. 最终 result ≠ mutation commit：写 record 后 done 前 crash、并发 done 乱序、tool body 后 ABORTED / post-execute block，都使「只认 success result」的新 fold 与旧 fold 不等价。
+4. create/prompt 自动 watch 与失败补偿 unwatch 不经过 `devlead_watch_session`，工具事件覆盖不全。
+5. 跨会话 mode-off 没有 occupant 自己的事件，必须另留权威事实。
+6. 历史日志混合两类事实，升级 `stateVersion` 只清 cache，无法界定 cutover。
+
+结论：**不再尝试 F**；仅当 DSH 未来提供「mutation 实际提交时点 + 结构化 payload + seq 排序」的公开核心 domain event 时重估（仅给 `CommandResult` / `ToolResult` 增加 JSON 字段仍不够）。
+
 **MVP**：Phase 1a–1e。全部在 `dsh-devlead` 内完成，不改 DSH 源码、不改工具数量、不新增
 DSH peer 依赖。最小可交付闭环是 1b + 1c + 1d：question 快、answer 能 steer、双 wake 规则
 不吞状态。
@@ -2729,3 +2743,8 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
 当前为 **31 个测试文件 / 1362 tests**，installed / patch 各 **221/221**、`--no-worktree`
 **198/198**。后续 test/docs-only 复核 amend 增加 writer-only、reader 晚失败、boot warn-once 与
 mutation negative control；运行时代码和既有 E2E 对应的构建未变。
+
+**2026-11-20 F spike 收口（no-go）**：从 DSH 核心事件派生 mode/watch/reset 的一次性 spike
+（`dsh-0af20aa2-d0de @ a7009b9`）判定 no-go，6 个实质反例与重估条件见 §4.4.12；按用户决定
+丢弃 spike worktree/分支及全部一次性产物，结论同步记录在 [COMPATIBILITY](COMPATIBILITY.md)。
+本轮只改文档，`pnpm verify` 通过；未改 `packages/`、版本/tag、DSH，未 push。

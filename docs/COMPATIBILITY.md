@@ -56,6 +56,17 @@ migration keeps them on a best-effort basis。因此：
   缺失时健康 reader 仍读回既有 durable 状态。该降级只保证插件可加载与状态可见，**不提供 durable
   替代存储**；正常 API 路径仍由原记录语义与全部既有测试覆盖。
 
+### F 替代方案（核心事件派生 mode/watch/reset）— no-go（2026-11-20）
+
+2026-11-20 的一次性 spike（`dsh-0af20aa2-d0de @ a7009b9`，产物已按用户决定丢弃）评估用已发布的
+`command/*` / `tool/*` 核心事件替代 plugin records 派生 mode/watch/reset。结论 **no-go**：6 个实质
+反例（handler 在 mutation 后、`command/done` 前读回 projection；命令无结构化 domain outcome；最终
+result ≠ mutation commit；create/prompt 自动 watch 与补偿 unwatch 不经过 watch 工具；跨会话
+mode-off 无 occupant 自身事件；历史日志无 cutover 边界）详见 [DESIGN](DESIGN.md) §4.4.12。因此
+plugin records 的 experimental / 调用方受限依赖**仍然存在**，F 不是可行替代；当前缓解路径仍是
+**A 加固**（`record-api.ts` 能力探测 + 显式 memory-only 降级，见上节）与本文[升级门禁](#升级门禁)。
+仅当 DSH 提供公开的「mutation 实际提交时点 + 结构化 payload + seq 排序」核心 domain event 时重估。
+
 ### 隐私与 canonical 日志导出
 
 这些 plugin records 是 canonical session-log events。rc.1 / rc.5 的
