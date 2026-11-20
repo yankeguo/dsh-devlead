@@ -6795,3 +6795,292 @@ describe('cold-discard review round 4 (claimed survival, durable repair)', () =>
     })
   })
 })
+
+describe('cold-discard review round 5 (deferred re-prove, repair barrier, health)', () => {
+  /** Durable answer records of the lead Session, in log order. */
+  function answerRecords(harness: ServiceHarness): DevLeadReportAnswer[] {
+    return harness.leadSession.snapshotEvents().flatMap((event) => {
+      const record = pluginRecordOf(event)
+      return record?.type === DEVLEAD_REPORT_ANSWER_RECORD_TYPE
+        ? [(record.data as { answer: DevLeadReportAnswer }).answer]
+        : []
+    })
+  }
+
+  /** Register one live target Agent and announce it. */
+  function liveTarget(harness: ServiceHarness): FakeAgent {
+    const target = new FakeAgent(requireSession(harness, 'target'))
+    harness.agents.add(target)
+    harness.ctx.emit('agent/created', { agent: target.agent, source: 'resume' })
+    return target
+  }
+
+  /** One runtime-stamped answer message with a controlled identity. */
+  function answerMessage(messageId: string, questionId: string, leadId: string) {
+    return queuedMessage(messageId, {
+      kind: 'devlead',
+      form: 'relay',
+      intent: 'answer',
+      questionId,
+      senderSessionId: leadId,
+      wakeRequested: true,
+    }, `[DEV LEAD ANSWER to question ${questionId}]\nuse staging`)
+  }
+
+  /** Seed the lead's durable question + admitted m1 + a stale discarded m1. */
+  function seedStaleAudit(session: Session, leadId: string): string {
+    const q = devLeadReport({ senderSessionId: 'target', leadSessionId: leadId, turn: 1, kind: 'question', message: 'Which target?', at: T0 })
+    appendPluginRecord(session, DEVLEAD_REPORT_RECORD_TYPE, reportRecord(q))
+    appendPluginRecord(session, DEVLEAD_REPORT_ANSWER_RECORD_TYPE, reportAnswerRecord(answer({
+      reportId: q.id, leadSessionId: leadId, sessionId: 'target', messageId: 'm1', status: 'admitted', at: T0, answerSeq: 1,
+    })))
+    appendPluginRecord(session, DEVLEAD_REPORT_ANSWER_RECORD_TYPE, reportAnswerRecord(answer({
+      reportId: q.id, leadSessionId: leadId, sessionId: 'target', messageId: 'm1', status: 'discarded', at: T0 + 1, answeredAt: T0, answerSeq: 1,
+    })))
+    return q.id
+  }
+
+  /** Pre-seed durable discard rows into the storage domain before a boot/mount. */
+  async function seedQueueRows(storage: FakeStorageDomain, rows: readonly DevLeadReportAnswer[]): Promise<void> {
+    const ctx = new Context()
+    ctx.provide('storageDomain' as never, storage.asService() as never)
+    const outbox = await DevLeadReportOutbox.open(ctx)
+    for (const row of rows) await outbox!.putAnswerDiscard(row)
+    await outbox!.close()
+    await disposeContext(ctx)
+  }
+
+  /** One stale discard row of m1. */
+  function staleRow(leadId: string, questionId: string): DevLeadReportAnswer {
+    return answer({
+      reportId: questionId, leadSessionId: leadId, sessionId: 'target',
+      messageId: 'm1', status: 'discarded', at: T0 + 1, answeredAt: T0, answerSeq: 1,
+    })
+  }
+
+  /** Simulate a cold/detached lead log. */
+  function coldLead(harness: ServiceHarness): { restore(): void } {
+    const realGet = harness.ctx.sessions.get.bind(harness.ctx.sessions)
+    const spy = vi.spyOn(harness.ctx.sessions, 'get')
+      .mockImplementation((id: Parameters<typeof realGet>[0]) => String(id) === String(harness.lead.id) ? undefined : realGet(id))
+    return { restore: () => spy.mockRestore() }
+  }
+
+  /** Script a pending answer into a live target's inbox AND durable log. */
+  function scriptPending(target: FakeAgent, messageId: string, questionId: string, leadId: string): void {
+    const message = answerMessage(messageId, questionId, leadId)
+    target.inbox.append('next-step', message)
+    target.session.append('agent/inbox/spliced', { target: 'next-step', start: 0, inserted: [message] })
+  }
+
+  it('a deferred repair re-proves survival and never appends over a settled child', async () => {
+    const storage = new FakeStorageDomain()
+    const questionId = devLeadReport({ senderSessionId: 'target', leadSessionId: 'r5-order-lead', turn: 1, kind: 'question', message: 'Which target?', at: T0 }).id
+    await seedQueueRows(storage, [staleRow('r5-order-lead', questionId)])
+    const harness = await bootService({
+      leadId: 'r5-order-lead',
+      enabled: true,
+      sessionIds: ['target'],
+      watched: ['target'],
+      registerLeadAgent: false,
+      seedLead: (session) => { seedStaleAudit(session, 'r5-order-lead') },
+    })
+    const cold = coldLead(harness)
+    const target = liveTarget(harness)
+    // The answer is claimed (unsettled): the stale row restores and its repair
+    // defers against the cold lead with the claimed survival proven now.
+    scriptPending(target, 'm1', questionId, 'r5-order-lead')
+    target.claimNextStep({ present: false, turn: 1 })
+    harness.ctx.provide('storageDomain' as never, storage.asService() as never)
+    await nextTask()
+    expect(harness.service.answerDiscardHealth().pendingRepairs['r5-order-lead']).toBe(1)
+    // The child then GENUINELY settles the claim via turn/end (a real reject):
+    // the saved claimed survival no longer holds.
+    appendTurnEnd(target.session, 1)
+    await flushMicrotasks()
+    cold.restore()
+    harness.agents.add(harness.lead)
+    harness.ctx.emit('agent/created', { agent: harness.lead.agent, source: 'resume' })
+    await nextTask()
+    // The deferred repair re-proves a settled child and is dropped: it must NOT
+    // append a repair fact resurrecting the answer over the genuine reject.
+    const records = answerRecords(harness)
+    expect(records.some(record => (record.status === 'admitted' || record.status === 'claimed' || record.status === 'presented') && record.at > T0 + 1)).toBe(false)
+    expect(harness.service.questionAnswerView(harness.lead.agent, questionId)?.questionStatus).toBe('open')
+    expect(harness.service.answerDiscardHealth().pendingRepairs).toEqual({})
+  })
+
+  it('prompt admission awaits the repair barrier; the view reports repairPending meanwhile', async () => {
+    const questionId = devLeadReport({ senderSessionId: 'target', leadSessionId: 'r5-barrier-lead', turn: 1, kind: 'question', message: 'Which target?', at: T0 }).id
+    // Child empty at boot: the init repair finds no survival and does nothing.
+    const harness = await bootService({
+      leadId: 'r5-barrier-lead',
+      enabled: true,
+      sessionIds: ['target'],
+      watched: ['target'],
+      seedLead: (session) => { seedStaleAudit(session, 'r5-barrier-lead') },
+    })
+    await nextTask()
+    // Gate the lead's flush so the child-activation repair blocks mid-flight.
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    let gated = true
+    harness.ctx.on('session/flush', async (session) => {
+      if (gated && String(session.id) === 'r5-barrier-lead') {
+        gated = false
+        await gate
+      }
+    })
+    const target = new FakeAgent(requireSession(harness, 'target'))
+    scriptPending(target, 'm1', questionId, 'r5-barrier-lead')
+    harness.agents.add(target)
+    harness.ctx.emit('agent/created', { agent: target.agent, source: 'resume' })
+    await flushMicrotasks()
+    expect(harness.service.questionAnswerView(harness.lead.agent, questionId)?.repairPending).toBe(true)
+    // A different answer prompted now must await the repair, then see answered
+    // (m1 'use staging') and conflict — not admit a duplicate against stale open.
+    const prompt = harness.service.promptSession(harness.lead.agent, 'target', 'use prod', { intent: 'answer', questionId })
+    await flushMicrotasks()
+    release()
+    await expectCodeAsync(() => prompt, 'DEVLEAD_QUESTION_ALREADY_ANSWERED')
+    const view = harness.service.questionAnswerView(harness.lead.agent, questionId)
+    expect(view).toMatchObject({ questionStatus: 'answered', answerMessageId: 'm1' })
+    expect(view?.repairPending).toBeUndefined()
+  })
+
+  it('a cold-deferred repair retries when the lead becomes live (append path)', async () => {
+    const storage = new FakeStorageDomain()
+    const questionId = devLeadReport({ senderSessionId: 'target', leadSessionId: 'r5-cold-repair-lead', turn: 1, kind: 'question', message: 'Which target?', at: T0 }).id
+    await seedQueueRows(storage, [staleRow('r5-cold-repair-lead', questionId)])
+    const harness = await bootService({
+      leadId: 'r5-cold-repair-lead',
+      enabled: true,
+      sessionIds: ['target'],
+      watched: ['target'],
+      registerLeadAgent: false,
+      seedLead: (session) => { seedStaleAudit(session, 'r5-cold-repair-lead') },
+    })
+    const cold = coldLead(harness)
+    const target = liveTarget(harness)
+    scriptPending(target, 'm1', questionId, 'r5-cold-repair-lead')
+    harness.ctx.provide('storageDomain' as never, storage.asService() as never)
+    await nextTask()
+    expect(harness.service.answerDiscardHealth().pendingRepairs['r5-cold-repair-lead']).toBe(1)
+    cold.restore()
+    harness.agents.add(harness.lead)
+    harness.ctx.emit('agent/created', { agent: harness.lead.agent, source: 'resume' })
+    await nextTask()
+    expect(harness.service.questionAnswerView(harness.lead.agent, questionId)).toMatchObject({
+      questionStatus: 'answered',
+      answerStatus: 'admitted',
+      answerMessageId: 'm1',
+    })
+    expect(answerRecords(harness).at(-1)).toMatchObject({ messageId: 'm1', status: 'admitted', answerSeq: 1 })
+    const health = harness.service.answerDiscardHealth()
+    expect(health.pendingRepairs).toEqual({})
+    expect(health.lastRepairFailure).toBeUndefined()
+  })
+
+  it('a repair append failure surfaces lastRepairFailure and retries on activation', async () => {
+    const questionId = devLeadReport({ senderSessionId: 'target', leadSessionId: 'r5-append-fail-lead', turn: 1, kind: 'question', message: 'Which target?', at: T0 }).id
+    // Child empty at boot: the init repair finds no survival and does nothing.
+    const harness = await bootService({
+      leadId: 'r5-append-fail-lead',
+      enabled: true,
+      sessionIds: ['target'],
+      watched: ['target'],
+      seedLead: (session) => { seedStaleAudit(session, 'r5-append-fail-lead') },
+    })
+    await nextTask()
+    const target = new FakeAgent(requireSession(harness, 'target'))
+    scriptPending(target, 'm1', questionId, 'r5-append-fail-lead')
+    harness.agents.add(target)
+    const spy = vi.spyOn(harness.leadSession as unknown as { commit: (...args: unknown[]) => unknown }, 'commit')
+      .mockImplementationOnce(() => {
+        throw new Error('disk full')
+      })
+    harness.ctx.emit('agent/created', { agent: target.agent, source: 'resume' })
+    await nextTask()
+    spy.mockRestore()
+    const failed = harness.service.answerDiscardHealth()
+    expect(failed.lastRepairFailure).toContain('append')
+    expect(failed.pendingRepairs['r5-append-fail-lead']).toBe(1)
+    harness.ctx.emit('agent/created', { agent: harness.lead.agent, source: 'resume' })
+    await nextTask()
+    expect(harness.service.questionAnswerView(harness.lead.agent, questionId)).toMatchObject({ questionStatus: 'answered', answerMessageId: 'm1' })
+    const health = harness.service.answerDiscardHealth()
+    expect(health.pendingRepairs).toEqual({})
+    expect(health.lastRepairFailure).toBeUndefined()
+  })
+
+  it('a repair flush failure surfaces lastRepairFailure and retries the flush on activation', async () => {
+    const questionId = devLeadReport({ senderSessionId: 'target', leadSessionId: 'r5-flush-fail-lead', turn: 1, kind: 'question', message: 'Which target?', at: T0 }).id
+    const harness = await bootService({
+      leadId: 'r5-flush-fail-lead',
+      enabled: true,
+      sessionIds: ['target'],
+      watched: ['target'],
+      seedLead: (session) => { seedStaleAudit(session, 'r5-flush-fail-lead') },
+    })
+    await nextTask()
+    let failRepair = true
+    harness.ctx.on('session/flush', (session) => {
+      if (failRepair && String(session.id) === 'r5-flush-fail-lead') throw new Error('flush down')
+    })
+    const target = new FakeAgent(requireSession(harness, 'target'))
+    scriptPending(target, 'm1', questionId, 'r5-flush-fail-lead')
+    harness.agents.add(target)
+    harness.ctx.emit('agent/created', { agent: target.agent, source: 'resume' })
+    await nextTask()
+    const failed = harness.service.answerDiscardHealth()
+    expect(failed.lastRepairFailure).toContain('flush')
+    expect(failed.pendingRepairs['r5-flush-fail-lead']).toBe(1)
+    failRepair = false
+    harness.ctx.emit('agent/created', { agent: harness.lead.agent, source: 'resume' })
+    await nextTask()
+    expect(harness.service.questionAnswerView(harness.lead.agent, questionId)).toMatchObject({ questionStatus: 'answered', answerMessageId: 'm1' })
+    const health = harness.service.answerDiscardHealth()
+    expect(health.pendingRepairs).toEqual({})
+    expect(health.lastRepairFailure).toBeUndefined()
+  })
+
+  it('a drop-only drain clears the discard failure but not a still-failing repair', async () => {
+    const storage = new FakeStorageDomain()
+    const questionId = devLeadReport({ senderSessionId: 'target', leadSessionId: 'r5-coexist-lead', turn: 1, kind: 'question', message: 'Which target?', at: T0 }).id
+    const harness = await bootService({
+      leadId: 'r5-coexist-lead',
+      enabled: true,
+      sessionIds: ['target'],
+      watched: ['target'],
+      storageDomain: storage,
+      seedLead: (session) => { seedStaleAudit(session, 'r5-coexist-lead') },
+    })
+    await nextTask()
+    let failFlush = true
+    harness.ctx.on('session/flush', (session) => {
+      if (failFlush && String(session.id) === 'r5-coexist-lead') throw new Error('flush down')
+    })
+    const target = new FakeAgent(requireSession(harness, 'target'))
+    scriptPending(target, 'm1', questionId, 'r5-coexist-lead')
+    harness.agents.add(target)
+    harness.ctx.emit('agent/created', { agent: target.agent, source: 'resume' })
+    await nextTask()
+    // The repair append landed but its flush failed: lastRepairFailure pending.
+    expect(harness.service.answerDiscardHealth().lastRepairFailure).toContain('flush')
+    // Queue a discard of the same answer; its flush also fails: lastFailure set.
+    const message = target.inbox.nextStep.find(entry => String(entry.id) === 'm1')!
+    target.inbox.remove('m1')
+    harness.ctx.emit('agent/inbox/discarded', { agent: target.agent, message })
+    await flushMicrotasks()
+    expect(harness.service.answerDiscardHealth().lastFailure).toContain('flush')
+    // The answer survived (restore re-inserts it): the next drain drops the row
+    // without appending (clearing lastFailure), while the repair still fails.
+    target.inbox.append('next-step', message)
+    harness.ctx.emit('agent/created', { agent: harness.lead.agent, source: 'resume' })
+    await nextTask()
+    const health = harness.service.answerDiscardHealth()
+    expect(health.lastFailure).toBeUndefined()
+    expect(health.lastRepairFailure).toContain('flush')
+    expect(health.pendingRepairs['r5-coexist-lead']).toBe(1)
+  })
+})

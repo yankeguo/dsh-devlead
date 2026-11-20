@@ -127,14 +127,16 @@ export class DevLeadAnswerTracker {
     const existing = this.byQuestion.get(key)
     if (existing !== undefined) {
       if (existing.messageId === answer.messageId) {
-        // Same answer: a durable terminal discard/failed is authoritative over
-        // a stale admission, but an observed presentation is delivery completion
-        // and is never rewound. A claimed answer is only overwritten by a
-        // terminal fact observed AFTER the claim (a genuine pre-step reject);
-        // a stale discard queued before the claim must not reopen the question.
+        // Same answer: a durable terminal discard/failed is authoritative only
+        // when observed AFTER the live entry's newest fact. An observed
+        // presentation is delivery completion and is never rewound; a claimed
+        // answer is only overwritten by a terminal fact after the claim (a
+        // genuine pre-step reject); a repaired admission (at = the survival
+        // proof instant) is only overwritten by a strictly later terminal. A
+        // stale discard queued before any of these must not reopen the question.
         if (answer.status === 'discarded' || answer.status === 'failed') {
           if (existing.status === 'presented') return
-          if (existing.status === 'claimed' && answer.at <= existing.at) return
+          if (answer.at <= existing.at) return
           existing.status = answer.status
           existing.at = answer.at
         }
@@ -252,24 +254,34 @@ export class DevLeadAnswerTracker {
   }
 
   /**
-   * Repair one entry whose terminal discard/failed fact was disproven by the
-   * child's durable log: the message is still pending in the inbox (a
-   * keep/clear-own restore re-inserted it after a canceled splice), claimed by
-   * an unsettled pre-step, or it really entered an entered step (`user/message`).
-   * Only a discarded/failed entry is repaired — an observed presentation is
-   * never rewound, and a live admission/claim needs no repair. This is the
-   * stale-queue-row / stale-durable-discard correction path, not a normal
-   * lifecycle transition.
+   * Apply the child-log-proven reality to one entry: the message is still
+   * pending in the inbox (a keep/clear-own restore re-inserted it after a
+   * canceled splice), claimed by an unsettled pre-step, or it really entered an
+   * entered step (`user/message`). A terminal discard/failed entry is repaired
+   * to the proven status; a live entry only ever advances FORWARD
+   * (admitted → claimed → presented) with a newer proving instant — an observed
+   * presentation is never rewound. This is the stale-queue-row /
+   * stale-durable-discard correction path, not a normal lifecycle transition.
    * @param sessionId - child Session identity.
    * @param messageId - answer message identity.
    * @param status - the proven reality: pending (`admitted`), claimed, or presented.
    * @param at - instant of the proving fact.
-   * @returns whether the entry was repaired.
+   * @returns whether the entry changed.
    */
   repairLifecycle(sessionId: string, messageId: string, status: 'admitted' | 'claimed' | 'presented', at: number): boolean {
     const entry = this.byMessage.get(messageKey(sessionId, messageId))
     if (entry === undefined) return false
-    if (entry.status !== 'discarded' && entry.status !== 'failed') return false
+    if (entry.status === 'presented') return false
+    if (entry.status === 'discarded' || entry.status === 'failed') {
+      entry.status = status
+      entry.at = at
+      if (status === 'presented') entry.presentedAt = at
+      return true
+    }
+    // A live entry advances forward only, and only with a newer proving fact.
+    const rank = { admitted: 0, claimed: 1, presented: 2 } as const
+    if (rank[status] < rank[entry.status]) return false
+    if (at <= entry.at && status === entry.status) return false
     entry.status = status
     entry.at = at
     if (status === 'presented') entry.presentedAt = at

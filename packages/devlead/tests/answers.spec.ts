@@ -82,6 +82,37 @@ describe('DevLeadAnswerTracker seed (restart semantics)', () => {
     expect(tracker.entryOfQuestion(LEAD, REPORT)?.status).toBe('discarded')
   })
 
+  it('a repaired admission is only overwritten by a strictly later terminal', () => {
+    const tracker = new DevLeadAnswerTracker()
+    // A pending repair set the entry admitted at the survival-proof instant.
+    tracker.remember(entryOfRecord(answer({ reportId: REPORT, leadSessionId: LEAD, sessionId: CHILD, messageId: 'm1', status: 'admitted', at: 100, answerSeq: 1 })))
+    // An older stale durable discard must not rewind the repaired admission.
+    tracker.seed(answer({ reportId: REPORT, leadSessionId: LEAD, sessionId: CHILD, messageId: 'm1', status: 'discarded', at: 10, answeredAt: 10, answerSeq: 1 }))
+    expect(tracker.entryOfQuestion(LEAD, REPORT)?.status).toBe('admitted')
+    // A genuinely later terminal still discards it.
+    tracker.seed(answer({ reportId: REPORT, leadSessionId: LEAD, sessionId: CHILD, messageId: 'm1', status: 'discarded', at: 200, answeredAt: 10, answerSeq: 1 }))
+    expect(tracker.entryOfQuestion(LEAD, REPORT)?.status).toBe('discarded')
+  })
+
+  it('repairLifecycle advances a live entry forward only, never rewinding a presentation', () => {
+    const tracker = new DevLeadAnswerTracker()
+    tracker.remember(entryOfRecord(answer({ reportId: REPORT, leadSessionId: LEAD, sessionId: CHILD, messageId: 'm1', status: 'admitted', at: 10 })))
+    // admitted → claimed → presented advance with newer proving instants.
+    expect(tracker.repairLifecycle(CHILD, 'm1', 'claimed', 20)).toBe(true)
+    expect(tracker.entryOfQuestion(LEAD, REPORT)?.status).toBe('claimed')
+    expect(tracker.repairLifecycle(CHILD, 'm1', 'presented', 30)).toBe(true)
+    expect(tracker.entryOfQuestion(LEAD, REPORT)?.status).toBe('presented')
+    expect(tracker.entryOfQuestion(LEAD, REPORT)?.presentedAt).toBe(30)
+    // A presentation is never rewound to claimed/admitted.
+    expect(tracker.repairLifecycle(CHILD, 'm1', 'claimed', 40)).toBe(false)
+    expect(tracker.repairLifecycle(CHILD, 'm1', 'admitted', 50)).toBe(false)
+    expect(tracker.entryOfQuestion(LEAD, REPORT)?.status).toBe('presented')
+    // A claimed entry is not rewound to admitted.
+    tracker.remember(entryOfRecord(answer({ reportId: REPORT, leadSessionId: LEAD, sessionId: CHILD, messageId: 'm2', status: 'claimed', at: 60 })))
+    expect(tracker.repairLifecycle(CHILD, 'm2', 'admitted', 70)).toBe(false)
+    expect(tracker.entryOfQuestion(LEAD, REPORT)?.status).toBe('claimed')
+  })
+
   it('replaces an older entry with a newer different-message answer, but not an older one', () => {
     const tracker = new DevLeadAnswerTracker()
     tracker.seed(answer({ reportId: REPORT, leadSessionId: LEAD, sessionId: CHILD, messageId: 'm1', status: 'admitted', at: 10 }))

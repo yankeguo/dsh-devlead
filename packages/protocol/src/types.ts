@@ -352,6 +352,13 @@ export interface DevLeadQuestionAnswerView {
   readonly answeredAt?: number
   /** Instant the newest answer was presented, when observed. */
   readonly presentedAt?: number
+  /**
+   * A durable-discard repair of this question is in flight or deferred: the
+   * derived `questionStatus` may still reflect a stale terminal discard that
+   * the child's log disproves. Consumers should treat the status as provisional
+   * until the repair settles (the runtime awaits it before answer admission).
+   */
+  readonly repairPending?: boolean
 }
 
 /** Durable record payload selecting DevLead mode for one Session. */

@@ -758,6 +758,23 @@ export class DevLeadService extends Service {
   private lastAnswerDiscardFailure: string | undefined
 
   /**
+   * Last durable-discard REPAIR failure (append/flush), tracked separately from
+   * the discard-queue failure so a drop-only drain success does not clear a
+   * still-pending repair failure. Cleared by a successful repair.
+   */
+  private lastRepairFailure: string | undefined
+
+  /**
+   * Per-lead barrier chaining every in-flight repair pass and repair fact, so
+   * answer admission can await the repaired state before computing question
+   * guards (a stale terminal discard must not let a duplicate answer through).
+   */
+  private readonly answerRepairBarriers = new Map<string, Promise<void>>()
+
+  /** Per-lead set of question report ids with a repair currently executing. */
+  private readonly repairingQuestions = new Map<string, Set<string>>()
+
+  /**
    * Discard derivations waiting for a cold lead to become live (no Session
    * query engine could read its cold log). Processed at lead activation.
    * Bounded per lead; the newest derivations are kept.
@@ -2043,6 +2060,21 @@ export class DevLeadService extends Service {
       // below must see the reopened state, and an older discard must reach the
       // durable audit before a newer answer record is appended.
       if (this.pendingAnswerDiscards.has(leadId)) await this.reconcileAnswerDiscards(leadId)
+      // Settle any deferred repairs before the question guards too: a repair
+      // deferred while the lead was cold must not leave a stale `open` that
+      // admits a duplicate answer.
+      if (this.deferredDiscardRepairs.has(leadId)) {
+        this.registerRepairBarrier(leadId, this.processDeferredDiscardRepairs(leadId))
+      }
+      // Await the lead's repair barrier: a stale durable discard being repaired
+      // must settle before the question guards run, or a duplicate answer could
+      // be admitted against a stale `open`. Bounded re-check covers repairs
+      // registered while a prior barrier was awaiting.
+      for (let round = 0; round < 8; round += 1) {
+        const barrier = this.answerRepairBarriers.get(leadId)
+        if (barrier === undefined) break
+        await barrier
+      }
       const archived = this.ctx.get('workspaceRegistry')?.archivedSessionIds.includes(resolved.sessionId) ?? false
       const liveTarget = this.ctx.agents.get(resolved.sessionId)
       const targetState: TargetState = archived
@@ -4035,7 +4067,11 @@ export class DevLeadService extends Service {
     if (entry.status === 'presented') return recordOfEntry(entry)
     if (entry.status === 'discarded' || entry.status === 'failed') return recordOfEntry(entry)
     if (record.status === 'discarded' || record.status === 'failed') {
-      if (entry.status === 'claimed' && entry.at > record.at) return recordOfEntry(entry)
+      // A claim or a repaired admission observed AFTER the durable terminal
+      // disproves it (a stale discard); a strictly later live fact wins.
+      if ((entry.status === 'claimed' || entry.status === 'admitted') && entry.at > record.at) {
+        return recordOfEntry(entry)
+      }
       return record
     }
     if (record.status === 'admitted' && entry.status === 'claimed') {
@@ -4062,8 +4098,11 @@ export class DevLeadService extends Service {
     const state = this.strictStateOf(agent.session)
     const report = state.reports.find(existing => existing.id === reportId)
     if (report === undefined || report.kind !== 'question') return undefined
+    const leadId = String(agent.id)
+    const repairPending = this.repairingQuestions.get(leadId)?.has(reportId) === true
+      || (this.deferredDiscardRepairs.get(leadId) ?? []).some(entry => entry.stale.reportId === reportId)
     const fact = this.resolvedAnswer(agent, reportId)
-    if (fact === undefined) return { questionStatus: 'open' }
+    if (fact === undefined) return { questionStatus: 'open', ...(repairPending ? { repairPending: true } : {}) }
     // A legacy durable record may lack `answeredAt`; an active answer's own
     // admission instant is the fallback (a discarded/failed answer without one
     // exposes no answeredAt, exactly like the fold's durable view).
@@ -4075,25 +4114,40 @@ export class DevLeadService extends Service {
       answerMessageId: fact.messageId,
       ...(answeredAt === undefined ? {} : { answeredAt }),
       ...(fact.presentedAt === undefined ? {} : { presentedAt: fact.presentedAt }),
+      // A repair in flight/deferred means the derived status may still reflect a
+      // stale terminal discard; consumers treat it as provisional.
+      ...(repairPending ? { repairPending: true } : {}),
     }
   }
 
   /**
-   * Diagnostic health of the answer discard queue: how many discards are still
-   * waiting per lead, and the last persistence failure (append/flush/durable
-   * queue write) that a successful drain has not cleared yet. A non-empty
-   * `pending` with a `lastFailure` means some question reopens may not survive
-   * a Host crash until the queue drains.
-   * @returns the per-lead pending counts and the last failure, when any.
+   * Diagnostic health of the answer discard queue and its repairs: per-lead
+   * pending discard counts (`pending`) and deferred durable-repair counts
+   * (`pendingRepairs`), plus the last discard-queue failure (`lastFailure`,
+   * cleared by a successful drain) and the last repair failure
+   * (`lastRepairFailure`, cleared by a successful repair) tracked separately so
+   * a drop-only drain success never masks a still-pending repair failure.
+   * @returns the per-lead pending counts and the last failures, when any.
    */
-  answerDiscardHealth(): { readonly pending: Readonly<Record<string, number>>; readonly lastFailure?: string } {
+  answerDiscardHealth(): {
+    readonly pending: Readonly<Record<string, number>>
+    readonly pendingRepairs: Readonly<Record<string, number>>
+    readonly lastFailure?: string
+    readonly lastRepairFailure?: string
+  } {
     const pending: Record<string, number> = {}
     for (const [leadId, queue] of this.pendingAnswerDiscards) {
       if (queue.length > 0) pending[leadId] = queue.length
     }
+    const pendingRepairs: Record<string, number> = {}
+    for (const [leadId, queue] of this.deferredDiscardRepairs) {
+      if (queue.length > 0) pendingRepairs[leadId] = queue.length
+    }
     return {
       pending,
+      pendingRepairs,
       ...(this.lastAnswerDiscardFailure === undefined ? {} : { lastFailure: this.lastAnswerDiscardFailure }),
+      ...(this.lastRepairFailure === undefined ? {} : { lastRepairFailure: this.lastRepairFailure }),
     }
   }
 
@@ -4315,7 +4369,7 @@ export class DevLeadService extends Service {
         void this.reconcileAnswerDiscards(leadId)
       }
       for (const leadId of [...this.deferredDiscardRepairs.keys()]) {
-        void this.processDeferredDiscardRepairs(leadId)
+        this.registerRepairBarrier(leadId, this.processDeferredDiscardRepairs(leadId))
       }
     }, ANSWER_DISCARD_RETRY_MS)
     this.answerDiscardRetryTimer.unref?.()
@@ -4510,87 +4564,154 @@ export class DevLeadService extends Service {
   private dropObsoleteDiscard(discard: DevLeadReportAnswer, survival?: AnswerSurvivalProof): void {
     void this.outbox?.deleteAnswerDiscard(discard)
     if (survival === undefined) return
-    this.answers.repairLifecycle(discard.sessionId, discard.messageId, survival.status, survival.at)
-    void this.repairStaleDurableDiscard(discard, survival)
+    // The tracker repair happens inside the repair pass, AFTER the latest
+    // durable fact is validated: a newer genuine terminal must not be undone,
+    // and a failed/rejected repair must not leave the tracker falsely survived.
+    void this.repairStaleDurableDiscard(discard)
   }
 
   /**
-   * Repair one stale durable discard already appended to the lead's audit: when
-   * the newest durable fact of the question is a terminal discard/failed of the
-   * SAME message but the child proved the answer survived, append a repair fact
-   * (same message/answerSeq, the proven status, a strictly later instant) so the
-   * fold derives answered again — durably, across restarts. A cold lead defers
-   * the repair until its log is live; append/flush failures re-defer with a
-   * visible health failure. The tracker entry is repaired either way.
-   * @param stale - the stale discard fact (queued row or durable record).
-   * @param survival - the proven survival state.
+   * Chain one repair pass/fact onto the lead's repair barrier so answer
+   * admission can await the repaired state. The chained promise never rejects;
+   * callers that need the outcome await the raw run, not the barrier (so a pass
+   * that itself spawns repairs cannot deadlock on its own barrier).
+   * @param leadId - lead Session identity.
+   * @param run - the repair work to chain.
    */
-  private async repairStaleDurableDiscard(stale: DevLeadReportAnswer, survival: AnswerSurvivalProof): Promise<void> {
-    this.answers.repairLifecycle(stale.sessionId, stale.messageId, survival.status, survival.at)
+  private registerRepairBarrier(leadId: string, run: Promise<void>): void {
+    const previous = this.answerRepairBarriers.get(leadId) ?? Promise.resolve()
+    const chained = previous.then(() => run.catch(() => undefined))
+    this.answerRepairBarriers.set(leadId, chained)
+    void chained.then(() => {
+      if (this.answerRepairBarriers.get(leadId) === chained) this.answerRepairBarriers.delete(leadId)
+    })
+  }
+
+  /** The set of question report ids currently repairing for one lead. */
+  private repairingQuestionsFor(leadId: string): Set<string> {
+    let set = this.repairingQuestions.get(leadId)
+    if (set === undefined) {
+      set = new Set()
+      this.repairingQuestions.set(leadId, set)
+    }
+    return set
+  }
+
+  /**
+   * Repair one stale durable discard already appended to the lead's audit. The
+   * repair is registered on the lead's barrier (so admission awaits it) and its
+   * question is marked repairing (so the view reports `repairPending`). The raw
+   * run is returned for callers that await the outcome directly.
+   * @param stale - the stale discard fact (queued row or durable record).
+   * @param survival - the proven survival state at drop/scan time.
+   */
+  private repairStaleDurableDiscard(stale: DevLeadReportAnswer): Promise<void> {
+    const leadId = stale.leadSessionId
+    this.repairingQuestionsFor(leadId).add(stale.reportId)
+    const run = this.runDiscardRepair(stale).finally(() => {
+      this.repairingQuestionsFor(leadId).delete(stale.reportId)
+    })
+    this.registerRepairBarrier(leadId, run)
+    return run
+  }
+
+  /**
+   * Execute one durable-discard repair. The survival is RE-PROVEN now (a
+   * deferred entry's saved survival may be stale: the child may have settled
+   * since). The repair only appends when the newest durable fact is the SAME
+   * stale terminal (same messageId/status/answerSeq and `latest.at <= stale.at`);
+   * a newer genuine terminal (a true pre-step reject or clear-all discard that
+   * landed after the stale one) is never overwritten. The tracker is advanced to
+   * the proven status only after the latest fact validates, and explicitly on a
+   * successful repair. A cold lead defers; append/flush failures re-defer with a
+   * separate visible repair-failure health field.
+   * @param stale - the stale discard fact.
+   */
+  private async runDiscardRepair(stale: DevLeadReportAnswer): Promise<void> {
+    // Re-prove against the child's current reality: a deferred survival may no
+    // longer hold (the answer settled via turn/end or a later canceled splice).
+    const fresh = await this.survivalProof(stale, new Map())
+    if (fresh === undefined) return
     const leadSession = this.ctx.sessions.get(toSessionId(stale.leadSessionId))
     if (leadSession === undefined) {
-      this.deferDiscardRepair(stale, survival)
+      this.deferDiscardRepair(stale, fresh)
       return
     }
     const state = this.projectionHandle.stateOf(leadSession)
     if (state.failure !== null) {
-      this.deferDiscardRepair(stale, survival)
+      this.deferDiscardRepair(stale, fresh)
       return
     }
     const latest = latestAnswerOf(state.answers, stale.reportId)
-    if (latest === undefined || latest.messageId !== stale.messageId) return
-    if (latest.status !== 'discarded' && latest.status !== 'failed') {
-      // Already answered durably. When the exact repair fact is the latest row
-      // (an earlier append whose flush failed), retry just the flush.
-      if (latest.status === survival.status && latest.at > stale.at
-        && (latest.answerSeq ?? 0) === (stale.answerSeq ?? 0)) {
-        try {
-          await this.ctx.sessions.flush(leadSession)
-          this.lastAnswerDiscardFailure = undefined
-        } catch (error: unknown) {
-          this.lastAnswerDiscardFailure = `repair flush for answer "${stale.messageId}" (lead "${stale.leadSessionId}") failed: ${thrownMessage(error)}`
-          this.ctx.logger.warn(`devlead: ${this.lastAnswerDiscardFailure}; deferred`)
-          this.deferDiscardRepair(stale, survival)
-        }
+    const sameMessage = latest !== undefined && latest.messageId === stale.messageId
+    const sameSeq = sameMessage && (latest.answerSeq ?? 0) === (stale.answerSeq ?? 0)
+    if (sameMessage && (latest.status === 'discarded' || latest.status === 'failed')) {
+      // Only repair the SAME stale terminal. A newer terminal fact (later at,
+      // or a different status/sequence) is a genuine discard that supersedes.
+      const sameStaleTerminal = latest.status === stale.status && sameSeq && latest.at <= stale.at
+      if (!sameStaleTerminal) return
+      // The latest fact validates as the same stale terminal: apply the proven
+      // reality to the tracker NOW, so the live view is correct even if the
+      // durable append/flush below fails (the durable repair then retries).
+      this.answers.repairLifecycle(stale.sessionId, stale.messageId, fresh.status, fresh.at)
+      const at = Math.max(Date.now(), latest.at + 1)
+      const repair: DevLeadReportAnswer = {
+        reportId: latest.reportId,
+        leadSessionId: latest.leadSessionId,
+        sessionId: latest.sessionId,
+        messageId: latest.messageId,
+        at,
+        status: fresh.status,
+        ...(latest.answerSeq === undefined ? {} : { answerSeq: latest.answerSeq }),
+        textHash: latest.textHash,
+        answeredAt: latest.answeredAt ?? latest.at,
+        ...(fresh.status === 'presented' ? { presentedAt: fresh.at } : {}),
+        ...(latest.idempotencyKey === undefined ? {} : { idempotencyKey: latest.idempotencyKey }),
+        ...(latest.textExcerpt === undefined ? {} : { textExcerpt: latest.textExcerpt }),
+        ...(latest.primitive === undefined ? {} : { primitive: latest.primitive }),
+        ...(latest.boundary === undefined ? {} : { boundary: latest.boundary }),
+        ...(latest.wakeRequested === undefined ? {} : { wakeRequested: latest.wakeRequested }),
+      }
+      try {
+        appendPluginRecord(leadSession, DEVLEAD_REPORT_ANSWER_RECORD_TYPE, reportAnswerRecord(repair))
+      } catch (error: unknown) {
+        this.lastRepairFailure = `repair append for answer "${stale.messageId}" (lead "${stale.leadSessionId}") failed: ${thrownMessage(error)}`
+        this.ctx.logger.warn(`devlead: ${this.lastRepairFailure}; deferred`)
+        this.deferDiscardRepair(stale, fresh)
+        return
+      }
+      try {
+        await this.ctx.sessions.flush(leadSession)
+      } catch (error: unknown) {
+        this.lastRepairFailure = `repair flush for answer "${stale.messageId}" (lead "${stale.leadSessionId}") failed: ${thrownMessage(error)}`
+        this.ctx.logger.warn(`devlead: ${this.lastRepairFailure}; deferred`)
+        this.deferDiscardRepair(stale, fresh)
+        return
+      }
+      this.lastRepairFailure = undefined
+      // Explicitly advance the tracker to the proven status (not merely seed,
+      // which a same-message non-terminal record would not apply).
+      this.answers.repairLifecycle(stale.sessionId, stale.messageId, fresh.status, fresh.at)
+      this.answers.seed(repair)
+      return
+    }
+    if (sameMessage && sameSeq && latest.status === fresh.status && latest.at > stale.at) {
+      // The exact repair fact is already the latest row (an earlier append whose
+      // flush failed): retry just the flush.
+      try {
+        await this.ctx.sessions.flush(leadSession)
+        this.lastRepairFailure = undefined
+        this.answers.repairLifecycle(stale.sessionId, stale.messageId, fresh.status, fresh.at)
+      } catch (error: unknown) {
+        this.lastRepairFailure = `repair flush for answer "${stale.messageId}" (lead "${stale.leadSessionId}") failed: ${thrownMessage(error)}`
+        this.ctx.logger.warn(`devlead: ${this.lastRepairFailure}; deferred`)
+        this.deferDiscardRepair(stale, fresh)
       }
       return
     }
-    const at = Math.max(Date.now(), latest.at + 1)
-    const repair: DevLeadReportAnswer = {
-      reportId: latest.reportId,
-      leadSessionId: latest.leadSessionId,
-      sessionId: latest.sessionId,
-      messageId: latest.messageId,
-      at,
-      status: survival.status,
-      ...(latest.answerSeq === undefined ? {} : { answerSeq: latest.answerSeq }),
-      textHash: latest.textHash,
-      answeredAt: latest.answeredAt ?? latest.at,
-      ...(survival.status === 'presented' ? { presentedAt: survival.at } : {}),
-      ...(latest.idempotencyKey === undefined ? {} : { idempotencyKey: latest.idempotencyKey }),
-      ...(latest.textExcerpt === undefined ? {} : { textExcerpt: latest.textExcerpt }),
-      ...(latest.primitive === undefined ? {} : { primitive: latest.primitive }),
-      ...(latest.boundary === undefined ? {} : { boundary: latest.boundary }),
-      ...(latest.wakeRequested === undefined ? {} : { wakeRequested: latest.wakeRequested }),
-    }
-    try {
-      appendPluginRecord(leadSession, DEVLEAD_REPORT_ANSWER_RECORD_TYPE, reportAnswerRecord(repair))
-    } catch (error: unknown) {
-      this.lastAnswerDiscardFailure = `repair append for answer "${stale.messageId}" (lead "${stale.leadSessionId}") failed: ${thrownMessage(error)}`
-      this.ctx.logger.warn(`devlead: ${this.lastAnswerDiscardFailure}; deferred`)
-      this.deferDiscardRepair(stale, survival)
-      return
-    }
-    try {
-      await this.ctx.sessions.flush(leadSession)
-      this.lastAnswerDiscardFailure = undefined
-    } catch (error: unknown) {
-      this.lastAnswerDiscardFailure = `repair flush for answer "${stale.messageId}" (lead "${stale.leadSessionId}") failed: ${thrownMessage(error)}`
-      this.ctx.logger.warn(`devlead: ${this.lastAnswerDiscardFailure}; deferred`)
-      this.deferDiscardRepair(stale, survival)
-      return
-    }
-    this.answers.seed(repair)
+    // No stale durable terminal of this message to repair (already answered, or
+    // a different answer is latest): the tracker still reflects proven reality.
+    this.answers.repairLifecycle(stale.sessionId, stale.messageId, fresh.status, fresh.at)
   }
 
   /**
@@ -4625,7 +4746,7 @@ export class DevLeadService extends Service {
     if (queue === undefined || queue.length === 0) return
     this.deferredDiscardRepairs.delete(leadId)
     for (const entry of queue) {
-      await this.repairStaleDurableDiscard(entry.stale, entry.survival)
+      await this.repairStaleDurableDiscard(entry.stale)
     }
   }
 
@@ -4655,7 +4776,7 @@ export class DevLeadService extends Service {
       if (record.status !== 'discarded' && record.status !== 'failed') continue
       const survival = await this.survivalProof(record, logCache)
       if (survival !== undefined) {
-        await this.repairStaleDurableDiscard(record, survival)
+        await this.repairStaleDurableDiscard(record)
       }
     }
   }
@@ -5083,9 +5204,11 @@ export class DevLeadService extends Service {
     // answers that reality disproves (restored/pending, claimed, or presented),
     // repair any tracker entry a stale queue row had marked discarded, and
     // repair stale durable discards its watching leads already appended.
-    void this.reconcileQueuedDiscardsForChild(sessionId)
-    for (const leadId of this.hub?.supervisorsOf(sessionId) ?? []) {
-      void this.repairDisprovenDurableDiscards(leadId)
+    const supervisors = this.hub?.supervisorsOf(sessionId) ?? []
+    const reconcile = this.reconcileQueuedDiscardsForChild(sessionId)
+    for (const leadId of supervisors) {
+      this.registerRepairBarrier(leadId, reconcile)
+      this.registerRepairBarrier(leadId, this.repairDisprovenDurableDiscards(leadId))
     }
     const ownState = this.projectionHandle.stateOf(agent.session)
     if (ownState.failure === null && ownState.enabled) {
@@ -5111,8 +5234,8 @@ export class DevLeadService extends Service {
     // failed append/flush) can now reach its log; and any stale durable discard
     // whose answer the child's reality disproves is repaired even without a
     // queued row (the false-discard-already-drained restart path).
-    void this.processDeferredDiscardRepairs(sessionId)
-    void this.repairDisprovenDurableDiscards(sessionId)
+    this.registerRepairBarrier(sessionId, this.processDeferredDiscardRepairs(sessionId))
+    this.registerRepairBarrier(sessionId, this.repairDisprovenDurableDiscards(sessionId))
     // The lead log is live now: drain any discards queued while it was cold (or
     // after a failed append/flush). This runs even when the mode is currently
     // disabled, so a disabled→enabled transition never strands the queue.
