@@ -759,6 +759,14 @@ export class DevLeadService extends Service {
   /** In-flight discard drains per lead, so overlapping triggers share one pass. */
   private readonly answerDiscardDrains = new Map<string, Promise<void>>()
 
+  /**
+   * Snapshot of the rows one in-flight drain removed from
+   * {@link pendingAnswerDiscards}. While the pass awaits its survival proofs the
+   * rows are in neither queue nor durable audit, so view/health read them here
+   * to keep the question provisional; the drain's `finally` clears the entry.
+   */
+  private readonly drainingAnswerDiscards = new Map<string, readonly DevLeadReportAnswer[]>()
+
   /** Armed retry timer for queued discards that could not drain yet. */
   private answerDiscardRetryTimer: ReturnType<typeof setTimeout> | undefined
 
@@ -2084,8 +2092,13 @@ export class DevLeadService extends Service {
       const leadId = String(agent.id)
       // Drain any queued discards before this admission: the question guards
       // below must see the reopened state, and an older discard must reach the
-      // durable audit before a newer answer record is appended.
-      if (this.pendingAnswerDiscards.has(leadId)) await this.reconcileAnswerDiscards(leadId)
+      // durable audit before a newer answer record is appended. This is
+      // UNCONDITIONAL: a trigger that already started a drain (lead activation or
+      // the retry timer) removed its rows from pendingAnswerDiscards before the
+      // survival proof resolved, so checking that map would miss the in-flight
+      // pass and could admit a duplicate answer. reconcileAnswerDiscards reuses
+      // the in-flight promise per lead and returns immediately when idle.
+      await this.reconcileAnswerDiscards(leadId)
       // Settle repairs before the question guards. Kick any deferred repairs,
       // then await the barrier chain until no repair is in flight (the chain
       // accumulates EVERY registered repair, so any number of them settles —
@@ -4167,9 +4180,10 @@ export class DevLeadService extends Service {
   /**
    * Diagnostic health of the answer discard queue and its repairs: per-lead
    * queued discard counts (`pending`) and unresolved repair counts
-   * (`pendingRepairs`: in-flight, deferred, queued, or unknown), plus the last
-   * discard-queue failure (`lastFailure`, cleared by a successful drain) and the
-   * newest repair failure (`lastRepairFailure`, cleared by that message's own
+   * (`pendingRepairs`: in-flight repair, deferred retry, queued-unreadable, or a
+   * drain currently awaiting its survival proof), plus the last discard-queue
+   * failure (`lastFailure`, cleared by a successful drain) and the newest repair
+   * failure (`lastRepairFailure`, cleared by that message's own
    * repair/settle/supersede) tracked separately so a drop-only drain success
    * never masks a still-pending repair failure.
    * @returns the per-lead pending counts and the last failures, when any.
@@ -4191,6 +4205,7 @@ export class DevLeadService extends Service {
       ...this.repairingQuestions.keys(),
       ...this.deferredDiscardRepairs.keys(),
       ...this.pendingAnswerDiscards.keys(),
+      ...this.drainingAnswerDiscards.keys(),
     ])
     for (const leadId of leads) {
       const count = this.pendingRepairIds(leadId).size
@@ -4630,9 +4645,10 @@ export class DevLeadService extends Service {
   /**
    * Every question of one lead whose stale-discard repair is still unresolved:
    * marked in-flight, deferred, STILL QUEUED with an unreadable child (a reopen
-   * that survives a drain), or a durable terminal whose child is unreadable. A
-   * queued unknown row counts because the question's reopen is not provable, so
-   * its `open` is provisional and must not admit a duplicate answer.
+   * that survives a drain), owned by a DRAIN WHOSE SURVIVAL PROOF IS PENDING, or a
+   * durable terminal whose child is unreadable. A queued/in-flight unknown row
+   * counts because the question's reopen is not provable, so its `open` is
+   * provisional and must not admit a duplicate answer.
    * @param leadId - lead Session identity.
    * @returns the set of unresolved question report ids.
    */
@@ -4645,6 +4661,12 @@ export class DevLeadService extends Service {
     for (const discard of this.pendingAnswerDiscards.get(leadId) ?? []) {
       if (this.childUnreadable(discard.sessionId)) ids.add(discard.reportId)
     }
+    // An IN-FLIGHT drain's rows are unresolved by definition: the pass is
+    // awaiting the survival proof that decides whether the reopen is genuine or
+    // must be repaired. Count every one until the pass settles; admission waits
+    // for that same pass (see promptSession), so this is a transient view/health
+    // state, not a permanent mark.
+    for (const discard of this.drainingAnswerDiscards.get(leadId) ?? []) ids.add(discard.reportId)
     const leadSession = this.ctx.sessions.get(toSessionId(leadId))
     if (leadSession !== undefined) {
       const state = this.projectionHandle.stateOf(leadSession)
@@ -4986,6 +5008,9 @@ export class DevLeadService extends Service {
       this.markRepairPending(leadId, record.reportId)
       const survival = await this.survivalProof(record, logCache)
       if (survival === undefined) {
+        // A settled child proves the discard genuine: the stale repair resolves,
+        // so its pending mark and its last repair failure both clear.
+        this.clearRepairFailure(record)
         this.clearRepairPending(leadId, record.reportId)
         continue
       }
@@ -5034,18 +5059,37 @@ export class DevLeadService extends Service {
   }
 
   /**
-   * One drain pass over a lead's queued discards. A discard superseded by a
-   * newer answer of the same question (durable or observed) is dropped instead
-   * of appended, so a delayed old discard can never become the latest fact; a
-   * discard whose exact fact is already durable, or whose answer survived
-   * (pending/presented), is dropped too. Append/flush failures re-queue the
-   * affected rows for the next drain.
+   * One drain pass over a lead's queued discards. The queue is removed from
+   * {@link pendingAnswerDiscards} only because this pass owns it: the same rows
+   * are published in {@link drainingAnswerDiscards} until the pass settles, so a
+   * concurrent view/health/answer admission cannot miss an in-flight reopen.
+   * A discard superseded by a newer answer of the same question (durable or
+   * observed) is dropped instead of appended, so a delayed old discard can
+   * never become the latest fact; a discard whose exact fact is already durable,
+   * or whose answer survived (pending/presented), is dropped too. Append/flush
+   * failures re-queue the affected rows for the next drain.
    * @param leadId - lead Session identity.
    */
   private async drainAnswerDiscards(leadId: string): Promise<void> {
     const queue = this.pendingAnswerDiscards.get(leadId)
     if (queue === undefined || queue.length === 0) return
     this.pendingAnswerDiscards.delete(leadId)
+    this.drainingAnswerDiscards.set(leadId, queue)
+    try {
+      await this.drainAnswerDiscardsNow(leadId, queue)
+    } finally {
+      this.drainingAnswerDiscards.delete(leadId)
+    }
+  }
+
+  /**
+   * Execute one drain pass for a queue this caller already detached from
+   * {@link pendingAnswerDiscards}. Kept separate so the ownership snapshot stays
+   * published for the whole async pass, including every early return.
+   * @param leadId - lead Session identity.
+   * @param queue - rows detached from the pending queue.
+   */
+  private async drainAnswerDiscardsNow(leadId: string, queue: DevLeadReportAnswer[]): Promise<void> {
     const leadSession = this.ctx.sessions.get(toSessionId(leadId))
     if (leadSession === undefined) {
       // Still cold: keep the queue (and its durable rows) for the next live index.

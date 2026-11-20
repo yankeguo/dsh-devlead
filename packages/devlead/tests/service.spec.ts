@@ -7545,3 +7545,166 @@ describe('cold-discard closure round 7 (queued unknown, real barrier chain)', ()
     expect(answerRecords(harness).filter(record => record.status === 'discarded' && record.at <= T0 + 1)).toHaveLength(10)
   })
 })
+
+describe('cold-discard closure round 8 (in-flight drain, genuine settle failure clear)', () => {
+  /** Durable answer records of the lead Session, in log order. */
+  function answerRecords(harness: ServiceHarness): DevLeadReportAnswer[] {
+    return harness.leadSession.snapshotEvents().flatMap((event) => {
+      const record = pluginRecordOf(event)
+      return record?.type === DEVLEAD_REPORT_ANSWER_RECORD_TYPE
+        ? [(record.data as { answer: DevLeadReportAnswer }).answer]
+        : []
+    })
+  }
+
+  it('prompt waits for an in-flight drain and the view/health expose its queued unknown rows', async () => {
+    const leadId = 'r8-inflight-drain-lead'
+    const question = devLeadReport({ senderSessionId: 'target', leadSessionId: leadId, turn: 1, kind: 'question', message: 'Which target?', at: T0 })
+    const query = new FakeSessionQuery()
+    // Make the child log read hang: this is exactly the window where the drain
+    // detached the row from the pending map but has not classified it unknown.
+    const realReadSession = query.readSession.bind(query)
+    let releaseRead!: () => void
+    const readGate = new Promise<void>((resolve) => { releaseRead = resolve })
+    let readStarted = false
+    let hangRead = true
+    query.readSession = async (sessionId) => {
+      if (hangRead) {
+        hangRead = false
+        readStarted = true
+        await readGate
+      }
+      return realReadSession(sessionId)
+    }
+    const harness = await bootService({
+      leadId,
+      enabled: true,
+      sessionIds: ['target'],
+      watched: ['target'],
+      sessionQuery: query,
+      seedLead: (session) => {
+        appendPluginRecord(session, DEVLEAD_REPORT_RECORD_TYPE, reportRecord(question))
+      },
+    })
+    await nextTask()
+    const target = new FakeAgent(requireSession(harness, 'target'))
+    harness.agents.add(target)
+    harness.ctx.emit('agent/created', { agent: target.agent, source: 'resume' })
+    await flushMicrotasks()
+    const receipt = await harness.service.promptSession(harness.lead.agent, 'target', 'use staging', { intent: 'answer', questionId: question.id })
+    const message = target.inbox.nextStep.find(entry => String(entry.id) === receipt.delivery.messageId)
+    if (message === undefined) throw new Error('expected the admitted answer to be pending')
+    // The Host removes the inbox message before emitting the discard event.
+    target.inbox.remove(receipt.delivery.messageId)
+    // A genuinely cold lead queues the discard with no pending mark and leaves
+    // the tracker discarded: the exact review finding.
+    const realGet = harness.ctx.sessions.get.bind(harness.ctx.sessions)
+    let hideLead = true
+    let hideTarget = false
+    const sessionSpy = vi.spyOn(harness.ctx.sessions, 'get').mockImplementation((id: Parameters<typeof realGet>[0]) => {
+      const key = String(id)
+      if (hideLead && key === leadId) return undefined
+      if (hideTarget && key === 'target') return undefined
+      return realGet(id)
+    })
+    harness.ctx.emit('agent/inbox/discarded', { agent: target.agent, message })
+    await flushMicrotasks()
+    const queued = harness.service.answerDiscardHealth()
+    expect(queued.pending[leadId]).toBe(1)
+    // No mark yet: a cold lead only queued the row.
+    expect(queued.pendingRepairs[leadId] ?? 0).toBe(0)
+    // Now the lead is live but the child is cold/unreadable: the activation
+    // starts a drain whose first survival proof hangs on readSession.
+    hideLead = false
+    hideTarget = true
+    harness.agents.remove('target')
+    harness.ctx.emit('agent/created', { agent: harness.lead.agent, source: 'resume' })
+    for (let round = 0; round < 64 && !readStarted; round += 1) await flushMicrotasks(64)
+    expect(readStarted).toBe(true)
+    // Admission arrives while the drain is mid-flight: it must wait, not skip
+    // the pass because pendingAnswerDiscards no longer owns the rows.
+    let settled = false
+    const prompt = harness.service.promptSession(harness.lead.agent, 'target', 'use prod', { intent: 'answer', questionId: question.id })
+      .then((value) => { settled = true; return value }, (error) => { settled = true; throw error })
+    await flushMicrotasks(256)
+    expect(settled).toBe(false)
+    // The in-flight rows stay visible to view/health even though the queue map
+    // was emptied and the durable latest is still the original admission.
+    const during = harness.service.answerDiscardHealth()
+    expect(during.pending[leadId] ?? 0).toBe(0)
+    expect(during.pendingRepairs[leadId]).toBeGreaterThanOrEqual(1)
+    expect(harness.service.questionAnswerView(harness.lead.agent, question.id)?.repairPending).toBe(true)
+    // Release the read: it rejects (no persisted log), so the drain classifies
+    // the row unknown, re-queues it, and the post-check refuses the answer.
+    releaseRead()
+    // No sessionController is composed: this retryable pending-repair guard must
+    // reject BEFORE any cold-target activator selection, so admission never
+    // reaches delivery.
+    const error = await expectCodeAsync(() => prompt, 'DEVLEAD_SESSION_UNAVAILABLE')
+    expect(error.message).toContain('pending answer-discard repair')
+    expect(answerRecords(harness).filter(record => record.status === 'admitted')).toHaveLength(1)
+    expect(target.inbox.nextStep).toEqual([])
+    // Recovery: the child becomes readable with the answer still pending, so the
+    // queued row is dropped/repaired and a same-text retry admits idempotently.
+    sessionSpy.mockRestore()
+    harness.agents.add(target)
+    target.inbox.append('next-step', message)
+    const retry = await harness.service.promptSession(harness.lead.agent, 'target', 'use staging', { intent: 'answer', questionId: question.id })
+    expect(retry.delivery.messageId).toBe(receipt.delivery.messageId)
+    expect(harness.service.answerDiscardHealth().pendingRepairs).toEqual({})
+    expect(harness.service.questionAnswerView(harness.lead.agent, question.id)).toMatchObject({
+      questionStatus: 'answered',
+      answerMessageId: receipt.delivery.messageId,
+    })
+  })
+
+  it('a genuine settle clears a prior repair failure', async () => {
+    const leadId = 'r8-genuine-settle-lead'
+    const question = devLeadReport({ senderSessionId: 'target', leadSessionId: leadId, turn: 1, kind: 'question', message: 'Which target?', at: T0 })
+    const harness = await bootService({
+      leadId,
+      enabled: true,
+      sessionIds: ['target'],
+      watched: ['target'],
+      seedLead: (session) => {
+        appendPluginRecord(session, DEVLEAD_REPORT_RECORD_TYPE, reportRecord(question))
+        appendPluginRecord(session, DEVLEAD_REPORT_ANSWER_RECORD_TYPE, reportAnswerRecord(answer({
+          reportId: question.id, leadSessionId: leadId, sessionId: 'target', messageId: 'm1', status: 'admitted', at: T0, answerSeq: 1,
+        })))
+        appendPluginRecord(session, DEVLEAD_REPORT_ANSWER_RECORD_TYPE, reportAnswerRecord(answer({
+          reportId: question.id, leadSessionId: leadId, sessionId: 'target', messageId: 'm1', status: 'discarded', at: T0 + 1, answeredAt: T0, answerSeq: 1,
+        })))
+      },
+    })
+    await nextTask()
+    const target = new FakeAgent(requireSession(harness, 'target'))
+    const message = queuedMessage('m1', {
+      kind: 'devlead',
+      form: 'relay',
+      intent: 'answer',
+      questionId: question.id,
+      senderSessionId: leadId,
+      wakeRequested: true,
+    }, '[DEV LEAD ANSWER to question m1]\nuse staging')
+    target.inbox.append('next-step', message)
+    target.session.append('agent/inbox/spliced', { target: 'next-step', start: 0, inserted: [message] })
+    harness.agents.add(target)
+    // Fail the repair append once: the failure map now has an entry for m1.
+    const spy = vi.spyOn(harness.leadSession as unknown as { commit: (...args: unknown[]) => unknown }, 'commit')
+      .mockImplementationOnce(() => { throw new Error('disk full') })
+    harness.ctx.emit('agent/created', { agent: target.agent, source: 'resume' })
+    await nextTask()
+    spy.mockRestore()
+    expect(harness.service.answerDiscardHealth().lastRepairFailure).toContain('m1')
+    // The child then settles genuinely: the pending answer leaves the inbox, so
+    // a re-scan proves no survival and must clear both the mark and the failure.
+    target.inbox.remove('m1')
+    const service = harness.service as unknown as { repairDisprovenDurableDiscards(leadId: string): Promise<void> }
+    await service.repairDisprovenDurableDiscards(leadId)
+    const health = harness.service.answerDiscardHealth()
+    expect(health.lastRepairFailure).toBeUndefined()
+    // The failed repair's deferred retry still owns a pending entry, but its
+    // failure is no longer reported once the child proves a genuine settle.
+    expect(health.pendingRepairs[leadId]).toBe(1)
+  })
+})

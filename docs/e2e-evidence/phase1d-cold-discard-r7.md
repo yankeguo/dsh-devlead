@@ -5,7 +5,8 @@
   全部门禁与 E2E 都在该最终树上重跑（不是复用 round 6 结果）。
 - 门禁：`pnpm verify` → typecheck 通过、**28 文件 / 1209 tests passed**、build **6 targets**；
   `pnpm check:packages` → `OK (6 packages)`。
-- E2E：三条流全部在本轮最终树上实测并留存日志，均 **PASS**（exit 0）。
+- E2E：三条流全部在本轮最终树上实测并留存日志，均 **PASS**；当轮日志末尾未写 shell
+  exit code，r8 重跑已把真实退出码写入新日志（见 [r8 证据](phase1d-cold-discard-r8.md)）。
 
 ## 汇总
 
