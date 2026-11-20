@@ -147,7 +147,7 @@ describe('DevLeadPromptIdempotencyStore', () => {
     expect(table.backups.size).toBe(0)
   })
 
-  it('degrades an unreadable individual record to an absent receipt with a warning', async () => {
+  it('reports read-time unreadable instead of absent with a warning', async () => {
     const storage = new FakeStorageDomain()
     const ctx = storageContext(storage)
     const store = await DevLeadPromptIdempotencyStore.open(ctx)
@@ -158,6 +158,7 @@ describe('DevLeadPromptIdempotencyStore', () => {
     const warn = vi.spyOn(ctx.logger, 'warn')
 
     expect(store!.get(value.leadSessionId, value.targetSessionId, value.key)).toBeUndefined()
+    expect(store!.read(value.leadSessionId, value.targetSessionId, value.key).status).toBe('unreadable')
     expect(warn.mock.calls.some(call => String(call[0]).includes('corrupt durable prompt idempotency receipt'))).toBe(true)
   })
 

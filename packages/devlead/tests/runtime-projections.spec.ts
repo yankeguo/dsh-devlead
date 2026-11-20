@@ -121,6 +121,7 @@ describe('child answer projection', () => {
     }
     expect(state.overflow.presented).toBe(true)
     expect(childAnswerUnknown(state, 'evicted-before-bound')).toBe(true)
+    expect(childAnswerUnknown(state, 'presented-1')).toBe(false)
     expect(state.presented).toHaveLength(DEVLEAD_CHILD_ANSWER_OBSERVATION_MAX)
   })
 

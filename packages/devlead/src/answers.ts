@@ -472,6 +472,7 @@ export class DevLeadChildAnswerObserver {
   private readonly claimed = new Map<string, { readonly questionId: string; readonly leadId: string; readonly at: number }>()
   private readonly cancelCandidates = new Map<string, { readonly questionId: string; readonly leadId: string; readonly at: number }>()
   private readonly presented = new Map<string, number>()
+  private presentedOverflowWarned = false
 
   /**
    * @param onWarning - optional sink for bounded-observation eviction warnings.
@@ -644,6 +645,10 @@ export class DevLeadChildAnswerObserver {
     }
     if (event.type === 'user/message') {
       const id = String((event.data as { id?: unknown } | null)?.id ?? '')
+      const related = answerMetaOf(event.data) !== undefined
+        || this.claimed.has(id)
+        || this.cancelCandidates.has(id)
+      if (!related) return []
       this.claimed.delete(id)
       // Presentation is delivery completion: it revokes any cancellation
       // candidate and blocks every later derived discard of this message.
@@ -653,7 +658,10 @@ export class DevLeadChildAnswerObserver {
         const oldest = this.presented.keys().next().value
         if (oldest === undefined) break
         this.presented.delete(oldest)
-        this.onWarning?.(`evicted the oldest presented observation beyond ${String(MAX_PRESENTED_OBSERVATIONS)}; a much later derived discard of it may not be blocked`)
+        if (!this.presentedOverflowWarned) {
+          this.presentedOverflowWarned = true
+          this.onWarning?.(`evicted the oldest presented observation beyond ${String(MAX_PRESENTED_OBSERVATIONS)}; a much later derived discard of it may not be blocked`)
+        }
       }
       return []
     }

@@ -102,7 +102,7 @@ Host 的工具数（14 lead + 1 report）、T1/lane/outbox/answer 合同没有�
 | --- | --- |
 | 19:00:00 | 修复后首轮 `pnpm verify`：34 files / **1411 tests** 全过，6 targets；`check:packages` OK |
 | 19:00:33 | M1 mutation（恢复 `invalidRecords:'backup-and-skip'`）：at-rest 测试按预期失败，`M1_MUTATION_EXIT=1`；随后恢复源码 |
-| 19:00:59 | M2 mutation（普通 user/message 重新计入 presented）：liveness 测试按预期失败，`M2_MUTATION_EXIT=1`；随后恢复源码 |
+| 19:00:59 | M2 fold-level mutation（普通 user/message 重新计入 presented）：当时仅 fold 级用例失败，`M2_MUTATION_EXIT=1`；二次修复新增真实 survivalProof service 负控，不能用该旧日志证明 service 覆盖 |
 | 19:01:16 | 恢复后再次 `pnpm verify`：34/1411 全过，`check:packages` OK，`git diff --check` 通过 |
 | 19:02:03 | patch：**221/221，PATCH_EXIT=0**，client revision `1bdf1e6e396d` |
 | 19:02:41 | installed：**221/221，INSTALLED_EXIT=0** |
@@ -152,14 +152,13 @@ mutation：`/tmp/dsh-devlead-m{1,2}-mutation.log`。
 | minor 6 文案漂移 | rollback 改为旧构建遇已知 v2 类型会 freeze 并需 reset；UI tooltip 加入 `provisional`；prompt `warning?` 补非 answer 幂等 process-local 说明 |
 | minor 7 测试缺口 | replay 配额改为 3→replay→第 4 成功→第 5 拒绝；late query/persistence 触发真实第二次 rehydration；64 个 cold read 上限且 map 不增长；真实 `turnSourceHandle.stateOf` question wiring；真实 registry refold；损坏 repair record 冻结 |
 
-## Delta 复核追加：cold index 状态机与重试恢复
+## 二次修复：cold index 状态机与重试恢复
 
 独立 delta 复核指出的晚绑定 fail-open 与不完整后永久 fail-closed 已关闭：
 
 - query/persistence 出现后的每次重扫先清除旧的 live-only 授权，readiness/完整扫描结束前不得利用旧 `true` 放行；阻塞 read 的负控返回 `DEVLEAD_SESSION_UNAVAILABLE`。
 - 只有完整扫描才 `finalizeRehydration()`；不完整时保留 `rehydrated=false`，在 `rehydrateFromPersistence.finally` 清理旧 hook 并重新调度 optional-service / 250ms 重试，避免 timer 已在扫描中触发后没有后续 retry。disposed 路径不再创建 effect。
 - 首次 no-cache 不完整后，晚装 projectionCache 的第二次扫描成功，合法 prompt 恢复；首次扫描超过 250ms 且失败，在无新注入时也由 finally 重新调度并恢复。capped 断言改为每次扫描最多 65 次读取，允许合法重试。
-- 原审查者最终 delta 结论：**未发现剩余 blocker**。
 
 最终冻结输出：
 
@@ -178,3 +177,61 @@ check-packages: OK (6 packages)
 ```
 
 client revision：`5acdbd8d704e`；日志：`/tmp/dsh-devlead-batch1-final4-{patch,installed,no-worktree}.log`。
+
+## 二次修复追加：cursor、退避与真实活性证据
+
+本轮把冷扫描、重试与 answer 活性测试改成可复现的实际契约：
+
+- 冷扫描以 `coldScan.records/index/leads/active/complete` 游标分批推进，每批最多 64 个 unknown/stale-negative；失败行保留在游标中等待重试，corrupt 行前进并标 degraded，最终完成才 finalize。70 个 benign/unknown 行和 no-cache 混合行都能恢复，不再把 cap 当作永久拒绝。
+- optional-service hook 只注册一次；重试由单一 timer 驱动，250ms 起步指数退避、5s 封顶、12 次上限，warning 按原因去重。persistence 先到而 query 未到时保留 query listener。
+- 只有扫描与应用都成功才 complete；live Agent/attach-only projection failure 显式 fail closed。
+- service 活性测试真实经过 `queueAnswerDiscard → reconcileAnswerDiscards → survivalProof`，不再只覆盖 live discard。普通 >256 清除 repairPending 并可重答；answer >256 仅对应消息 unknown。`childAnswerUnknown` 对仍在 presented 中的 message 返回 false。
+- `devLeadChildAnswers` stateVersion 2 有真实 registry refold；live observer 也只记录 answer/claimed presentation，普通聊天不再持续 evict/warn。
+
+mutation 负控（均先改回旧行为、确认失败后恢复）：
+
+| 类型 | 实际结果 |
+| --- | --- |
+| B1：finalize 永久 cap | `B1_MUTATION_EXIT=1` |
+| retry：0ms 热循环 | `RETRY_MUTATION_EXIT=1` |
+| M2：`childAnswerUnknown` 全局 true | `M2_SERVICE_MUTATION_EXIT=1` |
+| 应用阶段错误仍 finalize | `APPLY_MUTATION_EXIT=1` |
+| live projection failure 被跳过 | `LIVE_FAILURE_MUTATION_EXIT=1` |
+
+旧 M2 mutation 日志只证明 fold 级用例失败，不再被引用为 service 覆盖；当前 service 负控直接 spy `survivalProof` 并验证调用。
+
+## 二次修复最终门禁
+
+```text
+pnpm verify
+Test Files  34 passed (34)
+Tests       1420 passed (1420)
+build complete (6 targets)
+
+pnpm check:packages
+check-packages: OK (6 packages)
+
+20:09:19 patch:      221/221  PATCH_EXIT=0
+20:09:53 installed:  221/221  INSTALLED_EXIT=0
+20:10:27 no-worktree: 198/198 NO_WORKTREE_EXIT=0
+```
+
+client revision：`43cae907514d`；日志：`/tmp/dsh-devlead-batch1-final5-{patch,installed,no-worktree}.log`。
+
+## 二次修复最终复核门禁（最终树）
+
+```text
+pnpm verify
+Test Files  34 passed (34)
+Tests       1424 passed (1424)
+build complete (6 targets)
+
+pnpm check:packages
+check-packages: OK (6 packages)
+
+20:35:51 patch:      221/221  PATCH_EXIT=0
+20:36:00 installed:  221/221  INSTALLED_EXIT=0
+20:36:09 no-worktree: 198/198 NO_WORKTREE_EXIT=0
+```
+
+client revision：`2ce2a5a4eedb`；日志：`/tmp/dsh-devlead-batch1-final9-{patch,installed,no-worktree}.log`。

@@ -99,7 +99,7 @@ Session projection，cold 侧用 `observeSession()` 读取 projection，而不�
 | `inbox.ts` 反查 pending message 入队时间 | `devLeadInboxTimes`：只保存当前两个 pending lane 的 id/time，splice 移除即释放 |
 | `survivalProof` live/cold answer 证明 | `devLeadChildAnswers`：有界 JSON pending/claimed/candidate/presented/discard；live 用 `ProjectionHandle.stateOf`，cold 用 `observeSession().projections.values` |
 | `childLogEvents` | 已删除，不再读取原始事件 |
-| `replayChildObserver` | 从同一 child-answer projection 恢复 observer；bounded overflow 标 `complete:false`，survival 返回 unknown |
+| `replayChildObserver` | 从同一 child-answer projection 恢复 observer；overflow 按 family 记录，只有缺少其它证据的对应 message survival 返回 unknown，不再全局锁死 repair |
 | `question-routing.ts` 人类 turn 判定 | `devLeadTurnSource`，由 DevLeadService 同步读取，pre-tool gate 在不可确认时 fail closed |
 
 cold projection read 有 30 秒超时放弃、每 child single-flight、64 个 raw read 并发上限；超时后

@@ -9,9 +9,10 @@ import {
 import { DevLeadError } from '../src/error.ts'
 import { devLeadReport, modeRecord, reportAnswerRecord, reportRecord, watchRecord } from '../src/domain.ts'
 import { devLeadPromptIdempotencyKey, PROMPT_IDEMPOTENCY_SPEC } from '../src/idempotency.ts'
-import { devLeadAnswerDiscardKey } from '../src/outbox.ts'
 import { emptyDevLeadProjectionState } from '../src/fold.ts'
+import { emptyDevLeadChildAnswersState } from '../src/child-answer-projection.ts'
 import { ASK_USER_QUESTION_TOOL, registerQuestionRouting } from '../../tool/src/question-routing.ts'
+import { DevLeadNotificationHub } from '../src/notification.ts'
 import {
   appendTurnStart,
   bootService,
@@ -29,6 +30,19 @@ import {
 import { answer, modeEvent, watchEvent } from './fixtures.ts'
 
 afterEach(async () => { await disposeHarnesses() })
+
+async function eventually<T>(run: () => Promise<T>, timeoutMs = 4_000): Promise<T> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    try {
+      return await run()
+    } catch (error: unknown) {
+      if (!(error instanceof DevLeadError) || error.code !== 'DEVLEAD_SESSION_UNAVAILABLE') throw error
+      await new Promise(resolve => setTimeout(resolve, 50))
+    }
+  }
+  throw new Error(`operation did not recover within ${timeoutMs}ms`)
+}
 
 async function expectCode(run: () => Promise<unknown>, code: string): Promise<DevLeadError> {
   try {
@@ -87,7 +101,7 @@ describe('Batch 1 prompt supervision and budgets', () => {
     await nextTask()
     await expectCode(
       () => harness.service.promptSession(harness.lead.agent, 'target', 'do not deliver', { watch: false }),
-      'DEVLEAD_SESSION_UNAVAILABLE',
+      'DEVLEAD_FOREIGN_SUPERVISOR',
     )
     expect(target.followups).toHaveLength(0)
   })
@@ -133,6 +147,7 @@ describe('Batch 1 prompt supervision and budgets', () => {
   it('recovers prompt authorization after an incomplete scan succeeds on retry', async () => {
     const query = new FakeSessionQuery()
     query.seed('ordinary', [])
+    query.readError = new Error('transient read failure')
     const persistence = new FakeSessionPersistence()
     persistence.ids = ['ordinary']
     const harness = await bootService({
@@ -149,11 +164,12 @@ describe('Batch 1 prompt supervision and budgets', () => {
       'DEVLEAD_SESSION_UNAVAILABLE',
     )
     expect(target.followups).toHaveLength(0)
+    query.readError = undefined
     const cache = new FakeProjectionCache()
     harness.ctx.provide('sessionProjectionCache', cache.asService())
     await new Promise(resolve => setTimeout(resolve, 300))
     await nextTask()
-    const receipt = await harness.service.promptSession(harness.lead.agent, 'target', 'allowed after recovery')
+    const receipt = await eventually(() => harness.service.promptSession(harness.lead.agent, 'target', 'allowed after recovery'))
     expect(receipt.sessionId).toBe('target')
     expect(target.followups).toHaveLength(1)
   })
@@ -186,7 +202,7 @@ describe('Batch 1 prompt supervision and budgets', () => {
       'DEVLEAD_SESSION_UNAVAILABLE',
     )
     expect(target.followups).toHaveLength(0)
-    await new Promise(resolve => setTimeout(resolve, 700))
+    await new Promise(resolve => setTimeout(resolve, 2_200))
     await nextTask()
     const receipt = await harness.service.promptSession(harness.lead.agent, 'target', 'allowed after scheduled retry')
     expect(receipt.sessionId).toBe('target')
@@ -571,6 +587,251 @@ describe('repair projection publication', () => {
       ver: 7,
       val: { enabled: true, repairPending: [] },
     })
+
+    const child = emptyDevLeadChildAnswersState()
+    const childRestored = harness.ctx.sessionProjections.restore(
+      { devLeadChildAnswers: { ver: 1, seq: -1, val: { ...child, complete: true } } } as never,
+      harness.leadSession.snapshotEvents(),
+      SessionLogOffset(0),
+      harness.leadSession.header,
+      SessionLogOffset(0),
+    )
+    expect(childRestored.checkpoint.devLeadChildAnswers).toMatchObject({
+      ver: 2,
+      val: { overflow: { claimed: false, cancelCandidates: false, presented: false, discards: false } },
+    })
+  })
+})
+
+describe('cold supervision cursor and retry behavior', () => {
+  it('resumes beyond 64 benign rows and mixed missing/legacy cache rows', async () => {
+    const query = new FakeSessionQuery()
+    const cache = new FakeProjectionCache()
+    const persistence = new FakeSessionPersistence()
+    const ids: string[] = []
+    for (let index = 0; index < 70; index += 1) {
+      const id = `benign-${index}`
+      ids.push(id)
+      query.seed(id, [])
+      if (index < 35) cache.setDevLead(id, { enabled: false, sessions: [] })
+    }
+    persistence.ids = ids
+    const harness = await bootService({
+      enabled: true,
+      sessionIds: ['target'],
+      sessionQuery: query,
+      projectionCache: cache,
+      sessionPersistence: persistence,
+    })
+    const target = new FakeAgent(harness.sessions['target']!)
+    harness.agents.add(target)
+    await new Promise(resolve => setTimeout(resolve, 900))
+    await nextTask()
+    const receipt = await harness.service.promptSession(harness.lead.agent, 'target', 'allowed after paginated scan')
+    expect(receipt.sessionId).toBe('target')
+    expect(target.followups).toHaveLength(1)
+    expect(query.readSessionCalls).toBeLessThanOrEqual(70)
+  })
+
+  it('recovers a no-cache corpus without a hot retry loop', async () => {
+    const query = new FakeSessionQuery()
+    const persistence = new FakeSessionPersistence()
+    const ids: string[] = []
+    for (let index = 0; index < 70; index += 1) {
+      const id = `uncached-${index}`
+      ids.push(id)
+      query.seed(id, [])
+    }
+    persistence.ids = ids
+    const harness = await bootService({
+      enabled: true,
+      sessionIds: ['target'],
+      sessionQuery: query,
+      sessionPersistence: persistence,
+    })
+    const target = new FakeAgent(harness.sessions['target']!)
+    harness.agents.add(target)
+    await new Promise(resolve => setTimeout(resolve, 900))
+    await nextTask()
+    const receipt = await harness.service.promptSession(harness.lead.agent, 'target', 'allowed after uncached scan')
+    expect(receipt.sessionId).toBe('target')
+    expect(query.listSessionsCalls).toBeLessThanOrEqual(3)
+    expect(query.readSessionCalls).toBeLessThanOrEqual(70)
+  })
+
+  it('bounds failed retries and recovers after the cause clears', async () => {
+    const query = new FakeSessionQuery()
+    query.seed('transient', [])
+    query.readError = new Error('temporary read failure')
+    const cache = new FakeProjectionCache()
+    const persistence = new FakeSessionPersistence()
+    persistence.ids = ['transient']
+    const harness = await bootService({
+      enabled: true,
+      sessionIds: ['target'],
+      sessionQuery: query,
+      projectionCache: cache,
+      sessionPersistence: persistence,
+    })
+    const target = new FakeAgent(harness.sessions['target']!)
+    harness.agents.add(target)
+    await new Promise(resolve => setTimeout(resolve, 650))
+    expect(query.listSessionsCalls).toBeLessThanOrEqual(4)
+    expect(query.readSessionCalls).toBeLessThanOrEqual(4)
+    query.readError = undefined
+    await new Promise(resolve => setTimeout(resolve, 650))
+    await nextTask()
+    const receipt = await eventually(() => harness.service.promptSession(harness.lead.agent, 'target', 'recovered'))
+    expect(receipt.sessionId).toBe('target')
+  })
+
+  it('does not finalize when applying the rehydrated index fails', async () => {
+    const spy = vi.spyOn(DevLeadNotificationHub.prototype, 'rehydrate').mockImplementation(() => {
+      throw new Error('apply failed')
+    })
+    try {
+      const harness = await bootService({
+        leadId: 'apply-failure-lead',
+        enabled: true,
+        sessionIds: ['target'],
+        watched: ['target'],
+        registerLeadAgent: false,
+      })
+      harness.agents.add(harness.lead)
+      const target = new FakeAgent(harness.sessions['target']!)
+      harness.agents.add(target)
+      await expectCode(
+        () => harness.service.promptSession(harness.lead.agent, 'target', 'must not deliver'),
+        'DEVLEAD_SESSION_UNAVAILABLE',
+      )
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  it('fails closed when a live attached DevLead projection is corrupt', async () => {
+    const harness = await bootService({
+      enabled: true,
+      sessionIds: ['target'],
+      seedLead: (session) => {
+        appendPluginRecord(session, DEVLEAD_MODE_RECORD_TYPE, {
+          kind: 'devlead/mode', version: 2, enabled: 'yes', at: T0,
+        } as never)
+      },
+    })
+    const target = new FakeAgent(harness.sessions['target']!)
+    harness.agents.add(target)
+    expect((harness.service as unknown as { supervisionIndexComplete: boolean }).supervisionIndexComplete).toBe(false)
+    await expectCode(
+      () => harness.service.promptSession(harness.lead.agent, 'target', 'must not deliver', { watch: false }),
+      'DEVLEAD_NOT_ENABLED',
+    )
+    expect(target.followups).toHaveLength(0)
+  })
+
+  it('retains query lifecycle retries when persistence arrives before sessionQuery', async () => {
+    const persistence = new FakeSessionPersistence()
+    persistence.ids = []
+    const harness = await bootService({ enabled: true, sessionIds: ['target'], sessionPersistence: persistence })
+    const target = new FakeAgent(harness.sessions['target']!)
+    harness.agents.add(target)
+    const query = new FakeSessionQuery()
+    const cache = new FakeProjectionCache()
+    harness.ctx.provide('sessionQuery', query.asService())
+    harness.ctx.provide('sessionProjectionCache', cache.asService())
+    await new Promise(resolve => setTimeout(resolve, 300))
+    await nextTask()
+    const receipt = await harness.service.promptSession(harness.lead.agent, 'target', 'query arrived')
+    expect(receipt.sessionId).toBe('target')
+  })
+})
+
+describe('cold cursor sticky corruption and retry bounds', () => {
+  it('keeps a corrupt first batch closed after later benign batches', async () => {
+    const query = new FakeSessionQuery()
+    query.seed('corrupt', [{
+      type: 'plugin:devlead/mode', seq: 0, time: T0, ignorable: true,
+      data: { kind: 'devlead/mode', version: 2, enabled: 'yes', at: T0 },
+    } as never])
+    const cache = new FakeProjectionCache()
+    const persistence = new FakeSessionPersistence()
+    const ids = ['corrupt']
+    for (let index = 0; index < 64; index += 1) {
+      const id = `benign-${index}`
+      ids.push(id)
+      query.seed(id, [])
+    }
+    persistence.ids = ids
+    const harness = await bootService({
+      enabled: true,
+      sessionIds: ['target'],
+      sessionQuery: query,
+      projectionCache: cache,
+      sessionPersistence: persistence,
+    })
+    const service = harness.service as unknown as {
+      persistedLeadRecords(scan: boolean): Promise<{ complete: boolean }>
+    }
+    const first = await service.persistedLeadRecords(true)
+    expect(first.complete).toBe(false)
+    const second = await service.persistedLeadRecords(true)
+    expect(second.complete).toBe(false)
+    const calls = query.readSessionCalls
+    await new Promise(resolve => setTimeout(resolve, 400))
+    expect(query.readSessionCalls).toBe(calls)
+    query.delete('corrupt')
+    persistence.ids = persistence.ids.filter(id => id !== 'corrupt')
+    await harness.service.reset(harness.lead.agent)
+    await harness.service.setEnabled(harness.lead.agent, true)
+    harness.agents.add(new FakeAgent(harness.sessions['target']!))
+    const recovered = await eventually(() => harness.service.promptSession(harness.lead.agent, 'target', 'reset recovered'))
+    expect(recovered.sessionId).toBe('target')
+  })
+
+  it('does not consume the failure cap while paginating a large corpus', async () => {
+    const query = new FakeSessionQuery()
+    const cache = new FakeProjectionCache()
+    const persistence = new FakeSessionPersistence()
+    const ids: string[] = []
+    for (let index = 0; index < 770; index += 1) {
+      const id = `large-${index}`
+      ids.push(id)
+      query.seed(id, [])
+    }
+    persistence.ids = ids
+    const harness = await bootService({
+      enabled: true,
+      sessionIds: ['target'],
+      sessionQuery: query,
+      projectionCache: cache,
+      sessionPersistence: persistence,
+    })
+    const service = harness.service as unknown as {
+      persistedLeadRecords(scan: boolean): Promise<{ complete: boolean }>
+    }
+    let result = { complete: false }
+    for (let index = 0; index < 13; index += 1) {
+      result = await service.persistedLeadRecords(true)
+      if (result.complete) break
+    }
+    expect(result.complete).toBe(true)
+    expect(query.readSessionCalls).toBeLessThanOrEqual(770)
+  })
+
+  it('does not start a timer when no corpus service exists', async () => {
+    const harness = await bootService()
+    await new Promise(resolve => setTimeout(resolve, 350))
+    expect((harness.service as unknown as { rehydrationRetryTimer: unknown }).rehydrationRetryTimer).toBeUndefined()
+  })
+
+  it('recomputes live-only authorization immediately after reset without a corpus', async () => {
+    const harness = await bootService({ enabled: true, sessionIds: ['target'], watched: ['target'] })
+    const target = new FakeAgent(harness.sessions['target']!)
+    harness.agents.add(target)
+    await harness.service.reset(harness.lead.agent)
+    await harness.service.setEnabled(harness.lead.agent, true)
+    const receipt = await harness.service.promptSession(harness.lead.agent, 'target', 'reset without corpus')
+    expect(receipt.sessionId).toBe('target')
   })
 })
 
@@ -593,45 +854,30 @@ describe('answer projection liveness under message volume', () => {
       const message = queuedMessage(`ordinary-${String(index)}`, { kind: 'user' }, `ordinary ${index}`)
       target.session.append('user/message', { ...message, turn: 1, step: 1 } as never, { surfaceOp: 'append' })
     }
-    const admitted = await harness.service.promptSession(harness.lead.agent, 'target', 'use staging', { intent: 'answer', questionId: value.id })
-    const pending = target.inbox.nextStep.find(message => String(message.id) === admitted.delivery.messageId)
-    if (pending === undefined) throw new Error('expected pending answer')
-    target.inbox.remove(admitted.delivery.messageId)
-    target.session.append('agent/inbox/spliced', {
-      target: 'next-step', start: 0, removedCount: 1, inserted: [], outcome: 'canceled',
-    })
-    harness.ctx.emit('agent/inbox/discarded', { agent: target.agent, message: pending })
-    await flushMicrotasks()
+    const service = harness.service as unknown as {
+      queueAnswerDiscard(discard: ReturnType<typeof answer>): void
+      reconcileAnswerDiscards(lead: string): Promise<void>
+      survivalProof(discard: ReturnType<typeof answer>, cache: Map<string, unknown>): Promise<unknown>
+    }
+    const stale = answer({ reportId: value.id, leadSessionId: leadId, sessionId: 'target', messageId: 'ordinary-discard', status: 'discarded' })
+    service.queueAnswerDiscard(stale)
+    const proof = vi.spyOn(service, 'survivalProof')
+    await service.reconcileAnswerDiscards(leadId)
+    expect(proof).toHaveBeenCalled()
     expect(harness.service.questionAnswerView(harness.lead.agent, value.id)?.repairPending).toBeUndefined()
     const retry = await harness.service.promptSession(harness.lead.agent, 'target', 'use staging', { intent: 'answer', questionId: value.id })
-    expect(retry.delivery.messageId).not.toBe(admitted.delivery.messageId)
+    expect(retry.sessionId).toBe('target')
   })
 
   it('scopes answer-related overflow to the affected message instead of a global latch', async () => {
     const leadId = 'answer-overflow-lead'
     const first = question(leadId, T0, 'First question?')
     const second = question(leadId, T0, 'Second question?')
-    const storage = new FakeStorageDomain()
-    const seeded = await storage.open({ name: 'devlead_report_outbox', tables: { answer_discards: {} } })
-    const stale = answer({
-      reportId: second.id,
-      leadSessionId: leadId,
-      sessionId: 'target',
-      messageId: 'overflow-discard',
-      status: 'discarded',
-      at: T0 + 1,
-    })
-    storage.table('devlead_report_outbox', 'answer_discards').records.set(
-      devLeadAnswerDiscardKey(stale),
-      { answer: stale, enqueuedAt: Date.now() },
-    )
-    await seeded.close()
     const harness = await bootService({
       leadId,
       enabled: true,
       sessionIds: ['target'],
       watched: ['target'],
-      storageDomain: storage,
       seedSessions: (sessions) => {
         const target = sessions['target']!
         for (let index = 0; index < 257; index += 1) {
@@ -648,7 +894,16 @@ describe('answer projection liveness under message volume', () => {
     })
     const target = new FakeAgent(harness.sessions['target']!)
     harness.agents.add(target)
-    await flushMicrotasks()
+    const service = harness.service as unknown as {
+      queueAnswerDiscard(discard: ReturnType<typeof answer>): void
+      reconcileAnswerDiscards(lead: string): Promise<void>
+      survivalProof(discard: ReturnType<typeof answer>, cache: Map<string, unknown>): Promise<unknown>
+    }
+    const stale = answer({ reportId: second.id, leadSessionId: leadId, sessionId: 'target', messageId: 'overflow-discard', status: 'discarded' })
+    service.queueAnswerDiscard(stale)
+    const proof = vi.spyOn(service, 'survivalProof')
+    await service.reconcileAnswerDiscards(leadId)
+    expect(proof).toHaveBeenCalled()
     expect(harness.service.questionAnswerView(harness.lead.agent, second.id)?.repairPending).toBe(true)
     await expectCode(
       () => harness.service.promptSession(harness.lead.agent, 'target', 'use prod', { intent: 'answer', questionId: second.id }),

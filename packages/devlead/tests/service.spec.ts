@@ -4423,6 +4423,7 @@ describe('cold lead rehydration', () => {
     const persistence = new FakeSessionPersistence()
     persistence.ids = ['late-persist-lead']
     harness.ctx.provide('sessionPersistence', persistence)
+    await new Promise(resolve => setTimeout(resolve, 300))
     await nextTask()
     // The readiness barrier confirms the corpus, then the authoritative scan
     // rebuilds the index.
@@ -4551,6 +4552,7 @@ describe('cold lead rehydration', () => {
     harness.ctx.provide('sessionQuery', query.asService())
     harness.ctx.provide('sessionProjectionCache', cache.asService())
     harness.ctx.provide('sessionPersistence', persistence)
+    await new Promise(resolve => setTimeout(resolve, 300))
     await nextTask()
     // One readiness listing (consistency check) + one authoritative scan, then final.
     expect(query.listSessionsCalls).toBe(2)
@@ -4591,6 +4593,7 @@ describe('cold lead rehydration', () => {
     harness.ctx.provide('sessionProjectionCache', cache.asService())
     harness.ctx.provide('sessionPersistence', persistence)
     appendTurnEnd(requireSession(harness, 'cold-watched-child'), 1)
+    await new Promise(resolve => setTimeout(resolve, 300))
     await nextTask()
     // Each attempt is capped at 1 known-enabled + 64 unclassified reads;
     // transient failures may schedule another bounded attempt.
@@ -4616,6 +4619,7 @@ describe('cold lead rehydration', () => {
     harness.ctx.provide('sessionProjectionCache', cache.asService())
     harness.ctx.provide('sessionPersistence', persistence)
     appendTurnEnd(harness.leadSession, 2)
+    await new Promise(resolve => setTimeout(resolve, 300))
     await nextTask()
     expect(query.readSessionCalls).toBe(1)
   })
@@ -4630,8 +4634,9 @@ describe('cold lead rehydration', () => {
     harness.ctx.provide('sessionQuery', query.asService())
     harness.ctx.provide('sessionPersistence', persistence)
     appendTurnEnd(harness.leadSession, 1)
+    await new Promise(resolve => setTimeout(resolve, 300))
     await nextTask()
-    expect(query.readSessionCalls).toBe(0)
+    expect(query.readSessionCalls).toBe(1)
     expect(warn.mock.calls.some(call => String(call[0]).includes('no Session projection cache'))).toBe(true)
     warn.mockRestore()
   })
@@ -4649,6 +4654,7 @@ describe('cold lead rehydration', () => {
     harness.ctx.provide('sessionProjectionCache', cache.asService())
     harness.ctx.provide('sessionPersistence', persistence)
     appendTurnEnd(harness.leadSession, 1)
+    await new Promise(resolve => setTimeout(resolve, 300))
     await nextTask()
     expect(harness.service.view(harness.lead.agent).enabled).toBe(true)
     expect(warn.mock.calls.some(call => String(call[0]).includes('could not list persisted Sessions'))).toBe(true)
