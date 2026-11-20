@@ -60,6 +60,13 @@
 > 第三方插件无法扩充 `SessionEventMap`，所以本仓库把它当作务实 workaround，而**不是稳定契约**：
 > 上游移除或改变语义可能让持久状态降级为仅内存或不可恢复。升级 DSH 前见
 > [DSH 版本兼容矩阵](#dsh-版本兼容矩阵) 与 [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md)。
+>
+> Service init 会通过单一 facade 探测两个 record 函数。导出缺失或首次读/写抛错时，插件仍加载，
+> 只发一条结构化 warning；`/devlead status` 与每个成功的 `/devlead ...` 视图（共用 `statusLines`）
+> 都显示 `Durable state: unavailable ... (memory-only)`。只有失败的那次 append 返回 `false`，失败写入
+> 不会被假报为 durable；fold 保持最后有效状态（仅当 reader 从未可用时才是默认状态），不写
+> `failure`、不冻结。只有读取路径健康时才可重试失败写入；任何读失败都会阻止后续写入，避免生成
+> projection 读不到的 durable 状态。降级状态保持可见，因为之前的写入可能已经丢失。API 正常时行为不变。
 
 ## 界面
 
@@ -198,15 +205,15 @@ staged 发布辅助脚本（`stage-release.mjs`、`promote-release.mjs`、`trust
 | `agent_teams: true` | **不支持** — `DEVLEAD_TEAM_UNAVAILABLE`，不创建 Session | 支持\* | 支持\* | 支持\* | 支持\* | \*Host 需组合 `agent-team`；`dsh-base` 从 rc.2 起默认包含。`false`/省略在 rc.1 正常工作 |
 
 **已知兼容债务。** 生产代码仍有 5 处调用已 deprecated 的 `Session.snapshotEvents()`：
-`packages/devlead/src/inbox.ts:141`、`packages/devlead/src/index.ts:4734` / `:4854` / `:5616`、
-`packages/tool/src/question-routing.ts:235`。DSH rc.1 与 rc.5 原文为“existing logic may remain
+`packages/devlead/src/inbox.ts:141`、`packages/devlead/src/index.ts` 的 `survivalProof` /
+`childLogEvents` / `replayChildObserver` 方法，以及 `packages/tool/src/question-routing.ts:235`。DSH rc.1 与 rc.5 原文为“existing logic may remain
 unmigrated for now, but new production calls are prohibited.” 迁移方向是事件订阅 / Session
 projection / 查询引擎有界读。在 DSH 0.3.0（`engines.dsh` 上界）前迁移这些调用，或加能力检测与
 有界 fallback；本轮只记录债务，不改代码。见 [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md)。
 
 rc.4 已发布到 npm（该版本的全部 `@deepseek-ai/*` 包；npm 的 `latest` tag 仍指向
-`0.2.2-rc.1`，rc.4 在 `next` tag 下，也可按精确版本安装）。它是一个小修复版本：upgrade guide
-唯一条目是把 DeepSeek 流式拒答的 LLM 错误码从 `MALFORMED_RESPONSE` 改为 `CONTENT_REFUSED`；
+`0.2.2-rc.1`，rc.4 在 `next` tag 下，也可按精确版本安装）。它是一个小修复版本：与 DevLead
+相关的 upgrade guide 条目是把 DeepSeek 流式拒答的 LLM 错误码从 `MALFORMED_RESPONSE` 改为 `CONTENT_REFUSED`；
 DevLead 不分类 LLM 错误码。rc.3 与 rc.4 的
 `dsh-base` / `dsh-web-app` `cordis.patch.yml` 逐字节一致；DevLead 引用的 `@deepseek-ai/*`
 包中只有 `dsh-llm` 增加了这个错误码。因此不需要按版本分支或降级。
@@ -284,6 +291,9 @@ durable `team/mode`）。模型 API（`modelCatalog`、`Agent.model.select`、`m
 | `0.2.2-rc.5` | `pnpm e2e --flow installed --no-build`（Phase 1e cold-origin replay 收口，pin 总数） | **221/221**（218 PASS + 3 SKIP；replay gap 收口轮重跑） |
 | `0.2.2-rc.5` | `pnpm e2e`（patch，cold-origin replay 收口） | **221/221**（同轮） |
 | `0.2.2-rc.5` | `pnpm e2e --no-worktree --no-build`（cold-origin replay 收口） | **198/198**（同轮，跳过 phase 2） |
+| `0.2.2-rc.5` | `node scripts/e2e-smoke.mjs --flow installed --no-build`（record-API 加固） | **221/221**（218 PASS + 3 SKIP） |
+| `0.2.2-rc.5` | `node scripts/e2e-smoke.mjs --flow patch --no-build`（record-API 加固） | **221/221**（同轮） |
+| `0.2.2-rc.5` | `node scripts/e2e-smoke.mjs --no-worktree --no-build`（record-API 加固） | **198/198**（同轮，跳过 phase 2） |
 
 0.3.0 的 prerelease 候选（0.3.0-rc.1 / rc.2，尚未 promote 为稳定版）含 question 路由与排队 inbox 输入。Phase 1c 的 harness 轮新增 question-gate 与 `devlead_report` question checks（结构化多问题 payload 深比对、完整 wake payload 深比对、action-required wake admission、conclude/durable/memory-only 路径，以及只证明恢复可写性、不宣称自动 replay 的 recovery report），并新增两条**真实 prompted child turn**：用 scripted `llm/stream` 脚本驱动真实 agent-loop turn/step/tool 事件（无需 provider 凭据）——conclude 的 question batch 之后，已提交的 next-step marker 仍会在后续真实 step 中执行、先于唯一 completed `turn/end`；被 gate deny 的 `ask_user_question` 不会阻止模型继续运行（用例 33）。Phase 1d 轮新增一条真实 scripted child turn：lead 在 glob dispatch 期间用 `intent:"answer"` **steer 回答运行中的 child**（答案在后续真实 step 中 presented、先于唯一 completed `turn/end`；同键/同文本重试返回原 receipt；不同答案冲突；durable answer record 与派生视图报 answered/presented），以及 answer inbox 生命周期（queuedInputs 的 intent/questionId/wakeRequested/deliveryState、retract 拒绝 answer 但接受 background/instruction、运行中 child interrupt `clear-own` 保留 pending answer 而 `clear-all` 丢弃并重新 open question，经真实 `workspace/session-stop` fan-out）。Phase 1e 轮新增独立的 lane 实例：progress/fyi background inject 让 idle lead 保持 idle（不唤醒、不开新 turn），读工具输出带 `lane`/`deliveryState`；blocked/decision 以 `[DEV LEAD ACTION REQUIRED]` steer 携带完整 message；真实 completed turn 走 `[DEV LEAD NOTIFICATION]` followup，真实 adapter 失败 turn 走 `[DEV LEAD REVIEW REQUIRED]` steer；question+turn-end 合并抑制字段；共享 16-pending action 上限溢出显式返回 `DEVLEAD_DELIVERY_RATE_LIMITED`；低基数指标快照。每阶段 check 总数已 pin（27 / 12 / 23 / 128 / 31，基线 DSH 0.2.2-rc.5；删 check 会使该阶段失败），PASS 与 SKIP 分开输出；rc.5 的 installed/patch 完整双流各报 **221/221**（218 PASS + 3 条无凭据 SKIP；`--no-worktree`：**198/198**）。Phase 1e × cold-discard r3–r9 合并轮在合并树上重跑全部门禁并保持同一组 pin（30 个测试文件 / 1330 tests；installed/patch 各 **221/221**，`--no-worktree` **198/198**；见[合并证据](docs/e2e-evidence/phase1e-merge.md)）。Phase 1e 复核修复轮（live lead 的 background receipt append 失败有界重试，30 个测试文件 / 1339 tests）重跑同一组门禁：installed/patch 各 **221/221**、`--no-worktree` **198/198**（见[background-retry 证据](docs/e2e-evidence/phase1e-bg-retry.md)）。Phase 1e cold-origin 修复轮（cold-observed background receipt 跨 outbox replay/重启保持 digest-only，30 个测试文件 / 1345 tests）以相同总数重跑同一组门禁（见[cold-origin 证据](docs/e2e-evidence/phase1e-cold-origin.md)）。cold-origin replay 收口轮（cold-queued origin marker、cold outbox replay receipt retry，30 个测试文件 / 1351 tests）以相同总数重跑同一组门禁（见[replay-closure 证据](docs/e2e-evidence/phase1e-cold-origin-final.md)）。发布前仍需按发布指南重跑完整组合。
 
@@ -861,7 +871,15 @@ config 是整体替换）。
 - **不修改 DSH 上游**：只消费已发布 `@deepseek-ai/*` 包与 peer 范围；不 fork、不 vendor、
   不 patch、不要求修改版 DSH。Phase 3 曾提的 upstream ordinary-Session mailbox / ephemeral
   context / blocking-question primitive / turn-boundary hooks 都是历史提案，2026-11-20 起
-  out of scope。唯一依赖的上游扩展点是上面的实验性 plugin-record API。
+  out of scope。上面的实验性 plugin-record API 是兼容保证最弱的上游依赖；公开 tools /
+  commands / projection / UI slot 扩展点另在兼容矩阵中覆盖。
+- **plugin records 会随 canonical Session 日志导出，也可能被上传**：DevLead 的记录是 canonical
+  session-log events，包含 notification/report 摘要与嵌入的 title 摘要；canonical 日志还包含 DSH
+  `session/title` 事件，它们都会进入 session-log ZIP 导出。DSH 随发行组合默认挂载、且默认
+  `enabled: true` 的 `session-log-deepseek`，还可能在
+  符合条件的官方 DeepSeek 模型请求中附加 **every complete canonical event**。导出 ZIP 应按敏感
+  归档处理，分享前先检查；不需要该上传路径时，在 DSH profile 中关闭 `session-log-deepseek`
+  （`enabled: false`）或禁用对应插件。DevLead 不另加上传器，也不改变这个 DSH 默认行为。
 - **不做 git 仓库创建 / clone / 通用 worktree 管理**：用 shell 工具完成，然后注册 Workspace。
   上文的可选隔离只借用已组合的实验性 DSH worktree 服务；**插件本身不执行任何 Git 操作**——
   不创建仓库、不 clone / fetch / merge、不管理分支。隔离开出的分支由 lead 安排审阅与
@@ -986,7 +1004,7 @@ Session），rc.2–rc.5 走 Team 成功路径；rc.4 / rc.5 的 installed 与 p
 排队输入轮按其 harness 重跑 rc.5：`--no-worktree` **127/127**，installed/patch 完整双流各
 **150/150**；Phase 1c 证据轮 pin **174/174**，Phase 1d answer routing 轮 pin **188/188**，
 Phase 1e message-lane 轮 pin **221/221**（installed/patch 完整双流各）；Phase 1e × cold-discard
-r3–r9 合并轮在合并树上重跑同一组 pin：两条完整流各 **221/221**、`--no-worktree` **198/198**；Phase 1e 复核修复轮、cold-origin 修复轮与 replay 收口轮再跑，数字相同。probe 是
+r3–r9 合并轮在合并树上重跑同一组 pin：两条完整流各 **221/221**、`--no-worktree` **198/198**；Phase 1e 复核修复轮、cold-origin 修复轮与 replay 收口轮再跑，数字相同。record-API 加固轮当前为 31 个测试文件 / 1362 tests，installed/patch 各 **221/221**、`--no-worktree` **198/198**；其 test/docs-only 复核 amend 新增 writer-only、reader 晚失败与 boot warning mutation 覆盖，运行时构建未变（见[record-API 加固证据](docs/e2e-evidence/phase1e-record-api-hardening.md)）。probe 是
 `scripts/e2e-probe/` 下的私有测试包，不发布、不属于 workspace 包；profile 变更只发生在
 `os.tmpdir()` 下的一次性 profile，不涉及 pnpm install / 网络 / lockfile。
 

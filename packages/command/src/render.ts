@@ -33,6 +33,10 @@ export const HELP_LINE =
 export interface DevLeadStatusSnapshot {
   /** Whether DevLead mode is selected for the receiving Session. */
   readonly enabled: boolean
+  /** Runtime health of the experimental DSH plugin-record durability boundary. */
+  readonly durableState:
+    | { readonly status: 'available' }
+    | { readonly status: 'degraded'; readonly reason: string }
   /**
    * Whether the Host composes the optional experimental Git worktree service,
    * so a dispatched Session can be isolated into its own checkout.
@@ -145,9 +149,13 @@ function reportLines(snapshot: DevLeadStatusSnapshot): string[] {
  * @returns plain output lines; the caller supplies any leading title.
  */
 export function statusLines(snapshot: DevLeadStatusSnapshot): string[] {
+  const durableLines = snapshot.durableState.status === 'available'
+    ? []
+    : [`Durable state: unavailable — DSH plugin-record API missing/rejected (${snapshot.durableState.reason}; memory-only)`]
   const lines = [
     `DevLead mode: ${modeLabel(snapshot.enabled)}`,
     `Worktree isolation: ${snapshot.worktreeIsolation ? 'available' : 'unavailable'}`,
+    ...durableLines,
     ...watchedLines(snapshot),
     ...archivedOccupantLines(snapshot),
     ...notificationLines(snapshot),

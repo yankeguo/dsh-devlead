@@ -38,8 +38,8 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import { appendPluginRecord, pluginRecordOf } from '@deepseek-ai/dsh-session'
 import { SessionId as toSessionId } from '@deepseek-ai/dsh-session'
+import { appendRecordOrThrow, readRecord } from './record-api.ts'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import {
   DEVLEAD_DEFAULT_NOTIFICATION_RETENTION,
@@ -622,7 +622,7 @@ export class DevLeadNotificationHub {
     const known = state.reports.some(existing => existing.id === report.id)
     if (!known) {
       try {
-        appendPluginRecord(session, DEVLEAD_REPORT_RECORD_TYPE, reportRecord(report))
+        appendRecordOrThrow(session, DEVLEAD_REPORT_RECORD_TYPE, reportRecord(report))
       } catch (error: unknown) {
         this.ctx.logger.warn(
           `devlead: could not record a report for lead "${runtime.sessionId}": ${thrownMessage(error)}`,
@@ -977,7 +977,7 @@ export class DevLeadNotificationHub {
    */
   private appendReportRecord(session: Session, report: DevLeadReport): boolean {
     try {
-      appendPluginRecord(session, DEVLEAD_REPORT_RECORD_TYPE, reportRecord(report))
+      appendRecordOrThrow(session, DEVLEAD_REPORT_RECORD_TYPE, reportRecord(report))
     } catch (error: unknown) {
       this.ctx.logger.warn(
         `devlead: could not record a report for lead "${report.leadSessionId}": ${thrownMessage(error)}`,
@@ -1285,7 +1285,7 @@ export class DevLeadNotificationHub {
   private onSessionEvent(session: Session, event: SessionEvent): void {
     if (this.stopping) return
     const sessionId = String(session.id)
-    const record = pluginRecordOf(event)
+    const record = readRecord(event)
     if (record !== undefined
       && (record.type === DEVLEAD_MODE_RECORD_TYPE
         || record.type === DEVLEAD_WATCH_RECORD_TYPE
@@ -1511,7 +1511,7 @@ export class DevLeadNotificationHub {
    */
   private appendNotificationRecord(session: Session, notification: DevLeadNotification, leadId: string): boolean {
     try {
-      appendPluginRecord(session, DEVLEAD_NOTIFICATION_RECORD_TYPE, notificationRecord(notification))
+      appendRecordOrThrow(session, DEVLEAD_NOTIFICATION_RECORD_TYPE, notificationRecord(notification))
     } catch (error: unknown) {
       this.ctx.logger.warn(`devlead: could not record a notification for lead "${leadId}": ${thrownMessage(error)}`)
       return false
@@ -1551,7 +1551,7 @@ export class DevLeadNotificationHub {
     let appended = false
     for (const notification of runtime.unsaved) {
       try {
-        appendPluginRecord(session, DEVLEAD_NOTIFICATION_RECORD_TYPE, notificationRecord(notification))
+        appendRecordOrThrow(session, DEVLEAD_NOTIFICATION_RECORD_TYPE, notificationRecord(notification))
       } catch (error: unknown) {
         this.ctx.logger.warn(
           `devlead: could not record a notification for lead "${runtime.sessionId}": ${thrownMessage(error)}`,
@@ -1582,7 +1582,7 @@ export class DevLeadNotificationHub {
         continue
       }
       try {
-        appendPluginRecord(session, DEVLEAD_REPORT_RECORD_TYPE, reportRecord(report))
+        appendRecordOrThrow(session, DEVLEAD_REPORT_RECORD_TYPE, reportRecord(report))
       } catch (error: unknown) {
         this.ctx.logger.warn(
           `devlead: could not record a report for lead "${runtime.sessionId}": ${thrownMessage(error)}`,

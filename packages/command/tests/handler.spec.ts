@@ -118,6 +118,16 @@ describe('devlead command status', () => {
     expect(text(result)).toContain('DevLead mode: on')
   })
 
+  it('surfaces core record-API degradation in the human status output', async () => {
+    const { handler, service } = boot()
+    service.durableState = { status: 'degraded', reason: 'pluginRecordOf is unavailable' }
+    const result = await run(handler, 'status')
+    expect(result.kind).toBe('success')
+    expect(text(result)).toContain('Durable state: unavailable')
+    expect(text(result)).toContain('pluginRecordOf is unavailable')
+    expect(text(result)).toContain('memory-only')
+  })
+
   it('reports whether the Host composes the optional worktree service', async () => {
     const { handler, service } = boot()
     const withoutCapability = await run(handler, '')

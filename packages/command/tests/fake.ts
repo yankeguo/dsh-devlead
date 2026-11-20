@@ -46,6 +46,7 @@ type FakeDevLeadSurface = Pick<
   | 'archivedOccupants'
   | 'notifications'
   | 'worktreeIsolationAvailable'
+  | 'durableState'
 >
 
 /** Fixed epoch milliseconds used by every notification fixture. */
@@ -155,6 +156,8 @@ export class FakeDevLead implements FakeDevLeadSurface {
   enabled = false
   /** Whether the host reports the optional worktree-isolation capability. */
   worktreeIsolationAvailable = false
+  /** Runtime health of the core's experimental record API. */
+  durableState: DevLeadService['durableState'] = { status: 'available' }
   /** Complete watch set, in add order. */
   watching: string[] = []
   /** Retained notification digest, oldest first. */

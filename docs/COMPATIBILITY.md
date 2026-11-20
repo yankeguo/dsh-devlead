@@ -14,7 +14,7 @@
   - `agent_teams` 从 rc.2 起可用；rc.1 返回 `DEVLEAD_TEAM_UNAVAILABLE`，不创建 Session。
   - 可选 worktree 隔离需要 Host 组合实验性 worktree/forge 服务；rc.4 / rc.5 的完整 E2E
     覆盖 phase 2。
-  - rc.4 只改 DeepSeek 流式拒答的 LLM 错误码；DevLead 不分类该错误码。
+  - 与 DevLead 相关的 rc.4 差异是 DeepSeek 流式拒答的 LLM 错误码；DevLead 不分类该错误码。
   - rc.5 只改 web search provider 选择（见下）；DevLead 不读取或调用该 API。
 - `plugin records`（`appendPluginRecord` / `PluginRecordMap`）：rc.1–rc.5 均存在；这是
   **experimental、调用方受限**的扩展点，不是公开契约，Session format migration 为
@@ -49,6 +49,28 @@ migration keeps them on a best-effort basis。因此：
   DevLead 的 durable 状态可能降级为仅内存、部分不可恢复或完全不可恢复；不能假设升级后旧
   记录仍可无损读取。
 - 升级 DSH 前必须跑下节「升级门禁」；不得以“rc.1–rc.5 都有”替代稳定性判断。
+- 生产代码的唯一运行时入口是 `packages/devlead/src/record-api.ts`：init 探测两个导出，首次读/
+  写异常转入 `degraded`；只有失败的那次 append 返回 `false`，read 返回 `undefined`，只 warning
+  一次。degraded 时 `/devlead status` 与每个成功的 `/devlead ...` 视图都明示 memory-only。fold
+  保持最后有效状态（仅当 reader 从未可用时才是默认状态），不写 `failure`、不冻结；writer-only
+  缺失时健康 reader 仍读回既有 durable 状态。该降级只保证插件可加载与状态可见，**不提供 durable
+  替代存储**；正常 API 路径仍由原记录语义与全部既有测试覆盖。
+
+### 隐私与 canonical 日志导出
+
+这些 plugin records 是 canonical session-log events。rc.1 / rc.5 的
+`packages/session-query/session-log-export/src/archive.ts` 将 header 与每个 event 写成 canonical
+JSONL 并打入 ZIP；因此 DevLead 的 notification/report 摘要与嵌入的 title 摘要会进入导出归档，
+canonical 日志也包含 DSH `session/title` 事件。两个 tag 的
+`packages/session/session-log-deepseek/README.md` 与 `src/index.ts` 还确认：该插件由
+`packages/bundle/base/cordis.patch.yml:43-44` 默认组合（rc.1 / rc.5 相同）、`enabled` 默认 `true`，
+会在符合条件的官方 DeepSeek 模型请求中附加
+“every complete canonical event”（raw-number envelope；按连续后缀、2xx 确认、at-least-once）。
+这意味着上述 DevLead 内容也可能沿该默认上传路径离开本机。
+
+缓解建议：分享 session-log ZIP 前按敏感归档审查；不需要上传时，在 DSH profile 中将
+`session-log-deepseek` 的 `enabled` 设为 `false` 或禁用对应上传插件。这里只披露 DSH 既有行为，
+DevLead 不新增上传，也不修改默认配置。
 
 ### `Session.snapshotEvents()`（已 deprecated）
 
@@ -63,9 +85,9 @@ rc.1 与 rc.5 的 `packages/core/session/README.md`「Read the log」和
 | 位置 | 当前用途 | 迁移方向 |
 | --- | --- | --- |
 | `packages/devlead/src/inbox.ts:141` | 从日志尾部反查 pending inbox 消息的 `agent/inbox/spliced` 入队时间 | 事件订阅/投影维护 message id → enqueue time，或查询引擎有界读 |
-| `packages/devlead/src/index.ts:4734` | live child 缺 observer 时回放日志做 answer survival 证明 | 事件订阅重建 observer；cold 走查询引擎 |
-| `packages/devlead/src/index.ts:4854` | `childLogEvents`：attached child 取完整快照，否则查询引擎读 log | 统一走查询引擎有界读/投影 |
-| `packages/devlead/src/index.ts:5616` | `replayChildObserver` 全量回放 child inbox 日志 | 增量事件订阅 + cold 查询引擎 |
+| `packages/devlead/src/index.ts` 的 `survivalProof` | live child 缺 observer 时回放日志做 answer survival 证明 | 事件订阅重建 observer；cold 走查询引擎 |
+| `packages/devlead/src/index.ts` 的 `childLogEvents` | attached child 取完整快照，否则查询引擎读 log | 统一走查询引擎有界读/投影 |
+| `packages/devlead/src/index.ts` 的 `replayChildObserver` | 全量回放 child inbox 日志 | 增量事件订阅 + cold 查询引擎 |
 | `packages/tool/src/question-routing.ts:235` | 扫描当前 turn 的 `user/message` 判断是否人类发起 | turn/source 投影或按 turn 范围的有界查询 |
 
 该债务**本轮只记录、不改代码**。升级门禁：在 DSH `0.3.0`（当前 `engines.dsh` 上界）前迁移
@@ -177,18 +199,106 @@ wire projection 的 questionStatus/answerStatus 都是可选 additive 字段，�
 
 升级 DSH（任一新 rc 或进入 0.3.0）前必须全部通过：
 
-1. `pnpm verify` 与 `pnpm check:packages`（类型检查仍按最旧 rc.1 devDeps）。
-2. 在目标 DSH 上重跑[真实 E2E](#真实-e2e)：`--no-worktree` 至少覆盖 installed + patch；
-   声明 worktree / Team 能力时跑完整组合。发布前的完整重跑仍按 [PUBLISHING](PUBLISHING.md)。
-3. 核对实验性扩展点：`appendPluginRecord` / `PluginRecordMap` / `pluginRecordOf` 仍存在，
-   `packages/core/session/README.md` 的调用方限制与 Session format migration best-effort 条款
-   未变；若变化，先评估 durable 状态的迁移/降级路径。
-4. 核对 `Session.snapshotEvents()` 仍存在且语义未变；若被移除或从 deprecated 升级为硬禁止，
-   先完成本页记录的迁移或能力检测。
-5. 核对能力矩阵依赖的 Host API（Team / worktree / inbox / stop / question routing）与
+1. `pnpm verify` 与 `pnpm check:packages`（类型检查仍按最旧 rc.1 devDeps）；必须包含
+   `packages/devlead/tests/record-api.spec.ts` 的正常路径 negative control，以及 writer-only /
+   reader-only 缺失、首读/首写与 reader 晚失败、warn-once、失败 append=false、fold 不冻结、
+   Service 可加载的降级用例。
+2. 核对实验性扩展点的**声明与语义**，不能只检查名字：`appendPluginRecord` /
+   `pluginRecordOf` / `PluginRecordMap` 仍存在，同步签名与 `PluginRecord` envelope（`type` /
+   `seq` / `time` / `data`）未变；写入仍是 `ignorable:true`、JSON snapshot 后同步 commit，
+   `pluginRecordOf` 仍只提取 record 而由 owner 严格校验 payload。`packages/core/session/README.md`
+   的调用方限制与 Session format migration best-effort 条款也必须重新核对。
+3. 核对 `Session.snapshotEvents()` 仍存在且快照/区间语义未变；若被移除或从 deprecated 升级为
+   硬禁止，先完成本页记录的迁移或能力检测，再声明兼容。
+4. 在 **rc.1 到目标版本的每个 rc** 跑兼容矩阵；不能只测最新版本。每个版本至少重跑
+   [真实 E2E](#真实-e2e) 的 installed + patch `--no-worktree`，声明 worktree / Team 能力时跑
+   完整组合；另跑 record facade 的正常/降级测试，验证实际加载的导出与首写/首读路径。临时安装、
+   目标 typings 编译、三条命令与证据留存按下方[可执行 recipe](#逐-rc-可执行-recipe) 执行。
+5. 对旧日志做 record schema / migration 核对：六类 `plugin:devlead/*` 的 `kind` / `version` /
+   字段集、reset 解冻规则、strict decoder 与 projection stateVersion 必须一致。任何 record
+   schema 或迁移异常都按**可能不可恢复**处理：先备份原始日志、停止宣称兼容并评估显式迁移/
+   降级；不得把读取失败当作空日志，也不得用静默 reset 丢弃旧状态。
+6. 核对能力矩阵依赖的 Host API（Team / worktree / inbox / stop / question routing）与
    projection / summary 契约仍存在。
+7. 发布前的完整重跑与三门真实 E2E 仍按 [PUBLISHING](PUBLISHING.md)；证据日志必须来自冻结的
+   最终树并保留真实退出码。
 
 任一项失败或上游 API 语义变化时，不得宣称兼容；应修复、显式降级并在本页与 README 记录。
+
+### 逐 rc 可执行 recipe
+
+对 rc.1 到目标版本的每个 `RC` 分别执行。源码与依赖都在临时目录，main 的 lockfile、真实
+profile 和 DSH clone 不变；`git archive HEAD` 要求先固定待验证提交：
+
+```sh
+set -euo pipefail
+export RC=0.2.2-rc.5
+REPO=$PWD
+ROOT="$HOME/Library/Caches/dsh-plugin-tests/dsh-devlead"
+mkdir -p "$ROOT"
+WORK=$(mktemp -d "$ROOT/gate-$RC.XXXXXX")
+SRC="$WORK/src"
+BASE="$WORK/dsh"
+EVIDENCE="$WORK/evidence"
+mkdir -p "$SRC" "$BASE/tmp" "$BASE/install" "$EVIDENCE"
+git archive HEAD | tar -x -C "$SRC"
+
+# 只在临时源码树把全部 DSH devDependencies 固定到目标 rc，并编译其 typings。
+node - "$SRC/package.json" <<'NODE'
+const fs = require('node:fs')
+const file = process.argv[2]
+const manifest = JSON.parse(fs.readFileSync(file, 'utf8'))
+for (const [name, _range] of Object.entries(manifest.devDependencies)) {
+  if (name.startsWith('@deepseek-ai/dsh-')) manifest.devDependencies[name] = process.env.RC
+}
+fs.writeFileSync(file, JSON.stringify(manifest, null, 2) + '\n')
+NODE
+pnpm -C "$SRC" install
+
+run_gate() {
+  local name=$1
+  shift
+  set +e
+  "$@" >"$EVIDENCE/upgrade-$RC-$name.log" 2>&1
+  local code=$?
+  set -e
+  printf '%s_EXIT=%s\n' "${name//-/_}" "$code" >>"$EVIDENCE/upgrade-$RC-$name.log"
+  return "$code"
+}
+run_gate typings pnpm -C "$SRC" typecheck
+run_gate build pnpm -C "$SRC" build
+
+# 每个 rc 使用独立的临时 CLI 与 scratch DSH_HOME。
+npm install --prefix "$BASE/install" --cache "$BASE/npm-cache" "@deepseek-ai/dsh@$RC"
+DSH_BIN="$BASE/install/node_modules/@deepseek-ai/dsh/lib/bin.js"
+cd "$SRC"
+run_gate dsh-version env TMPDIR="$BASE/tmp" "$DSH_BIN" --version
+run_gate patch env TMPDIR="$BASE/tmp" DSH_BIN="$DSH_BIN" \
+  node scripts/e2e-smoke.mjs --flow patch --no-build --root "$BASE/tmp/e2e-patch"
+run_gate installed env TMPDIR="$BASE/tmp" DSH_BIN="$DSH_BIN" \
+  node scripts/e2e-smoke.mjs --flow installed --no-build --root "$BASE/tmp/e2e-installed"
+run_gate no-worktree env TMPDIR="$BASE/tmp" DSH_BIN="$DSH_BIN" \
+  node scripts/e2e-smoke.mjs --no-worktree --no-build --root "$BASE/tmp/e2e-no-worktree"
+
+cp "$EVIDENCE"/*.log "$REPO/docs/e2e-evidence/"
+git -C "$REPO" add -f \
+  "docs/e2e-evidence/upgrade-$RC-typings.log" \
+  "docs/e2e-evidence/upgrade-$RC-build.log" \
+  "docs/e2e-evidence/upgrade-$RC-dsh-version.log" \
+  "docs/e2e-evidence/upgrade-$RC-patch.log" \
+  "docs/e2e-evidence/upgrade-$RC-installed.log" \
+  "docs/e2e-evidence/upgrade-$RC-no-worktree.log"
+```
+
+当前 harness 的 pin 来自 `scripts/e2e-smoke.mjs` 的 `EXPECTED_CHECKS`
+（phase 1=27、1b=12、2=23、3=128、1e=31）：patch / installed 完整流必须各为 **221/221**，
+no-worktree 必须为 **198/198**（仅跳过 phase 2）；正向模型选择仍允许既有的 3 条有真实原因的
+SKIP，其他检查不得通过删除或放宽断言来凑数。未来 pin 变化只能先更新 `EXPECTED_CHECKS` 并在
+证据中解释。
+
+每个 rc 的 typings/build/三条 E2E 日志都必须复制到 `docs/e2e-evidence/`，保留真实 `*_EXIT=`
+行、`DSH_BIN --version` 输出与总计行；`*.log` 被 ignore 时用 `git add -f` 显式纳入证据 commit。
+临时目录默认清理，失败时先保留以便复现；不得在真实 profile 上执行该 recipe。
 
 ## 真实 E2E
 

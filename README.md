@@ -74,6 +74,16 @@ Documentation: [Design notes (中文)](docs/DESIGN.md) · [Publishing guide (中
 > an upstream removal or semantic change can degrade the state to memory-only or make it
 > unrecoverable. See [DSH version compatibility](#dsh-version-compatibility) and
 > [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) before upgrading DSH.
+>
+> At service init DevLead probes both record functions through one facade. A missing export or the
+> first thrown read/write produces one structured warning and adds
+> `Durable state: unavailable ... (memory-only)` to `/devlead status` and every successful
+> `/devlead ...` view (they share `statusLines`). Only the failed append returns `false`; failed
+> writes are never reported as durable. Each fold keeps its last valid state without setting
+> `failure` or freezing—the state is the default only when the reader was never available. A failed
+> write may be retried only while reads stay healthy; any read failure blocks later writes so they
+> cannot create durable state the projections cannot see. Degradation stays visible because an
+> earlier write may be lost. The plugin still loads; normal API behavior is unchanged.
 
 ## UI
 
@@ -226,8 +236,8 @@ accept every 0.2.2 release candidate instead of reporting unmet peers on rc.2+.
 | `agent_teams: true` | **no** — `DEVLEAD_TEAM_UNAVAILABLE`, no Session created | yes\* | yes\* | yes\* | yes\* | \*Host must compose `agent-team`; `dsh-base` includes it from rc.2. `false`/omitted work on rc.1 |
 
 **Known compatibility debt.** Production code still calls the deprecated
-`Session.snapshotEvents()` at `packages/devlead/src/inbox.ts:141`,
-`packages/devlead/src/index.ts:4734` / `:4854` / `:5616`, and
+`Session.snapshotEvents()` at `packages/devlead/src/inbox.ts:141`, the `survivalProof`,
+`childLogEvents`, and `replayChildObserver` methods in `packages/devlead/src/index.ts`, and
 `packages/tool/src/question-routing.ts:235`. DSH rc.1 and rc.5 mark that reader deprecated:
 "existing logic may remain unmigrated for now, but new production calls are prohibited." The
 migration direction is event subscription / Session projection / bounded reads through the
@@ -318,6 +328,9 @@ requires Node ≥ 24.9):
 | `0.2.2-rc.5` | `pnpm e2e --flow installed --no-build` (Phase 1e cold-origin replay closure, pinned totals) | **221/221** (218 PASS + 3 SKIP; replay-gap closure rerun) |
 | `0.2.2-rc.5` | `pnpm e2e` (patch, cold-origin replay closure) | **221/221** (same round) |
 | `0.2.2-rc.5` | `pnpm e2e --no-worktree --no-build` (cold-origin replay closure) | **198/198** (same round, phase 2 skipped) |
+| `0.2.2-rc.5` | `node scripts/e2e-smoke.mjs --flow installed --no-build` (record-API hardening) | **221/221** (218 PASS + 3 SKIP) |
+| `0.2.2-rc.5` | `node scripts/e2e-smoke.mjs --flow patch --no-build` (record-API hardening) | **221/221** (same round) |
+| `0.2.2-rc.5` | `node scripts/e2e-smoke.mjs --no-worktree --no-build` (record-API hardening) | **198/198** (same round, phase 2 skipped) |
 
 The 0.3.0 prerelease candidates (0.3.0-rc.1 / 0.3.0-rc.2, not yet promoted as stable) include question routing
 and queued inbox inputs. The Phase 1c harness rounds add the question-gate and `devlead_report` question
@@ -355,8 +368,12 @@ fix round (cold-observed background receipts stay digest-only across outbox repl
 [cold-origin evidence](docs/e2e-evidence/phase1e-cold-origin.md)). The cold-origin replay-closure
 round (cold-queued origin marker, cold outbox replay receipt retry, 30 test files / 1351 tests)
 reran the same gates with the same totals (see
-[replay-closure evidence](docs/e2e-evidence/phase1e-cold-origin-final.md)). A pre-release rerun of
-the full combination is still required by the publishing guide.
+[replay-closure evidence](docs/e2e-evidence/phase1e-cold-origin-final.md)). The record-API hardening
+round currently reports 31 test files / 1362 tests, installed/patch **221/221** each, and
+`--no-worktree` **198/198**; its test/docs-only review amendment adds writer-only, late-reader, and
+boot-warning mutation coverage without changing the runtime build (see
+[record-API hardening evidence](docs/e2e-evidence/phase1e-record-api-hardening.md)). A pre-release
+rerun of the full combination is still required by the publishing guide.
 
 Three positive model-selection checks per flow are reported as SKIP on this credential-less
 Host (the real reason is printed); the negative model path and `devlead_list_models` run on every
@@ -1065,8 +1082,17 @@ without it keeps the default single-checkout behavior and reports `unavailable`.
   its peer range; it does not fork, vendor, patch, or require a modified DSH. The Phase-3 ideas
   about an upstream ordinary-Session mailbox / ephemeral context / blocking-question primitive /
   turn-boundary hooks are historical proposals and out of scope (2026-11-20 user constraint). The
-  only upstream extension point it relies on is the experimental plugin-record API described
-  above.
+  experimental plugin-record API above is the upstream dependency with the weakest compatibility
+  guarantee; the public tools/commands/projection/UI-slot extension points are covered separately in
+  the compatibility matrix.
+- **Plugin records are exported and may be uploaded with the canonical Session log:** DevLead's
+  records are canonical session-log events and include notification/report summaries and embedded
+  title excerpts; the canonical log also carries DSH `session/title` events. They are all included in
+  session-log ZIP exports. DSH's shipped, default-enabled
+  `session-log-deepseek` path can also attach **every complete canonical event** to eligible official
+  DeepSeek model requests. Treat exported ZIPs as sensitive and review them before sharing; if this
+  upload path is unwanted, disable `session-log-deepseek` (`enabled: false`) or its plugin in the DSH
+  profile. DevLead does not add a separate uploader or change that DSH default.
 - **No Git repository creation / clone / general worktree management:** use shell tools, then
   register the Workspace. The optional per-Session isolation described above only borrows an
   already-composed experimental DSH worktree service; the plugin itself performs no Git

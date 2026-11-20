@@ -70,6 +70,7 @@ async function collectStatus(ctx: Context, invocation: CommandInvocation): Promi
   const archivedOccupants = await ctx.devLead.archivedOccupants(invocation.signal)
   return {
     enabled: view.enabled,
+    durableState: ctx.devLead.durableState,
     worktreeIsolation: ctx.devLead.worktreeIsolationAvailable,
     watched,
     missingWatched,

@@ -1,0 +1,51 @@
+$ pnpm vitest run packages/devlead/tests/record-api.spec.ts
+# /tmp/dsh-devlead-record-api-m8.sxrGxH
+# mutation: appendPluginRecord missing branch returns true
+
+ ❯ packages/devlead/tests/record-api.spec.ts (9 tests | 1 failed) 11ms
+     ✓ keeps the normal append/read path unchanged (negative control)
+     ✓ detects missing exports at init, warns once, and fails closed without throwing
+     ✓ fails closed when only the reader is missing and never invokes the healthy writer
+     × fails closed writer-only degradation while the healthy reader serves existing durable state
+     ✓ degrades on persistent thrown writes and keeps one warning while allowing reads
+     ✓ allows a later write retry without hiding the earlier durability loss
+     ✓ blocks writes after a later read failure and retains the last valid fold state
+     ✓ degrades on the first thrown read, blocks later writes, and never freezes any DevLead fold
+     ✓ loads the real service with a missing API and serves the default, unfrozen view
+
+AssertionError: expected true to be false // Object.is equality
+packages/devlead/tests/record-api.spec.ts:154:100
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 8 passed (9)
+MUTANT_WRITER_MISSING_EXIT=1
+
+$ pnpm vitest run packages/devlead/tests/record-api.spec.ts
+# writer-missing branch restored; initializeRecordApi(this.ctx.logger) removed
+
+ ❯ packages/devlead/tests/record-api.spec.ts (9 tests | 1 failed) 13ms
+     ✓ keeps the normal append/read path unchanged (negative control)
+     ✓ detects missing exports at init, warns once, and fails closed without throwing
+     ✓ fails closed when only the reader is missing and never invokes the healthy writer
+     ✓ fails closed writer-only degradation while the healthy reader serves existing durable state
+     ✓ degrades on persistent thrown writes and keeps one warning while allowing reads
+     ✓ allows a later write retry without hiding the earlier durability loss
+     ✓ blocks writes after a later read failure and retains the last valid fold state
+     ✓ degrades on the first thrown read, blocks later writes, and never freezes any DevLead fold
+     × loads the real service with a missing API and serves the default, unfrozen view
+
+AssertionError: expected [] to have a length of 1 but got +0
+packages/devlead/tests/record-api.spec.ts:285:22
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 8 passed (9)
+MUTANT_INIT_REMOVED_EXIT=1
+
+$ pnpm vitest run packages/devlead/tests/record-api.spec.ts
+# both mutations restored
+
+ ✓ packages/devlead/tests/record-api.spec.ts (9 tests) 11ms
+
+ Test Files  1 passed (1)
+      Tests  9 passed (9)
+MUTATION_RESTORED_EXIT=0

@@ -105,13 +105,35 @@ DSH 的所有读取路径会保留并重放这些记录，但不会把它们投�
 > 只做 **best-effort**。第三方插件又无法扩充 DSH 仓库内生成的 `SessionEventMap` 词表，因此本
 > 仓库对它的使用是**务实的 workaround，不是公开稳定契约，也没有稳定性或迁移保证**。本地只在
 > `packages/devlead/src/domain.ts:152` 对 `@deepseek-ai/dsh-session/types` 做 `PluginRecordMap`
-> 模块增强，运行时从 `@deepseek-ai/dsh-session` 公开入口使用 `appendPluginRecord` /
-> `pluginRecordOf`；二者都来自已发布 npm 包，`types` 子路径也是 DSH 原文指定的声明入口，不是
+> 模块增强，运行时唯一入口是 `packages/devlead/src/record-api.ts` 的 record API facade；它从
+> `@deepseek-ai/dsh-session` 公开入口以 namespace import 探测 `appendPluginRecord` /
+> `pluginRecordOf`，二者都来自已发布 npm 包，`types` 子路径也是 DSH 原文指定的声明入口，不是
 > 私有深层导入。若上游移除、收紧或改变 `appendPluginRecord` / `PluginRecordMap` /
 > `pluginRecordOf`，DevLead 的持久状态可能降级为仅内存、部分不可恢复或完全不可恢复；升级
 > DSH 前必须按 [COMPATIBILITY](COMPATIBILITY.md#升级门禁) 重跑兼容门禁，不得假设旧记录一定
 > 能随格式迁移保留。下方的严格字段解码仍是最后一道防线：迁移后语义不明的日志必须让 replay
 > 失败，而不是被静默转换。
+>
+> **可用性探测与显式降级（2026-11-20）**：Service init 检查两个导出是否都是 function；首次读/
+> 写抛错也把进程级状态置为 `degraded`。facade 只发一条含 `reason` 与影响范围的结构化
+> `logger.warn`；失败的那次 `appendRecord` 返回 `false` 而不抛出，`readRecord` 返回 `undefined`。
+> 三个 fold 保持最后有效状态（仅当 reader 从未可用时才是默认状态），**不写入 `failure`、不冻结**；
+> 严格 payload 解码失败的原有冻结语义不变。写入还要求读路径健康：reader 缺失或曾抛错后，即使
+> writer 正常也返回 `false`，不得生成 projection 与单活扫描读不到的 durable 记录。degraded 时
+> `/devlead status` 与每个成功的 `/devlead ...` 视图都显示
+> `Durable state: unavailable ... (memory-only)`（`statusLines` 是所有成功命令视图的公共 body），
+> 因此 API 缺失不会被静默伪装成“没有记录”。API 正常时 facade 直接转发，记录与 projection 行为不变。
+>
+> **隐私与导出披露（2026-11-20）**：这些 plugin records 是 canonical session-log events，不是
+> 仅进程内数据；session-log ZIP 导出会序列化 header 与完整 canonical JSONL 日志，因此包含这些
+> 记录。canonical 日志还包含 DSH `session/title` 事件，DevLead 记录中也嵌有 title 摘要。DSH 由
+> `packages/bundle/base/cordis.patch.yml:43-44`（rc.1 / rc.5 相同）默认组合、且默认
+> `enabled: true` 的 `session-log-deepseek` 会在符合条件的官方 DeepSeek 模型请求上附加
+> “every complete canonical event”（转换为 raw-number envelope），所以上述内容也可能随该上传路径
+> 离开本机。导出或分享
+> session-log ZIP 前应把它当作含敏感内容的归档检查；不需要该上传路径时，在 DSH profile 中关闭
+> `session-log-deepseek`（`enabled: false`）或禁用对应上传插件。DevLead 不另行上传，也不改变
+> DSH 的默认上传行为。
 
 | 记录类型 | payload | 语义 |
 | --- | --- | --- |
@@ -2701,3 +2723,9 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
 走可选 `ctx.get(...)`，实验性 worktree 服务只在显式 `isolation` 请求时借用（§4.3）。逐包判定
 表、`dsh.client.inject` 核验、证据 file:line 与「默认 profile 可安装/构建/运行」的验证方式见
 [`OPTIONAL-DEPENDENCIES.md`](OPTIONAL-DEPENDENCIES.md)。
+
+**2026-11-20 record-API 加固轮**：facade、显式降级、隐私披露与升级门禁的实现和三条真实 E2E
+见 [`e2e-evidence/phase1e-record-api-hardening.md`](e2e-evidence/phase1e-record-api-hardening.md)。
+当前为 **31 个测试文件 / 1362 tests**，installed / patch 各 **221/221**、`--no-worktree`
+**198/198**。后续 test/docs-only 复核 amend 增加 writer-only、reader 晚失败、boot warn-once 与
+mutation negative control；运行时代码和既有 E2E 对应的构建未变。

@@ -10,8 +10,8 @@
  * @module @yankeguo/dsh-devlead
  */
 
-import { pluginRecordOf } from '@deepseek-ai/dsh-session'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
+import { readRecord } from './record-api.ts'
 // Type-only: pulls the plugin-record map entries for the devlead event types.
 import type {} from './domain.ts'
 import {
@@ -55,7 +55,7 @@ export interface DevLeadActiveSession {
 export function lastEnabledAt(events: readonly SessionEvent[]): number | undefined {
   let at: number | undefined
   for (const event of events) {
-    const record = pluginRecordOf(event)
+    const record = readRecord(event)
     if (record === undefined) continue
     if (record.type === DEVLEAD_MODE_RECORD_TYPE) {
       const data = record.data as { readonly enabled?: unknown; readonly at?: unknown }

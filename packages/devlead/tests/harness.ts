@@ -9,6 +9,7 @@
  * without booting the Agent loop, a model, or a persistent store.
  */
 
+import { afterEach } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import type { Agent, AgentRegistry, AgentStatus, ModelSelection, TurnBoundaryProjection } from '@deepseek-ai/dsh-agent'
 import type { SessionController, SessionCreateRequest, SessionCreateValue } from '@deepseek-ai/dsh-api-session-controller'
@@ -35,6 +36,12 @@ import type { WorktreeCheckout } from '../src/isolation.ts'
 import { DevLeadMetrics } from '../src/metrics.ts'
 import { DevLeadNotificationHub } from '../src/notification.ts'
 import type { SessionProjectionCacheLike } from '../src/projection-cache.ts'
+import { resetRecordApiForTests } from '../src/record-api.ts'
+
+// The production facade degrades for the rest of the process after a Host API
+// failure. Keep that scope within one spec instead of leaking a mocked failure
+// into the next otherwise-independent harness.
+afterEach(() => { resetRecordApiForTests() })
 
 /** Deterministic instant used for every seeded record and fake title. */
 export const T0 = 1_700_000_000_000
@@ -1469,6 +1476,8 @@ export interface BootServiceOptions {
   readonly extraAgents?: (registry: FakeAgentRegistry, sessions: Readonly<Record<string, Session>>) => void
   /** Core-service configuration passed to the plugin. */
   readonly config?: Record<string, unknown>
+  /** Test-only hook run after Host fakes are provided but before the Service boots. */
+  readonly beforeServicePlugin?: (ctx: Context) => void
 }
 
 /** One booted core-service harness. */
@@ -1548,6 +1557,7 @@ export async function bootService(options: BootServiceOptions = {}): Promise<Ser
   if (options.agentTeams !== undefined) ctx.provide('agentTeams', options.agentTeams.asService())
   if (options.agentDefaultModel !== undefined) ctx.provide('agentDefaultModel', options.agentDefaultModel.asService())
   if (options.storageDomain !== undefined) ctx.provide('storageDomain' as never, options.storageDomain.asService() as never)
+  options.beforeServicePlugin?.(ctx)
   await ctx.plugin(DevLeadService, options.config ?? {})
   liveContexts.push(ctx)
   return {

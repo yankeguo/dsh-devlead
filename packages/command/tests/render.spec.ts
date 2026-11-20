@@ -16,6 +16,7 @@ import { NOW, notification, sessionView } from './fake.ts'
 function snapshot(overrides: Partial<DevLeadStatusSnapshot> = {}): DevLeadStatusSnapshot {
   return {
     enabled: true,
+    durableState: { status: 'available' },
     worktreeIsolation: false,
     watched: [],
     missingWatched: [],
@@ -149,6 +150,16 @@ describe('statusLines', () => {
   it('reports whether optional worktree isolation is composed', () => {
     expect(statusLines(snapshot({ worktreeIsolation: true }))).toContain('Worktree isolation: available')
     expect(statusLines(snapshot({ worktreeIsolation: false }))).toContain('Worktree isolation: unavailable')
+  })
+
+  it('makes plugin-record degradation visible without changing the available output', () => {
+    expect(statusLines(snapshot()).some(line => line.startsWith('Durable state:'))).toBe(false)
+    expect(statusLines(snapshot({
+      durableState: { status: 'degraded', reason: 'appendPluginRecord threw: read-only log' },
+    }))).toContain(
+      'Durable state: unavailable — DSH plugin-record API missing/rejected '
+      + '(appendPluginRecord threw: read-only log; memory-only)',
+    )
   })
 
   it('renders the mode, counted watch set, and running rows in watch order', () => {

@@ -17,8 +17,9 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import { MessageId, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-api-session-controller'
 import type { SessionCreateValue } from '@deepseek-ai/dsh-api-session-controller'
-import { appendPluginRecord } from '@deepseek-ai/dsh-session'
 import { SessionId as toSessionId } from '@deepseek-ai/dsh-session'
+import { appendRecordOrThrow, initializeRecordApi, recordApiStatus } from './record-api.ts'
+import type { RecordApiStatus } from './record-api.ts'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import type { ProjectionHandle } from '@deepseek-ai/dsh-session-projection'
 import type { SessionQueryEngine } from '@deepseek-ai/dsh-session-query'
@@ -165,6 +166,8 @@ export type * from '@yankeguo/dsh-devlead-protocol'
 export * from './domain.ts'
 export { DevLeadError, isDevLeadError } from './error.ts'
 export type { DevLeadErrorCode } from './error.ts'
+export { recordApiStatus } from './record-api.ts'
+export type { RecordApiStatus } from './record-api.ts'
 export {
   applyDevLeadModeProjection,
   applyDevLeadProjection,
@@ -911,6 +914,7 @@ export class DevLeadService extends Service {
   }
 
   protected async [Service.init](): Promise<void> {
+    initializeRecordApi(this.ctx.logger)
     this.projectionHandle = await this.ctx.sessionProjections.register(devLeadProjectionDefinition)
     // Summary-sized companion of the digest unit: Session-list rows carry the
     // mode selection without the retained notifications. No handle is needed:
@@ -1399,6 +1403,11 @@ export class DevLeadService extends Service {
     return worktreeCapabilityOf(this.ctx) !== undefined
   }
 
+  /** Runtime health of the experimental DSH plugin-record durability boundary. */
+  get durableState(): RecordApiStatus {
+    return recordApiStatus()
+  }
+
   // ---------------------------------------------------------------------------
   // Mode
   // ---------------------------------------------------------------------------
@@ -1491,7 +1500,7 @@ export class DevLeadService extends Service {
           )
         }
       }
-      appendPluginRecord(agent.session, DEVLEAD_MODE_RECORD_TYPE, modeRecord(enabled, Date.now()))
+      appendRecordOrThrow(agent.session, DEVLEAD_MODE_RECORD_TYPE, modeRecord(enabled, Date.now()))
       await this.flushDurably(agent.session, `DevLead mode for Session "${agent.id}"`)
       await this.checkpointProjectionCache(agent.session, `DevLead mode for Session "${agent.id}"`)
       if (enabled) this.activeSessionId = String(agent.id)
@@ -1533,7 +1542,7 @@ export class DevLeadService extends Service {
    * @param session - Session whose DevLead state is discarded.
    */
   private appendResetRecord(session: Session): void {
-    appendPluginRecord(session, DEVLEAD_RESET_RECORD_TYPE, resetRecord(Date.now()))
+    appendRecordOrThrow(session, DEVLEAD_RESET_RECORD_TYPE, resetRecord(Date.now()))
   }
 
   /**
@@ -3324,7 +3333,7 @@ export class DevLeadService extends Service {
         return false
       }
       if (state.enabled) {
-        appendPluginRecord(session, DEVLEAD_MODE_RECORD_TYPE, modeRecord(false, Date.now()))
+        appendRecordOrThrow(session, DEVLEAD_MODE_RECORD_TYPE, modeRecord(false, Date.now()))
         await this.flushDurably(session, `DevLead release for Session "${occupant.sessionId}"`)
         await this.checkpointProjectionCache(session, `DevLead release for Session "${occupant.sessionId}"`)
       }
@@ -4478,7 +4487,7 @@ export class DevLeadService extends Service {
     })
     let warning: string | undefined
     try {
-      appendPluginRecord(agent.session, DEVLEAD_REPORT_ANSWER_RECORD_TYPE, reportAnswerRecord(answer))
+      appendRecordOrThrow(agent.session, DEVLEAD_REPORT_ANSWER_RECORD_TYPE, reportAnswerRecord(answer))
     } catch (error: unknown) {
       warning = `the answer was delivered to the child inbox but its durable record could not be written `
         + `(${thrownMessage(error)}); the question state may not survive a Host restart`
@@ -4522,7 +4531,7 @@ export class DevLeadService extends Service {
       return
     }
     try {
-      appendPluginRecord(leadSession, DEVLEAD_REPORT_ANSWER_RECORD_TYPE, reportAnswerRecord(discard))
+      appendRecordOrThrow(leadSession, DEVLEAD_REPORT_ANSWER_RECORD_TYPE, reportAnswerRecord(discard))
     } catch (error: unknown) {
       this.lastAnswerDiscardFailure = `append of the discard of answer "${discard.messageId}" (question "${discard.reportId}", lead "${discard.leadSessionId}") failed: ${thrownMessage(error)}`
       this.ctx.logger.warn(`devlead: ${this.lastAnswerDiscardFailure}; queued for retry`)
@@ -5085,7 +5094,7 @@ export class DevLeadService extends Service {
         ...(latest.wakeRequested === undefined ? {} : { wakeRequested: latest.wakeRequested }),
       }
       try {
-        appendPluginRecord(leadSession, DEVLEAD_REPORT_ANSWER_RECORD_TYPE, reportAnswerRecord(repair))
+        appendRecordOrThrow(leadSession, DEVLEAD_REPORT_ANSWER_RECORD_TYPE, reportAnswerRecord(repair))
       } catch (error: unknown) {
         this.setRepairFailure(stale, `append: ${thrownMessage(error)}`)
         this.deferDiscardRepair(stale)
@@ -5320,7 +5329,7 @@ export class DevLeadService extends Service {
         && latest.status === discard.status && latest.at === discard.at
       if (!alreadyAppended) {
         try {
-          appendPluginRecord(leadSession, DEVLEAD_REPORT_ANSWER_RECORD_TYPE, reportAnswerRecord(discard))
+          appendRecordOrThrow(leadSession, DEVLEAD_REPORT_ANSWER_RECORD_TYPE, reportAnswerRecord(discard))
         } catch (error: unknown) {
           this.lastAnswerDiscardFailure = `reconcile append of answer discard "${discard.messageId}" (lead "${leadId}") failed: ${thrownMessage(error)}`
           this.ctx.logger.warn(`devlead: ${this.lastAnswerDiscardFailure}; queued for retry`)
@@ -5759,7 +5768,7 @@ export class DevLeadService extends Service {
     const next = watching
       ? [...state.sessions, id]
       : state.sessions.filter(existing => existing !== id)
-    appendPluginRecord(agent.session, DEVLEAD_WATCH_RECORD_TYPE, watchRecord(next, Date.now()))
+    appendRecordOrThrow(agent.session, DEVLEAD_WATCH_RECORD_TYPE, watchRecord(next, Date.now()))
     await this.flushDurably(agent.session, `watch set for lead "${agent.id}"`)
     await this.checkpointProjectionCache(agent.session, `watch set for lead "${agent.id}"`)
     if (watching) void this.replayOutbox()

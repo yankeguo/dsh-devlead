@@ -189,10 +189,21 @@ client-ui 的 `index`/`client`；`bundle` 只有 patch 文件与 icon，不产�
 可选（本机，需要已安装的 DSH 桌面端）：真实 DSH 端到端冒烟：
 
 ```sh
-pnpm e2e                          # 默认组合（阶段 1 + 1b + 2 + 3，全过报 150/150）
-pnpm e2e --flow installed         # 已安装形态的安装流
-pnpm e2e --no-worktree            # 跳过实验 forge bundle 组合（报 127/127，阶段 1 + 1b + 3）
+pnpm e2e                          # 默认组合（阶段 1 + 1b + 2 + 3 + 1e，全过报 221/221）
+pnpm e2e --flow installed         # 已安装形态的安装流（同 pin）
+pnpm e2e --no-worktree            # 跳过实验 forge bundle 组合（报 198/198，阶段 1 + 1b + 3 + 1e）
 ```
+
+阶段 pin 以 `scripts/e2e-smoke.mjs` 的 `EXPECTED_CHECKS` 为准（27 / 12 / 23 / 128 / 31；删增 check
+都会使对应阶段失败），不要在本页复制旧数字作为验收依据。
+
+**新 DSH 版本验证的发布硬门禁：**任何宣称新验证 DSH 版本的发布，在 stage 前必须逐项完成
+[COMPATIBILITY 的升级门禁与逐 rc recipe](COMPATIBILITY.md#升级门禁)：核对 `appendPluginRecord` /
+`pluginRecordOf` / `PluginRecordMap` 的声明与 record 语义，核对 deprecated
+`Session.snapshotEvents()` 仍存在，在 rc.1 到目标版本的每个 rc 做目标 typings 临时编译并跑兼容
+矩阵。record schema / migration 的任何异常都按“可能不可恢复”处理，不得用静默 reset 或空日志解释
+来放行。最终树必须重跑 patch / installed / no-worktree 三条真实 E2E，日志保留真实 `*_EXIT=` 行；
+缺任一项不得 stage。
 
 `release:dry` 的本地预检说明：
 

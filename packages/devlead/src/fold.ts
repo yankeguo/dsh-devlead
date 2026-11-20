@@ -9,8 +9,8 @@
  * @module @yankeguo/dsh-devlead
  */
 
-import { pluginRecordOf } from '@deepseek-ai/dsh-session'
 import type { SessionEvent, SessionHeader } from '@deepseek-ai/dsh-session'
+import { readRecord } from './record-api.ts'
 import type { ProjectionDefinition } from '@deepseek-ai/dsh-session-projection'
 import { z as zod } from 'zod'
 import type { ZodType } from 'zod'
@@ -574,7 +574,7 @@ export function applyDevLeadProjection(
   // Fork-inherited events are the parent's history, not this Session's state.
   // A forked subagent must never inherit DevLead mode or its watch set.
   if (event.seq < state.inheritedEventCount) return state
-  const record = pluginRecordOf(event)
+  const record = readRecord(event)
   if (record === undefined) return state
   if (record.type === DEVLEAD_RESET_RECORD_TYPE) {
     try {
@@ -744,7 +744,7 @@ export function applyDevLeadWatchProjection(
   event: SessionEvent,
 ): DevLeadWatchProjectionState {
   if (event.seq < state.inheritedEventCount) return state
-  const record = pluginRecordOf(event)
+  const record = readRecord(event)
   if (record === undefined) return state
   if (record.type === DEVLEAD_RESET_RECORD_TYPE) {
     try {
@@ -878,7 +878,7 @@ export function applyDevLeadModeProjection(
   event: SessionEvent,
 ): DevLeadModeProjectionState {
   if (event.seq < state.inheritedEventCount) return state
-  const record = pluginRecordOf(event)
+  const record = readRecord(event)
   if (record === undefined) return state
   if (record.type === DEVLEAD_RESET_RECORD_TYPE) {
     try {

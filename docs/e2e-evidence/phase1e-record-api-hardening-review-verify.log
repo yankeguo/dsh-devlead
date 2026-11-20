@@ -1,0 +1,70 @@
+$ pnpm verify
+Scope: all 7 workspace projects
+✓ Lockfile passes supply-chain policies (verified 23h ago)
+Lockfile is up to date, resolution step is skipped
+Already up to date
+Done in 150ms using pnpm v12.16.1
+$ pnpm run typecheck && pnpm run test && pnpm run build
+$ tsc -p tsconfig.json --noEmit
+$ vitest run
+
+ RUN  v4.1.12 /Users/guoyk/Workspace/src/dsh-devlead
+
+ ✓ packages/client-ui/tests/render.spec.tsx (53 tests) 49ms
+ ✓ packages/devlead/tests/fold.spec.ts (81 tests) 29ms
+ ✓ packages/devlead/tests/domain.spec.ts (31 tests) 9ms
+ ✓ packages/devlead/tests/active.spec.ts (8 tests) 13ms
+ ✓ packages/devlead/tests/regressions.spec.ts (4 tests) 18ms
+ ✓ packages/devlead/tests/outbox.spec.ts (25 tests) 25ms
+ ✓ packages/devlead/tests/isolation.spec.ts (13 tests) 101ms
+ ✓ packages/protocol/tests/format.spec.ts (45 tests) 9ms
+ ✓ packages/devlead/tests/plugin-metadata.spec.ts (22 tests) 7ms
+ ✓ packages/devlead/tests/answers.spec.ts (38 tests) 15ms
+ ✓ packages/client-ui/tests/styles.spec.ts (27 tests) 10ms
+ ✓ packages/client-ui/tests/format.spec.ts (48 tests) 7ms
+ ✓ packages/devlead/tests/record-api.spec.ts (9 tests) 19ms
+ ✓ packages/devlead/tests/message-policy.spec.ts (109 tests) 10ms
+ ✓ packages/devlead/tests/lanes.spec.ts (43 tests) 273ms
+ ✓ packages/command/tests/render.spec.ts (21 tests) 6ms
+ ✓ packages/command/tests/handler.spec.ts (56 tests) 11ms
+ ✓ packages/client-ui/tests/locales.spec.ts (14 tests) 4ms
+ ✓ packages/devlead/tests/notification.spec.ts (97 tests) 310ms
+ ✓ packages/command/tests/parse.spec.ts (21 tests) 6ms
+ ✓ packages/devlead/tests/metrics.spec.ts (6 tests) 2ms
+ ✓ packages/devlead/tests/mode-projection.spec.ts (10 tests) 7ms
+ ✓ packages/tool/tests/tools.spec.ts (194 tests) 297ms
+ ✓ packages/command/tests/resolve.spec.ts (19 tests) 3ms
+ ✓ packages/client-ui/tests/results.spec.ts (23 tests) 3ms
+ ✓ packages/client-ui/tests/sessionMark.spec.ts (10 tests) 2ms
+ ✓ packages/protocol/tests/types.spec.ts (8 tests) 2ms
+ ✓ packages/client-ui/tests/apply.spec.ts (3 tests) 2ms
+ ✓ packages/devlead/tests/watch-projection.spec.ts (7 tests) 2ms
+ ✓ packages/tool/tests/errors.spec.ts (16 tests) 2ms
+ ✓ packages/devlead/tests/service.spec.ts (301 tests) 12734ms
+     ✓ keeps an action report queued behind an unclaimed action wake and delivers it when the inbox clears  1104ms
+     ✓ retries a cold outbox replay receipt failure and clears the row without injecting  1306ms
+     ✓ loads and serves live leads when the corpus never becomes consistent  2026ms
+     ✓ bounds the readiness barrier when the persistence listing keeps failing  2025ms
+     ✓ the retry timer drains a queued discard without any activation or prompt  5303ms
+
+ Test Files  31 passed (31)
+      Tests  1362 passed (1362)
+   Start at  15:36:21
+   Duration  13.21s (transform 2.38s, setup 0ms, import 4.86s, tests 13.99s, environment 1ms)
+
+$ node scripts/build.mjs
+built packages/protocol/lib/index.js
+built packages/protocol/lib/client.js
+built packages/devlead/lib/index.js
+built packages/tool/lib/index.js
+built packages/command/lib/index.js
+built packages/client-ui/lib/index.js
+built packages/client-ui/lib/client.js
+validated bundle (patch-only)
+build complete (6 targets)
+VERIFY_EXIT=0
+
+$ pnpm check:packages
+$ node scripts/check-packages.mjs
+check-packages: OK (6 packages)
+CHECK_PACKAGES_EXIT=0
