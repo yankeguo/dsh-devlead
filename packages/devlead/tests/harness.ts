@@ -1127,6 +1127,8 @@ export class FakeSessionPersistence {
   listCalls = 0
   /** When set, every `list` call rejects (composed but not usable yet). */
   listError: Error | undefined
+  /** Optional per-Session artifact locations exposed by the real JSONL backend. */
+  readonly locations = new Map<string, string>()
 
   /**
    * List every stored Session snapshot.
@@ -1136,6 +1138,22 @@ export class FakeSessionPersistence {
     this.listCalls += 1
     if (this.listError !== undefined) throw this.listError
     return this.ids.map(id => ({ header: { id } }))
+  }
+
+  /**
+   * Return the stored metadata and optional JSONL location for one Session.
+   * @param sessionId - stored Session identity.
+   * @returns the metadata snapshot used by read-only recovery diagnostics.
+   */
+  async stat(sessionId: SessionId): Promise<{
+    header: { id: SessionId }
+    location?: { kind: 'jsonl'; path: string }
+  }> {
+    const path = this.locations.get(String(sessionId))
+    return {
+      header: { id: sessionId },
+      ...(path === undefined ? {} : { location: { kind: 'jsonl' as const, path } }),
+    }
   }
 
   /** Persistence-service-shaped value for `ctx.provide`. */

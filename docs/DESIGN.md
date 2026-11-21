@@ -386,9 +386,9 @@ default: boolean; broken? }[]; reason? }`；`default` 是 Host 有效默认（`s
   - 持久语料经 `sessionQuery.listSessions()` 遍历；`header.origin === 'subagent'` 记录在
     cache 预筛前直接跳过；projection cache 的 active 行（`devLead` enabled，含空 watch）以
     `snapshot.inheritedEventCount` 初始化后精确 fold，inactive 行零 I/O 跳过，其余行有界
-    读取（64 条上限）并 warning。准入扫描是 **fail closed** 的：语料 listing 失败，或 cache 明确标为 active 的行
-    读取失败，都返回 `DEVLEAD_SESSION_UNAVAILABLE`，不会在无法证明单活时放行；reconcile /
-    status 仍走 best-effort。unknown 行的 64 条读取上限是既有的可用性取舍（极老的历史会话
+    读取（64 条上限）并 warning。准入扫描是 **fail closed** 的：语料 listing 失败，或任何实际读取候选的
+    读取/只读恢复/DevLead fold 失败，都返回 `DEVLEAD_SESSION_UNAVAILABLE`，不会在无法证明该候选时放行；
+    reconcile / status 仍走 best-effort。unknown 行的 64 条读取上限是既有的可用性取舍（极老的历史会话
     仍可能不被扫描），由 warning 暴露；
   - 启动阶段的冷语料由 rehydration 扫描顺带产出 active 列表（不重复读），与 live 扫描合并。
 
@@ -621,6 +621,16 @@ title 是展示元数据，DSH 0.2.2-rc.1–rc.5 的 WorkspaceRegistry 明确允
   的 `plugin:devlead/*` 记录不参与判断。`failure !== null` → warning 一次、**推进游标**并把索引
   标记为 degraded 后继续扫其它候选（不终止扫描）；`enabled && sessions.length > 0` → 记录
   （关注集合以精确折叠为准，cache 只作候选提示）。
+- **无关旧事件的只读恢复**：`readSession` 仅因一条「unknown to this harness and not marked
+  ignorable」事件拒绝整份日志时（典型是已卸载插件留下的非 ignorable 旧事件），
+  `session-log-recovery.ts` 通过 `sessionPersistence.stat()` 取得后端确认的真实路径，只对当前
+  `session.v4.jsonl[.zstd]` 做只读全量恢复。读取前后同时核对路径与 FileHandle 的物理 revision（覆盖
+  append 和原子路径替换），支持多帧、校验和与 torn final frame 中已完整的 JSONL 记录；不修改、截断、
+  迁移或 resume 用户日志。恢复器逐行检查 exact v4 header/event keys、JSON、UTF-8、连续 seq、完整
+  header/listing 身份、sourceEventSeqs 区间解码与精确 inherited cut，随后走同一个严格 DevLead fold；
+  foreign watch、损坏的 `plugin:devlead/*`、非 ignorable DevLead 记录仍 fail closed。
+  旧格式、非 JSONL 后端、路径缺失、权限/I/O、压缩损坏、并发追加和其它 replay 错误不套用这个兜底，
+  继续走有界重试或安全失败，绝不凭 cache 的 disabled 或目标 Agent 存活跳过完整证明。
 - **可续扫的多批游标**：`coldScan` 保存 `{ records, index, leads, active, activeIds, complete,
   corrupt, liveFailure, trusted, listedIds }`。扫描**只消费校验过的 listing**：就绪屏障把校验
   通过的 listing 直接交给 `persistedLeadRecords`，扫描不再自行 `listSessions()` 一份未校验语料；
@@ -650,6 +660,8 @@ title 是展示元数据，DSH 0.2.2-rc.1–rc.5 的 WorkspaceRegistry 明确允
   `attempt.extend()` 是 no-op，不会给已卸载的插件重新 arm deadline，挂起的后端等待也不会拖住
   Host 卸载。
 - **失败与重试**：读取失败保留游标（下一轮重试同一行），按指数退避 250ms→5s、最多 12 次重试；
+  prompt 侧错误保留具体 Session id、可用的真实日志路径与底层 decoder/I/O 原因，后续 retry-cap
+  warning 不覆盖这条可诊断细节；
   达到上限后只保留一条 30s 慢速降级恢复探针，不形成热循环。该 cap 是 **sticky** 的：cap 之后
   每次探针失败只会再排同一条探针，不会重新进入 12 次快速退避；只有**完整扫描成功 finalize**、
   显式 reset 或语料服务重新组合才清除——探针自己的批次推进（游标越过旧的 batch 边界但没完成
@@ -727,12 +739,14 @@ title 是展示元数据，DSH 0.2.2-rc.1–rc.5 的 WorkspaceRegistry 明确允
   只在 `sessionQuery` 本身缺失时才 arm），只按 live 会话授权。
   两个服务都只读 `ctx.get` 探测，不新增 `static inject`、不新增依赖，缺失时仍可加载并仅恢复
   live lead。
-- **恢复路径**：先打开（resume）受影响的 DevLead Session，再在其中运行 `/devlead reset`
-  （`reset` 要求 live Agent：冷 Session 的 reset 会以 `DEVLEAD_AGENT_NOT_LIVE` 拒绝；reset 重置
-  rehydration epoch、清空游标/warning/重试计时器并重新扫描；`/devlead off` 在冻结 fold 上
-  也走同一 reset），或修复/删除损坏或不可读的 Session 日志。30s 慢速降级探针**本身不会修复**
-  原因，只是每 30s 重试一次：原因未移除时它只会继续失败，移除后（reset、修日志、删 Session）
-  下一次探针才恢复；重启 Host 也会重建索引。
+- **恢复路径**：临时 I/O、超时、listing 未就绪与 torn tail 由有界重试自动恢复；无关旧事件走上述
+  只读恢复，不要求人类改日志。若错误明确指出某条 DevLead record 损坏，先按 path/cause 解决任何阻断
+  Host resume 的原始 format/read 问题，再打开（resume）该具名 DevLead Session 并运行 `/devlead reset`
+  （`reset` 要求 live Agent：冷 Session 的 reset 会以
+  `DEVLEAD_AGENT_NOT_LIVE` 拒绝；reset 重置 rehydration epoch、清空游标/warning/重试计时器并重新扫描；
+  `/devlead off` 在冻结 fold 上也走同一 reset）。原始存储/格式错误则按错误中的路径与 cause 修复所属
+  插件、升级 Host 或恢复可读备份，**不把删除日志当作绕过证明的常规手段**。30s 慢速降级探针本身不会
+  修复原因，只是每 30s 重试一次：原因移除后下一次探针恢复；重启 Host 也会重建索引。
 - 恢复的只是关注关系索引：**插件卸载期间**结束的 `turn/end` 不会补发（内存 transport 只在
   插件运行期间存在；事件只发生一次），Host 重启/重载后新的 `turn/end` 正常写入持久通知并
   投递；`agent/disposed` 不卸载插件，索引保留，因此不丢观察。
@@ -1978,9 +1992,9 @@ question 路由。
     先清回不完整状态，只有完整扫描且在 finalize 复核中通过才 finalize；不完整扫描按
     250ms→5s 有界指数退避续扫（最多 12 次，cap 为 sticky 后只保留一条 30s 慢速降级探针，
     探针失败只重排探针；只有完整扫描成功 finalize、reset 或服务重新组合清除 cap，retry-cap
-    探针保留游标以便越过第一批失败点）。恢复路径：打开（resume）受影响 DevLead Session 后
-    运行 `/devlead reset`（reset 要求 live Agent）、修复/删除损坏或不可读的 Session 日志，或
-    重启 Host；探针每 30s 重试一次、原因移除后恢复，不形成永久 prompt 禁令。
+    探针保留游标以便越过第一批失败点）。恢复路径按 §4.1.1：临时故障自动重试，无关旧事件只读恢复；
+    只有具名 DevLead record 损坏时才打开（resume）该 Session 运行 `/devlead reset`，原始存储问题按
+    具体路径/cause 修复或恢复备份，不能把删除日志当常规绕过手段；探针每 30s 重试一次、原因移除后恢复。
 - **不能 prompt 另一个 DevLead Session**：target `isEnabled === true` 时拒绝
   `DEVLEAD_INVALID_INPUT`，防止 lead-to-lead 循环。当前只拒绝 self；这是 Proposed 变更。
 - subagent Session 已经不在 `collectSessionIds` / `resolveSessionReference` 的可寻址集合里，

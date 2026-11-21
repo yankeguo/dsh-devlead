@@ -436,6 +436,10 @@ worktree 服务时才存在，并且每次派发通过 `isolation` 参数使用�
 - **损坏的 DevLead 记录会 fail closed，但可恢复：** 一条损坏的 `plugin:devlead/*` 记录会
   冻结 replay，读写都会报 `DEVLEAD_PROJECTION_INVALID`；人类专属的 `/devlead reset` 可以
   恢复该会话（在此之前 `/devlead on` 会拒绝）。
+- **未知旧事件只有窄口径只读兜底：** DSH 仅因当前 Harness 不认识的非 ignorable 旧事件拒绝整份
+  日志时，DevLead 可以只读恢复完整的当前 v4 JSONL，并严格折叠其中的 DevLead 记录，不修改日志。
+  旧格式、非 JSONL 后端、物理损坏与不可读文件仍然 fail closed 并有界重试；兜底不会忽略损坏的
+  DevLead 记录或 foreign watch。
 - **插件记录会随 canonical Session 日志导出，并可能被上传：** DevLead 的通知/汇报摘要与
   标题是 canonical session-log 事件，而 DSH 默认启用的 `session-log-deepseek` 路径可能把
   完整的 canonical 事件附加到符合条件的官方 DeepSeek 模型请求上。请把导出的 ZIP 视为敏感
@@ -462,6 +466,7 @@ worktree 服务时才存在，并且每次派发通过 `isolation` 参数使用�
 | `/devlead on` 报 `DEVLEAD_ALREADY_ACTIVE` | 另一个 Session 已持有 Host 级 DevLead 模式。错误会点名它；先在那里执行 `/devlead off`。**已归档**的持有者不会阻塞新的开启：打开它执行 `/devlead off`，或直接删除 |
 | `devlead_report` 报 `DEVLEAD_NOT_SUPERVISED` | 该 Session 自己是 DevLead、lead 已停止关注它、lead 已归档、lead 的模式已关闭，或存在多个历史 watcher 导致没有唯一 active lead 在关注它。请从 active lead 重新关注 |
 | `devlead_prompt_session` 报 `DEVLEAD_FOREIGN_SUPERVISOR` / `DEVLEAD_MULTIPLE_SUPERVISORS` | 目标属于另一个 lead，或历史状态留下冲突的关注者。改从所属 lead 继续，或关闭另一个 lead / 移除冲突的 watch；prompt 在投递前就会被拒绝 |
+| `devlead_prompt_session` 无法证明完整 supervisor set | prompt 未投递。临时读取/listing/超时会自动重试；当前 v4 JSONL 中无关的未知旧事件会只读恢复。其它情况按错误给出的具体 Session id、路径与原因处理：先修复原始 format/read blocker（或恢复可读备份），只有 DevLead 记录损坏时才在具名 Session 能打开后使用 `/devlead reset`；不要仅为绕过检查删除日志 |
 | `devlead_prompt_session` 报 `DEVLEAD_DELIVERY_RATE_LIMITED` | 当前子会话 turn 内，该 lead/child 组合已达到 4 条 correction 或 8 条 background prompt。合并上下文或等下一个子会话 turn；原始 receipt 的幂等 replay 仍被允许 |
 | `devlead_report` 报 `DEVLEAD_REPORT_RATE_LIMITED` | 子会话本轮已发送 4 条不同的非 question 汇报（`question` 汇报不计入）。等它下一轮；lead 仍可引导它 |
 | `devlead_report` 报 `DEVLEAD_INVALID_INPUT` | message 为空或超过 4000 码点，summary 超过 200，或 kind 不是 `progress` / `blocked` / `decision` / `question` / `fyi` |

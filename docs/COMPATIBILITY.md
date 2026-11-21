@@ -60,6 +60,21 @@ migration keeps them on a best-effort basis。因此：
   缺失时健康 reader 仍读回既有 durable 状态。该降级只保证插件可加载与状态可见，**不提供 durable
   替代存储**；正常 API 路径仍由原记录语义与全部既有测试覆盖。
 
+### 无关未知事件的 v4 JSONL 只读恢复
+
+`sessionQuery.readSession()` 会 replay-validate 整份日志；因此一条与 DevLead 无关、未标 ignorable 的
+旧插件事件也会让 Host 以 `SessionFormatUnsupportedError` 拒绝整份物理完好日志。核心扫描只对这条精确
+错误启用 `session-log-recovery.ts`：通过 `sessionPersistence.stat().location` 取得后端确认的路径，读取
+当前 `session.v4.jsonl[.zstd]` 的全部 frames 和 torn tail 中完整记录，再做严格 DevLead fold。该路径
+不 import/inject 具体 JSONL 包、不新增 peer 依赖；zstd 使用 Node ≥24.9 已提供的 `node:zlib`。没有
+`stat/location`、旧格式或其它后端时不猜测表示，维持原 fail-closed 行为。
+
+这是针对 v4 物理格式的兼容 workaround，不替代 `readSession`，也不承诺迁移旧格式。并发修改、非连续
+seq、header/listing 不一致、错误 inherited cut、压缩/JSON/UTF-8 损坏、非 ignorable DevLead 记录以及
+严格 fold 失败都拒绝授权；恢复绝不写文件。UTF-8 使用 fatal decoder，是有意比 Host 的非 fatal
+`Buffer.toString()` 更严格，不声称接受面完全相同。升级门禁需继续核对 v4 header/event framing、
+sourceEventSeqs 区间、zstd 多帧与 torn-tail 语义及 unknown-event error taxonomy。
+
 ### F 替代方案（核心事件派生 mode/watch/reset）— no-go（2026-11-20）
 
 2026-11-20 的一次性 spike（`dsh-0af20aa2-d0de @ a7009b9`，产物已按用户决定丢弃）评估用已发布的

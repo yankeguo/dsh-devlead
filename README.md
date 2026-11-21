@@ -481,6 +481,11 @@ notification carries its last assistant excerpt back, and the DevLead reports):
 - **Damaged DevLead records fail closed but are recoverable:** a corrupt `plugin:devlead/*` record
   freezes replay and reads/writes report `DEVLEAD_PROJECTION_INVALID`; the human-only
   `/devlead reset` recovers the session (`/devlead on` refuses until then).
+- **Unknown legacy events have a narrow read-only fallback:** when DSH rejects a whole log only for an
+  unrelated non-ignorable event unknown to the current Harness, DevLead can recover the complete current
+  v4 JSONL log and strictly fold its DevLead records without modifying it. Historical formats, non-JSONL
+  backends, physical corruption, and unreadable files still fail closed with bounded retries; this fallback
+  never ignores a corrupt DevLead record or a foreign watch.
 - **Plugin records are exported with the canonical Session log and may be uploaded:** DevLead's
   notification/report summaries and titles are canonical session-log events, and DSH's
   default-enabled `session-log-deepseek` path can attach complete canonical events to eligible
@@ -508,6 +513,7 @@ notification carries its last assistant excerpt back, and the DevLead reports):
 | `/devlead on` reports `DEVLEAD_ALREADY_ACTIVE` | another Session already holds the Host-wide DevLead mode. The error names it; run `/devlead off` there first. An **archived** holder does not block a new enable: open it and run `/devlead off`, or delete it |
 | `devlead_report` reports `DEVLEAD_NOT_SUPERVISED` | the Session is a DevLead itself, the lead stopped watching it, the lead is archived, the lead's mode is off, or several historical watchers leave no unique active lead watching it. Re-watch it from the active lead |
 | `devlead_prompt_session` reports `DEVLEAD_FOREIGN_SUPERVISOR` / `DEVLEAD_MULTIPLE_SUPERVISORS` | the target belongs to another lead, or historical state leaves conflicting watchers. Continue from the owning lead, or disable the other lead / remove the conflicting watch; the prompt is rejected before delivery |
+| `devlead_prompt_session` cannot prove the complete supervisor set | no prompt was delivered. Transient reads/listings/timeouts retry automatically; an unrelated unknown legacy event in a current v4 JSONL log is recovered read-only. Otherwise follow the error's concrete Session id, path, and cause: repair any raw format/read blocker first (or restore a readable backup), then use `/devlead reset` only for corrupt DevLead records after the named Session can open. Do not delete logs merely to bypass the check |
 | `devlead_prompt_session` reports `DEVLEAD_DELIVERY_RATE_LIMITED` | this lead/child pair reached 4 corrections or 8 background prompts in the current child turn. Merge the context or wait for the next child turn; an idempotent replay of the original receipt remains allowed |
 | `devlead_report` reports `DEVLEAD_REPORT_RATE_LIMITED` | the child already sent four distinct non-question reports in this turn (`question` reports are exempt). Wait for its next turn; the lead can still steer it |
 | `devlead_report` reports `DEVLEAD_INVALID_INPUT` | the message is empty or over 4000 code points, the summary is over 200, or the kind is not `progress` / `blocked` / `decision` / `question` / `fyi` |

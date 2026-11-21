@@ -20,7 +20,11 @@ import type { SessionCreateValue } from '@deepseek-ai/dsh-api-session-controller
 import { SessionId as toSessionId } from '@deepseek-ai/dsh-session'
 import { appendRecordOrThrow, initializeRecordApi, recordApiStatus } from './record-api.ts'
 import type { RecordApiStatus } from './record-api.ts'
-import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
+import {
+  isUnknownNonIgnorableEventError,
+  recoverUnknownEventSessionLog,
+} from './session-log-recovery.ts'
+import type { Session, SessionEvent, SessionHeader } from '@deepseek-ai/dsh-session'
 import type { ProjectionHandle } from '@deepseek-ai/dsh-session-projection'
 import type { SessionQueryEngine } from '@deepseek-ai/dsh-session-query'
 import type {} from '@deepseek-ai/dsh-session-query'
@@ -523,17 +527,18 @@ const REHYDRATION_PROBE_MESSAGES: Readonly<Record<RehydrationProbeReason, string
   'corrupt-terminal':
     'devlead: cold lead rehydration is degraded by a corrupt persisted DevLead replay; '
     + 'ordinary retries are paused and a slow 30s recovery probe retries every 30s. '
-    + 'Open (resume) the affected DevLead Session and run /devlead reset there, or repair/delete the corrupt Session log; '
-    + 'the probe recovers once the cause is removed (a Host restart also rebuilds the index)',
+    + 'Resolve any raw format/read blocker in the detailed error, then open (resume) the affected DevLead Session '
+    + 'and run /devlead reset there; the probe recovers once the cause is removed (a Host restart also rebuilds the index)',
   'live-failure':
     'devlead: a live attached DevLead projection is corrupt, so the supervisor set cannot be proven; '
-    + 'prompting stays disabled until it is repaired. Open the affected Session, run /devlead reset there, '
-    + 'or repair/delete the corrupt Session log; the slow 30s recovery probe retries every 30s and recovers once the cause is removed',
+    + 'prompting stays disabled until it is repaired. Open the affected Session and run /devlead reset there; '
+    + 'the slow 30s recovery probe retries every 30s and recovers once the cause is removed',
   'retry-cap':
     `devlead: cold lead rehydration failed ${String(MAX_REHYDRATION_RETRY_ATTEMPTS)} bounded retry attempts; `
-    + 'prompting stays disabled until a complete scan succeeds. Open (resume) the affected DevLead Session and run '
-    + '/devlead reset there, repair or delete the unreadable/corrupt Session storage, or restart the Host; '
-    + 'the slow 30s recovery probe retries every 30s and recovers once the cause is removed',
+    + 'prompting stays disabled until a complete scan succeeds. Follow the detailed Session/path/cause error: '
+    + 'transient causes need no log edits. Open (resume) the named DevLead Session for corrupt DevLead records '
+    + 'and run /devlead reset there; raw storage failures require storage/plugin repair or a readable backup; '
+    + 'the slow 30s recovery probe retries every 30s and a Host restart also rebuilds the index',
 }
 /** Concise cause shown in the prompt-side fail-closed error per warning reason. */
 const REHYDRATION_DEGRADED_CAUSES: Readonly<Record<string, string>> = {
@@ -969,6 +974,8 @@ export class DevLeadService extends Service {
   private liveAttachFailure = false
   /** Human-readable cause of the current degraded supervision state. */
   private supervisionDegradedReason = DEFAULT_SUPERVISION_DEGRADED_REASON
+  /** Latest concrete Session/path/cause; retained when a later retry-cap warning is emitted. */
+  private supervisionDegradedDetail: string | undefined
   /** Invalidates every in-flight scan application; bumped by reset and service recomposition. */
   private rehydrationEpoch = 0
   /** Whether the current attempt reached the corpus scan (early live-only returns do not). */
@@ -2171,6 +2178,7 @@ export class DevLeadService extends Service {
     this.rehydrated = true
     this.corpusWasProven = true
     this.supervisionDegradedReason = DEFAULT_SUPERVISION_DEGRADED_REASON
+    this.supervisionDegradedDetail = undefined
     this.trustedBindings = this.currentCorpusBindings()
     this.observedBindings = this.trustedBindings
     this.coldScan = undefined
@@ -2414,6 +2422,7 @@ export class DevLeadService extends Service {
     if (this.disposed) return
     this.invalidateCorpusProof()
     this.supervisionDegradedReason = reason
+    this.supervisionDegradedDetail = undefined
     this.requestFreshRehydration()
     this.armRehydrationRetry(this.ctx.get('sessionQuery') !== undefined)
     void this.rehydrateFromPersistence()
@@ -2508,8 +2517,8 @@ export class DevLeadService extends Service {
    * states and exhausted retry budgets are recoverable without a Host restart:
    * the probe re-lists and rescans once every {@link DEGRADED_REHYDRATION_PROBE_MS}.
    * The probe itself does not repair anything: it retries every 30s and recovers
-   * once a human opens the affected Session and resets it, repairs/deletes the
-   * corrupt log, or restarts the Host. An explicit reset recovers immediately.
+   * after the transient cause clears, a read-only recovery succeeds, a human
+   * resets corrupt DevLead state, or the Host restarts. An explicit reset recovers immediately.
    * @param reason - stable warning key and degraded-state cause.
    */
   private scheduleRehydrationProbe(reason: RehydrationProbeReason): void {
@@ -2583,8 +2592,10 @@ export class DevLeadService extends Service {
   }
 
   /** Emit each rehydration warning reason once per service epoch and track its cause. */
-  private warnRehydration(reason: string, message: string): void {
+  private warnRehydration(reason: string, message: string, detail?: string): void {
     this.supervisionDegradedReason = REHYDRATION_DEGRADED_CAUSES[reason] ?? message
+    if (detail !== undefined) this.supervisionDegradedDetail = detail
+    else if (reason !== 'retry-cap' && reason !== 'corrupt-terminal') this.supervisionDegradedDetail = undefined
     if (this.rehydrationWarnings.has(reason)) return
     this.rehydrationWarnings.add(reason)
     this.ctx.logger.warn(message)
@@ -2799,6 +2810,7 @@ export class DevLeadService extends Service {
     this.rehydrationProgress = false
     this.liveAttachFailure = false
     this.supervisionDegradedReason = DEFAULT_SUPERVISION_DEGRADED_REASON
+    this.supervisionDegradedDetail = undefined
     if (this.rehydrationRetryTimer !== undefined) {
       clearTimeout(this.rehydrationRetryTimer)
       this.rehydrationRetryTimer = undefined
@@ -4093,11 +4105,12 @@ export class DevLeadService extends Service {
   private supervisionUnavailable(targetId: string): DevLeadError {
     return new DevLeadError(
       `cannot prove the complete DevLead supervisor set for Session "${targetId}" yet; `
-      + `no prompt was delivered — ${this.supervisionDegradedReason}. `
-      + 'Recovery: open (resume) the affected DevLead Session and run /devlead reset there, or repair/delete '
-      + 'the corrupt or unreadable Session log; the slow recovery probe retries '
-      + `every ${String(DEGRADED_REHYDRATION_PROBE_MS / 1_000)}s and recovers once the cause is removed, and a Host `
-      + 'restart also rebuilds the index',
+      + `no prompt was delivered — ${this.supervisionDegradedDetail ?? this.supervisionDegradedReason}. `
+      + 'Recovery: transient I/O, timeout, listing, and torn-tail failures are retried automatically. '
+      + 'For corrupt DevLead records, first resolve any raw format/read blocker in the detail (upgrade/repair '
+      + 'the owning plugin or restore a readable backup), then open (resume) that named DevLead Session and run '
+      + '/devlead reset there. Do not delete logs merely to bypass this check. '
+      + `The slow recovery probe retries every ${String(DEGRADED_REHYDRATION_PROBE_MS / 1_000)}s, and a Host restart also rebuilds the index`,
       'DEVLEAD_SESSION_UNAVAILABLE',
     )
   }
@@ -4575,16 +4588,16 @@ export class DevLeadService extends Service {
    * reported.
    *
    * `strict` makes the scan safe for admission: a corpus listing failure, or a
-   * log read failure for a row the cache positively classified as active, is a
-   * hard `DEVLEAD_SESSION_UNAVAILABLE` instead of a best-effort skip, because
-   * admitting on an unverifiable corpus could create a second active lead.
+   * log read/recovery/fold failure for any candidate actually read, is a hard
+   * `DEVLEAD_SESSION_UNAVAILABLE` instead of a best-effort skip, because
+   * admitting on an unverifiable candidate could create a second active lead.
    * Reconciliation and status remain best-effort.
    * @param signal - caller cancellation threaded through query reads.
    * @param includePersisted - whether the persisted corpus is scanned.
    * @param strict - whether unknown occupancy is a hard error (admission only).
    * @returns every enabled Session, deduplicated by id.
    * @throws {@link DevLeadError} `DEVLEAD_SESSION_UNAVAILABLE` when `strict` is
-   *   set and a cache-positive candidate or the corpus listing cannot be read.
+   *   set and a candidate read/recovery/fold or the corpus listing cannot be proven.
    */
   private async scanActiveSessions(
     signal?: AbortSignal,
@@ -4668,15 +4681,15 @@ export class DevLeadService extends Service {
       let events: readonly SessionEvent[]
       let inheritedEventCount = 0
       try {
-        const snapshot = await query.readSession(record.header.id)
+        const snapshot = await this.readColdSessionForSupervision(query, record.header, signal)
         events = snapshot.events
         inheritedEventCount = snapshot.inheritedEventCount
       } catch (error: unknown) {
         if (signal?.aborted === true) throw error
-        if (strict && prefilter === 'active') {
+        if (strict) {
           throw new DevLeadError(
             `could not verify global DevLead occupancy: persisted Session "${sessionId}" `
-            + `is cached as an active DevLead but its log could not be read: ${thrownMessage(error)}`,
+            + `could not be read (${prefilter} cache classification): ${thrownMessage(error)}`,
             'DEVLEAD_SESSION_UNAVAILABLE',
           )
         }
@@ -4694,7 +4707,17 @@ export class DevLeadService extends Service {
         state = applyDevLeadProjection(state, event)
         if (state.failure !== null) break
       }
-      if (state.failure !== null || !state.enabled) continue
+      if (state.failure !== null) {
+        if (strict) {
+          throw new DevLeadError(
+            `could not verify global DevLead occupancy: persisted Session "${sessionId}" `
+            + `has a corrupt DevLead replay (${prefilter} cache classification): ${state.failure}`,
+            'DEVLEAD_SESSION_UNAVAILABLE',
+          )
+        }
+        continue
+      }
+      if (!state.enabled) continue
       active.set(sessionId, {
         sessionId,
         live: false,
@@ -4970,6 +4993,35 @@ export class DevLeadService extends Service {
   }
 
   /**
+   * Read one cold candidate through the Host's replay-validated query path.
+   * Only a precise unknown-non-ignorable-event refusal uses the read-only
+   * current-JSONL recovery: all records are still read and the caller applies
+   * the same strict DevLead fold, so unrelated legacy vocabulary cannot hide a
+   * foreign supervisor or excuse corrupt DevLead state.
+   */
+  private async readColdSessionForSupervision(
+    query: SessionQueryEngine,
+    header: SessionHeader,
+    signal?: AbortSignal,
+  ): Promise<{ readonly inheritedEventCount: number; readonly events: readonly SessionEvent[]; readonly path?: string }> {
+    try {
+      const snapshot = await query.readSession(header.id)
+      signal?.throwIfAborted()
+      return snapshot
+    } catch (error: unknown) {
+      signal?.throwIfAborted()
+      if (!isUnknownNonIgnorableEventError(error)) throw error
+      const recovered = await recoverUnknownEventSessionLog(this.ctx, header, signal)
+      signal?.throwIfAborted()
+      this.ctx.logger.debug(
+        `devlead: recovered a complete current JSONL log for DevLead-only replay after an unrelated unknown event; `
+        + `session=${String(header.id)} path=${recovered.path} events=${String(recovered.events.length)}`,
+      )
+      return recovered
+    }
+  }
+
+  /**
    * Scan durable state for lead Sessions the hub must index after a restart.
    *
    * The scan runs on a corpus listing validated against the Session persistence
@@ -4987,9 +5039,9 @@ export class DevLeadService extends Service {
    * Cheap sources first: a live Session without an Agent has its projection
    * folded directly (attach-only leads), then the persisted corpus is filtered
    * through the projection cache — a row that positively reports an enabled mode
-   * with a non-empty watch set is a candidate, a disabled/empty row is skipped
-   * without reading its log, and only unclassified rows pay for a complete
-   * full-log exact fold (bounded, because a Host history is unbounded).
+   * with a non-empty watch set is a candidate; every other non-live, non-subagent
+   * row still pays for a complete full-log exact fold (bounded, because a Host
+   * history is unbounded and a stale-negative cache row is not authorization).
    * A corrupt replay skips that candidate with one warning; it must never stop
    * the scan, and it must never make the plugin fail to load.
    * @param listing - barrier-validated listing; re-verified when omitted.
@@ -5159,14 +5211,16 @@ export class DevLeadService extends Service {
         // are exact-folded under the resumable budget, never trusted blindly.
         let events: readonly SessionEvent[]
         let inheritedEventCount = 0
+        let sourcePath: string | undefined
         try {
-          const snapshot = await this.awaitScan(query.readSession(record.header.id), signal)
+          const snapshot = await this.awaitScan(this.readColdSessionForSupervision(query, record.header, signal), signal)
           if (snapshot === SCAN_ABORTED) {
             state.complete = false
             return result([...state.leads.values()], state.active, false)
           }
           events = snapshot.events
           inheritedEventCount = snapshot.inheritedEventCount
+          sourcePath = snapshot.path
         } catch (error: unknown) {
           if (signal?.aborted) {
             state.complete = false
@@ -5181,8 +5235,9 @@ export class DevLeadService extends Service {
               readFailed = true
               this.warnRehydration(
                 'read',
-                `devlead: a persisted Session stayed unreadable (not found) after re-listing; `
+                `devlead: Session "${sessionId}" stayed unreadable (not found) after re-listing; `
                 + `keeping the cursor for a bounded retry: ${thrownMessage(error)}`,
+                `Session "${sessionId}" stayed unreadable (not found) after re-listing: ${thrownMessage(error)}`,
               )
               break
             }
@@ -5205,8 +5260,9 @@ export class DevLeadService extends Service {
               this.rehydrationValidationUnverifiable = true
               this.warnRehydration(
                 'read',
-                `devlead: could not re-verify the Session corpus after a not-found read; keeping the trusted cursor `
-                + `for a bounded retry: ${thrownMessage(error)}`,
+                `devlead: could not re-verify the Session corpus after Session "${sessionId}" returned not-found; `
+                + `keeping the trusted cursor for a bounded retry: ${thrownMessage(error)}`,
+                `Session "${sessionId}" returned not-found and its corpus re-list failed: ${thrownMessage(error)}`,
               )
               return result([...state.leads.values()], state.active, false)
             }
@@ -5253,7 +5309,11 @@ export class DevLeadService extends Service {
           }
           state.complete = false
           readFailed = true
-          this.warnRehydration('read', `devlead: could not read a cold lead candidate Session log: ${thrownMessage(error)}`)
+          this.warnRehydration(
+            'read',
+            `devlead: could not read a cold lead candidate Session log "${sessionId}": ${thrownMessage(error)}`,
+            `Session "${sessionId}" could not be read: ${thrownMessage(error)}`,
+          )
           // Keep the cursor on this row: the next bounded attempt retries it.
           break
         }
@@ -5266,7 +5326,12 @@ export class DevLeadService extends Service {
         if (folded.failure !== null) {
           state.complete = false
           state.corrupt = true
-          this.warnRehydration('corrupt', `devlead: skipping a cold lead candidate with a corrupt DevLead replay: ${folded.failure}`)
+          const location = sourcePath === undefined ? '' : ` at ${sourcePath}`
+          this.warnRehydration(
+            'corrupt',
+            `devlead: skipping cold lead candidate Session "${sessionId}"${location} with a corrupt DevLead replay: ${folded.failure}`,
+            `Session "${sessionId}"${location} has a corrupt DevLead replay: ${folded.failure}`,
+          )
           state.index += 1
           continue
         }

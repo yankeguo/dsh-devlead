@@ -59,9 +59,11 @@ dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
   structured domain errors; no experimental package is imported, injected, or declared.
 - Cold-lead rehydration: at plugin load the hub rebuilds its watch index from durable state
   (`sessionQuery` listing → projection-cache pre-filter → exact fold; unclassified rows are capped
-  at 64 full-log reads). Without a projection cache only live lead Sessions are recovered. A
-  disposed lead keeps observing; `wakeColdSession` defaults to `true`, so a queued notification
-  resumes the cold lead before delivering.
+  at 64 full-log reads per bounded attempt, with a saved cursor). Without a projection cache every cold
+  candidate uses the same bounded exact fold. A precise unknown-non-ignorable legacy event can trigger
+  read-only recovery of the complete current v4 JSONL artifact; all DevLead records still use the strict
+  fold, and other formats/read failures stay fail closed. A disposed lead keeps observing;
+  `wakeColdSession` defaults to `true`, so a queued notification resumes the cold lead before delivering.
 
 ## Configuration
 
