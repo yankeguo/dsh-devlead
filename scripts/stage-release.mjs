@@ -4,9 +4,10 @@
  * `npm stage publish`, consuming pnpm-packed tarballs.
  *
  * Why staged publishing: CI uploads each version to the npm registry but
- * publishes nothing. A maintainer later approves the staged versions with
- * scripts/promote-release.mjs (human 2FA). This makes a release "all or
- * nothing": either every package of the version is approved, or none is
+ * publishes nothing. A maintainer later batch-approves the staged versions on
+ * npmjs.com (logged-in session + 2FA); after approval the GitHub Release is
+ * created manually with `gh release create --verify-tag`. This makes a release
+ * "all or nothing": either every package of the version is approved, or none is
  * public, and a broken tarball is never visible to users.
  *
  * Why pnpm pack: `npm pack`/`npm publish` from a package directory do not
@@ -96,8 +97,9 @@ Environment:
                              OIDC token exchange succeeds).
   GITHUB_STEP_SUMMARY=<path> Appends the staged-version table to the job summary.
 
-This script never publishes: it only stages. Approve with
-'node scripts/promote-release.mjs' locally (npm login + 2FA).
+This script never publishes: it only stages. A maintainer then batch-approves
+the staged versions on npmjs.com (logged-in session + 2FA) and creates the
+GitHub Release manually with 'gh release create --verify-tag'.
 `
 
 /**
@@ -493,8 +495,8 @@ function reportFailure (version, staged, error) {
   console.error('  - inspect an existing stage:   npm stage view <stage-id> --json')
   console.error('  - reject a stale/duplicate stage id (irreversible, removes the staged tarball):')
   console.error('      npm stage reject <stage-id>')
-  console.error('  - if the version is already fully staged, do NOT re-run staging; approve it with')
-  console.error(`      node scripts/promote-release.mjs --version ${version}`)
+  console.error('  - if the version is already fully staged, do NOT re-run staging; batch-approve the')
+  console.error(`      staged ${version} packages on npmjs.com instead`)
   console.error('  - to retry CI after a fix, re-run the publish workflow with workflow_dispatch and')
   console.error('    the SAME existing release_tag (never move or recreate the tag).')
   console.error('  - a version that is already published cannot be staged again: bump every workspace')
@@ -607,10 +609,13 @@ function main () {
     }
     console.log(`STAGED ${staged.length}/${packages.length} packages for ${expectedVersion}. NOTHING IS PUBLIC YET.`)
     console.log('')
-    console.log('Next step (human, npm login + 2FA):')
-    console.log(`  node scripts/promote-release.mjs --version ${expectedVersion}`)
-    console.log('That command verifies every staged id, approves them in order (npm prompts for the OTP),')
-    console.log('then creates or updates the GitHub Release.')
+    console.log('Next step (human): batch-approve the staged versions on npmjs.com')
+    console.log('  (logged-in session + 2FA; web approval needs no local npm login or OTP).')
+    console.log('After approval, create the GitHub Release manually against the existing tag:')
+    console.log(`  gh release create v${expectedVersion} --repo yankeguo/dsh-devlead --title v${expectedVersion} \\`)
+    console.log(`    --notes-file docs/releases/v${expectedVersion}.md --verify-tag --latest`)
+    console.log('  (prerelease: use --prerelease --latest=false instead of --latest)')
+    console.log('Never create, move, or recreate the tag.')
     const rows = staged.map(item => `| \`${item.name}\` | ${item.version} | \`${item.stageId}\` |`).join('\n')
     appendStepSummary(
       `## npm staged publish — ${expectedVersion}\n\n` +

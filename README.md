@@ -244,7 +244,7 @@ so a new publishable package must add both locale files or CI fails.
 
 `scripts/` provides the build (`build.mjs`), package invariants (`check-packages.mjs`), profile
 install (`install-profile.mjs`), dev overlay (`dev-patch.mjs`), local E2E (`e2e-smoke.mjs`), and
-the staged-release helpers (`stage-release.mjs`, `promote-release.mjs`, `trusted-publishers.sh`).
+the staged-release helpers (`stage-release.mjs`, `trusted-publishers.sh`).
 
 ## Getting started
 
@@ -1416,8 +1416,9 @@ and the root `package.json`, then installs, typechecks, tests, builds, checks th
 invariants, and finally **stages** every package in dependency order through `npm stage publish`
 with a keyless, short-lived OIDC token (`id-token: write`; **no `NPM_TOKEN` secret**; provenance
 is attached on a public repository). Staging publishes nothing: the registry holds the versions
-until a maintainer approves them. CI has no permission to approve: `npm stage approve`
-requires a maintainer's logged-in session and 2FA.
+until a maintainer approves them on npmjs.com. CI has no permission to approve: staged versions can
+only be approved from a maintainer's logged-in npmjs.com session (2FA) or an interactive CLI login,
+never with the workflow's OIDC token.
 
 Each package needs a one-time trusted-publisher configuration that allows staged publishes
 (`--allow-stage-publish`); an old `--allow-publish` configuration must be revoked and recreated:
@@ -1427,17 +1428,24 @@ npm login
 scripts/trusted-publishers.sh          # configures all 6 packages (--dry-run / --list available)
 ```
 
-After CI stages the versions, a maintainer approves them from a terminal and the script creates
-the GitHub Release from `docs/releases/v<version>.md`:
+After CI stages the versions, a maintainer batch-approves all 6 staged packages on npmjs.com
+(logged-in session + 2FA; no local `npm login`/OTP). Staging alone publishes nothing; approval
+publishes each package immediately and is irreversible, so check the staged version and dist-tag
+(stable: `latest`, prerelease: `next`) before approving.
+
+Once all 6 packages are public, the maintainer (or an agent the maintainer notifies) creates the
+GitHub Release manually against the existing tag, using the release notes file:
 
 ```sh
-npm login
-node scripts/promote-release.mjs --version 0.4.0 --list-only   # inspect the staged versions
-node scripts/promote-release.mjs --version 0.4.0                # approve (2FA prompt) + gh release
+gh release create v0.4.0 --repo yankeguo/dsh-devlead --title v0.4.0 \
+  --notes-file docs/releases/v0.4.0.md --verify-tag --latest
+# prerelease: --prerelease --latest=false
 ```
 
-The setup and the full release flow (version bump, pre-flight, tag push, re-staging an existing
-tag, approve, partial-failure recovery, troubleshooting) are documented in
+`--verify-tag` only accepts an existing tag: a release never creates, moves, or deletes tags.
+There is no repository approve/promote script. The setup and the full release flow (version bump,
+pre-flight, tag push, re-staging an existing tag, npmjs.com approval, manual GitHub Release,
+partial-failure recovery, troubleshooting) are documented in
 [`docs/PUBLISHING.md`](docs/PUBLISHING.md) (Chinese).
 
 ## License

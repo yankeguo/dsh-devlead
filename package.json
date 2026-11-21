@@ -22,8 +22,7 @@
     "install:profile": "node scripts/install-profile.mjs",
     "uninstall:profile": "node scripts/install-profile.mjs --uninstall",
     "release:dry": "pnpm build && node scripts/stage-release.mjs --dry-run",
-    "release:stage": "pnpm build && node scripts/stage-release.mjs",
-    "release:promote": "node scripts/promote-release.mjs"
+    "release:stage": "pnpm build && node scripts/stage-release.mjs"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "~4.1.0",

@@ -191,7 +191,7 @@ host 入口把 `@deepseek-ai/*`、`@yankeguo/*` 与 `node:*` 保持为外部依�
 
 `scripts/` 提供构建（`build.mjs`）、包不变式检查（`check-packages.mjs`）、profile 安装
 （`install-profile.mjs`）、开发 overlay（`dev-patch.mjs`）、本地 E2E（`e2e-smoke.mjs`）以及
-staged 发布辅助脚本（`stage-release.mjs`、`promote-release.mjs`、`trusted-publishers.sh`）。
+staged 发布辅助脚本（`stage-release.mjs`、`trusted-publishers.sh`）。
 
 ## 快速开始
 
@@ -1119,8 +1119,9 @@ PR / push 到 main 由 [`verify.yml`](.github/workflows/verify.yml) 跑
 6 个可发布包及根 `package.json` 的 `version` 一致，再依次 install / typecheck / test / build /
 `check:packages`，最后按依赖拓扑顺序对每个包执行 `npm stage publish`——由 GitHub Actions 的
 `id-token: write` 换取短时 OIDC token，**不需要 `NPM_TOKEN` secret**，公开仓库下自动附带
-provenance。stage 不会公开任何包，registry 只暂存版本；approve 只能由维护者在本地完成
-（`npm stage approve` 需要维护者本地登录并完成 2FA）。
+provenance。stage 不会公开任何包，registry 只暂存版本；approve 只能由维护者在 npmjs.com 网页
+完成（登录 + 2FA），工作流的 OIDC token 没有 approve 权限；staged 版本也可以由本地 CLI 登录并
+完成 2FA 后批准，但当前流程统一走网页。
 
 每个包需一次性配置 trusted publisher，且必须允许 staged publish（`--allow-stage-publish`）；
 旧的 `--allow-publish` 配置需先 revoke 再重建：
@@ -1130,17 +1131,23 @@ npm login
 scripts/trusted-publishers.sh          # 批量配置全部 6 个包（--dry-run / --list 可选）
 ```
 
-CI stage 完成后，维护者从终端 approve，并由脚本按 `docs/releases/v<version>.md` 创建
-GitHub Release：
+CI stage 完成后，维护者在 npmjs.com 网页批量 approve 全部 6 个 staged 包（网页会话 + 2FA，
+不需要本地 `npm login`/OTP）。stage 不会公开任何内容，approve 即公开且**不可撤销**，因此批准前
+先核对 staged 记录的版本号与 dist-tag（稳定版 `latest`，prerelease `next`）。
+
+approve 完成（6 个包都已公开）后，由维护者通知 agent（或维护者本人）用已存在的 tag 手动创建
+GitHub Release，正文取 `docs/releases/v<version>.md`：
 
 ```sh
-npm login
-node scripts/promote-release.mjs --version 0.4.0 --list-only   # 查看已暂存的版本
-node scripts/promote-release.mjs --version 0.4.0               # approve（交互式 2FA）+ gh release
+gh release create v0.4.0 --repo yankeguo/dsh-devlead --title v0.4.0 \
+  --notes-file docs/releases/v0.4.0.md --verify-tag --latest
+# 预发布版：--prerelease --latest=false
 ```
 
-完整流程（一次性配置、版本升级、预检、tag 推送、已存在 tag 的重新 stage、approve、
-部分失败恢复与故障排查）见 [`docs/PUBLISHING.md`](docs/PUBLISHING.md)。
+`--verify-tag` 只接受已存在的 tag：创建 Release 不会创建、移动或删除 tag。仓库不再提供
+approve/promote 脚本。完整流程（一次性配置、版本升级、预检、tag 推送、已存在 tag 的重新
+stage、网页 approve、手动 GitHub Release、部分失败恢复与故障排查）见
+[`docs/PUBLISHING.md`](docs/PUBLISHING.md)。
 
 ## License
 

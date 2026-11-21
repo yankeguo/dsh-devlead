@@ -491,7 +491,7 @@ for (const pattern of ['node_modules/', 'packages/*/lib/', '.tmp/']) {
     fail(`.gitignore must ignore ${pattern}`)
   }
 }
-for (const script of ['build.mjs', 'clean.mjs', 'dev-patch.mjs', 'install-profile.mjs', 'trusted-publishers.sh', 'check-packages.mjs', 'stage-release.mjs', 'promote-release.mjs']) {
+for (const script of ['build.mjs', 'clean.mjs', 'dev-patch.mjs', 'install-profile.mjs', 'trusted-publishers.sh', 'check-packages.mjs', 'stage-release.mjs']) {
   if (!existsSync(join(ROOT, 'scripts', script))) fail(`scripts/${script} is missing`)
 }
 const workflowDir = join(ROOT, '.github', 'workflows')
@@ -518,10 +518,12 @@ if (!/id-token: write/u.test(publish)) fail('publish.yml must declare id-token: 
 
 // ---- staged publishing contract --------------------------------------------
 // CI stages versions with a short-lived OIDC token and publishes nothing; a
-// maintainer approves the staged versions locally with scripts/promote-
-// release.mjs (interactive 2FA) and that script creates the GitHub Release.
-// These checks keep the workflow, the trust setup, and the root scripts wired
-// to that model instead of the retired direct-publish/CI-Release flow.
+// maintainer then batch-approves the staged versions on npmjs.com (logged-in
+// session + 2FA), and after approval creates the GitHub Release manually with
+// `gh release create ... --verify-tag` (no repository approve/Release script:
+// scripts/promote-release.mjs was removed). These checks keep the workflow,
+// the trust setup, and the root scripts wired to that model instead of the
+// retired direct-publish / local-promote flow.
 if (!/run:\s*node scripts\/stage-release\.mjs/u.test(publish)) {
   fail('publish.yml must stage through a "run: node scripts/stage-release.mjs" step')
 }
@@ -534,11 +536,20 @@ if (/\bpnpm publish\b/u.test(publishLines)) {
 if (/(?<!stage )\bnpm publish\b/u.test(publishLines)) {
   fail('publish.yml must not run a plain "npm publish"; CI only runs "npm stage publish" via scripts/stage-release.mjs')
 }
-if (/gh release (?:create|edit)/u.test(publish)) {
-  fail('publish.yml must not create the GitHub Release; scripts/promote-release.mjs creates it locally')
+// The summary legitimately tells the maintainer how to create the Release by
+// hand, so only an actual `gh release ...` command line (first token `gh`)
+// counts as CI creating the Release.
+if (/^\s*gh release (?:create|edit)\b/mu.test(publishLines)) {
+  fail('publish.yml must not create the GitHub Release; the maintainer creates it manually with `gh release create --verify-tag` after npm approval')
+}
+if (!/npmjs\.com/u.test(publish) || !/gh release create/u.test(publish)) {
+  fail('publish.yml release summary must point at npmjs.com batch approval and the manual `gh release create --verify-tag` step')
+}
+if (/promote-release\.mjs/u.test(publish)) {
+  fail('publish.yml must not reference the removed scripts/promote-release.mjs; approval happens on npmjs.com and the Release is created manually')
 }
 if (/contents:\s*write/u.test(publish)) {
-  fail('publish.yml must not request contents: write; the GitHub Release is created by the local promote script')
+  fail('publish.yml must not request contents: write; the GitHub Release is created manually after npm approval, outside CI')
 }
 if (!/workflow_dispatch:/u.test(publish) || !/release_tag:/u.test(publish)) {
   fail('publish.yml must support workflow_dispatch with a release_tag input so an existing tag can be re-staged')
@@ -552,6 +563,12 @@ const stageScript = existsSync(join(ROOT, 'scripts', 'stage-release.mjs'))
 if (!/--provenance/u.test(stageScript)) {
   fail('scripts/stage-release.mjs must pass --provenance when running in GitHub Actions')
 }
+if (/promote-release/u.test(stageScript)) {
+  fail('scripts/stage-release.mjs must not point at the removed promote-release script; point at npmjs.com batch approval + manual `gh release create`')
+}
+if (existsSync(join(ROOT, 'scripts', 'promote-release.mjs'))) {
+  fail('scripts/promote-release.mjs must stay deleted: approval happens on npmjs.com and the GitHub Release is created manually after approval')
+}
 const trustScript = existsSync(join(ROOT, 'scripts', 'trusted-publishers.sh'))
   ? readFileSync(join(ROOT, 'scripts', 'trusted-publishers.sh'), 'utf8')
   : ''
@@ -561,8 +578,11 @@ if (!/TRUST_ARGS=\([^)]*--allow-stage-publish/u.test(trustScript)) {
 if (/TRUST_ARGS=\([^)]*--allow-publish/u.test(trustScript)) {
   fail('scripts/trusted-publishers.sh must not grant --allow-publish')
 }
+if (/promote-release/u.test(trustScript)) {
+  fail('scripts/trusted-publishers.sh must not point at the removed promote-release script')
+}
 const rootScripts = rootManifest.scripts ?? {}
-for (const [name, target] of [['release:dry', 'stage-release.mjs'], ['release:stage', 'stage-release.mjs'], ['release:promote', 'promote-release.mjs']]) {
+for (const [name, target] of [['release:dry', 'stage-release.mjs'], ['release:stage', 'stage-release.mjs']]) {
   const value = rootScripts[name]
   if (typeof value !== 'string' || !value.includes(target)) fail(`root package.json scripts["${name}"] must run ${target}`)
 }
@@ -571,6 +591,9 @@ if (!String(rootScripts['release:dry'] ?? '').includes('--dry-run')) {
 }
 if (rootScripts['release:publish'] !== undefined) {
   fail('root package.json must not keep a direct-publish script ("release:publish")')
+}
+if (rootScripts['release:promote'] !== undefined) {
+  fail('root package.json must not keep "release:promote": approval happens on npmjs.com and the GitHub Release is created manually')
 }
 
 // ---- report ----------------------------------------------------------------

@@ -16,39 +16,50 @@
 `pnpm pack` 会把 `workspace:*` 改写为当前精确版本（例如 `0.2.0`）。`npm pack` / 从包目录直接
 `npm publish` **不会**改写 `workspace:`，因此发布链路固定使用 pnpm 打包，详见下文脚本说明。
 
-## 发布模型：CI 只 stage，人工 approve，再出 GitHub Release
+## 发布模型：CI 只 stage，维护者在 npmjs.com 网页 approve，再手动创建 GitHub Release
 
 发布分为三个明确阶段：
 
 | 阶段 | 执行者 | 认证 | 动作 |
 | --- | --- | --- | --- |
 | **1. Stage（暂存）** | `.github/workflows/publish.yml`（推 tag 或手动 dispatch） | GitHub Actions OIDC 短时 token（`id-token: write`） | 构建、校验、`npm stage publish` 上传 6 个包的暂存版本。**不发布任何东西。** |
-| **2. Approve（批准 = 发布）** | 仓库维护者本地 | `npm login` 登录凭据 + 交互式 2FA OTP | `scripts/promote-release.mjs` 逐个审批 staged 版本；npm 每批准一个就立即公开该包 |
-| **3. Release（GitHub Release）** | 同一个本地脚本 | `gh auth login` | 全部批准后创建/更新 GitHub Release（幂等，`--verify-tag`） |
+| **2. Approve（批准 = 发布）** | 仓库维护者（npmjs.com 网页） | 浏览器登录 npm 账号 + 2FA | 在 npmjs.com 的 staged / pending approvals 页面**批量批准**该版本的 6 个 staged 包；npm 每批准一个就立即公开该包，**approve 不可撤销** |
+| **3. GitHub Release** | 维护者；或维护者 approve 完成后通知 agent 执行 | `gh auth login`（人类授权后） | 用 `gh release create ... --verify-tag` 对**已存在**的 tag 手动创建 GitHub Release；不创建、不移动 tag |
 
 这样设计的原因：
 
 - **原子发布**：某个版本的任何包在全部 stage 完成并且人工批准整套之前都不会公开。构建坏包、
   CI 中途失败、版本错位都不会让用户装到半套版本。
 - **CI 没有发布权**：工作流不持有任何长期 npm token，只有每个包对应的短时 OIDC token；
-  npm 只在 `npm stage publish` / `npm publish` 时接受 OIDC token，`npm stage list/approve/reject`
-  **只能由人类登录执行**（approve/reject 还需要交互式 2FA）。即使工作流被篡改，最多也只能
-  stage 一个未批准版本。
-- **可重跑、可审计**：stage 产物带 provenance；审批前的 staged id 全部打印在 CI job summary 里；
-  发布顺序和批准人（actor）都能在 `npm stage list` 中看到。
+  npm 只在 `npm stage publish` / `npm publish` 时接受 OIDC token，staged 版本的
+  list/approve/reject **只能由人类账号执行**（网页会话 + 2FA，或本地 CLI 登录 + 2FA）。
+  即使工作流被篡改，最多也只能 stage 一个未批准版本。
+- **可重跑、可审计**：stage 产物带 provenance；审批前的 staged id 全部打印在 CI job summary 里，
+  npmjs.com 的 staged 队列与包的 Versions 页也能看到；发布顺序和批准人（actor）可在 npm 侧审计。
+- **避免本地逐包 OTP**：approve 在 npmjs.com 网页批量完成，不需要在本地 CLI 为每个包交互式
+  输入 OTP；本地 `npm stage` 只保留为排障/例外手段。
 
-旧的“CI 直接 `pnpm publish -r` + CI 创建 GitHub Release”模型已废弃。PR / push 到 main 仍由
+旧的“CI 直接 `pnpm publish -r` + CI 创建 GitHub Release”模型已废弃。本仓库**不再提供
+`scripts/promote-release.mjs` 与 `pnpm release:promote`**：approve 改为 npmjs.com 网页批量操作，
+GitHub Release 在 approve 完成后用 `gh release create` 手动创建。
+
+> **历史记录说明**：`docs/releases/` 下的历史 release notes 与 `docs/e2e-evidence/` 等审计文档中
+> 出现的 `promote-release.mjs` 命令属于发布当时的历史记录，不再代表当前流程；当前流程以本页为准。
+
+PR / push 到 main 仍由
 [`verify.yml`](../.github/workflows/verify.yml) 跑安装、typecheck、test、build、`check:packages`；
 它不碰 registry，也不需要任何凭据。
 
 ## 前置条件
 
 - Node.js ≥ 24.9、pnpm `12.16.1`（`corepack enable` 或直接安装）。
-- **npm ≥ 11.15.0**：staged publishing（`npm stage` 系列命令与 `npm trust --allow-stage-publish`）
-  从 11.15.0 开始提供；本仓库 CI 固定并校验 **11.20.0**（`npm install -g npm@11.20.0`）。
-  本地发布/审批前请安装同一版本（用 `npm stage --help` 自检）。
+- **npm ≥ 11.15.0（仅本地 CLI 备用路径需要）**：staged publishing（`npm stage` 系列命令与
+  `npm trust --allow-stage-publish`）从 11.15.0 开始提供；本仓库 CI 固定并校验 **11.20.0**
+  （`npm install -g npm@11.20.0`）。网页 approve 本身不需要本地 npm；但本地 stage、trusted
+  publisher 配置以及 `npm stage list/reject` 例外处理需要同一版本（用 `npm stage --help` 自检）。
 - npm 账号对 `@yankeguo` scope 有写权限；所有包都声明了 `publishConfig.access: public`。
-- npm 账号已开启 **2FA**：approve / reject 必须交互式输入一次性密码（OTP）。
+- npm 账号已开启 **2FA**：网页 approve 需要浏览器登录后的 2FA 确认；CLI 的 approve/reject
+  还需要交互式一次性密码（OTP）。
 - 包必须**已存在于 npm registry**：npm 的 trusted publishing 只对已发布的包生效，新包的
   **首次发布**是一次性手工操作（见下文“新包首次发布”）。
 - GitHub Actions 运行在 **GitHub-hosted runner**（npm 目前不支持 self-hosted runner 的 trusted
@@ -163,14 +174,14 @@ node -e '
 pnpm install                # 同步 workspace 锁文件中的版本
 ```
 
-> 不要只发布部分包：bundle 依赖整套包的同一版本；CI 的 tag 门禁和本地 promote 都要求
+> 不要只发布部分包：bundle 依赖整套包的同一版本；CI 的 tag 门禁和本地 stage 脚本都要求
 > 根 `package.json` 与 6 个可发布包版本完全一致。
 
-### 3. 写 release notes（promote 的硬性前置条件）
+### 3. 写 release notes（GitHub Release 的正文）
 
-新建 `docs/releases/v<VERSION>.md`（参考 [`v0.2.0.md`](releases/v0.2.0.md)）。
-`scripts/promote-release.mjs` 会用它作为 GitHub Release 正文，**文件不存在或为空时拒绝批准**
-（避免包已公开却没有发布说明）。
+新建 `docs/releases/v<VERSION>.md`（参考 [`v0.2.0.md`](releases/v0.2.0.md)）。approve 完成后
+它会作为 GitHub Release 正文（`gh release create --notes-file`）；**文件不存在或为空时不要创建
+Release**（避免包已公开却没有发布说明）。当前流程没有脚本替你校验这一步，属于人工检查项。
 
 ### 4. 发布前检查
 
@@ -258,7 +269,7 @@ git push origin v0.4.0            # 触发 .github/workflows/publish.yml
 
 > 本版 `0.4.0` 是**稳定版**：CI 按版本自动推导 dist-tag 为 `latest`（prerelease 才是 `next`）。
 > 打 tag 与 push 属于人类批准动作；本次 `0.4.0` 由人类明确指示后执行。具体检查清单见下文
-> [「0.4.0 稳定版发布步骤与检查」](#8-040-稳定版发布步骤与检查)。
+> [「0.4.0 稳定版发布步骤与检查」](#9-040-稳定版发布步骤与检查)。
 
 `publish.yml` 的行为：
 
@@ -274,13 +285,14 @@ git push origin v0.4.0            # 触发 .github/workflows/publish.yml
 5. `pnpm install --frozen-lockfile` → typecheck → test → build → `node scripts/check-packages.mjs`。
 6. **Stage**：`node scripts/stage-release.mjs --version "$RELEASE_VERSION" --dist-tag "$RELEASE_DIST_TAG"`（稳定版 latest，prerelease next）。
    每个包打印一行 stage id，并写入 job summary；失败时停止并打印已 stage 的包与修复提示。
-7. **Release summary**：仅在全部 stage 成功后写入下一步人工审批命令。
+7. **Release summary**：仅在全部 stage 成功后写入下一步提示（到 npmjs.com 网页批量 approve；
+   approve 完成后手动创建 GitHub Release）。
 
 工作流权限（已声明）：
 
 ```yaml
 permissions:
-  contents: read      # GitHub Release 由本地 promote 脚本创建，CI 不需要写权限
+  contents: read      # GitHub Release 在 approve 后手动创建，CI 不需要写权限
   id-token: write     # OIDC：npm CLI 换取逐个包的短时 token（仅能 stage）
 ```
 
@@ -292,57 +304,92 @@ permissions:
 **已存在**的 tag（例如 `v0.4.0`）。工作流只认既有 tag；**不要删除、重建或移动 tag**。
 dispatch 与 tag push 共用并发组 `publish`，不会交错 stage。
 
-### 6. 人工批准（本地，2FA）
+### 6. 人工批准（npmjs.com 网页，批量 approve）
 
-维护者在本机执行：
+stage 成功后**什么都不会公开**。维护者在 npmjs.com 网页上批量批准该版本的 6 个 staged 包：
+
+1. 用对 `@yankeguo` 有写权限的维护者账号登录 [npmjs.com](https://www.npmjs.com/)，按提示完成 2FA。
+2. 打开 staged 队列 / pending approvals 页面（账号下的 staged packages；每个包的 **Versions**
+   页也会显示该版本的 staged / 待批准状态与审批入口，页面约每分钟自动刷新）。
+3. **先核对再批准**：6 条 staged 记录的包名、版本号（例如全部为 `0.4.0`）与记录携带的
+   dist-tag（稳定版 `latest`；prerelease `next`）必须与 CI job summary 一致。
+   **版本或 dist-tag 不对的记录不要批准**，先按本节末尾的 reject 说明清理。
+4. 勾选该版本全部 6 个包后**批量 approve**（网页要求 2FA 确认）。npm **每批准一个就立即公开
+   该包**：approve 即公开、**不可撤销**；中途中断时已批准的包已经公开，剩余包仍留在 staged
+   队列，可继续批准。网页批量批准不保证逐包先后顺序；若需要严格控制“依赖先、bundle 最后”
+   的公开顺序，可逐包 approve。
+5. 网页 approve 不经过本地 CLI：不需要 `npm login`、不需要本地 npm 版本，也不需要逐包输入
+   OTP；只有例外处理（`npm stage list` / `npm stage reject`）才需要本地登录。
+
+approve 后逐包核对 npm `dist-tags`（`latest` 指向稳定版；`next`/其它按版本形态，prerelease
+**绝不能**指向 `latest`）：
 
 ```sh
-npm login                                  # 确认是 @yankeguo 维护者，账号已开 2FA
-npm install -g npm@11.20.0                 # 若尚未安装（仓库固定 11.20.0；npm stage 自 11.15.0 提供）
-
-node scripts/promote-release.mjs --dry-run # 预检 + 打印计划，不做任何变更
-node scripts/promote-release.mjs           # 逐包 approve（npm 会提示输入 OTP），然后建 GitHub Release
+npm view @yankeguo/dsh-devlead-bundle dist-tags
+npm view @yankeguo/dsh-devlead dist-tags
+# 0.4.0 示例期望：latest = 0.4.0；next = 0.4.0-rc.1
 ```
 
-`promote-release.mjs` 的两阶段行为：
+也可以在 npmjs.com 各包页面的 **Versions** 里核对哪个版本带 `latest` / `next` 标签。
 
-**阶段 A：只读预检**（任一失败都不会批准任何包）
+**staged 版本怎么 reject（例外手段）**：approve 前发现 stage 了错误的 commit/tag、或同一版本
+存在多条 staged 记录时，需要清掉 staged 记录。网页 staged 页面提供 reject 操作时直接在网页上
+reject；否则用本地 CLI 作为例外手段（需 `npm login` + 2FA）：
 
-- 验证根 `package.json` 与 6 个包版本一致、npm 已登录、npm 支持 `npm stage`；
-- 对每个包执行 `npm stage list <pkg> --json`，过滤出 `packageName === <pkg>` 且
-  `version === <发布版本>` 的记录：
-  - **恰好 1 条**：批准它；
-  - **0 条但该版本已发布**：视为已完成（重跑/断点续传幂等），跳过；
-  - **0 条且未发布**：先对 `npm view` 做有限次重试（最多 4 次、间隔约 1.5s）再判定 ——
-    刚 approve 的版本可能还没出现在读路径里，避免把“已发布但尚未传播”误判为缺失；仍不存在
-    才失败，提示先跑发布工作流；
-  - **多于 1 条**：失败并列出全部 staged id（必须人工决定 reject 哪一条）；
-- 验证 `gh` 已认证、有仓库权限、`gh release view` 可查（结果缓存给阶段 B 使用）；
-- 验证 release tag **已在远端存在**（`gh api repos/<repo>/git/ref/tags/<tag>`，本脚本不会创建
-  tag），验证 release notes 文件存在且非空；
-- 按 workspace 依赖拓扑顺序打印 approve 计划与第 N 步 GitHub Release 动作。
+```sh
+npm install -g npm@11.20.0                 # 网页流程不需要；CLI 例外处理需要 npm >= 11.15
+npm stage list <package> --json            # 找出本次运行的 staged id
+npm stage view <stage-id> --json           # 核对 createdAt / shasum / version / dist-tag
+npm stage reject <stage-id>                # 不可恢复：删除该 staged tarball（不公开、不删已发布版本）
+```
 
-**阶段 B：串行批准**
+reject staged 记录**不会**撤销任何已 approve 的版本（已 approve = 已公开，无法撤回）。清理后
+从**同一个既有 tag** 用 `workflow_dispatch` 重新 stage，不要移动/重建 tag。
 
-- 逐个执行 `npm stage approve <stage-id>`，stdio 继承，npm 自己提示并读取 OTP；
-- 每个包批准后**立即公开**；中途失败会停止并打印：已公开的包、仍处于 staged 的包的 id、
-  `npm stage reject <id>` 清理提示、以及重跑命令；
-- 全部批准后按阶段 A 缓存的 release 存在性执行 `gh release create|edit <tag>
-  --repo <repo> --title <tag> --notes-file docs/releases/v<version>.md --verify-tag`
-  （幂等；`--verify-tag` 保证只使用已存在的 tag）。
+### 7. 创建 GitHub Release（approve 完成后手动，tag 不移动）
 
-脚本参数：
+**approve 完成（网页显示 6 个包均已公开、dist-tags 核对无误）后，由维护者通知 agent，或维护者
+本人执行**：用**已存在**的 release tag 创建 GitHub Release，正文取 `docs/releases/v<version>.md`。
+在仓库根目录执行：
 
-| 参数 | 默认值 | 说明 |
-| --- | --- | --- |
-| `--version <x.y.z>` | 根 `package.json` 版本 | 要批准的发布版本 |
-| `--release-tag <tag>` | `v<version>` | GitHub Release tag；必须已存在，脚本绝不创建/移动 tag |
-| `--repo <owner/repo>` | 从 origin remote 推导 | GitHub 仓库 |
-| `--notes-file <path>` | `docs/releases/v<version>.md` | Release 正文文件（相对路径从仓库根解析） |
-| `--dry-run` | 关闭 | 完整只读预检 + 打印计划，不批准、不创建 Release |
-| `--list-only` | 关闭 | 只打印各包 staged 状态（临时排障/清理用），不检查 gh/notes、不变更 |
+```sh
+# 稳定版（tag 已存在；--verify-tag 保证只对既有 tag 建 Release，绝不创建/移动 tag）
+gh release create v0.4.0 --repo yankeguo/dsh-devlead --title v0.4.0 \
+  --notes-file docs/releases/v0.4.0.md --verify-tag --latest
 
-### 7. 发布后校验
+# 预发布版（若适用）
+gh release create v0.4.0-rc.1 --repo yankeguo/dsh-devlead --title v0.4.0-rc.1 \
+  --notes-file docs/releases/v0.4.0-rc.1.md --verify-tag --prerelease --latest=false
+```
+
+- `--verify-tag`：只使用远端已存在的 tag；tag 不存在时命令失败，**不会创建、移动或重建 tag**。
+- 稳定版带 `--latest`（标记为 latest release）；prerelease 带 `--prerelease --latest=false`，
+  不要占用 latest。
+- 若 Release 已存在（重跑/补建），改用
+  `gh release edit <tag> --repo yankeguo/dsh-devlead --title <tag> --notes-file <file> --verify-tag ...`，
+  不要重复 `create`。
+- **不要由 CI 创建 Release**：`publish.yml` 只 stage（`permissions.contents: read`），Release
+  必须在 approve 之后手动创建。
+- Release 正文取 `docs/releases/v<version>.md` 的当前内容；Release 发布后改正文不影响 npm 上
+  已公开的版本。
+
+创建后核对「npm dist-tags ↔ git tag ↔ GitHub Release」三者一致：
+
+```sh
+git rev-parse v0.4.0^{commit}                 # tag 指向的 commit
+gh release view v0.4.0 --repo yankeguo/dsh-devlead \
+  --json tagName,isPrerelease,isDraft,targetCommitish
+gh release list --repo yankeguo/dsh-devlead --limit 5 --json tagName,isLatest
+npm view @yankeguo/dsh-devlead-bundle dist-tags
+```
+
+稳定版期望：6 个包的 `@0.4.0` 在 npm 可见；`dist-tags.latest = 0.4.0`、`next` 仍指向
+`0.4.0-rc.1`；GitHub Release 指向 tag `v0.4.0` 与同一 commit，`isLatest=true`、
+`isPrerelease=false`、`isDraft=false`。
+
+### 8. 发布后校验
+
+网页 approve 完成、并按第 7 步手动创建 GitHub Release 后执行：
 
 ```sh
 npm view @yankeguo/dsh-devlead-bundle@0.4.0 version dist-tags
@@ -353,7 +400,8 @@ gh release view v0.4.0 --repo yankeguo/dsh-devlead
 ```
 
 稳定版三方核对：6 个包的 `@0.4.0` 在 npm 可见、`dist-tags.latest` 指向 **`0.4.0`**、
-`dist-tags.next` 保持 **`0.4.0-rc.1`**；GitHub Release 指向 tag `v0.4.0` 与同一 commit。
+`dist-tags.next` 保持 **`0.4.0-rc.1`**；GitHub Release 指向 tag `v0.4.0` 与同一 commit
+（`isLatest=true`、`isPrerelease=false`）。
 npmjs.com 上每个包应显示 **provenance / attestation**（公开仓库 + GitHub-hosted runner 自动
 生成）。
 
@@ -367,21 +415,23 @@ dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 然后刷新 Web 页面，开一个会话执行 `/devlead on`，再让模型
 `devlead_use_workspace` + `devlead_create_session` 做一次冒烟。
 
-### 8. 0.4.0 稳定版发布步骤与检查
+### 9. 0.4.0 稳定版发布步骤与检查
 
 本版是 **0.4.0 稳定版**（dist-tag `latest`），由已发布的 `0.4.0-rc.1` 去掉 rc 后缀得到，承载
 Batch 1 的 breaking 兼容性清理与正确性收口；稳定版只做版本 bump、文档/证据同步与门禁重跑，
-不改运行时行为。发布说明正文是 [`docs/releases/v0.4.0.md`](releases/v0.4.0.md)（promote 的
-硬性前置条件）。`0.4.0-rc.1` 已于 2026-11-21 以 `next` dist-tag 发布并创建 prerelease GitHub
-Release；`next` 保持指向 `0.4.0-rc.1`。打 tag 前必须逐项确认，任一项未完成不得进入下一步：
+不改运行时行为。发布说明正文是 [`docs/releases/v0.4.0.md`](releases/v0.4.0.md)（approve 完成后
+作为 GitHub Release 正文；文件缺失或为空时不得创建 Release）。`0.4.0-rc.1` 已于 2026-11-21 以
+`next` dist-tag 发布并创建 prerelease GitHub Release；`next` 保持指向 `0.4.0-rc.1`。打 tag 前
+必须逐项确认，任一项未完成不得进入下一步：
 
 - [ ] **(a) 版本 lockstep**：根 `package.json` + 6 个可发布包共 **7 个 workspace manifest**
   （不含 `scripts/e2e-probe/package.json` 的 0.0.0）均为 `0.4.0`
   （`git grep -n '"version": "0.4.0"' -- package.json packages/*/package.json`
   应恰好 7 行）；`pnpm install --frozen-lockfile` 通过——`pnpm-lock.yaml` 不记录本仓库自身的
   版本，**不要手工编辑 lockfile**。
-- [ ] **(b) release notes 就绪**：`docs/releases/v0.4.0.md` 存在且非空；缺失/为空时
-  `promote-release.mjs` 会拒绝 approve（避免包已公开却没有发布说明）。
+- [ ] **(b) release notes 就绪**：`docs/releases/v0.4.0.md` 存在且非空；approve 完成后由
+  `gh release create --notes-file` 作为 Release 正文（当前没有脚本强制，属于人工检查项；
+  缺失/为空时不得创建 Release，避免包已公开却没有发布说明）。
 - [ ] **(c) stage 前门禁**：`pnpm verify`、`pnpm check:packages` 全绿；稳定版本地打包预检用
   `pnpm release:dry`（默认 `--dist-tag latest`）并看到 `DRY RUN OK`；三条真实 e2e 为
   `pnpm e2e --no-build`、`pnpm e2e --flow installed --no-build`、
@@ -396,16 +446,18 @@ Release；`next` 保持指向 `0.4.0-rc.1`。打 tag 前必须逐项确认，任
   `git tag -a v0.4.0 -m "v0.4.0"` + `git push origin v0.4.0`；推送即触发 CI stage 6 个包
   （OIDC + provenance、dist-tag `latest`），**不公开任何内容**。tag 由人类批准；没有明确指示
   时 agent 不 push、不打 tag、不 stage/approve，且绝不移动/删除/重建 tag。
-- [ ] **(f) 人工 approve（2FA）**：
+- [ ] **(f) 人工 approve（npmjs.com 网页，批量）+ 手动 GitHub Release**：登录 npmjs.com，
+  核对 6 条 staged 记录（版本 `0.4.0`、dist-tag `latest`）后批量 approve；**approve 即公开、
+  不可撤销**，不需要本地 `npm login`/OTP。approve 完成后由维护者通知 agent（或维护者本人）执行：
   ```sh
-  node scripts/promote-release.mjs --version 0.4.0 --dry-run   # 只读预检，打印计划
-  node scripts/promote-release.mjs --version 0.4.0             # 逐包 approve（OTP）+ GitHub Release
+  gh release create v0.4.0 --repo yankeguo/dsh-devlead --title v0.4.0 \
+    --notes-file docs/releases/v0.4.0.md --verify-tag --latest
   ```
-  脚本创建/更新稳定版 GitHub Release（`gh release create|edit ... --verify-tag
-  --prerelease=false`），不会创建/移动 tag。
+  `--verify-tag` 保证只对既有 tag 建 Release，不创建/移动 tag；Release 已存在时改用
+  `gh release edit`。
 - [ ] **(g) 发布后三方核对**：6 个包的 `@0.4.0` 在 npm 可见；`dist-tags.latest` 指向 `0.4.0`、
-  `dist-tags.next` 仍为 `0.4.0-rc.1`；GitHub Release 指向 tag `v0.4.0` 与同一 commit；
-  npmjs.com 显示 provenance。
+  `dist-tags.next` 仍为 `0.4.0-rc.1`；GitHub Release 指向 tag `v0.4.0` 与同一 commit
+  （`isLatest=true`、`isPrerelease=false`）；npmjs.com 显示 provenance。
 - [ ] **(h) 升级门禁提示**：0.4.0 携带 breaking changes（旧 DevLead state 不迁移、outbox v3 无
   兼容、`answerSeq` 必填、multi-lead 硬门禁、question TTL 默认 24h）。受影响的 Session 需
   `/devlead reset`（或 `/devlead off`）；新配置 `questionTtlMs` 默认 24h（`86400000`，0 禁用）
@@ -420,7 +472,7 @@ Release；`next` 保持指向 `0.4.0-rc.1`。打 tag 前必须逐项确认，任
   tag；不要用新 commit 重新打同名 tag。
 
 发布前 dist-tag 现状：`latest=0.2.6`、`next=0.4.0-rc.1`（`0.4.0-rc.1` 于 2026-11-21 发布并
-promote）；approve `0.4.0` 后 `latest=0.4.0`、`next` 仍为 `0.4.0-rc.1`。
+approve）；网页 approve `0.4.0` 后 `latest=0.4.0`、`next` 仍为 `0.4.0-rc.1`。
 
 ## 新包首次发布（一次性手工操作）
 
@@ -443,33 +495,38 @@ scripts/trusted-publishers.sh
 scripts/trusted-publishers.sh --list
 ```
 
-之后该包即走正常的 CI stage → 人工 approve 流程。若新包被 bundle 依赖，把它加进 workspace 后
-`pnpm install` 会同步锁文件；下一次整套发版会按拓扑顺序带上它。
+之后该包即走正常的 CI stage → npmjs.com 网页 approve → 手动 GitHub Release 流程。若新包被
+bundle 依赖，把它加进 workspace 后 `pnpm install` 会同步锁文件；下一次整套发版会按拓扑顺序
+带上它。
 
 ## 版本与 dist-tag 策略
 
-- 稳定版：默认 `latest`。CI 固定以 `--dist-tag latest` stage；promote 批准后即成为 `latest` 对应的
-  已发布版本。当前稳定版本 **0.4.0** 即走这条路径（`pnpm release:dry` 用默认 `latest` 预检）。
+- 稳定版：默认 `latest`。CI 固定以 `--dist-tag latest` stage；网页 approve 后即成为 `latest`
+  对应的已发布版本。当前稳定版本 **0.4.0** 即走这条路径（`pnpm release:dry` 用默认 `latest`
+  预检）。
 - 试验版/预发布：**打 prerelease tag 并推送即可**——CI 自动以 `next` dist-tag stage（稳定版才用
-  `latest`），其余流程与稳定版完全一致（人工 approve + GitHub Release 自动标 prerelease）。
-  以已发布的 **0.4.0-rc.1** 为例：
+  `latest`），其余流程与稳定版完全一致（npmjs.com 网页 approve + 手动 GitHub Release 标
+  prerelease）。以已发布的 **0.4.0-rc.1** 为例：
   ```sh
   git tag -a v0.4.0-rc.1 -m "v0.4.0-rc.1"
   git push origin v0.4.0-rc.1                 # CI 以 next stage 全部 6 包（provenance，不公开）
-  npm login
-  node scripts/promote-release.mjs --version 0.4.0-rc.1   # approve（2FA）+ prerelease Release
+  # 1) npmjs.com 网页：核对 6 条 staged 记录的 dist-tag 是 next 后批量 approve
+  # 2) approve 完成后手动创建 prerelease Release：
+  gh release create v0.4.0-rc.1 --repo yankeguo/dsh-devlead --title v0.4.0-rc.1 \
+    --notes-file docs/releases/v0.4.0-rc.1.md --verify-tag --prerelease --latest=false
   ```
   本地 stage 仍可作为备用路径（`stage-release.mjs --version 0.4.0-rc.1 --dist-tag next`，
-  无 provenance）。该候选已于 2026-11-21 promote：`next=0.4.0-rc.1`、`latest` 仍为 **0.2.6**
-  （prerelease 不占用 `latest`）；`0.4.0` 稳定版以 `latest` stage + approve 后，`latest` 变为
-  0.4.0。三道防误发闸门：
-  1. `stage-release.mjs` **拒绝 prerelease 版本 + `--dist-tag latest`**（approve 会按 stage 时
-     记录的 dist-tag 公开，prerelease 一旦挂 latest 就成了默认安装）；
-  2. `promote-release.mjs` 预检**拒绝 approve 任何以 latest stage 的 prerelease 记录**，并给出
-     reject + 以 next 重 stage 的修复命令；approve 后还会逐包核对 registry `dist-tags.latest`
-     不指向该 prerelease；
-  3. GitHub Release 自动按版本标记：prerelease → `--prerelease --latest=false`，稳定版 →
-     `--prerelease=false`（edit 时纠正旧标记），都带 `--verify-tag`。
+  无 provenance）。该候选已于 2026-11-21 approve：`next=0.4.0-rc.1`、`latest` 仍为 **0.2.6**
+  （prerelease 不占用 `latest`）；`0.4.0` 稳定版以 `latest` stage + 网页 approve 后，`latest`
+  变为 0.4.0。三道防误发闸门（approve/Release 现在没有仓库脚本兜底，其中两条靠人工核对）：
+  1. `stage-release.mjs` **拒绝 prerelease 版本 + `--dist-tag latest`**，CI 对 prerelease 也
+     固定用 `next`（approve 会按 stage 时记录的 dist-tag 公开，prerelease 一旦挂 latest 就成
+     了默认安装）。
+  2. **approve 前人工核对**：npmjs.com 网页上每条 staged 记录都带 stage 时记录的 dist-tag；
+     prerelease 记录必须是 `next`。若发现以 latest stage 的 prerelease，**不要 approve**：
+     先 reject 这些 staged 记录，再从同一既有 tag 以 `--dist-tag next` 重新 stage。
+  3. **手动创建 Release 时按版本形态选择标记**：prerelease → `--prerelease --latest=false`，
+     稳定版 → `--latest`（edit 已存在的 Release 时纠正旧标记），都带 `--verify-tag`。
   prerelease 的 tag（`v0.4.0-rc.1`）推送到远端即触发 CI stage，也供 Release 的 `--verify-tag`
   使用；tag 一旦推送就**不移动、不删除、不重建**（已推送的 `v0.3.0-rc.1` / `v0.3.0-rc.2` 保持
   原样）。用户安装时必须写精确版本；发布后 24 小时内尤其不能用 `@next`——pnpm 的
@@ -529,19 +586,22 @@ scripts/trusted-publishers.sh --list
 与修复提示（**不打印假的 stage id**；只有 npm 真实返回的 stage id 才会被记录）。临时 tarball
 目录在结束时删除，不污染仓库。
 
-### `scripts/promote-release.mjs`（维护者本地 approve + Release）
+### npmjs.com 网页 approve + 手动 GitHub Release（无仓库脚本）
 
-参数见上文“人工批准”一节。要点：
+approve 不在本仓库脚本里完成：维护者在 npmjs.com 网页批量 approve（见上文「6. 人工批准」），
+approve 完成后用 `gh release create` 手动创建 Release（见上文「7. 创建 GitHub Release」）。
 
-- 预检对每个包要求**恰好一条**匹配 staged 记录；已发布视为幂等完成（`npm view` 未命中时会做
-  有限次 registry 传播重试，避免把刚 approve、尚未可见的版本误判为缺失）；重试后仍缺失才失败；
-- approve 顺序与发布顺序一致（依赖先公开，bundle 最后），每个 approve 由 npm 交互式读取 OTP；
-- 失败时给出已公开列表、剩余 staged id、`npm stage reject` 与重跑指引；
-- GitHub Release 幂等创建/更新，`--verify-tag` 保证不新建 tag；prerelease 版本自动
-  `--prerelease --latest=false`，稳定版 `--prerelease=false`；本地 HEAD 与 tag 不一致时只警告
-  （promote 读取 registry 与 notes 文件，不依赖本地构建产物）；
-- prerelease 预检拒绝以 latest stage 的记录；approve 后逐包核对 `dist-tags.latest` 不指向该
-  prerelease（违反即失败并给出 `npm dist-tag add` 修复命令）。
+仓库里只保留 stage 相关脚本（`stage-release.mjs` / `trusted-publishers.sh`）。`npm stage` 的
+CLI 仍可作为只读查询与例外清理手段：
+
+```sh
+npm stage list <package> --json    # 只读查询该包的 staged 记录
+npm stage view <stage-id> --json   # 只读查看单条记录（createdAt / shasum / version / dist-tag）
+npm stage reject <stage-id>        # 不可恢复：删除 staged tarball；不撤销已 approve 的版本
+```
+
+原 `scripts/promote-release.mjs` 与 `pnpm release:promote` 已随本次流程改版删除；历史文档中的
+相关命令仅作历史记录。
 
 ### 根 `package.json` scripts
 
@@ -549,9 +609,10 @@ scripts/trusted-publishers.sh --list
 | --- | --- | --- |
 | `pnpm release:dry` | `pnpm build && node scripts/stage-release.mjs --dry-run` | 本地打包 + npm 预检（不上传） |
 | `pnpm release:stage` | `pnpm build && node scripts/stage-release.mjs` | 本地 stage（需 `npm login`；CI 不需要它） |
-| `pnpm release:promote` | `node scripts/promote-release.mjs` | 人工批准 + GitHub Release |
 
-原 `release:publish`（直接 `pnpm publish -r`）已删除：CI 不再直接发布，本地也不需要整体直发命令。
+原 `release:promote`（本地 approve + GitHub Release）与 `release:publish`（直接 `pnpm publish -r`）
+已删除：approve 在 npmjs.com 网页完成，GitHub Release 用 `gh release create` 手动创建，CI 也
+不再直接发布。
 
 ## 故障恢复
 
@@ -568,47 +629,52 @@ scripts/trusted-publishers.sh --list
    ```
    然后 Actions → `publish` → Run workflow → `release_tag` 填**同一个既有 tag**。
    CI 会重新 stage 全部 6 个包，provenance 也重新生成。
-4. 如果上一次运行其实**全部 6 个包都 stage 成功**，不要重跑 stage：直接用
-   `node scripts/promote-release.mjs` 完成发布。
+4. 如果上一次运行其实**全部 6 个包都 stage 成功**，不要重跑 stage：直接到 npmjs.com 网页
+   批量 approve（approve 完成后手动创建 GitHub Release）。
 
 > 为什么不能“只补 stage 失败的包”？`npm stage list` 只允许人类登录查询，CI 无法知道哪些包已
 > staged；而重复 stage 同一版本的结果没有保证（可能被 registry 拒绝，也可能留下多条同版本
 > staged 记录）。因此“先 reject 本次残留记录、再用同一既有 tag 全量重跑”是最干净、可预测的
 > 恢复路径。
 
-### promote 中途失败
+### approve 中途失败
 
-- 已 approve 的包**已经公开**，无法撤销（见“误发版本”）。`promote-release.mjs` 重跑是幂等的：
-  已发布的包会被跳过（`npm view` 暂时查不到时会有限次等待 registry 传播），只继续批准剩余
-  staged 的包 —— 修复原因后直接重跑同一条命令即可。
-- 如果失败发生在最后的 GitHub Release 步骤：所有包都已公开，只需修好 `gh` 认证/网络后重跑
-  promote（会走 `gh release edit/create --verify-tag`），不会重复发布。
+- 已 approve 的包**已经公开**，无法撤销（见“误发版本”）。网页 approve 天然幂等：已公开的
+  版本不再出现在 staged 队列，重新登录 npmjs.com 后继续批量 approve 剩余记录即可，不需要
+  任何本地脚本。
+- 如果失败发生在网页 2FA/网络：重新登录并完成 2FA 后继续 approve 剩余 staged 记录。
+- 如果所有包都已 approve、但 GitHub Release 还没创建：修好 `gh` 认证/网络后手动执行
+  `gh release create ... --verify-tag`（Release 已存在则 `gh release edit`），不会重复发布。
+- 如果误批了错误的 staged 版本：已公开无法撤回；72 小时内可 `npm unpublish`，否则
+  `npm deprecate` 并升版本。
 
 ### 其它典型情况
 
 | 现象 | 处理 |
 | --- | --- |
-| 某个包出现**多条** matched staged 记录 | 先 `npm stage view <id> --json` 看 createdAt/shasum，再 `npm stage reject <id>` 清掉多余记录；每次运行只保留一条 |
-| staged 了**错误 commit** 的版本 | reject 该版本的全部 staged id，确认 tag/commit 后再 dispatch 同一 tag（不会移动 tag） |
-| CI 重跑报“版本已 staged / 已发布”或出现重复 staged 记录 | 说明上次运行已 stage（或该版本已发布）。重复 stage 同版本可能被拒绝、也可能新增一条 staged 记录（registry 行为未验证）；先 `npm stage list <pkg> --json` 核对：6 个包全部已 stage → 直接 promote；只 stage 了一部分 → reject 本次残留记录后从同一既有 tag 全量重跑 |
+| 某个包出现**多条** matched staged 记录 | 先 `npm stage view <id> --json` 看 createdAt/shasum，再 `npm stage reject <id>`（或网页 reject）清掉多余记录；每次运行只保留一条 |
+| staged 了**错误 commit** 的版本 | reject 该版本的全部 staged id（网页或 CLI），确认 tag/commit 后再 dispatch 同一 tag（不会移动 tag） |
+| CI 重跑报“版本已 staged / 已发布”或出现重复 staged 记录 | 说明上次运行已 stage（或该版本已发布）。重复 stage 同版本可能被拒绝、也可能新增一条 staged 记录（registry 行为未验证）；先 `npm stage list <pkg> --json` 核对：6 个包全部已 stage → 直接在 npmjs.com 网页批量 approve；只 stage 了一部分 → reject 本次残留记录后从同一既有 tag 全量重跑 |
 | 版本已经发布 | 不能再次 stage/publish 同版本；升版本重新发版（72 小时内可 `npm unpublish`，见下） |
 | 想用 workflow_dispatch 重跑 | `release_tag` 必须是已存在的 tag；工作流校验 tag commit == HEAD。**不要删除/重建/移动 tag** |
-| tag 不存在 | `git push origin <tag>` 推送既有 tag；本工作流与 promote 脚本都不会创建 tag |
+| tag 不存在 | `git push origin <tag>` 推送既有 tag；本工作流不会创建 tag，`gh release create --verify-tag` 也只接受既有 tag |
 | 误发版本 | npm 允许 72 小时内 `npm unpublish <pkg>@<version>`；超过则只能 `npm deprecate` 并升版本 |
 
 ### 首次 CI 运行的验证清单
 
 - [ ] `scripts/trusted-publishers.sh --list` 显示 6 个包均已配置 `publish.yml` / `yankeguo/dsh-devlead`，
       且授权动作为 staged publishing（没有旧的 `--allow-publish` 配置残留）
-- [ ] 本地 `npm --version` ≥ 11.15.0（建议与 CI 一致的 11.20.0）；CI 日志出现 “npm 11.20.0 supports staged publishing”
+- [ ] 本地 `npm --version` ≥ 11.15.0（建议与 CI 一致的 11.20.0；仅本地 stage 与 CLI 例外操作
+      需要）；CI 日志出现 “npm 11.20.0 supports staged publishing”
 - [ ] tag 已 push，且 CI 的 “Resolve and verify the release tag” 通过（tag commit == HEAD）
 - [ ] “Verify the release tag matches every package version” 通过（6 包 + 根版本一致）
 - [ ] “Stage packages on npm (publishes nothing)” 打印 6 个 stage id；job summary 有 staged 表
 - [ ] 此时 `npm view <pkg>@<version>` **仍应 404**（还没有公开），`npm stage list <pkg> --json`
       每个包恰好一条记录
-- [ ] 本地 `node scripts/promote-release.mjs --dry-run` 计划正确（6 个 approve + 1 个 Release）
-- [ ] approve 后 `npm view <pkg>@<version> version dist-tags` 正常，npmjs.com 显示 provenance
+- [ ] npmjs.com 的 staged 队列能列出这 6 条 staged 记录（版本与 dist-tag 正确）
+- [ ] 网页 approve 后 `npm view <pkg>@<version> version dist-tags` 正常，npmjs.com 显示 provenance
 - [ ] `gh release view v<version> --repo yankeguo/dsh-devlead` 指向同一 tag 与 commit
+      （`isLatest` / `isPrerelease` 与版本形态一致）
 - [ ] 仓库 secrets 中没有 `NPM_TOKEN`（本模型不需要任何 npm secret）
 
 ## 安全说明与 provenance
@@ -621,8 +687,8 @@ scripts/trusted-publishers.sh --list
    也可通过 `NPM_ID_TOKEN` 传入（npm CLI 直接使用该 token；audience 由 registry 侧校验）。
 3. npm 侧校验 OIDC claims（仓库、工作流文件名、可选 environment）与包的 trusted publisher 配置
    一致，并且配置允许 staged publishing，然后接受 stage 请求。
-4. token 短时且绑定具体工作流；CI 不能 list/approve/reject（这些需要人类登录，approve/reject
-   还需要交互式 2FA）。
+4. token 短时且绑定具体工作流；CI 不能 list/approve/reject（这些只能由人类账号执行：
+   npmjs.com 网页会话 + 2FA，或本地 CLI 登录 + 2FA）。
 5. provenance 由 npm CLI 在 OIDC token 交换成功后生成（Sigstore）：需要公开仓库 + 公开包；
    CI 中 `stage-release.mjs` 显式传 `--provenance`，npm 也会对公开包自动启用。本地 stage
    （`npm login` 凭据）不产生 provenance；如不需要可加 `--no-provenance`。
@@ -639,15 +705,16 @@ scripts/trusted-publishers.sh --list
 | CI 报 401/403 / `no trust evidence` / trust 校验错误 | trusted publisher 配置与本次运行不匹配，或配置是旧的 `--allow-publish`（不允许 stage）。核对 repo、**工作流文件名**、environment；必要时 `npm trust list` → `npm trust revoke --id` → `scripts/trusted-publishers.sh` 重建 |
 | CI 报 `ENEEDAUTH`（stage 阶段） | 工作流缺少 `id-token: write`，或该包还没有匹配的 trusted publisher（先手动首次发布再配置） |
 | CI 报 `npm: command not found` / `npm stage` 不存在 | runner 上的 npm < 11.15.0（工作流已显式安装并校验 11.20.0）；若仍失败检查 npm 安装步骤日志 |
-| `npm stage list` 报 401/ENEEDAUTH | 本地未 `npm login`，或登录凭据不可用于该操作；list 需要人类登录，approve/reject 还需要交互式 2FA；OIDC token 无效 |
-| approve 报 `EOTP` / OTP 错误 | OTP 输错或过期；重跑 `node scripts/promote-release.mjs` 重新输入。也可手工 `npm stage approve <id>` 后重跑 promote（会跳过已批准项） |
-| promote 报 “no staged version and no published version” | CI 未运行或 stage 失败；先跑发布工作流（tag push 或 dispatch 既有 tag），看到 6 个 stage id 后再 promote |
-| promote 报 “has N staged records” | 同一版本存在多条 staged 记录：`npm stage view <id> --json` 比较，`npm stage reject` 清掉旧记录后重试 |
-| CI 重跑报版本已存在 / staged 记录重复 | 上次已 stage 或该版本已发布。重复 stage 同版本可能被拒绝、也可能新增一条 staged 记录（registry 行为未验证）：先 `npm stage list <pkg> --json` 核对，全部已 stage 则直接 promote；只 stage 了一部分则 reject 本次残留记录后从同一既有 tag 全量重跑 |
+| `npm stage list` 报 401/ENEEDAUTH | 本地未 `npm login`，或登录凭据不可用于该操作；list 需要人类登录，reject 还需要交互式 2FA；OIDC token 无效（网页 approve 不需要本地 CLI） |
+| 网页 approve 报 2FA / 会话错误 | 重新登录 npmjs.com 并完成 2FA 后继续；已公开的包不会回滚。CLI 例外操作（`npm stage reject`）报 `EOTP` 时重新执行并按提示输入 OTP |
+| 网页上看不到 staged 记录 | CI 未运行或 stage 失败：先跑发布工作流（tag push 或 dispatch 既有 tag）并确认 CI 打印 6 个 stage id、job summary 有 staged 表；用 `npm stage list <pkg> --json` 交叉核对 |
+| 同一版本出现多条 staged 记录 | `npm stage view <id> --json` 比较 createdAt/shasum，`npm stage reject`（或网页 reject）清掉旧记录后再 approve |
+| CI 重跑报版本已存在 / staged 记录重复 | 上次已 stage 或该版本已发布。重复 stage 同版本可能被拒绝、也可能新增一条 staged 记录（registry 行为未验证）：先 `npm stage list <pkg> --json` 核对，全部已 stage 则直接到网页 approve；只 stage 了一部分则 reject 本次残留记录后从同一既有 tag 全量重跑 |
 | `Cannot publish over the previously published versions` | 该版本已发布，不能覆盖；升版本（并统一 6 个包）后再发 |
-| promote 报 `release tag ... does not exist` | 先把既有 tag push 到 origin；promote 与 CI 都不会创建/移动 tag |
-| promote 报 notes 文件不存在/为空 | 先写 `docs/releases/v<version>.md`，或用 `--notes-file` 指定 |
-| GitHub Release 创建失败 | 所有包已公开；修好 `gh auth`/网络后重跑 promote，或手工 `gh release create <tag> --verify-tag --title <tag> --notes-file <file>` |
+| GitHub Release 报 tag 不存在 | 先把既有 tag push 到 origin；`--verify-tag` 与 CI 都不会创建/移动 tag |
+| Release 正文文件不存在/为空 | 先写 `docs/releases/v<version>.md`，再 `gh release create --notes-file`（当前没有脚本强制） |
+| GitHub Release 创建失败 | 所有包已公开；修好 `gh auth`/网络后重跑 `gh release create <tag> --verify-tag --title <tag> --notes-file <file>`（已存在则 `gh release edit`），或由 agent 执行 |
+| approve 后发现 dist-tag 不对 | 用 `npm dist-tag add <pkg>@<version> <tag>` 修正（需 2FA）；prerelease 被误挂 latest 时把 latest 指回上一稳定版，再清掉错误 tag |
 | provenance 未生成 | 仓库非公开、runner 非 GitHub-hosted、或本地 stage（本地不生成）；公开仓库 + hosted runner 会在 CI 中生成 |
 | 想改用新工作流文件名/环境 | 一个包只能存在一个 trust 配置：先 `npm trust list` + `npm trust revoke --id`，再用 `scripts/trusted-publishers.sh` 重建 |
 | 误发版本 | npm 允许 72 小时内 `npm unpublish <pkg>@<version>`；超过则只能废弃（deprecate）并升版本 |
@@ -751,8 +818,11 @@ dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@<version>
 
 ## 参考
 
-- npm staged publishing：[npm stage](https://docs.npmjs.com/cli/v11/commands/npm-stage)、`npm help stage`
+- npm staged publishing：[Staged publishing for npm packages](https://docs.npmjs.com/staged-publishing)、
+  [npm stage](https://docs.npmjs.com/cli/v11/commands/npm-stage)、`npm help stage`
 - npm 文档：[Trusted publishing for npm packages](https://docs.npmjs.com/trusted-publishers/)
 - `npm trust` 命令：`npm help trust` / [npm-trust](https://docs.npmjs.com/cli/v11/commands/npm-trust)
+- GitHub CLI 手动 Release：[gh release create](https://cli.github.com/manual/gh_release_create) /
+  [gh release edit](https://cli.github.com/manual/gh_release_edit)（`--verify-tag` 只接受既有 tag）
 - pnpm：[pnpm pack](https://pnpm.io/cli/pack)（改写 `workspace:` 协议）、[pnpm publish](https://pnpm.io/cli/publish)
 - OpenSSF [Trusted Publishers](https://repos.openssf.org/trusted-publishers) 标准

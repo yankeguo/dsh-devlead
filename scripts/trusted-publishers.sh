@@ -5,8 +5,9 @@
 # Run this once per package after the package's FIRST publish (npm requires the
 # package to exist before a trusted publisher can be attached). Afterward
 # .github/workflows/publish.yml stages new versions with a short-lived OIDC
-# token and no NPM_TOKEN secret at all; a human then approves the staged
-# versions locally with scripts/promote-release.mjs.
+# token and no NPM_TOKEN secret at all; a human then batch-approves the staged
+# versions on npmjs.com and creates the GitHub Release manually with
+# `gh release create --verify-tag`.
 #
 # The CI workflow never publishes directly. A trusted-publisher record created
 # with --allow-publish does NOT authorize `npm stage publish`; such old records
@@ -196,5 +197,9 @@ echo "All ${#PACKAGES[@]} packages allow staged publishing from ${REPO} // ${WOR
 echo "Next steps:"
 echo "  1. push a v* tag (or run workflow_dispatch with an existing release_tag)"
 echo "     -> .github/workflows/${WORKFLOW_FILE} stages all packages, publishes nothing"
-echo "  2. a maintainer runs scripts/promote-release.mjs locally (npm login + 2FA)"
-echo "     to approve the staged versions and create the GitHub Release"
+echo "  2. a maintainer batch-approves the staged versions on npmjs.com"
+echo "     (logged-in session + 2FA; no local npm login or OTP needed)"
+echo "  3. after approval, create the GitHub Release manually against the existing tag:"
+echo "     gh release create <tag> --repo ${REPO} --title <tag> \\"
+echo "       --notes-file docs/releases/v<version>.md --verify-tag --latest"
+echo "     (prerelease: use --prerelease --latest=false instead of --latest)"
