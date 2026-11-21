@@ -51,7 +51,7 @@ The bundle's patch inserts four plugin rows:
 - [Repository README (English)](https://github.com/yankeguo/dsh-devlead/blob/main/README.md) · [中文](https://github.com/yankeguo/dsh-devlead/blob/main/README.zh.md)
 - [Design notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/DESIGN.md): domain model, durable records, service API, notification pump
 - [Compatibility notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/COMPATIBILITY.md): the supported DSH surface
-- [v0.4.0 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.0.md) · [GitHub Releases](https://github.com/yankeguo/dsh-devlead/releases)
+- [v0.4.1 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.1.md) · [GitHub Releases](https://github.com/yankeguo/dsh-devlead/releases)
 - Package READMEs: [protocol](https://github.com/yankeguo/dsh-devlead/blob/main/packages/protocol/README.md) · [devlead](https://github.com/yankeguo/dsh-devlead/blob/main/packages/devlead/README.md) · [tool](https://github.com/yankeguo/dsh-devlead/blob/main/packages/tool/README.md) · [command](https://github.com/yankeguo/dsh-devlead/blob/main/packages/command/README.md) · [client-ui](https://github.com/yankeguo/dsh-devlead/blob/main/packages/client-ui/README.md)
 
 ## License

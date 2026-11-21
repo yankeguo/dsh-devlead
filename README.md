@@ -8,7 +8,7 @@ upgrades **one ordinary session** into a **DevLead session**: it can operate DSH
 their state changes — so one agent can orchestrate multiple repositories inside a standard
 interface the human can see and interact with.
 
-Stable release **0.4.0** · DSH **0.2.2-rc.1 – 0.2.2-rc.5** · one `dsh plugin` command installs
+Stable release **0.4.1** · DSH **0.2.2-rc.1 – 0.2.2-rc.5** · one `dsh plugin` command installs
 everything.
 
 ## What you get
@@ -70,8 +70,13 @@ page.
 To pin an exact version:
 
 ```sh
-dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.0
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.1
 ```
+
+0.4.1 is a patch release with no public API changes. It recovers supervisor scans from physically
+healthy current v4 logs that contain an unrelated legacy event unknown to the running Harness;
+upgrading from 0.4.0 needs no log cleanup or `/devlead reset` for this fix. See the
+[0.4.1 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.1.md).
 
 Advanced users can install individual packages and insert the corresponding loader rows into the
 profile's `cordis.patch.yml` themselves; the bundle is the recommended path.
@@ -83,7 +88,7 @@ profile's `cordis.patch.yml` themselves; the bundle is the recommended path.
 dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 
 # or pin a specific version
-dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.0
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.1
 ```
 
 > **Upgrading from an older release (below 0.4.0):** 0.4.0 intentionally discards older DevLead

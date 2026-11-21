@@ -7,7 +7,7 @@
 **Session**（会话），创建并续写其他会话、读取它们的状态、在状态变化时被唤醒——于是一个
 agent 就能在人可见、可参与的标准界面里统管多个仓库。
 
-稳定版 **0.4.0** · DSH **0.2.2-rc.1 – 0.2.2-rc.5** · 一条 `dsh plugin` 命令即可装好全部组件。
+稳定版 **0.4.1** · DSH **0.2.2-rc.1 – 0.2.2-rc.5** · 一条 `dsh plugin` 命令即可装好全部组件。
 
 ## 核心能力
 
@@ -66,8 +66,13 @@ Web 页面。
 固定到精确版本：
 
 ```sh
-dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.0
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.1
 ```
+
+0.4.1 是无公网 API 变更的补丁版：物理完好的当前 v4 日志仅因包含当前 Harness 不认识的无关旧事件
+而被 Host 拒绝时，DevLead 现在可以有界、只读地恢复 supervisor 扫描。从 0.4.0 升级无需为此清理
+日志或执行 `/devlead reset`。详见
+[0.4.1 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.1.md)。
 
 进阶用户可以单独安装各个包，并自行把对应的 loader row 插入 profile 的 `cordis.patch.yml`；
 推荐直接用 bundle。
@@ -79,7 +84,7 @@ dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.0
 dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 
 # 或固定到某个版本
-dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.0
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.1
 ```
 
 > **从旧版本（低于 0.4.0）升级：** 0.4.0 会直接丢弃旧的 DevLead 会话状态（模式、关注集合、
