@@ -1,9 +1,9 @@
 # DSH 兼容性矩阵
 
 本仓库的目标兼容面是 **DeepSeek Harness `0.2.2-rc.1` – `0.2.2-rc.5`**；当前发布版本是插件版本
-**`0.4.0`**（6 个可发布包共用同一版本号；稳定版，CI 以 npm dist-tag `latest` stage，维护者
-approve 后公开）。`0.4.0-rc.1` 已于 2026-11-21 以 `next` dist-tag 发布（历史候选，保持可安装），
-与 `0.4.0` 的运行时行为相同。`0.4.0` 只是**插件版本**，**不代表 DSH 0.4.0**——DSH 兼容面与
+**`0.4.0`**（6 个可发布包共用同一版本号；稳定版，已于 2026-11-21 经 staged publish + 人工
+approve 以 npm dist-tag `latest` 公开）。`0.4.0-rc.1` 已于同日以 `next` dist-tag 发布（历史候选，
+保持可安装），与 `0.4.0` 的运行时行为相同。`0.4.0` 只是**插件版本**，**不代表 DSH 0.4.0**——DSH 兼容面与
 `engines.dsh` 都不变。6 个可发布包的
 `engines.dsh` 均为 `>=0.2.2-rc.1 <0.3.0`（根 `package.json` 是 private 包，不声明
 `engines.dsh`，只声明 `engines.node`），所有
@@ -343,7 +343,8 @@ Batch 1 实现 breaking 兼容性清理与正确性收口；Batch 2 只把根 `p
 - **projection cache 自愈**：stateVersion 小于 7 的 projection cache 行整体失效，从 durable log
   重新 fold（stateVersion 7/3/3），不需要手工删除缓存。
 
-任一项失败或上游 API 语义变化时，不得宣称兼容；应修复、显式降级并在本页与 README 记录。
+任一项失败或上游 API 语义变化时，不得宣称兼容；应修复、显式降级并在本页记录（README 只保留
+面向使用者的升级提示）。
 
 ### 逐 rc 可执行 recipe
 
@@ -473,8 +474,8 @@ lane/deliveryState、blocked/decision action steer、真实 T1 followup / T2 rev
 
 上表 Phase 1e 行即 **Batch 1 最终树**的 pin 实测：installed / patch 完整流各 **221/221**
 （218 PASS + 3 SKIP；phase 1 27 + 1b 12 + 2 23 + 3 128 + 1e 31），`--no-worktree` **198/198**
-（phase 2 skipped）。当前发布版本是插件 **`0.4.0`**（稳定版，dist-tag `latest`；approve 前
-`latest` 仍是 0.2.6，`0.4.0` 未公开；DSH 兼容面仍为 rc.1–rc.5）。`0.4.0-rc.1` 候选的三条真实
+（phase 2 skipped）。当前发布版本是插件 **`0.4.0`**（稳定版，dist-tag `latest`；DSH 兼容面
+仍为 rc.1–rc.5）。`0.4.0-rc.1` 候选的三条真实
 E2E 重跑（含真实 `*_EXIT=0` 与总计行）记录在
 [`docs/e2e-evidence/batch2-release-prep.md`](e2e-evidence/batch2-release-prep.md)；稳定版 `0.4.0`
 在最终 release 树上的三条真实 E2E 重跑记录在

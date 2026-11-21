@@ -1,9 +1,9 @@
 # AGENTS.md — dsh-devlead 仓库工作约定
 
 本文件面向在本仓库工作的 agent。用户文档见 [README](README.md)（[中文](README.zh.md)）；
-架构与实现细节见 [docs/DESIGN.md](docs/DESIGN.md)，发布流程见
-[docs/PUBLISHING.md](docs/PUBLISHING.md)，DSH 兼容面见
-[docs/COMPATIBILITY.md](docs/COMPATIBILITY.md)。这里只记跨任务复用的约定和门禁，不复述细节。
+开发环境、构建/测试/E2E 见 [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md)，架构与实现细节见
+[docs/DESIGN.md](docs/DESIGN.md)，发布流程见 [docs/PUBLISHING.md](docs/PUBLISHING.md)，DSH
+兼容面见 [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md)。这里只记跨任务复用的约定和门禁，不复述细节。
 
 ## 仓库与验证
 

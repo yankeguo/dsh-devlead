@@ -1,196 +1,80 @@
----
-description: "Dev Lead mode for DeepSeek Harness: turn one session into a lead that creates and steers ordinary Workspaces and Sessions, watches their state, and is woken on change."
-kind: "package-bundle"
----
-
 # @yankeguo/dsh-devlead-bundle
 
-一套面向 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DSH）的插件：
-把**一个普通会话**升级成 **DevLead 会话**，让它能直接操纵 DSH 的 **Workspace** 与
-**Session**，创建/续写其他会话、读取会话状态、在会话状态变化时被唤醒，从而在一个
-人类可见、可参与的标准界面里统管多个仓库。
+The npm bundle that upgrades one ordinary [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)
+(DSH) session into a **DevLead session**: it ships the core host service, fourteen lead
+`devlead_*` tools plus the watched-child `devlead_report` tool, the human `/devlead` command, and
+the browser UI (composer-toolbar switch, read-only status strip, sidebar marks).
 
-## 特性
-
-- **DevLead 模式**：每个会话一个持久开关；打开后获得 14 个主 `devlead_*` 工具（已关注会话另有 1 个 `devlead_report`）、DevLead 系统
-  提示，以及两态 UI：composer 工具条里的 DevLead 图标 + 文本按钮在两种状态下都常驻并负责
-  开启/关闭，开启后 composer 上方才出现只读状态条。
-  当前激活的 DevLead 行会显示强调色 ring（无行尾图标），被关注 Session 行显示弱化准星，关掉会话后仍可辨识（DSH rc.1 对
-  blank / 尚无 turn 的新会话行不渲染该 seat，首次 turn 后才显示）。
-  开关是**人类专属操作**（`/devlead on|off` 或 composer 工具条开关），模型无法自行打开。
-- **产出物是标准 DSH 实体**：Workspace 真实注册进 `ctx.workspaceRegistry`，子会话是真实普通
-  Session（侧边栏可见、可被人类打开接管），**不是 subagent**。
-- **关注与唤醒**：已关注的会话每个 `turn/end` 都写入 DevLead 会话的持久通知记录；Agent
-  存活时经合并窗口唤醒它决定下一步。关注关系索引在 Host 重启 / 插件重载后从持久记录重建
-  （cold lead rehydration），已 dispose 的 lead 继续观察；冷 lead 默认 resume 投递
-  （`wakeColdSession: true`）。
-- **事件溯源**：模式 / 关注集合 / 通知 / 中途汇报 / reset 以可忽略的 `plugin:devlead/*` 记录持久化，
-  可跨重启 / 恢复 / fork；`devLead` Session projection 把状态同步到浏览器，summary 级 `devLeadMode` 与
-  `devLeadWatch`（关注集合）随每个会话列表行下发，供侧边栏激活/已关注标记使用。
-- **人类命令**：`/devlead`、`/devlead on|off`、`/devlead reset`（损坏状态恢复）、
-  `/devlead watch|unwatch <session>`。
-- **两态 UI**：composer 工具条里的 ghost 图标 + DevLead 文本按钮在两种状态下都显示——关闭态
-  点击 `/devlead on`，开启态点击 `/devlead off`；开启后 composer 上方出现只读 DevLeadBar，
-  显示已关注会话数 / 运行中数与最近通知；侧边栏同时标识激活 lead 与已关注会话。
-
-## 本 bundle 包含的插件行
-
-| entry id | 包 | 作用 |
-| --- | --- | --- |
-| `devlead` | `@yankeguo/dsh-devlead` | 核心服务 `ctx.devLead`：模式、Workspace/Session 编排、通知投递、`devLead` projection |
-| `devlead-tool` | `@yankeguo/dsh-tool-devlead` | 14 个主工具 + 1 个汇报工具与条件 system prompt |
-| `devlead-command` | `@yankeguo/dsh-command-devlead` | `/devlead` 人类命令 |
-| `devlead-ui` | `@yankeguo/dsh-client-ui-devlead` | 浏览器两态 UI：常驻工具条开关（图标 + 文本）+ 开启后的只读 DevLeadBar + 侧边栏激活/已关注标记 |
-
-依赖方向：`protocol ← devlead ← {tool, command}`；`client-ui` 只依赖 `protocol`（浏览器侧）。
-
-## 安装
-
-### 从 npm 安装（发布后，推荐）
-
-在 **Plugins → Add plugin** 输入 `@yankeguo/dsh-devlead-bundle` 安装并启用；
-或：
+## Install
 
 ```sh
 dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 ```
 
-安装后在 Plugins 页面确认 bundle 已启用（新安装的 bundle 通常默认启用；若显示未启用，
-勾选一次即可），刷新 Web 页面。升级 / 卸载：
+Or install it from the Web UI: open **Plugins → Add plugin**, enter
+`@yankeguo/dsh-devlead-bundle`, and confirm. Afterwards check that the bundle is enabled on the
+**Plugins** page (freshly installed bundles are usually enabled by default; tick it if not), then
+reload the Web page.
+
+## Open DevLead
+
+In the session that should lead, run:
+
+```text
+/devlead on
+```
+
+The switch is **human-only**: no model call or tool can enable it. You can also click the
+**DevLead** icon + label button in the composer toolbar — the same button stays in place in both
+states and sends `/devlead on` when off and `/devlead off` when on. One Host runs at most one
+DevLead session at a time; `/devlead on` in a second session is refused until the current holder
+runs `/devlead off`. `/devlead` on its own prints the status view (mode, watched sessions, recent
+notifications and mid-turn reports), and `/devlead reset` recovers a damaged state.
+
+Once the mode is on, that session gains the lead tools: it can register Workspaces, create
+ordinary child sessions, prompt and watch them, and be woken when they settle. The child sessions
+are standard DSH Sessions — visible in the sidebar and openable by a human — not subagents.
+
+## What's inside
+
+The bundle's patch inserts four plugin rows:
+
+| entry id | package | role |
+| --- | --- | --- |
+| `devlead` | `@yankeguo/dsh-devlead` | Host core service `ctx.devLead`: durable mode switch, Workspace/Session orchestration, notification hub, Session projections |
+| `devlead-tool` | `@yankeguo/dsh-tool-devlead` | Fourteen lead `devlead_*` tools plus `devlead_report`, and the conditional DevLead system prompt |
+| `devlead-command` | `@yankeguo/dsh-command-devlead` | The human `/devlead` command: status, on/off, reset, watch/unwatch |
+| `devlead-ui` | `@yankeguo/dsh-client-ui-devlead` | Browser UI: composer-toolbar switch, read-only status strip, sidebar active/watched marks — renders on the DSH **Web** platform |
+
+## Learn more
+
+- [Repository README (English)](https://github.com/yankeguo/dsh-devlead/blob/main/README.md) · [中文](https://github.com/yankeguo/dsh-devlead/blob/main/README.zh.md)
+- [Design notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/DESIGN.md): domain model, durable records, service API, notification pump
+- [Compatibility notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/COMPATIBILITY.md): the supported DSH surface
+- [v0.4.0 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.0.md) · [GitHub Releases](https://github.com/yankeguo/dsh-devlead/releases)
+- Package READMEs: [protocol](https://github.com/yankeguo/dsh-devlead/blob/main/packages/protocol/README.md) · [devlead](https://github.com/yankeguo/dsh-devlead/blob/main/packages/devlead/README.md) · [tool](https://github.com/yankeguo/dsh-devlead/blob/main/packages/tool/README.md) · [command](https://github.com/yankeguo/dsh-devlead/blob/main/packages/command/README.md) · [client-ui](https://github.com/yankeguo/dsh-devlead/blob/main/packages/client-ui/README.md)
+
+## License
+
+MIT. See [LICENSE](https://github.com/yankeguo/dsh-devlead/blob/main/LICENSE).
+
+## 中文
+
+`@yankeguo/dsh-devlead-bundle` 是 DevLead 套件的安装入口：把 DSH 的一个普通会话升级为 DevLead
+会话，内含核心服务 `ctx.devLead`、14 个主 `devlead_*` 工具加 1 个 `devlead_report` 汇报工具、
+人类 `/devlead` 命令，以及浏览器端 UI（composer 工具条开关、只读状态条、侧边栏标记；UI 只在
+DSH Web 平台渲染）。
+
+安装，或从 Web 的 **Plugins → Add plugin** 输入包名安装：
 
 ```sh
-dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.2.0   # 升级到指定版本
-dsh plugin --profile desktop remove @yankeguo/dsh-devlead-bundle     # 卸载
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 ```
 
-### 本地 checkout 安装
+安装后在 Plugins 页面确认 bundle 已启用（通常默认启用），刷新页面。要打开 DevLead，在目标
+会话执行 `/devlead on`（人类专属操作；也可点 composer 工具条里的 DevLead 图标 + 文本按钮）。
+同一 Host 同一时间只能有一个 DevLead 会话，关闭用 `/devlead off`。
 
-```sh
-pnpm install && pnpm build
-pnpm install:profile            # 链接到 ~/.dsh/profiles/desktop 并启用 bundle
-```
-
-或直接 `--patch` 调试（不安装 bundle，先 `pnpm build`）：
-
-```sh
-# 一次性：创建专用 dev profile（不要复用 desktop —— 它已启用本 bundle）
-dsh devlead --from-default-profile web --dump-config
-
-pnpm build
-pnpm dev:patch --profile devlead        # 生成 overlay 并注册 linked root
-# 脚本会打印确切的启动命令，例如：
-dsh --profile devlead --patch "$PWD/.tmp/cordis.patch.yml" --no-open
-```
-
-`dev:patch` 默认目标是 `--profile web` / `--dsh-home ~/.dsh`；普通安装通常没有 `web`
-profile，且 `desktop` profile 已启用本 bundle（重复插入相同 row id 会被脚本拒绝），
-所以要按上面的方式先建一个专用 dev profile。
-
-`dev:patch` 除了生成 `.tmp/cordis.patch.yml`，还会在目标 profile 的 `node_modules/`
-下创建一个指向本仓库的链接根（`devlead-repo`），这是该调试路径能正常工作的前提：
-
-- 绝对路径插入的 Loader row 会从本仓库加载代码；没有链接根时，插件的
-  `@deepseek-ai/*` 依赖会走仓库自己的 pnpm `node_modules`，在 Host 进程里形成**第二份
-  DSH runtime**，第一次跨副本私有检查就会失败
-  （典型报错 `gateway/internal: Receiver must be an instance of class Session`）。
-- 链接根让 DSH 的 linked-root 解析把每个插件包 `peerDependencies` 中声明的
-  `@deepseek-ai/*` 路由到安装自带的单例（官方机制，见 DSH 仓库
-  `packages/boot/app-boot/README.md` 的 “Linked directories” 小节）。
-- 目标 profile 必须已初始化；profile 不存在、或该 profile 已启用本 bundle
-  （会重复插入相同 row id）时，`dev:patch` 会拒绝执行并给出修复提示。
-- 用 `--profile <name>` / `--dsh-home <dir>` 指定目标；`--no-link` 只生成 overlay，
-  只能用于查看内容，不能用于可用的调试启动。
-- 撤销：删除 profile 的 `node_modules/devlead-repo`；`pnpm uninstall:profile` 负责撤销
-  `install:profile` 创建的包链接与 bundle 选择。
-
-本地一键校验：`pnpm verify`（typecheck + 单元测试 + 构建）；`pnpm e2e` 默认走
-`--flow patch`，`pnpm e2e --flow installed` 走 `install-profile`，两者都用隔离的
-`os.tmpdir()` DSH_HOME 验收本地加载路径（需要本机已安装 DSH，因此不在 CI 中运行）。
-0.2.0 起 E2E 分多阶段：阶段 1 保持默认组合断言（含 `Worktree isolation: unavailable`），
-阶段 1b 用同一加载流/scratch home 重启验证冷 lead 索引重建，阶段 2 在同一 scratch profile 里
-追加官方实验 forge bundle 并验证 worktree happy path；两条加载流各 **150/150**（阶段 1 27 +
-阶段 1b 12 + 阶段 2 23 + 阶段 3 88，含 3 条 question-gate 与 4 条排队 inbox checks），`--no-worktree` 跳过阶段 2
-（**127/127**，阶段 1 + 1b + 3）。
-
-### 前置条件
-
-- DSH `0.2.2-rc.1` – `0.2.2-rc.5`（bundle 声明 `engines.dsh: >=0.2.2-rc.1 <0.3.0`）；
-- 从 npm 安装不需要本机 Node；本地构建 / 发布需要 Node.js ≥ 24.9 与 pnpm 12。
-
-## 使用
-
-```
-/devlead                        # 状态：模式状态、已关注会话、最近通知、帮助
-/devlead on                     # 打开当前会话的 DevLead 模式（人类专属）
-/devlead off                    # 关闭（fold 冻结时同时完成隐式 reset 恢复）
-/devlead reset                  # 人类专属恢复：丢弃本会话的 DevLead 状态（模式/watch/digest）
-/devlead watch <session>        # 关注某个会话（完整 id 或唯一前缀）
-/devlead unwatch <session>      # 取消关注
-```
-
-`/devlead status` 还会打印 `Worktree isolation: available|unavailable`，让人类直接判断当前
-profile 是否组合了可选的实验性 worktree 隔离能力。
-
-打开模式后，让模型为它配置工作区并派发任务：
-
-```
-先用 devlead_use_workspace 注册 /absolute/path/to/repo，
-再用 devlead_create_session 在这个工作区创建一个子会话，下发下面的任务：……
-```
-
-子会话跑完后（lead 仍被索引时）DevLead 会话会收到通知摘要并被唤醒。详见仓库 README 的
-「使用」与「通知机制」。
-
-## 配置
-
-bundle 的 patch 行没有显式写配置，核心服务使用 DESIGN 默认值；要覆盖时在 profile 的
-`cordis.patch.yml` 里按 loader row id `devlead` 覆盖该行 `config`（DSH 的 patch 是整体替换
-该行 config，需写全要保留的字段）。
-
-```yaml
-- id: devlead
-  config:
-    notificationBatchMs: 400     # 通知合并窗口（0–2147483647 毫秒）
-    maxWatchedSessions: 64       # 每个 lead 最多关注的会话数
-    maxListedSessions: 200       # 会话列表最大行数
-    wakeColdSession: true        # resume 冷 DevLead 会话以投递其排队的通知（默认）
-    defaultAgentPreset: ''       # 创建会话的默认 Agent preset（空 = 用 Host 默认；无效 id 创建失败）
-```
-
-## 行为与限制
-
-- 模式是**每个 Session 的持久状态**：打开后 DSH 重启 / 会话恢复仍然打开，需要人类关闭。
-- 通知保留最近 64 条（projection 常量截断）；更早的记录仍在 Session 日志里。
-- 关注关系索引在 Host 重启 / 插件重载后从持久记录重建（projection cache 预筛 + 精确折叠，
-  无法分类的候选全量读取上限 64）；`agent/disposed` 不再丢索引，已 dispose 的 lead 继续观察。
-- 冷 lead 有排队通知时默认 resume 投递（`wakeColdSession: true`）；设为 `false` 只把队列留在
-  内存，等人类打开 lead Session 时补写并投递。插件卸载期间结束的 turn 无法补发。
-- 损坏的 `plugin:devlead/*` 记录会让 fold 冻结（`DEVLEAD_PROJECTION_INVALID`），人类可用
-  `/devlead reset`（或冻结时 `/devlead off`）追加 reset 记录恢复；旧版本无法执行该恢复。
-- Workspace 注册（`devlead_use_workspace` / core `useWorkspace`）默认**不创建**缺失目录：
-  `create` 默认 `false`，只有人类明确要求建目录时才传 `true`。
-- watch 上限默认 64；命令的候选列表默认截断在 200 行，列表外的会话会回退到 core 的
-  `getSession` 解析；前缀引用在变更前还会用 core 的穷尽 resolver 确认唯一性。
-- 不做 git 克隆 / 通用 worktree 管理；不跨进程编排；不替人类做权限决策。实验性 DSH worktree
-  服务被组合时，`devlead_create_session` 可传 `isolation: "worktree"` 为新会话尽力提供隔离检出；
-  缺少该服务时退化为共享 checkout 并如实上报，绝不失败（默认 Web 组合即无此能力）。
-- 兼容性：`engines.dsh: >=0.2.2-rc.1 <0.3.0`；本地构建 / 发布需要 Node.js ≥ 24.9、pnpm 12。
-
-## 文档
-
-- 仓库 [README.zh.md](https://github.com/yankeguo/dsh-devlead/blob/main/README.zh.md)：功能、安装、使用、通知机制、配置与故障排查（英文版见 [README.md](https://github.com/yankeguo/dsh-devlead/blob/main/README.md)）
-- [DESIGN](https://github.com/yankeguo/dsh-devlead/blob/main/docs/DESIGN.md)：领域模型、持久记录、核心服务 API、通知泵与权限模型
-- [PUBLISHING](https://github.com/yankeguo/dsh-devlead/blob/main/docs/PUBLISHING.md)：npm staged publish 发布流程（CI 只 stage、维护者人工 approve 后公开）
-- [v0.2.0 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.2.0.md)
-- 包 README：[protocol](https://github.com/yankeguo/dsh-devlead/blob/main/packages/protocol/README.md) · [devlead](https://github.com/yankeguo/dsh-devlead/blob/main/packages/devlead/README.md) ·
-  [tool](https://github.com/yankeguo/dsh-devlead/blob/main/packages/tool/README.md) · [command](https://github.com/yankeguo/dsh-devlead/blob/main/packages/command/README.md) ·
-  [client-ui](https://github.com/yankeguo/dsh-devlead/blob/main/packages/client-ui/README.md)
-
-## English summary
-
-`@yankeguo/dsh-devlead-bundle` installs the whole DevLead suite - the core `ctx.devLead` service,
-fourteen lead `devlead_*` tools plus the watched-child `devlead_report` tool, the `/devlead` human command, and the Web UI (composer-toolbar toggle
-plus a status-only strip and sidebar marks). The suite targets the default DSH Web composition
-(`dsh-base` + `dsh-web-app`) and has no hard dependency on experimental plugins. Full docs:
-[README.md](https://github.com/yankeguo/dsh-devlead/blob/main/README.md) (English), [README.zh.md](https://github.com/yankeguo/dsh-devlead/blob/main/README.zh.md) (中文), and
-[DESIGN.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/DESIGN.md).
+更多文档见[根 README.zh.md](https://github.com/yankeguo/dsh-devlead/blob/main/README.zh.md)与
+[设计说明](https://github.com/yankeguo/dsh-devlead/blob/main/docs/DESIGN.md)；License 为 MIT，
+见 [LICENSE](https://github.com/yankeguo/dsh-devlead/blob/main/LICENSE)。

@@ -463,16 +463,16 @@ Batch 1 的 breaking 兼容性清理与正确性收口；稳定版只做版本 b
   `/devlead reset`（或 `/devlead off`）；新配置 `questionTtlMs` 默认 24h（`86400000`，0 禁用）
   与 `actionRequiredBatchMs`（默认 0）。详见
   [COMPATIBILITY 的升级门禁](COMPATIBILITY.md#升级门禁)。
-- [ ] **(i) dist-tag 注意事项**：稳定版必须用 `latest` stage（approve 前 `latest` 仍是
-  `0.2.6`，`0.4.0` 不可安装）；发布后 24 小时内不要用 `@next` 安装——pnpm
-  `minimumReleaseAge` 会回退到 npm 占位版本 `0.0.0-stage` 并解包失败，需要时写精确版本
-  `@yankeguo/dsh-devlead-bundle@0.4.0`；tag `v0.4.0` 一旦推送**不移动、不删除、不重建**。
+- [ ] **(i) dist-tag 注意事项**：稳定版必须用 `latest` stage（0.4.0 已于 2026-11-21 approve，
+  `latest=0.4.0`；下一次发版前 `latest` 指向上一个稳定版）；发布后 24 小时内不要用 `@next`
+  安装——pnpm `minimumReleaseAge` 会回退到 npm 占位版本 `0.0.0-stage` 并解包失败，需要时写精确
+  版本 `@yankeguo/dsh-devlead-bundle@0.4.0`；tag `v0.4.0` 一旦推送**不移动、不删除、不重建**。
 - [ ] **(j) 只改文档后的重试**：若 stage 之后只改了文档，**reject 旧的 staged id，再从同一
   已存在的 tag 重跑 stage**（`workflow_dispatch`，`release_tag=v0.4.0`），不要移动或重建
   tag；不要用新 commit 重新打同名 tag。
 
-发布前 dist-tag 现状：`latest=0.2.6`、`next=0.4.0-rc.1`（`0.4.0-rc.1` 于 2026-11-21 发布并
-approve）；网页 approve `0.4.0` 后 `latest=0.4.0`、`next` 仍为 `0.4.0-rc.1`。
+0.4.0 发布后 dist-tag 现状：`latest=0.4.0`、`next=0.4.0-rc.1`（`0.4.0-rc.1` 于 2026-11-21 发布
+并 approve；`0.4.0` 于同日以 `latest` stage + 网页 approve 后公开）。
 
 ## 新包首次发布（一次性手工操作）
 
@@ -516,9 +516,9 @@ bundle 依赖，把它加进 workspace 后 `pnpm install` 会同步锁文件；�
     --notes-file docs/releases/v0.4.0-rc.1.md --verify-tag --prerelease --latest=false
   ```
   本地 stage 仍可作为备用路径（`stage-release.mjs --version 0.4.0-rc.1 --dist-tag next`，
-  无 provenance）。该候选已于 2026-11-21 approve：`next=0.4.0-rc.1`、`latest` 仍为 **0.2.6**
-  （prerelease 不占用 `latest`）；`0.4.0` 稳定版以 `latest` stage + 网页 approve 后，`latest`
-  变为 0.4.0。三道防误发闸门（approve/Release 现在没有仓库脚本兜底，其中两条靠人工核对）：
+  无 provenance）。该候选已于 2026-11-21 approve：`next=0.4.0-rc.1`；此后 `0.4.0` 稳定版以
+  `latest` stage + 网页 approve 公开，`latest` 已变为 0.4.0。三道防误发闸门（approve/Release
+  现在没有仓库脚本兜底，其中两条靠人工核对）：
   1. `stage-release.mjs` **拒绝 prerelease 版本 + `--dist-tag latest`**，CI 对 prerelease 也
      固定用 `next`（approve 会按 stage 时记录的 dist-tag 公开，prerelease 一旦挂 latest 就成
      了默认安装）。
@@ -750,7 +750,7 @@ Web 的 Plugins → Add plugin 接受同样的写法（prerelease 输入 `包名
 > 等满 24 小时后再用 `@next`；或手工把 `'@yankeguo/dsh-devlead-bundle@<version>'` 等 6 条
 > 加进该列表。
 
-本地 checkout 开发仍可用 `pnpm install:profile`（见主 [README.zh.md](../README.zh.md)）。
+本地 checkout 开发仍可用 `pnpm install:profile`（见 [CONTRIBUTING.md](CONTRIBUTING.md)）。
 
 ## 插件展示元数据（`locale/*.json`）
 

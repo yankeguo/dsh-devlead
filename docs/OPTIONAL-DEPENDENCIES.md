@@ -422,8 +422,8 @@ Web/Desktop 完整支持"，见 §9 R5。
   triage/自主关闭 policy 与 archive/unarchive/remove 的真实 Host 行为（见 §7.4）。两条加载流各
   **143/143**（27 + 12 + 23 + 81）；`--no-worktree` 只跳过阶段 2（120/120，阶段 1 + 1b + 3）。probe 包
   `@yankeguo/dsh-devlead-e2e-probe`（0.0.0）是私有测试资产，不发布、
-  不进 workspace/build/check-packages。文档承诺见 README 的 Notification loop / Development
-  and verification 与 `docs/DESIGN.md` §10（行号随并行开发漂移，引用按小节）。
+  不进 workspace/build/check-packages。文档承诺见 [README](../README.md) 的通知语义、
+  [CONTRIBUTING](CONTRIBUTING.md) 与 `docs/DESIGN.md` §10（行号随并行开发漂移，引用按小节）。
 
 ## 7. 验证方式与证据
 

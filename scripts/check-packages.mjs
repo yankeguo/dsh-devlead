@@ -7,7 +7,8 @@
  * alias coverage, lockfile importers, the pinned/contracted CI workflows, the
  * staged-publishing contract, each publishable package's locale display
  * metadata (DSH plugin manager titles/descriptions), the shipped license text,
- * and the root `packageManager` pin.
+ * the README publishing contract (no YAML frontmatter, absolute links, README
+ * shipped in every publishable package), and the root `packageManager` pin.
  *
  * This is read-only (it imports only the semver devDependency); it is safe to run
  * in CI after `pnpm build` and is wired into both verify.yml and publish.yml. Run:
@@ -43,7 +44,7 @@ const PINNED_ACTIONS = ['actions/checkout@', 'pnpm/action-setup@', 'actions/setu
 
 const argv = process.argv.slice(2)
 if (argv.includes('--help') || argv.includes('-h')) {
-  console.log('Usage: node scripts/check-packages.mjs\n\nRead-only workspace packaging checks: version/engine lockstep, dependency placement,\npeer completeness for DSH linked-root resolution, alias coverage, lockfile importers,\nCI workflow pins, the staged-publishing contract, plugin locale display metadata,\nshipped LICENSE text, and the root packageManager pin.')
+  console.log('Usage: node scripts/check-packages.mjs\n\nRead-only workspace packaging checks: version/engine lockstep, dependency placement,\npeer completeness for DSH linked-root resolution, alias coverage, lockfile importers,\nCI workflow pins, the staged-publishing contract, plugin locale display metadata,\nshipped LICENSE text, the README publishing contract (no YAML frontmatter,\nabsolute links, README shipped), and the root packageManager pin.')
   process.exit(0)
 }
 if (argv.length > 0) {
@@ -594,6 +595,52 @@ if (rootScripts['release:publish'] !== undefined) {
 }
 if (rootScripts['release:promote'] !== undefined) {
   fail('root package.json must not keep "release:promote": approval happens on npmjs.com and the GitHub Release is created manually')
+}
+
+// ---- README publishing contract -------------------------------------------
+// README files are user-facing docs that npm renders verbatim. DSH's internal
+// documentation convention allows (and sometimes expects) a YAML frontmatter
+// block on a bundle README; npmjs.com does not render frontmatter and shows the
+// `---` metadata block as body text, so that convention does not apply to a
+// third-party package published to npm. Repository links must be absolute
+// GitHub URLs because relative paths would resolve against npmjs.com, not this
+// repository. Every publishable package must ship its README.
+const readmeFiles = [
+  { file: join(ROOT, 'README.md'), label: 'README.md' },
+  { file: join(ROOT, 'README.zh.md'), label: 'README.zh.md' },
+]
+for (const { dir, dirPath, manifest } of manifests) {
+  if (manifest.private === true) continue
+  const label = `packages/${dir}`
+  const files = Array.isArray(manifest.files) ? manifest.files.map(file => String(file).replace(/^\.\//u, '')) : []
+  if (!files.includes('README.md')) {
+    fail(`${label}: package.json "files" must include "README.md" so the published tarball carries a README`)
+  }
+  readmeFiles.push({ file: join(dirPath, 'README.md'), label: `${label}/README.md` })
+}
+const frontmatterPattern = /^---\r?\n/u
+const markdownLinkPattern = /!?\[[^\]]*\]\(([^)\s]+)(?:\s+"[^"]*")?\)/gu
+for (const { file, label } of readmeFiles) {
+  if (!existsSync(file)) {
+    fail(`${label}: missing`)
+    continue
+  }
+  const text = readFileSync(file, 'utf8')
+  if (frontmatterPattern.test(text)) {
+    fail(`${label}: must not start with YAML frontmatter; npmjs.com renders the metadata block as body text (the DSH-internal bundle README convention does not apply to third-party packages on npm)`)
+  }
+  if (/\bpromote-release\b/u.test(text)) {
+    fail(`${label}: must not mention the removed promote-release script; approval happens on npmjs.com`)
+  }
+  const relativeLinks = []
+  for (const match of text.matchAll(markdownLinkPattern)) {
+    const target = match[1]
+    if (target.startsWith('https://') || target.startsWith('http://') || target.startsWith('mailto:') || target.startsWith('#')) continue
+    relativeLinks.push(target)
+  }
+  if (relativeLinks.length > 0) {
+    fail(`${label}: repository links/images must use absolute URLs for npm readers (relative: ${relativeLinks.slice(0, 3).map(target => JSON.stringify(target)).join(', ')})`)
+  }
 }
 
 // ---- report ----------------------------------------------------------------
