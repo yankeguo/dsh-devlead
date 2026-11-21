@@ -49,9 +49,9 @@
      行没有这些标记。
    - 如需真实 watch/通知，再建一个会话并 watch，然后触发一次 turn 结束。
 
-### 0.4.0-rc.1 视觉验收项（发布前必查，对应 PUBLISHING checklist (d)）
+### 0.4.0 视觉验收项（发布前必查，对应 PUBLISHING checklist (d)）
 
-以下 4 项是 0.4.0-rc.1 新增/变更的浏览器视觉行为，必须在隔离 profile 里逐项确认；`pnpm e2e`
+以下 4 项是 0.4.0（由 0.4.0-rc.1 引入）新增/变更的浏览器视觉行为，必须在隔离 profile 里逐项确认；`pnpm e2e`
 只断言 projection/DOM/渲染，不能替代人工判断。
 
 1. **三 lane 配色**：让状态条显示 `turn-notice`（completed/forked）、`action-required`

@@ -1,8 +1,10 @@
 # DSH 兼容性矩阵
 
-本仓库的目标兼容面是 **DeepSeek Harness `0.2.2-rc.1` – `0.2.2-rc.5`**；当前发布候选是插件版本
-**`0.4.0-rc.1`**（6 个可发布包共用同一版本号；prerelease，npm dist-tag `next`）。`0.4.0-rc.1`
-只是**插件版本**，**不代表 DSH 0.4.0**——DSH 兼容面与 `engines.dsh` 都不变。6 个可发布包的
+本仓库的目标兼容面是 **DeepSeek Harness `0.2.2-rc.1` – `0.2.2-rc.5`**；当前发布版本是插件版本
+**`0.4.0`**（6 个可发布包共用同一版本号；稳定版，CI 以 npm dist-tag `latest` stage，维护者
+approve 后公开）。`0.4.0-rc.1` 已于 2026-11-21 以 `next` dist-tag 发布（历史候选，保持可安装），
+与 `0.4.0` 的运行时行为相同。`0.4.0` 只是**插件版本**，**不代表 DSH 0.4.0**——DSH 兼容面与
+`engines.dsh` 都不变。6 个可发布包的
 `engines.dsh` 均为 `>=0.2.2-rc.1 <0.3.0`（根 `package.json` 是 private 包，不声明
 `engines.dsh`，只声明 `engines.node`），所有
 `@deepseek-ai/dsh-*` peer 使用同一范围；本地 devDependencies 仍固定 rc.1，用最旧 API 做
@@ -249,13 +251,17 @@ fiber 的原地 `ctx.set`；绑定 token 取 `impl.value` 的对象身份，真�
 能检测），重新扫描完成前保持 fail-closed；一旦本进程证明过持久语料，不会退回 live-only 授权。
 plugin dispose 会 abort 进行中的 attempt。
 
-## 0.4.0-rc.1 breaking changes（Batch 1 + Batch 2）
+## 0.4.0 breaking changes（Batch 1 + Batch 2；由 0.4.0-rc.1 引入）
 
-0.4.0-rc.1 按「正确性 > 兼容性」执行，以下变更是**有意的**、不提供自动迁移。Batch 1 实现
-breaking 兼容性清理与正确性收口；Batch 2 只把根 `package.json` 与 6 个可发布包统一 bump 到
-`0.4.0-rc.1` 并同步文档/证据/门禁，**不改变运行时行为**，其最终门禁的真实输出见
-[`docs/e2e-evidence/batch2-release-prep.md`](e2e-evidence/batch2-release-prep.md)。发布说明正文见
-[`docs/releases/v0.4.0-rc.1.md`](releases/v0.4.0-rc.1.md)。
+0.4.0（含其候选 `0.4.0-rc.1`）按「正确性 > 兼容性」执行，以下变更是**有意的**、不提供自动迁移。
+Batch 1 实现 breaking 兼容性清理与正确性收口；Batch 2 只把根 `package.json` 与 6 个可发布包
+统一 bump 到 `0.4.0-rc.1` 并同步文档/证据/门禁；稳定版 `0.4.0` 只去掉 rc 后缀并同步文档，
+**均不改变运行时行为**。Batch 2 门禁的真实输出见
+[`docs/e2e-evidence/batch2-release-prep.md`](e2e-evidence/batch2-release-prep.md)，稳定版
+`0.4.0` 的最终门禁见
+[`docs/e2e-evidence/v0.4.0-release-prep.md`](e2e-evidence/v0.4.0-release-prep.md)。发布说明正文见
+[`docs/releases/v0.4.0.md`](releases/v0.4.0.md)（历史候选说明见
+[`v0.4.0-rc.1.md`](releases/v0.4.0-rc.1.md)）。
 
 - 7 类 `plugin:devlead/*` record 统一为 `version:2`；v1 record 与缺少必填 `answerSeq` 的旧
   answer 显式忽略并丢弃（每进程一次 warning），**不冻结** projection。旧 Session 的 DevLead
@@ -314,7 +320,7 @@ breaking 兼容性清理与正确性收口；Batch 2 只把根 `package.json` �
    完整组合；另跑 record facade 的正常/降级测试，验证实际加载的导出与首写/首读路径。临时安装、
    目标 typings 编译、三条命令与证据留存按下方[可执行 recipe](#逐-rc-可执行-recipe) 执行。
 5. 对旧日志做 record schema / migration 核对：七类 `plugin:devlead/*` 的 `kind` / `version` /
-   字段集、reset 解冻规则、strict decoder 与 projection stateVersion 必须一致。`0.4.0-rc.1` 的
+   字段集、reset 解冻规则、strict decoder 与 projection stateVersion 必须一致。`0.4.0` 的
    既定策略是 v1 record、无 `answerSeq` 的 answer 与 v1/v2 outbox **显式丢弃**，不要误判为当前
    schema 损坏而冻结；当前 v2 损坏仍按**可能不可恢复**处理：先备份原始日志、冻结并提供
    `/devlead reset`，不得把读取失败当作空日志，也不得用静默 reset 丢弃当前状态。
@@ -323,7 +329,7 @@ breaking 兼容性清理与正确性收口；Batch 2 只把根 `package.json` �
 7. 发布前的完整重跑与三门真实 E2E 仍按 [PUBLISHING](PUBLISHING.md)；证据日志必须来自冻结的
    最终树并保留真实退出码。
 
-升级到 `0.4.0-rc.1`（插件升级，不是 DSH 升级）后还需要同时注意：
+升级到 `0.4.0`（插件升级，不是 DSH 升级；从 `0.4.0-rc.1` 升级同样适用）后还需要同时注意：
 
 - **旧 devlead state 被显式丢弃、不迁移**：受影响的 Session 打开后运行人类命令
   `/devlead reset`（`/devlead off` 也可重置冻结折叠；冷 Session 先 resume/open），之后重新
@@ -467,10 +473,13 @@ lane/deliveryState、blocked/decision action steer、真实 T1 followup / T2 rev
 
 上表 Phase 1e 行即 **Batch 1 最终树**的 pin 实测：installed / patch 完整流各 **221/221**
 （218 PASS + 3 SKIP；phase 1 27 + 1b 12 + 2 23 + 3 128 + 1e 31），`--no-worktree` **198/198**
-（phase 2 skipped）。当前发布候选是插件 **`0.4.0-rc.1`**（prerelease，dist-tag `next`；DSH 兼容面
-仍为 rc.1–rc.5）；它在 0.4.0-rc.1 冻结树上的三条真实 E2E 重跑（含真实 `*_EXIT=0` 与总计行）
-记录在 [`docs/e2e-evidence/batch2-release-prep.md`](e2e-evidence/batch2-release-prep.md)，本页不
-预填 Batch 2 数字。发布前仍需按 [PUBLISHING](PUBLISHING.md) 在冻结树重跑完整组合。
+（phase 2 skipped）。当前发布版本是插件 **`0.4.0`**（稳定版，dist-tag `latest`；approve 前
+`latest` 仍是 0.2.6，`0.4.0` 未公开；DSH 兼容面仍为 rc.1–rc.5）。`0.4.0-rc.1` 候选的三条真实
+E2E 重跑（含真实 `*_EXIT=0` 与总计行）记录在
+[`docs/e2e-evidence/batch2-release-prep.md`](e2e-evidence/batch2-release-prep.md)；稳定版 `0.4.0`
+在最终 release 树上的三条真实 E2E 重跑记录在
+[`docs/e2e-evidence/v0.4.0-release-prep.md`](e2e-evidence/v0.4.0-release-prep.md)。发布前仍需按
+[PUBLISHING](PUBLISHING.md) 在冻结树重跑完整组合。
 
 每条 flow 有 3 条正向模型选择检查因无 provider 凭据 SKIP（打印真实原因）；负向
 `DEVLEAD_MODEL_UNAVAILABLE`、`devlead_list_models`、preset roster 与 watched-child

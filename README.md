@@ -41,20 +41,22 @@ interface that the human can see and interact with.
 
 Documentation: [Design notes (中文)](docs/DESIGN.md) · [Publishing guide (中文)](docs/PUBLISHING.md) ·
 [Agent working notes (中文)](AGENTS.md) · [UI verification (中文)](docs/UI-VERIFICATION.md) ·
-[Audit record (中文)](docs/AUDIT.md) · [v0.2.6 release notes (中文)](docs/releases/v0.2.6.md) ·
+[Audit record (中文)](docs/AUDIT.md) · [v0.4.0 release notes (中文)](docs/releases/v0.4.0.md) ·
 [Bundle package (中文)](packages/bundle/README.md) · Package READMEs:
 [protocol](packages/protocol/README.md) · [devlead](packages/devlead/README.md) ·
 [tool](packages/tool/README.md) · [command](packages/command/README.md) ·
 [client-ui](packages/client-ui/README.md)
 
-## 0.4.0-rc.1 breaking changes (Batch 1 + Batch 2)
+## 0.4.0 breaking changes (Batch 1 + Batch 2)
 
-This tree is the **0.4.0-rc.1 release candidate**: all 7 workspace manifests (the root plus the 6
+This tree is the **0.4.0 stable release**: all 7 workspace manifests (the root plus the 6
 publishable packages; `scripts/e2e-probe/package.json` stays `0.0.0` and is not a workspace
-member) are `0.4.0-rc.1`. Batch 1 implemented the planned 0.4.0 compatibility break; Batch 2 only
-bumped the version, updated the docs/evidence and reran the release gates, so runtime behavior is
-unchanged since `a35fc1d`. No tag, GitHub Release, or npm publish has happened yet — those await
-explicit human approval.
+member) are `0.4.0`. Batch 1 implemented the planned 0.4.0 compatibility break; Batch 2 prepared
+the `0.4.0-rc.1` candidate (version bump, docs/evidence, release gates), and the stable release
+only drops the rc suffix and updates the docs/release notes, so runtime behavior is unchanged
+since `a35fc1d`. `0.4.0-rc.1` was staged and approved under the npm `next` dist-tag on 2026-11-21;
+`0.4.0` itself goes through the same CI stage → maintainer approve flow under `latest`, and
+nothing of `0.4.0` is public until that approval (which also creates the GitHub Release).
 
 - Durable records now use **version 2**. Version-1 records and answers without the now-required
   `answerSeq` are ignored and discarded with one warning, not frozen; a malformed version-2 payload
@@ -371,8 +373,13 @@ requires Node ≥ 24.9):
 | `0.2.2-rc.5` | `pnpm e2e --no-build` (0.4.0-rc.1 release candidate, Batch 1 final tree) | **221/221** (218 PASS + 3 credential-less SKIP) |
 | `0.2.2-rc.5` | `pnpm e2e --flow installed --no-build` (0.4.0-rc.1 release candidate, Batch 1 final tree) | **221/221** (218 PASS + 3 credential-less SKIP) |
 | `0.2.2-rc.5` | `pnpm e2e --no-worktree --no-build` (0.4.0-rc.1 release candidate, Batch 1 final tree) | **198/198** (195 PASS + 3 credential-less SKIP; phase 2 skipped) |
+| `0.2.2-rc.5` | `pnpm e2e --no-build` (0.4.0 stable release tree) | **221/221** (218 PASS + 3 credential-less SKIP) |
+| `0.2.2-rc.5` | `pnpm e2e --flow installed --no-build` (0.4.0 stable release tree) | **221/221** (218 PASS + 3 credential-less SKIP) |
+| `0.2.2-rc.5` | `pnpm e2e --no-worktree --no-build` (0.4.0 stable release tree) | **198/198** (195 PASS + 3 credential-less SKIP; phase 2 skipped) |
 
-The current prerelease candidate is **0.4.0-rc.1** (not yet promoted as stable); it includes question
+The current stable release is **0.4.0** (the `0.4.0-rc.1` candidate was promoted under the `next`
+dist-tag on 2026-11-21; the stable `0.4.0` stages under `latest` and publishes on maintainer
+approval); it includes question
 routing and queued inbox inputs, Phase 1d answer routing, Phase 1e message lanes, the cold-discard
 durable/repair closure (OUTBOX spec v3), and the A hardening (plugin-record probe/degrade with an
 explicit memory-only status, privacy disclosure, upgrade-gate docs, and the completed
@@ -417,8 +424,10 @@ hardening and the follow-up cold-supervision fixes close the batch: the final tr
 files / **1464 tests**, installed/patch **221/221** each and `--no-worktree` **198/198**; Batch 1
 was accepted by an independent DeepSeek review round 7 with verdict **FINAL SAFE** (see
 [Batch 1 evidence](docs/e2e-evidence/batch1-breaking-correctness.md)). Batch 2 reran the full gates on
-this release tree; the version list, raw outputs and release checks are recorded in
-[Batch 2 release-prep evidence](docs/e2e-evidence/batch2-release-prep.md).
+the rc.1 tree, and the stable 0.4.0 release reran them on the final release tree; the version list,
+raw outputs and release checks are recorded in
+[Batch 2 release-prep evidence](docs/e2e-evidence/batch2-release-prep.md) and
+[0.4.0 release-prep evidence](docs/e2e-evidence/v0.4.0-release-prep.md).
 
 Three positive model-selection checks per flow are reported as SKIP on this credential-less
 Host (the real reason is printed); the negative model path and `devlead_list_models` run on every
@@ -432,12 +441,14 @@ with the oldest supported release.
 dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 ```
 
-`latest` remains **0.2.6**; npm's `next` dist-tag currently points at `0.3.0-rc.2`. The current
-release candidate is **0.4.0-rc.1**; pin the exact version because staged versions are not public
-until a maintainer approves them:
+`latest` remains **0.2.6** until the maintainer approves the staged **0.4.0**; npm's `next` dist-tag
+points at **`0.4.0-rc.1`** (promoted on 2026-11-21). The current stable release is **0.4.0**: CI
+stages it under `latest`, and staging publishes nothing, so nothing of `0.4.0` is installable until
+the maintainer approves it (and the exact pin only works after approval):
 
 ```sh
-dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.0-rc.1
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle          # after 0.4.0 is approved
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.0   # exact pin, after approval
 ```
 
 Do not use `@next` within 24 hours of staging: pnpm's `minimumReleaseAge` can fall back to the
@@ -1421,8 +1432,8 @@ the GitHub Release from `docs/releases/v<version>.md`:
 
 ```sh
 npm login
-node scripts/promote-release.mjs --version 0.4.0-rc.1 --list-only   # inspect the staged versions
-node scripts/promote-release.mjs --version 0.4.0-rc.1                # approve (2FA prompt) + gh release
+node scripts/promote-release.mjs --version 0.4.0 --list-only   # inspect the staged versions
+node scripts/promote-release.mjs --version 0.4.0                # approve (2FA prompt) + gh release
 ```
 
 The setup and the full release flow (version bump, pre-flight, tag push, re-staging an existing

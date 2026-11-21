@@ -1,0 +1,14 @@
+# gate=install
+RUN_AT=2026-11-21T12:32:17+0800
+VERSION=0.4.0
+GIT_HEAD=2f978e8c87865f098f03c850ce6808e287dab1c1
+GIT_TREE=c025e12c65bea2c8c418cc071caa3fda9ddcd819
+BRANCH=main
+WORKTREE_CHANGED_FILES=9
+--- output ---
+$ pnpm install --frozen-lockfile
+Scope: all 7 workspace projects
+✓ Lockfile passes supply-chain policies (verified 1d ago)
+Lockfile is up to date, resolution step is skipped
+Done in 12ms using pnpm v12.16.1
+install_EXIT=0

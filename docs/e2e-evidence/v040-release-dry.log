@@ -1,0 +1,41 @@
+# gate=release-dry
+RUN_AT=2026-11-21T12:32:17+0800
+VERSION=0.4.0
+GIT_HEAD=2f978e8c87865f098f03c850ce6808e287dab1c1
+GIT_TREE=c025e12c65bea2c8c418cc071caa3fda9ddcd819
+BRANCH=main
+WORKTREE_CHANGED_FILES=9
+--- output ---
+$ pnpm release:dry
+$ pnpm build && node scripts/stage-release.mjs --dry-run
+$ node scripts/build.mjs
+built packages/protocol/lib/index.js
+built packages/protocol/lib/client.js
+built packages/devlead/lib/index.js
+built packages/tool/lib/index.js
+built packages/command/lib/index.js
+built packages/client-ui/lib/index.js
+built packages/client-ui/lib/client.js
+validated bundle (patch-only)
+build complete (6 targets)
+stage-release: DRY RUN (no upload) — version 0.4.0, dist-tag latest
+npm 11.20.0 / pnpm 12.16.1
+provenance: no
+
+Packing and staging 6 packages in workspace-dependency order:
+1. @yankeguo/dsh-devlead-protocol@0.4.0
+2. @yankeguo/dsh-client-ui-devlead@0.4.0
+3. @yankeguo/dsh-devlead@0.4.0
+4. @yankeguo/dsh-command-devlead@0.4.0
+5. @yankeguo/dsh-tool-devlead@0.4.0
+6. @yankeguo/dsh-devlead-bundle@0.4.0
+
+[1/6] dry-run OK @yankeguo/dsh-devlead-protocol@0.4.0 (7 files, yankeguo-dsh-devlead-protocol-0.4.0.tgz)
+[2/6] dry-run OK @yankeguo/dsh-client-ui-devlead@0.4.0 (7 files, yankeguo-dsh-client-ui-devlead-0.4.0.tgz)
+[3/6] dry-run OK @yankeguo/dsh-devlead@0.4.0 (6 files, yankeguo-dsh-devlead-0.4.0.tgz)
+[4/6] dry-run OK @yankeguo/dsh-command-devlead@0.4.0 (6 files, yankeguo-dsh-command-devlead-0.4.0.tgz)
+[5/6] dry-run OK @yankeguo/dsh-tool-devlead@0.4.0 (6 files, yankeguo-dsh-tool-devlead-0.4.0.tgz)
+[6/6] dry-run OK @yankeguo/dsh-devlead-bundle@0.4.0 (7 files, yankeguo-dsh-devlead-bundle-0.4.0.tgz)
+
+DRY RUN OK: packed and preflighted 6 packages; nothing was uploaded and no stage id was created.
+release-dry_EXIT=0

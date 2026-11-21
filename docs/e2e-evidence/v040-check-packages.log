@@ -1,0 +1,12 @@
+# gate=check-packages
+RUN_AT=2026-11-21T12:32:17+0800
+VERSION=0.4.0
+GIT_HEAD=2f978e8c87865f098f03c850ce6808e287dab1c1
+GIT_TREE=c025e12c65bea2c8c418cc071caa3fda9ddcd819
+BRANCH=main
+WORKTREE_CHANGED_FILES=9
+--- output ---
+$ pnpm check:packages
+$ node scripts/check-packages.mjs
+check-packages: OK (6 packages)
+check-packages_EXIT=0

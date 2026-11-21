@@ -142,11 +142,11 @@ git status                 # 必须干净
 
 ### 2. 统一升级 6 个包的版本
 
-所有包使用同一版本号。一行命令改完（示例 `0.4.0-rc.1`；本版 0.4.0-rc.1 的 bump 已在 Batch 2
-完成，此命令保留为流程模板，重复执行同版本无副作用）：
+所有包使用同一版本号。一行命令改完（示例 `0.4.0`；`0.4.0-rc.1` 的 bump 在 Batch 2 完成，
+稳定版 `0.4.0` 的 bump 在 v0.4.0 发布准备完成，此命令保留为流程模板，重复执行同版本无副作用）：
 
 ```sh
-export VERSION=0.4.0-rc.1
+export VERSION=0.4.0
 node -e '
   const fs = require("node:fs")
   const files = ["package.json"]
@@ -187,7 +187,8 @@ pnpm release:dry                   # 稳定版：= build + stage-release --dry-r
 `pnpm build` 产出 7 个 `lib/*.js`：protocol 的 `index`/`client`、core、tool、command、
 client-ui 的 `index`/`client`；`bundle` 只有 patch 文件与 icon，不产出 JS。
 
-> **prerelease 不能用 `pnpm release:dry` 做预检。** 该 script 不带 `--dist-tag`，等价于默认
+> **稳定版用 `pnpm release:dry`（默认 `--dist-tag latest`）；prerelease 不能用它做预检。**
+> 该 script 不带 `--dist-tag`，等价于默认
 > `--dist-tag latest`；对 `0.4.0-rc.1` 这类 prerelease，`stage-release.mjs` 会按设计拒绝并退出
 > 非 0（没有打包/上传任何内容）：
 >
@@ -197,7 +198,7 @@ client-ui 的 `index`/`client`；`bundle` 只有 patch 文件与 icon，不产�
 > tag) for prereleases.
 > ```
 >
-> 本 RC 的正确预检命令是显式带 dist-tag：
+> prerelease 的正确预检命令是显式带非 latest dist-tag（以 `0.4.0-rc.1` 为例）：
 >
 > ```sh
 > pnpm build && node scripts/stage-release.mjs --dry-run --dist-tag next
@@ -217,8 +218,10 @@ pnpm e2e --no-worktree --no-build         # 跳过实验 forge bundle 组合（�
 阶段 pin 以 `scripts/e2e-smoke.mjs` 的 `EXPECTED_CHECKS` 为准（27 / 12 / 23 / 128 / 31；删增 check
 都会使对应阶段失败），不要在本页复制旧数字作为验收依据。完整流必须 **221/221**、`--no-worktree`
 必须 **198/198**，数字以当次真实输出为准；完整流的 221/221 是 218 PASS + 3 条无 provider 凭据
-的正向模型选择 SKIP（SKIP 未执行、不能算通过）。本版 0.4.0-rc.1 冻结树的真实输出（含真实
+的正向模型选择 SKIP（SKIP 未执行、不能算通过）。本版 `0.4.0` 冻结树的真实输出（含真实
 `PATCH_EXIT` / `INSTALLED_EXIT` / `NOWORKTREE_EXIT` 与总计行）见
+[`docs/e2e-evidence/v0.4.0-release-prep.md`](e2e-evidence/v0.4.0-release-prep.md)；历史候选
+`0.4.0-rc.1` 的输出见
 [`docs/e2e-evidence/batch2-release-prep.md`](e2e-evidence/batch2-release-prep.md)。
 
 **新 DSH 版本验证的发布硬门禁：**任何宣称新验证 DSH 版本的发布，在 stage 前必须逐项完成
@@ -247,15 +250,15 @@ pnpm e2e --no-worktree --no-build         # 跳过实验 forge bundle 组合（�
 
 ```sh
 git add -A
-git commit -m "release: v0.4.0-rc.1"
+git commit -m "chore(release): prepare 0.4.0"
 git push origin main
-git tag -a v0.4.0-rc.1 -m "v0.4.0-rc.1"
-git push origin v0.4.0-rc.1            # 触发 .github/workflows/publish.yml
+git tag -a v0.4.0 -m "v0.4.0"
+git push origin v0.4.0            # 触发 .github/workflows/publish.yml
 ```
 
-> 本版 `0.4.0-rc.1` 是 prerelease：CI 按版本自动推导 dist-tag 为 `next`（稳定版才是 `latest`）。
-> 打 tag 与 push 属于人类批准动作，agent 不得执行；具体检查清单见下文
-> [「0.4.0-rc.1 首 RC 发布步骤与检查」](#8-040-rc1-首-rc-发布步骤与检查)。
+> 本版 `0.4.0` 是**稳定版**：CI 按版本自动推导 dist-tag 为 `latest`（prerelease 才是 `next`）。
+> 打 tag 与 push 属于人类批准动作；本次 `0.4.0` 由人类明确指示后执行。具体检查清单见下文
+> [「0.4.0 稳定版发布步骤与检查」](#8-040-稳定版发布步骤与检查)。
 
 `publish.yml` 的行为：
 
@@ -286,7 +289,7 @@ permissions:
 两个工作流 pin 完全一致、pnpm/node 版本、`id-token: write` 与 `verify.yml` 的只读权限。
 
 **手动 dispatch（补发/重跑）**：Actions → `publish` → Run workflow，`release_tag` 必须填
-**已存在**的 tag（例如 `v0.4.0-rc.1`）。工作流只认既有 tag；**不要删除、重建或移动 tag**。
+**已存在**的 tag（例如 `v0.4.0`）。工作流只认既有 tag；**不要删除、重建或移动 tag**。
 dispatch 与 tag push 共用并发组 `publish`，不会交错 stage。
 
 ### 6. 人工批准（本地，2FA）
@@ -342,82 +345,82 @@ node scripts/promote-release.mjs           # 逐包 approve（npm 会提示输�
 ### 7. 发布后校验
 
 ```sh
-npm view @yankeguo/dsh-devlead-bundle@0.4.0-rc.1 version dist-tags
-npm view @yankeguo/dsh-devlead@0.4.0-rc.1 version
-npm view @yankeguo/dsh-command-devlead@0.4.0-rc.1 version
+npm view @yankeguo/dsh-devlead-bundle@0.4.0 version dist-tags
+npm view @yankeguo/dsh-devlead@0.4.0 version
+npm view @yankeguo/dsh-command-devlead@0.4.0 version
 
-gh release view v0.4.0-rc.1 --repo yankeguo/dsh-devlead
+gh release view v0.4.0 --repo yankeguo/dsh-devlead
 ```
 
-prerelease 还需三方核对 dist-tag：6 个包的 `@0.4.0-rc.1` 在 npm 可见、`dist-tags.next` 指向
-`0.4.0-rc.1`、`dist-tags.latest` 仍是 **`0.2.6`**；GitHub Release 指向 tag `v0.4.0-rc.1` 与同一
-commit。npmjs.com 上每个包应显示 **provenance / attestation**（公开仓库 + GitHub-hosted runner
-自动生成）。
+稳定版三方核对：6 个包的 `@0.4.0` 在 npm 可见、`dist-tags.latest` 指向 **`0.4.0`**、
+`dist-tags.next` 保持 **`0.4.0-rc.1`**；GitHub Release 指向 tag `v0.4.0` 与同一 commit。
+npmjs.com 上每个包应显示 **provenance / attestation**（公开仓库 + GitHub-hosted runner 自动
+生成）。
 
-在 DSH 中安装验证（prerelease 必须写精确版本）：
+在 DSH 中安装验证（稳定版可不写版本；若 `latest` 传播延迟则写精确版本）：
 
 ```sh
-dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.0-rc.1
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
+# 或：dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.0
 ```
 
 然后刷新 Web 页面，开一个会话执行 `/devlead on`，再让模型
 `devlead_use_workspace` + `devlead_create_session` 做一次冒烟。
 
-### 8. 0.4.0-rc.1 首 RC 发布步骤与检查
+### 8. 0.4.0 稳定版发布步骤与检查
 
-本版是 **0.4.0 的首个 RC**（prerelease，dist-tag `next`），承载 Batch 1 的 breaking 兼容性清理
-与正确性收口；Batch 2 只做版本 bump 与文档/证据/门禁同步。发布说明正文是
-[`docs/releases/v0.4.0-rc.1.md`](releases/v0.4.0-rc.1.md)（promote 的硬性前置条件）。打 tag 前
-必须逐项确认，任一项未完成不得进入下一步：
+本版是 **0.4.0 稳定版**（dist-tag `latest`），由已发布的 `0.4.0-rc.1` 去掉 rc 后缀得到，承载
+Batch 1 的 breaking 兼容性清理与正确性收口；稳定版只做版本 bump、文档/证据同步与门禁重跑，
+不改运行时行为。发布说明正文是 [`docs/releases/v0.4.0.md`](releases/v0.4.0.md)（promote 的
+硬性前置条件）。`0.4.0-rc.1` 已于 2026-11-21 以 `next` dist-tag 发布并创建 prerelease GitHub
+Release；`next` 保持指向 `0.4.0-rc.1`。打 tag 前必须逐项确认，任一项未完成不得进入下一步：
 
 - [ ] **(a) 版本 lockstep**：根 `package.json` + 6 个可发布包共 **7 个 workspace manifest**
-  （不含 `scripts/e2e-probe/package.json` 的 0.0.0）均为 `0.4.0-rc.1`
-  （`git grep -n '"version": "0.4.0-rc.1"' -- package.json packages/*/package.json`
+  （不含 `scripts/e2e-probe/package.json` 的 0.0.0）均为 `0.4.0`
+  （`git grep -n '"version": "0.4.0"' -- package.json packages/*/package.json`
   应恰好 7 行）；`pnpm install --frozen-lockfile` 通过——`pnpm-lock.yaml` 不记录本仓库自身的
   版本，**不要手工编辑 lockfile**。
-- [ ] **(b) release notes 就绪**：`docs/releases/v0.4.0-rc.1.md` 存在且非空；缺失/为空时
+- [ ] **(b) release notes 就绪**：`docs/releases/v0.4.0.md` 存在且非空；缺失/为空时
   `promote-release.mjs` 会拒绝 approve（避免包已公开却没有发布说明）。
-- [ ] **(c) stage 前门禁**：`pnpm verify`、`pnpm check:packages` 全绿；prerelease 的本地打包
-  预检用 `pnpm build && node scripts/stage-release.mjs --dry-run --dist-tag next` 并看到
-  `DRY RUN OK`（**`pnpm release:dry` 是稳定版形式，默认 `latest`，对 0.4.0-rc.1 会按设计失败，
-  不能作为本 RC 的预检**）；三条真实 e2e 为 `pnpm e2e --no-build`、
-  `pnpm e2e --flow installed --no-build`、`pnpm e2e --no-worktree --no-build`，保留真实
-  `PATCH_EXIT=0` / `INSTALLED_EXIT=0` / `NOWORKTREE_EXIT=0` 与总计行（完整流 221/221、
-  `--no-worktree` 198/198）。冻结树原始输出见
-  [`docs/e2e-evidence/batch2-release-prep.md`](e2e-evidence/batch2-release-prep.md)。
+- [ ] **(c) stage 前门禁**：`pnpm verify`、`pnpm check:packages` 全绿；稳定版本地打包预检用
+  `pnpm release:dry`（默认 `--dist-tag latest`）并看到 `DRY RUN OK`；三条真实 e2e 为
+  `pnpm e2e --no-build`、`pnpm e2e --flow installed --no-build`、
+  `pnpm e2e --no-worktree --no-build`，保留真实 `PATCH_EXIT=0` / `INSTALLED_EXIT=0` /
+  `NOWORKTREE_EXIT=0` 与总计行（完整流 221/221、`--no-worktree` 198/198）。冻结树原始输出见
+  [`docs/e2e-evidence/v0.4.0-release-prep.md`](e2e-evidence/v0.4.0-release-prep.md)。
 - [ ] **(d) 浏览器可视验收（人工）**：按 [UI-VERIFICATION](UI-VERIFICATION.md) 在隔离 profile
   由人类走查 composer 的 DevLead 开关、`DevLeadBar`、三 lane 配色、question 状态与 `provisional`
   标记、侧栏 active ring / watched 准星，并把结果记录到发布检查/证据中。e2e 与渲染测试只覆盖
   projection/DOM/断言，**不替代**这一步。
 - [ ] **(e) 人类批准 tag（硬门禁）**：只有人类明确指示后才执行
-  `git tag -a v0.4.0-rc.1 -m "v0.4.0-rc.1"` + `git push origin v0.4.0-rc.1`；推送即触发 CI
-  stage 6 个包（OIDC + provenance、dist-tag `next`），**不公开任何内容**。tag 由人类创建；
-  agent 不 push、不打 tag、不 stage/approve。
+  `git tag -a v0.4.0 -m "v0.4.0"` + `git push origin v0.4.0`；推送即触发 CI stage 6 个包
+  （OIDC + provenance、dist-tag `latest`），**不公开任何内容**。tag 由人类批准；没有明确指示
+  时 agent 不 push、不打 tag、不 stage/approve，且绝不移动/删除/重建 tag。
 - [ ] **(f) 人工 approve（2FA）**：
   ```sh
-  node scripts/promote-release.mjs --version 0.4.0-rc.1 --dry-run   # 只读预检，打印计划
-  node scripts/promote-release.mjs --version 0.4.0-rc.1             # 逐包 approve（OTP）+ GitHub Release
+  node scripts/promote-release.mjs --version 0.4.0 --dry-run   # 只读预检，打印计划
+  node scripts/promote-release.mjs --version 0.4.0             # 逐包 approve（OTP）+ GitHub Release
   ```
-  脚本创建/更新 prerelease GitHub Release（`gh release create|edit ... --verify-tag
-  --prerelease --latest=false`），不会创建/移动 tag。
-- [ ] **(g) 发布后三方核对**：6 个包的 `@0.4.0-rc.1` 在 npm 可见；`dist-tags.next` 指向
-  `0.4.0-rc.1`、`dist-tags.latest` 仍是 `0.2.6`；GitHub Release 指向 tag `v0.4.0-rc.1` 与同一
-  commit；npmjs.com 显示 provenance。
-- [ ] **(h) 升级门禁提示**：这是首个携带 breaking changes 的 0.4.x RC。旧 DevLead Session
-  state 不迁移（模式/关注集/digest/answer 状态失效），受影响的 Session 需 `/devlead reset`
-  （或 `/devlead off`）；新配置 `questionTtlMs` 默认 24h（`86400000`，0 禁用）与
-  `actionRequiredBatchMs`（默认 0）；multi-lead 仍是硬门禁，第二个 lead 必须先 off。详见
+  脚本创建/更新稳定版 GitHub Release（`gh release create|edit ... --verify-tag
+  --prerelease=false`），不会创建/移动 tag。
+- [ ] **(g) 发布后三方核对**：6 个包的 `@0.4.0` 在 npm 可见；`dist-tags.latest` 指向 `0.4.0`、
+  `dist-tags.next` 仍为 `0.4.0-rc.1`；GitHub Release 指向 tag `v0.4.0` 与同一 commit；
+  npmjs.com 显示 provenance。
+- [ ] **(h) 升级门禁提示**：0.4.0 携带 breaking changes（旧 DevLead state 不迁移、outbox v3 无
+  兼容、`answerSeq` 必填、multi-lead 硬门禁、question TTL 默认 24h）。受影响的 Session 需
+  `/devlead reset`（或 `/devlead off`）；新配置 `questionTtlMs` 默认 24h（`86400000`，0 禁用）
+  与 `actionRequiredBatchMs`（默认 0）。详见
   [COMPATIBILITY 的升级门禁](COMPATIBILITY.md#升级门禁)。
-- [ ] **(i) dist-tag 注意事项**：prerelease 绝不能用 `latest` stage（`stage-release.mjs` /
-  `promote-release.mjs` 都会拒绝）；发布后 24 小时内不要用 `@next` 安装——pnpm
-  `minimumReleaseAge` 会回退到 npm 占位版本 `0.0.0-stage` 并解包失败，必须写精确版本
-  `@yankeguo/dsh-devlead-bundle@0.4.0-rc.1`；tag `v0.4.0-rc.1` 一旦推送**不移动、不删除、不重建**。
+- [ ] **(i) dist-tag 注意事项**：稳定版必须用 `latest` stage（approve 前 `latest` 仍是
+  `0.2.6`，`0.4.0` 不可安装）；发布后 24 小时内不要用 `@next` 安装——pnpm
+  `minimumReleaseAge` 会回退到 npm 占位版本 `0.0.0-stage` 并解包失败，需要时写精确版本
+  `@yankeguo/dsh-devlead-bundle@0.4.0`；tag `v0.4.0` 一旦推送**不移动、不删除、不重建**。
 - [ ] **(j) 只改文档后的重试**：若 stage 之后只改了文档，**reject 旧的 staged id，再从同一
-  已存在的 tag 重跑 stage**（`workflow_dispatch`，`release_tag=v0.4.0-rc.1`），不要移动或重建
+  已存在的 tag 重跑 stage**（`workflow_dispatch`，`release_tag=v0.4.0`），不要移动或重建
   tag；不要用新 commit 重新打同名 tag。
 
-发布前 dist-tag 现状：`latest=0.2.6`、`next=0.3.0-rc.2`；approve 后 `next=0.4.0-rc.1`、
-`latest` 仍为 `0.2.6`（本候选不占用 `latest`）。
+发布前 dist-tag 现状：`latest=0.2.6`、`next=0.4.0-rc.1`（`0.4.0-rc.1` 于 2026-11-21 发布并
+promote）；approve `0.4.0` 后 `latest=0.4.0`、`next` 仍为 `0.4.0-rc.1`。
 
 ## 新包首次发布（一次性手工操作）
 
@@ -446,10 +449,10 @@ scripts/trusted-publishers.sh --list
 ## 版本与 dist-tag 策略
 
 - 稳定版：默认 `latest`。CI 固定以 `--dist-tag latest` stage；promote 批准后即成为 `latest` 对应的
-  已发布版本。
+  已发布版本。当前稳定版本 **0.4.0** 即走这条路径（`pnpm release:dry` 用默认 `latest` 预检）。
 - 试验版/预发布：**打 prerelease tag 并推送即可**——CI 自动以 `next` dist-tag stage（稳定版才用
   `latest`），其余流程与稳定版完全一致（人工 approve + GitHub Release 自动标 prerelease）。
-  以本版 **0.4.0-rc.1** 为例：
+  以已发布的 **0.4.0-rc.1** 为例：
   ```sh
   git tag -a v0.4.0-rc.1 -m "v0.4.0-rc.1"
   git push origin v0.4.0-rc.1                 # CI 以 next stage 全部 6 包（provenance，不公开）
@@ -457,8 +460,9 @@ scripts/trusted-publishers.sh --list
   node scripts/promote-release.mjs --version 0.4.0-rc.1   # approve（2FA）+ prerelease Release
   ```
   本地 stage 仍可作为备用路径（`stage-release.mjs --version 0.4.0-rc.1 --dist-tag next`，
-  无 provenance）。当前 dist-tag 现状：promote 前 `latest=0.2.6`、`next=0.3.0-rc.2`；promote 后
-  `next=0.4.0-rc.1`、`latest` 仍为 **0.2.6**（prerelease 不占用 `latest`）。三道防误发闸门：
+  无 provenance）。该候选已于 2026-11-21 promote：`next=0.4.0-rc.1`、`latest` 仍为 **0.2.6**
+  （prerelease 不占用 `latest`）；`0.4.0` 稳定版以 `latest` stage + approve 后，`latest` 变为
+  0.4.0。三道防误发闸门：
   1. `stage-release.mjs` **拒绝 prerelease 版本 + `--dist-tag latest`**（approve 会按 stage 时
      记录的 dist-tag 公开，prerelease 一旦挂 latest 就成了默认安装）；
   2. `promote-release.mjs` 预检**拒绝 approve 任何以 latest stage 的 prerelease 记录**，并给出
@@ -497,6 +501,8 @@ scripts/trusted-publishers.sh --list
   `answerSeq` 必填、multi-lead 硬门禁、question TTL 默认 24h）+ In-Turn / Question lanes +
   cold-discard OUTBOX v3 收口 + A 加固（plugin-record 探测/降级）；DSH 兼容面与 `engines.dsh`
   不变。详见 `docs/releases/v0.4.0-rc.1.md`。
+  **0.4.0**（stable，dist-tag `latest`）由 `0.4.0-rc.1` 去掉 rc 后缀得到：只做版本 bump、
+  文档/证据同步与门禁重跑，运行时行为不变；发布说明见 `docs/releases/v0.4.0.md`。
   各版发布时同步 README / README.zh 与 `docs/releases/v<version>.md`；0.2.0 另复核
   旧 core + 新 tool 混装时 `isolation` 的防御性降级（tool 对缺失字段回退
   `{requested:'none',status:'none'}`）。
