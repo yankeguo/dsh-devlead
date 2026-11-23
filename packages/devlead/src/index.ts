@@ -9,7 +9,7 @@
  * @module @yankeguo/dsh-devlead
  */
 
-import { mkdir } from 'node:fs/promises'
+import { mkdir, stat } from 'node:fs/promises'
 import { isAbsolute } from 'node:path'
 import { Service } from '@deepseek-ai/cordis'
 import type { Context } from '@deepseek-ai/cordis'
@@ -167,6 +167,7 @@ import {
 import { worktreeCapabilityOf, worktreeCheckoutOf } from './isolation.ts'
 import { DevLeadBoardError, DevLeadBoardStore, isDevLeadBoardError, resolveDevLeadBoardPath } from './board.ts'
 import type {
+  DevLeadBoardDisabledReason,
   DevLeadBoardReadFilter,
   DevLeadBoardReadResult,
   DevLeadBoardUpdate,
@@ -1002,6 +1003,8 @@ export class DevLeadService extends Service {
   private boardPathOverrideValue = false
   /** Latest board start failure; the rest of the service keeps serving without a board. */
   private boardStartErrorValue: DevLeadBoardStartError | undefined
+  /** Why the board is disabled right now, or undefined while a store is active. */
+  private boardDisabledReasonValue: DevLeadBoardDisabledReason | undefined
   /** Serializes store swaps so two lead changes can never interleave one store. */
   private boardSyncTail: Promise<void> = Promise.resolve()
   /**
@@ -2750,6 +2753,19 @@ export class DevLeadService extends Service {
   }
 
   /**
+   * Why the project board is currently disabled, when it is.
+   *
+   * `missing-workspace` reports a lead whose recorded original workspace root is
+   * gone (or is no longer a directory): the board stays disabled with one
+   * warning and the Host never recreates the workspace. An explicit deployment
+   * `boardPath` override bypasses this check and keeps the existing pre-create
+   * semantics. Undefined while a board store is active.
+   */
+  get boardDisabledReason(): DevLeadBoardDisabledReason | undefined {
+    return this.boardDisabledReasonValue
+  }
+
+  /**
    * Resolve the calling lead's board file and hand it a tool read. Only the
    * unique active lead may reach the store; with no active lead/workspace the
    * call reports BOARD_DISABLED.
@@ -2833,12 +2849,16 @@ export class DevLeadService extends Service {
    * store/watcher.
    *
    * The path is the Config override when configured, otherwise the lead's
-   * original workspace root plus `.dsh/devlead/board.json`. The same resolved
-   * file keeps its store (so a lead switch inside one workspace does not churn
-   * the watcher); a changed path starts the new store before the old one is
-   * closed, so an in-flight read never sees a half-swapped service. A start
-   * failure is recorded and logged but never rejects: the store is kept so its
-   * later operations report the real `BOARD_IO_ERROR`.
+   * original workspace root plus `.dsh/devlead/board.json`. A derived path is
+   * used only while that workspace root still exists as a directory: a cold
+   * lead whose recorded root was deleted or moved must never make the Host
+   * recreate the workspace (with just `.dsh/devlead`) to host the board file.
+   * The same resolved file keeps its store (so a lead switch inside one
+   * workspace does not churn the watcher); a changed path starts the new store
+   * before the old one is closed, so an in-flight read never sees a
+   * half-swapped service. A start failure is recorded and logged but never
+   * rejects: the store is kept so its later operations report the real
+   * filesystem failure, and the next same-path sync or path switch retries it.
    * @param sessionId - active lead identity, or undefined when disabled.
    * @param workspaceRoot - that lead's original workspace root, when known.
    */
@@ -2852,28 +2872,42 @@ export class DevLeadService extends Service {
         ...this.resolved.boardPath === undefined ? {} : { override: this.resolved.boardPath },
         ...workspaceRoot === undefined ? {} : { cwd: workspaceRoot },
       })
-    const nextPath = resolution.kind === 'resolved' ? resolution.path : undefined
-    const nextOverride = resolution.kind === 'resolved' && resolution.source === 'override'
-    const previous = this.boardStore
-    if (nextPath === undefined) {
-      if (resolution.kind === 'disabled' && resolution.reason === 'relative-workspace') {
+    if (resolution.kind === 'disabled') {
+      if (resolution.reason === 'relative-workspace') {
         this.ctx.logger.warn(
           `devlead: Session "${sessionId ?? ''}" records a relative workspace root (${workspaceRoot ?? ''}); `
           + 'the project board stays disabled until it has an absolute workspace root',
         )
       }
-      this.boardLeadSessionIdValue = undefined
-      this.boardPathOverrideValue = false
-      this.boardStartErrorValue = undefined
-      if (previous.path !== undefined) {
-        this.boardStore = new DevLeadBoardStore(undefined, this.ctx.logger)
-        await this.closeBoardStore(previous)
-      }
+      await this.disableBoardStore(resolution.reason)
       return
     }
+    const nextPath = resolution.path
+    const nextOverride = resolution.source === 'override'
+    if (resolution.source === 'workspace' && !(await this.workspaceRootExists(workspaceRoot))) {
+      // The default board location lives inside the user's project root. If
+      // that root is gone, start() would `mkdir -p` it back (only
+      // `.dsh/devlead` inside); keep the board disabled instead and let the
+      // explicit deployment override own any board that must survive a move.
+      this.ctx.logger.warn(
+        `devlead: Session "${sessionId ?? ''}" records a workspace root (${workspaceRoot ?? ''}) that is missing `
+        + 'or not a directory; the project board stays disabled instead of recreating the workspace. '
+        + 'Configure an absolute devlead boardPath if this Session should keep a project board.',
+      )
+      await this.disableBoardStore('missing-workspace')
+      return
+    }
+    const previous = this.boardStore
     if (previous.path === nextPath) {
       this.boardLeadSessionIdValue = sessionId
       this.boardPathOverrideValue = nextOverride
+      this.boardDisabledReasonValue = undefined
+      if (this.boardStartErrorValue !== undefined) {
+        // A start failure can be transient (permissions, a directory created or
+        // removed concurrently). The file path did not change, so retry the
+        // same store on this sync instead of waiting for a path switch.
+        await this.retryBoardStart(previous, nextPath)
+      }
       return
     }
     const next = new DevLeadBoardStore(nextPath, this.ctx.logger)
@@ -2882,16 +2916,65 @@ export class DevLeadService extends Service {
       await next.start()
     } catch (error: unknown) {
       startError = devLeadBoardStartErrorOf(error)
-      this.ctx.logger.warn(
-        `devlead: project board at ${nextPath} is degraded and DevLead stays loaded: `
-        + `${startError.code}: ${startError.message}`,
-      )
+      this.logBoardStartFailure(nextPath, startError)
     }
     this.boardStore = next
     this.boardLeadSessionIdValue = sessionId
     this.boardPathOverrideValue = nextOverride
+    this.boardDisabledReasonValue = undefined
     this.boardStartErrorValue = startError
     await this.closeBoardStore(previous)
+  }
+
+  /**
+   * Whether one derived board's workspace root still exists as a directory.
+   *
+   * Any stat failure (missing, not a directory, unreadable) is treated as
+   * unusable: the board is disabled instead of attempting a write under a root
+   * the Host cannot verify.
+   * @param workspaceRoot - the lead's recorded original workspace root.
+   * @returns whether `start()` may safely prepare the board parent under it.
+   */
+  private async workspaceRootExists(workspaceRoot: string | undefined): Promise<boolean> {
+    if (workspaceRoot === undefined || workspaceRoot.trim().length === 0) return false
+    try {
+      return (await stat(workspaceRoot)).isDirectory()
+    } catch {
+      return false
+    }
+  }
+
+  /** Retry `start()` on the current same-path store, keeping the degraded record on failure. */
+  private async retryBoardStart(store: DevLeadBoardStore, path: string): Promise<void> {
+    let startError: DevLeadBoardStartError | undefined
+    try {
+      await store.start()
+    } catch (error: unknown) {
+      startError = devLeadBoardStartErrorOf(error)
+      this.logBoardStartFailure(path, startError)
+    }
+    this.boardStartErrorValue = startError
+  }
+
+  /** Log one board degradation without failing the surrounding service. */
+  private logBoardStartFailure(path: string, failure: DevLeadBoardStartError): void {
+    this.ctx.logger.warn(
+      `devlead: project board at ${path} is degraded and DevLead stays loaded: `
+      + `${failure.code}: ${failure.message}`,
+    )
+  }
+
+  /** Release any current board store and expose why the board is disabled. */
+  private async disableBoardStore(reason: DevLeadBoardDisabledReason): Promise<void> {
+    const previous = this.boardStore
+    this.boardLeadSessionIdValue = undefined
+    this.boardPathOverrideValue = false
+    this.boardStartErrorValue = undefined
+    this.boardDisabledReasonValue = reason
+    if (previous.path !== undefined) {
+      this.boardStore = new DevLeadBoardStore(undefined, this.ctx.logger)
+      await this.closeBoardStore(previous)
+    }
   }
 
   /** Close one replaced store without letting cleanup failure break the swap. */

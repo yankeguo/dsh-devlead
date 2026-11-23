@@ -335,4 +335,115 @@ describe('service board lifecycle', () => {
       await harness.dispose()
     }
   })
+
+  it('disables a derived board instead of recreating a deleted lead workspace', async () => {
+    const root = await tempRoot('missing-workspace')
+    const missing = join(root, 'moved-away')
+    const harness = await bootService({ enabled: true, leadCwd: missing })
+    try {
+      // The lead Session's recorded workspace root no longer exists: no board
+      // store, no mkdir, and no writes under a path that only the board would
+      // recreate.
+      expect(existsSync(missing)).toBe(false)
+      expect(harness.service.board.path).toBeUndefined()
+      expect(harness.service.board.enabled).toBe(false)
+      expect(harness.service.boardLeadSessionId).toBeUndefined()
+      expect(harness.service.boardDisabledReason).toBe('missing-workspace')
+      expect(harness.service.boardStartError).toBeUndefined()
+      expect(harness.service.board.summary()).toBe('')
+      await expect(harness.service.readBoard(harness.lead.agent))
+        .rejects.toMatchObject({ code: 'BOARD_DISABLED' })
+      await expect(harness.service.updateBoard(harness.lead.agent, {
+        project: 'alpha',
+        create: true,
+        set: { workspace: { path: missing, title: 'alpha' } },
+      })).rejects.toMatchObject({ code: 'BOARD_DISABLED' })
+      // Nothing under the missing root was created, including `.dsh/devlead`.
+      expect(existsSync(missing)).toBe(false)
+      expect(existsSync(join(missing, '.dsh'))).toBe(false)
+
+      // A later lead in an existing workspace recovers a normal board.
+      const workspaceB = await tempRoot('missing-workspace-recover')
+      const sessionB = harness.ctx.sessions.create(SessionId('board-missing-recover-b'), { meta: { cwd: workspaceB } })
+      const agentB = new FakeAgent(sessionB)
+      harness.agents.add(agentB)
+      await harness.service.setEnabled(harness.lead.agent, false)
+      await harness.service.setEnabled(agentB.agent, true)
+      expect(harness.service.board.path).toBe(expectedPath(workspaceB))
+      expect(harness.service.boardDisabledReason).toBeUndefined()
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  it('keeps a cold lead board disabled when its recorded workspace is gone', async () => {
+    const root = await tempRoot('cold-missing-workspace')
+    const missing = join(root, 'gone')
+    const query = new FakeSessionQuery()
+    const cache = new FakeProjectionCache()
+    const persistence = new FakeSessionPersistence()
+    await seedPersistedLead(query, { sessionId: 'cold-missing-lead', cwd: missing })
+    cache.setDevLead('cold-missing-lead', { enabled: true, sessions: [] })
+    persistence.ids = ['cold-missing-lead']
+    const harness = await bootService({
+      sessionQuery: query,
+      projectionCache: cache,
+      sessionPersistence: persistence,
+      registerLeadAgent: false,
+    })
+    try {
+      // A cold Session's header still names the old root, but the directory is
+      // gone; the Host must not rebuild it just to host the default board file.
+      expect(existsSync(missing)).toBe(false)
+      expect(harness.service.board.path).toBeUndefined()
+      expect(harness.service.boardLeadSessionId).toBeUndefined()
+      expect(harness.service.boardDisabledReason).toBe('missing-workspace')
+      expect(existsSync(missing)).toBe(false)
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  it('keeps the explicit override pre-creating even when the lead workspace is missing', async () => {
+    const root = await tempRoot('override-missing-cwd')
+    const missing = join(root, 'moved-away')
+    const override = join(root, 'deploy-board', 'nested', 'board.json')
+    const harness = await bootService({ enabled: true, leadCwd: missing, config: { boardPath: override } })
+    try {
+      // The deployment override owns its own location; it does not depend on
+      // the lead workspace existing and keeps the existing pre-create contract.
+      expect(harness.service.board.path).toBe(override)
+      expect(harness.service.boardPathOverride).toBe(true)
+      expect(harness.service.boardDisabledReason).toBeUndefined()
+      expect(harness.service.boardStartError).toBeUndefined()
+      expect(await directoryMode(join(root, 'deploy-board', 'nested'))).toBe(0o700)
+      expect(existsSync(missing)).toBe(false)
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  it('retries a degraded same-path board start on the next lead sync', async () => {
+    const workspace = await tempRoot('same-path-retry')
+    // A regular file where the override parent should be makes start() fail
+    // deterministically (ENOTDIR) until the blocker is removed.
+    const blocker = join(workspace, 'blocker')
+    await writeFile(blocker, 'not a directory\n')
+    const boardPath = join(blocker, 'nested', 'board.json')
+    const harness = await bootService({ enabled: true, leadCwd: workspace, config: { boardPath } })
+    try {
+      expect(harness.service.boardStartError).toMatchObject({ code: 'BOARD_IO_ERROR' })
+      expect(harness.service.board.path).toBe(boardPath)
+      // The failure clears; a sync that resolves to the same path retries
+      // start() instead of leaving the board degraded until a path switch.
+      await rm(blocker, { force: true })
+      await harness.service.setEnabled(harness.lead.agent, true)
+      expect(harness.service.boardStartError).toBeUndefined()
+      expect(harness.service.board.path).toBe(boardPath)
+      expect(await directoryMode(join(blocker, 'nested'))).toBe(0o700)
+      expect(harness.service.boardDisabledReason).toBeUndefined()
+    } finally {
+      await harness.dispose()
+    }
+  })
 })

@@ -279,6 +279,18 @@ export type DevLeadBoardPathSource = 'override' | 'workspace'
 /** Why automatic board-path resolution disabled the board. */
 export type DevLeadBoardPathDisabledReason = 'no-workspace' | 'relative-workspace' | 'invalid-override'
 
+/**
+ * Why the Host currently exposes no board store.
+ *
+ * `missing-workspace` is decided by the service, not by
+ * {@link resolveDevLeadBoardPath}: a derived (non-override) path is only used
+ * while the lead's recorded original workspace root still exists as a directory.
+ * The store then stays disabled without creating anything, so a cold lead whose
+ * workspace was deleted or moved cannot make the Host recreate it just to hold
+ * `.dsh/devlead`.
+ */
+export type DevLeadBoardDisabledReason = DevLeadBoardPathDisabledReason | 'missing-workspace'
+
 /** One automatic board-path resolution outcome. */
 export type DevLeadBoardPathResolution =
   | { readonly kind: 'resolved'; readonly path: string; readonly source: DevLeadBoardPathSource }
@@ -295,7 +307,11 @@ export type DevLeadBoardPathResolution =
  * ignored: the board belongs to the project root the Session was created in,
  * not to a checkout a turn moved into. The result is absolute and normalized;
  * a caller with no absolute workspace root gets the disabled outcome instead
- * of a fabricated relative path.
+ * of a fabricated relative path. This pure resolver never touches the
+ * filesystem; the service additionally verifies that a derived workspace root
+ * still exists as a directory before using the path (a missing root yields
+ * {@link DevLeadBoardDisabledReason} `missing-workspace` rather than a
+ * recreated workspace).
  * @param input - optional deployment override and the lead's original workspace root.
  * @returns a normalized absolute path, or the disabled reason.
  */
@@ -574,7 +590,14 @@ export class DevLeadBoardStore {
     return this.filePath !== undefined
   }
 
-  /** Prepare the watchable parent, then load without rejecting for a malformed file. */
+  /**
+   * Prepare the watchable parent, then load without rejecting for a malformed
+   * file.
+   *
+   * The service only calls this for an explicit deployment override or for a
+   * derived path whose workspace root already exists as a directory; a missing
+   * workspace root disables the board instead of being recreated here.
+   */
   async start(): Promise<void> {
     if (this.filePath === undefined) return
     try {

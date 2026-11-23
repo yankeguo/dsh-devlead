@@ -57,3 +57,21 @@ it('rearms a failed watcher after a successful reload', async () => {
   expect((await store.read()).revision).toBe(2)
   expect(mocks.watchers).toHaveLength(2)
 })
+
+it('releases the watcher when the store closes and never rearms it', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-devlead-board-watcher-close-'))
+  roots.push(root)
+  const file = join(root, 'board.json')
+  await writeFile(file, JSON.stringify(board(1)), 'utf8')
+  const store = new DevLeadBoardStore(file)
+  stores.push(store)
+  await store.start()
+  expect(mocks.watchers).toHaveLength(1)
+  const watcher = mocks.watchers[0] as unknown as { close: ReturnType<typeof vi.fn> }
+
+  await store.close()
+  expect(watcher.close).toHaveBeenCalledTimes(1)
+  // A closed store is inert: a later read must not reinstall a watcher.
+  await store.read()
+  expect(mocks.watchers).toHaveLength(1)
+})

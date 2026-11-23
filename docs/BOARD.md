@@ -13,9 +13,16 @@ Step B 实现右侧栏只读 UI。动态默认路径、lead 生命周期与 lead
   `<SessionHeader.cwd>/.dsh/devlead/board.json`。`SessionHeader.cwd` 是 Session **创建时的原始
   workspace 根**，不是某次 turn 的 effective/worktree cwd；worktree 隔离的 lead 仍把看板放在
   项目根，而不是 `.agents/worktrees/...` 检出里。
+- **派生路径要求 workspace 根仍然存在**：没有 override 时，Host 在派生
+  `<cwd>/.dsh/devlead/board.json` 前先确认该 `cwd` 仍是**已存在的目录**。不存在（cold lead 记录的
+  workspace 被删除/移走/变成普通文件，或无法 `stat`）时看板进入 disabled 状态，新增 reason
+  `missing-workspace`（`ctx.devLead.boardDisabledReason` 可读），只记录一条 warning；
+  **不会 `mkdir` 重建 workspace 根，也不会写入任何文件**，工具返回 `BOARD_DISABLED`、摘要为空、
+  不注入浏览器 global。workspace 恢复后，下一次 lead 同步/切换会重新解析并重新启用看板。
+  显式 `boardPath` override 不受此限制，保持既有预创建语义（见下）。
 - **没有 lead 就看板禁用**：没有 active lead 时，或既未配置 `boardPath` override、lead 的
-  header 又没有绝对 workspace 根时，  工具返回 `BOARD_DISABLED`、动态摘要为空、浏览器 global 不注入、UI 不显示任何看板入口；
-  不会伪造相对路径，也不会回退到插件安装目录。
+  header 又没有绝对 workspace 根时，工具返回 `BOARD_DISABLED`、动态摘要为空、浏览器 global 不注入、
+  UI 不显示任何看板入口；不会伪造相对路径，也不会回退到插件安装目录。
 - **单活即单 store**：DevLead 模式本来就是 Host 级单活（见 [DESIGN](DESIGN.md) §2），因此
   同一时刻最多只有一个看板 store 与一个目录 watcher。`/devlead off`、lead 切换到另一个
   Session、或 lead 的 workspace 根变化时，Host 先关闭旧 store（释放 watcher 与订阅），再
@@ -49,7 +56,9 @@ canonicalization。
 
 看板路径解析完成后，`DevLeadBoardStore.start()` 先以
 `mkdir(dirname, {recursive:true, mode:0o700})` 幂等预创建父目录（不修改已有目录权限），再启动
-读取/监听。这保证浏览器 chokidar 首开时父目录已存在，Host 首次写入能触发 `add` 事件。
+读取/监听。这保证浏览器 chokidar 首开时父目录已存在，Host 首次写入能触发 `add` 事件。该预创建
+只发生在**显式 override** 或**已确认存在的派生 workspace 根**之上：派生路径的 workspace 根不存在
+时不会进入 `start()`（见上文 `missing-workspace`）。
 `update()` 仍先完成逻辑预检，再执行自己的 mkdir，因此失败预检不会由 update 新建目录。文件以
 `0600` 原子替换。是否把 `.dsh/devlead/` 加入仓库的 `.gitignore` 由用户/仓库所有者决定；
 插件不修改 `.gitignore`，也不要求看板进入 Git。
@@ -57,7 +66,8 @@ canonicalization。
 **start 失败不阻塞 DevLead（P2-2）**：父目录预创建或 `start()` 失败时，Host 只记录一条 warning
 并把看板标记为 degraded；`DevLeadService`、`devlead_*` 工具、`/devlead` 命令与浏览器 UI 照常
 加载。此时 board 相关工具与摘要按真实故障返回 `BOARD_IO_ERROR`（或保持空摘要），其余 DevLead
-功能不受影响。下一次 lead/路径切换会重新尝试 `start()`。
+功能不受影响。下一次 lead 同步（同一 resolved 路径也会**按需重试** `start()`）或路径切换会再次
+尝试 `start()`；重试仍失败时 `boardStartError` 保留最后一次真实故障。
 
 ## 文件 schema v1
 
@@ -117,8 +127,10 @@ Host 通过 `ctx.devLead.board` 暴露**当前 active lead 的 store**（没有 
   其中 project 省略 tasks；
 - `summary()`：从最后合法内存缓存同步渲染摘要；禁用或空 projects 时为空串。
 
-`ctx.devLead.boardLeadSessionId` / `boardPathOverride` / `boardStartError` 暴露当前 store 归属的
-lead Session、路径是否来自 Config override，以及最近一次 start 失败（degraded 时非空）。
+`ctx.devLead.boardLeadSessionId` / `boardPathOverride` / `boardStartError` /
+`boardDisabledReason` 暴露当前 store 归属的 lead Session、路径是否来自 Config override、最近一次
+start 失败（degraded 时非空），以及看板当前被禁用的原因（`no-workspace` /
+`relative-workspace` / `invalid-override` / `missing-workspace`；有活动 store 时 undefined）。
 `ctx.devLead.updateBoard(agent, patch, expectedRevision?, signal?)` 额外补上 lead 身份；调用者
 必须是当前 active lead，否则 `BOARD_DISABLED`。`read()` / `update()` 在没有 board 或
 `expectedRevision` 不是非负安全整数时返回 rejected Promise；revision 不一致返回
@@ -134,8 +146,8 @@ schema 错误、未知字段或超限文件会产生带 RFC 6901 JSON pointer �
 前后的 `mtimeMs/size/ino` 指纹，并核对实际 UTF-8 字节数；只有稳定快照才进入缓存。文件持续变化
 时返回可重试的 `BOARD_IO_ERROR`。watcher 出错后，在下一次成功 load 时 rearm。
 
-文件不存在为 `BOARD_NOT_FOUND`；没有 active lead（或既无 override 又无绝对 workspace 根），
-或调用者不是当前 active lead
+文件不存在为 `BOARD_NOT_FOUND`；没有 active lead（或既无 override 又无绝对 workspace 根）、派生
+路径的 workspace 根已不存在（`missing-workspace`），或调用者不是当前 active lead
 时为 `BOARD_DISABLED`。start 的父目录预创建失败、读取故障以及整个写周期中已知的 filesystem
 错误、锁超时和 `FileLockError` 都映射为 `BOARD_IO_ERROR`，领域错误保持原错误码；锁超时文案
 提示当前 writer 结束后 retry。start 失败本身不会 reject 服务加载：它只产生
@@ -249,6 +261,9 @@ kind 上。模式 off、Session 切换、路径切换会立即重渲染并 dispo
 HTML 才携带 override 的真实路径与 `override:true`；client 不会把 override 路径猜成默认路径。
 global 存在但页面渲染后换了 lead 时，client 按 `leadSessionId` 判定归属，不匹配就回到从当前
 屏幕 lead 的 summary 派生；`override:true` 的 global 是部署级路径，对所有 lead 生效。
+派生路径的 workspace 根已不存在时 Host 不发布 global；但页面在 late-enable 场景下仍可能按
+summary `cwd` 自愈派生默认路径，此时只读面板显示空态/读取错误（浏览器只做 `stat`/`readBytes`，
+不会创建目录或写入），Host 侧的看板仍是 disabled。
 
 global 的 `leadSessionId` / `override` 是**additive** 字段：旧 Host 的 global 缺这两个字段时，
 client 按旧部署级宽路径语义继续工作；旧 client 会忽略新字段。
@@ -274,7 +289,8 @@ client 按旧部署级宽路径语义继续工作；旧 client 会忽略新字�
   谓词选择 `node:path.posix` / `node:path.win32` 语义，不从路径字符串猜测。文件不存在是
   「还没有看板数据」；Remote 错误是读取错误；JSON/schema 错误是
   解析错误，显示最后成功时间与重试，不保留旧项目卡片。`devlead_board_read` 的 64 KiB
-  裁剪对 UI 透明：面板拿到的是已裁剪结果，`truncated:true` 时按既有只读语义展示。
+  裁剪只作用于**模型工具结果**；右栏面板直接读取看板文件（受 schema 的 256 KiB 文件上限约束，
+  不经工具层裁剪），两者互不影响。
 - 项目按 blocked / active / paused / done 分组，同组按 high / medium / low、updatedAt 倒序、id
   稳定排序；卡片展示 workspace、focus/next/blockers 和原生 `<details>` 任务清单。顶部展示
   revision、updatedAt 相对时间与读取状态。
