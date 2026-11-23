@@ -1,0 +1,353 @@
+===== MUTATION: drop duplicate workspace-path rule =====
+
+ RUN  v4.1.12 /Users/guoyk/Workspace/src/dsh-devlead
+
+ ❯ packages/protocol/tests/board.spec.ts (47 tests | 1 failed) 14ms
+     ✓ pins the schema version, byte cap, and every count/length limit 1ms
+     ✓ accepts a complete board and leaves project order untouched 2ms
+     ✓ accepts empty boards, empty text fields, and omitted optional ids 0ms
+     ✓ accepts the same blocker and task ids in different projects 0ms
+     ✓ rejects duplicate project id with its JSON pointer 1ms
+     × rejects duplicate workspace path with its JSON pointer 3ms
+     ✓ rejects duplicate blocker id with its JSON pointer 0ms
+     ✓ rejects duplicate task id with its JSON pointer 0ms
+     ✓ treats workspace path duplicates as exact-string duplicates only 0ms
+     ✓ rejects unknown root field 0ms
+     ✓ rejects unknown updatedBy field 0ms
+     ✓ rejects unknown project field 0ms
+     ✓ rejects unknown workspace field 0ms
+     ✓ rejects unknown blocker field 0ms
+     ✓ rejects unknown task field 0ms
+     ✓ rejects an unknown project status enum value 0ms
+     ✓ rejects an unknown project priority enum value 0ms
+     ✓ rejects an unknown task status enum value 0ms
+     ✓ rejects a wrong or missing schema version 0ms
+     ✓ rejects a negative revision 0ms
+     ✓ rejects a fractional revision 0ms
+     ✓ rejects a unsafe revision 0ms
+     ✓ rejects a string revision 0ms
+     ✓ rejects a bad offset timestamp 0ms
+     ✓ rejects a bad missing timezone 0ms
+     ✓ rejects a bad not a timestamp 0ms
+     ✓ rejects a bad project timestamp 0ms
+     ✓ rejects a bad blocker since 0ms
+     ✓ rejects a bad task updatedAt 0ms
+     ✓ rejects a non-absolute workspace path for each path implementation 0ms
+     ✓ accepts the Windows absolute workspace path C:\work\alpha under win32 semantics 0ms
+     ✓ accepts the Windows absolute workspace path C:/work/alpha under win32 semantics 0ms
+     ✓ accepts the Windows absolute workspace path \\work\alpha under win32 semantics 0ms
+     ✓ accepts the Windows absolute workspace path \\server\share\alpha under win32 semantics 0ms
+     ✓ accepts the Windows absolute workspace path /work/alpha under win32 semantics 0ms
+     ✓ rejects an oversized project list 2ms
+     ✓ rejects an oversized task list and blocker list 2ms
+     ✓ rejects an oversized project id 0ms
+     ✓ rejects an oversized blocker id 0ms
+     ✓ rejects an oversized task id 0ms
+     ✓ rejects an oversized workspace title 0ms
+     ✓ rejects an oversized workspace path 0ms
+     ✓ rejects an oversized goal text 0ms
+     ✓ rejects an oversized blocker text 0ms
+     ✓ rejects an empty blocker text and an empty required id 0ms
+     ✓ renders RFC 6901 JSON pointers and an empty root pointer 0ms
+     ✓ maps every validation issue to a pointer plus message 0ms
+ ❯ packages/client-ui/tests/board.spec.ts (46 tests | 1 failed) 16ms
+     ✓ accepts only a complete current absolute-path global 1ms
+     ✓ round-trips a valid board without changing project order in the decoder 2ms
+     ✓ rejects invalid JSON with a parse error 0ms
+     ✓ rejects unknown root fields with a parse error 0ms
+     ✓ rejects wrong schema version with a parse error 0ms
+     ✓ rejects relative workspace with a parse error 0ms
+     ✓ rejects duplicate project ids with a parse error 0ms
+     ✓ rejects duplicate task ids with a parse error 0ms
+     ✓ uses POSIX absolute-path semantics for a POSIX board location 0ms
+     ✓ accepts the Windows absolute path C:\work\one for a Windows board location 1ms
+     ✓ accepts the Windows absolute path C:/work/one for a Windows board location 0ms
+     ✓ accepts the Windows absolute path \\work\one for a Windows board location 0ms
+     ✓ accepts the Windows absolute path \\server\share\one for a Windows board location 0ms
+     ✓ accepts the Windows absolute path /work/one for a Windows board location 0ms
+     ✓ rejects a drive-relative Windows path 0ms
+     ✓ decodes UTF-8 fatally and enforces the 256 KiB bound before decoding 1ms
+     ✓ puts blocked first, then active/paused/done, omitting empty groups 0ms
+     ✓ sorts each group by priority, descending updatedAt, then stable id 3ms
+     ✓ summarizes tasks and truncates only long owner ids 0ms
+     ✓ maps statuses to stable tones 0ms
+     ✓ lists only exact-path unlisted workspaces with authoritative session activity 1ms
+     ✓ normalizes Windows separators, case, and trailing slashes without claiming realpath 0ms
+     ✓ buckets relative timestamps without letting future times go negative 0ms
+     × rejects duplicate workspace path exactly like the Host decoder 2ms
+     ✓ rejects duplicate project id exactly like the Host decoder 0ms
+     ✓ rejects duplicate blocker id exactly like the Host decoder 0ms
+     ✓ rejects duplicate task id exactly like the Host decoder 0ms
+     ✓ rejects unknown project field exactly like the Host decoder 0ms
+     ✓ rejects unknown workspace field exactly like the Host decoder 0ms
+     ✓ rejects unknown blocker field exactly like the Host decoder 0ms
+     ✓ rejects unknown task field exactly like the Host decoder 0ms
+     ✓ rejects wrong schema version exactly like the Host decoder 0ms
+     ✓ rejects offset timestamp exactly like the Host decoder 0ms
+     ✓ rejects relative workspace path exactly like the Host decoder 0ms
+     ✓ rejects too many projects exactly like the Host decoder 1ms
+     ✓ rejects too many tasks exactly like the Host decoder 0ms
+     ✓ rejects too many blockers exactly like the Host decoder 0ms
+     ✓ rejects oversized free text exactly like the Host decoder 0ms
+     ✓ rejects oversized id exactly like the Host decoder 0ms
+     ✓ rejects oversized title exactly like the Host decoder 0ms
+     ✓ rejects oversized workspace path exactly like the Host decoder 0ms
+     ✓ rejects a bad project status enum value 0ms
+     ✓ rejects a bad project priority enum value 0ms
+     ✓ rejects a bad task status enum value 0ms
+     ✓ reports the same JSON pointer for a nested violation as the Host validator 0ms
+     ✓ keeps the byte cap and schema version aligned with the shared wire contract 0ms
+ ❯ packages/devlead/tests/board.spec.ts (30 tests | 1 failed) 2241ms
+     ✓ is disabled without configuration and resolves a configured path once 1ms
+     ✓ precreates the watchable parent at startup without creating the board file 2ms
+     ✓ keeps an existing parent and its permissions across idempotent starts 1ms
+     ✓ creates parent directories and schema-v1 JSON on the first atomic write 4ms
+     ✓ creates its own parent when the first update runs without start 1ms
+     ✓ rejects an invalid first update without creating its parent tree 0ms
+     ✓ stamps the enabled lead identity in the core service and rejects writes after mode-off 7ms
+     ✓ requires explicit create and a workspace path for a new project 1ms
+     ✓ applies scalar, blocker, and task patches and keeps no-op revisions stable 3ms
+     ✓ allows an existing task upsert to omit its title 11ms
+     ✓ still rejects a title-less upsert for a genuinely new task 1ms
+     ✓ resolves one project by id, title, and path and bounds unfiltered reads 2ms
+     ✓ rejects stale expected revisions without changing the file 1ms
+     ✓ serializes concurrent Host updates without losing tasks 9ms
+     ✓ coordinates two store instances through the cross-process file lock 23ms
+     ✓ keeps the last valid cached summary and never overwrites malformed JSON 2ms
+     ✓ returns JSON pointers for invalid fields and refuses unknown fields 13ms
+     ✓ rejects oversized files while retaining the last valid cache 1ms
+     ✓ enforces project, task, and free-text limits before committing 2ms
+     ✓ refreshes its cached summary after a valid external watch event 22ms
+     × rejects duplicate project ids and workspace paths, non-UTC timestamps, and relative workspaces 2ms
+     ✓ reports ambiguous titles and accepts a matching CAS revision 2ms
+     ✓ recovers when an external actor deletes and recreates the file 1ms
+     ✓ normalizes blank and overlong lead titles on the write path 1ms
+     ✓ keeps omitted blocker fields and treats a repeated add as a no-op 2ms
+     ✓ bounds selected-project task output and reports truncation 1ms
+     ✓ single-lines project ids and workspace titles in dynamic summaries 0ms
+     ✓ maps a read-only parent to BOARD_IO_ERROR without changing bytes 1ms
+     ✓ maps writer-lock timeout to a retryable BOARD_IO_ERROR without changing bytes  2121ms
+     ✓ renders stable, status-counted summaries capped at 1.5 KiB 2ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 3 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  packages/client-ui/tests/board.spec.ts > shared host contract (schema convergence) > rejects duplicate workspace path exactly like the Host decoder
+AssertionError: expected function to throw an error, but it didn't
+ ❯ packages/client-ui/tests/board.spec.ts:295:43
+    293|     }]))],
+    294|   ])('rejects %s exactly like the Host decoder', (_label, text) => {
+    295|     expect(() => parseDevLeadBoard(text)).toThrow(DevLeadBoardParseErr…
+       |                                           ^
+    296|   })
+    297|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/3]⎯
+
+ FAIL  packages/protocol/tests/board.spec.ts > shared board wire rejection > rejects duplicate workspace path with its JSON pointer
+AssertionError: expected true to be false // Object.is equality
+
+- Expected
++ Received
+
+- false
++ true
+
+ ❯ pointersOf packages/protocol/tests/board.spec.ts:89:26
+     87| function pointersOf(value: unknown, schema = hostSchema): string[] {
+     88|   const parsed = schema.safeParse(value)
+     89|   expect(parsed.success).toBe(false)
+       |                          ^
+     90|   if (parsed.success) return []
+     91|   return devLeadBoardIssueViews(parsed.error.issues).map(issue => issu…
+ ❯ packages/protocol/tests/board.spec.ts:146:12
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/3]⎯
+
+ FAIL  packages/devlead/tests/board.spec.ts > DevLeadBoardStore > rejects duplicate project ids and workspace paths, non-UTC timestamps, and relative workspaces
+AssertionError: expected true to be false // Object.is equality
+
+- Expected
++ Received
+
+- false
++ true
+
+ ❯ packages/devlead/tests/board.spec.ts:380:65
+    378|     expect(devLeadBoardSchema.safeParse(duplicateId).success).toBe(fal…
+    379|     const duplicatePath = board([project('alpha', '/tmp/shared'), proj…
+    380|     expect(devLeadBoardSchema.safeParse(duplicatePath).success).toBe(f…
+       |                                                                 ^
+    381|     const offsetTime = board([project()])
+    382|     offsetTime.updatedAt = '2026-01-01T08:00:00+08:00'
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/3]⎯
+
+
+ Test Files  3 failed (3)
+      Tests  3 failed | 120 passed (123)
+   Start at  17:26:35
+   Duration  2.51s (transform 197ms, setup 0ms, import 345ms, tests 2.27s, environment 0ms)
+
+===== MUTATION: widen DEVLEAD_BOARD_MAX_PROJECTS to 51 =====
+
+ RUN  v4.1.12 /Users/guoyk/Workspace/src/dsh-devlead
+
+ ❯ packages/protocol/tests/board.spec.ts (47 tests | 1 failed) 10ms
+     × pins the schema version, byte cap, and every count/length limit 3ms
+     ✓ accepts a complete board and leaves project order untouched 2ms
+     ✓ accepts empty boards, empty text fields, and omitted optional ids 0ms
+     ✓ accepts the same blocker and task ids in different projects 0ms
+     ✓ rejects duplicate project id with its JSON pointer 0ms
+     ✓ rejects duplicate workspace path with its JSON pointer 0ms
+     ✓ rejects duplicate blocker id with its JSON pointer 0ms
+     ✓ rejects duplicate task id with its JSON pointer 0ms
+     ✓ treats workspace path duplicates as exact-string duplicates only 0ms
+     ✓ rejects unknown root field 0ms
+     ✓ rejects unknown updatedBy field 0ms
+     ✓ rejects unknown project field 0ms
+     ✓ rejects unknown workspace field 0ms
+     ✓ rejects unknown blocker field 0ms
+     ✓ rejects unknown task field 0ms
+     ✓ rejects an unknown project status enum value 0ms
+     ✓ rejects an unknown project priority enum value 0ms
+     ✓ rejects an unknown task status enum value 0ms
+     ✓ rejects a wrong or missing schema version 0ms
+     ✓ rejects a negative revision 0ms
+     ✓ rejects a fractional revision 0ms
+     ✓ rejects a unsafe revision 0ms
+     ✓ rejects a string revision 0ms
+     ✓ rejects a bad offset timestamp 0ms
+     ✓ rejects a bad missing timezone 0ms
+     ✓ rejects a bad not a timestamp 0ms
+     ✓ rejects a bad project timestamp 0ms
+     ✓ rejects a bad blocker since 0ms
+     ✓ rejects a bad task updatedAt 0ms
+     ✓ rejects a non-absolute workspace path for each path implementation 0ms
+     ✓ accepts the Windows absolute workspace path C:\work\alpha under win32 semantics 0ms
+     ✓ accepts the Windows absolute workspace path C:/work/alpha under win32 semantics 0ms
+     ✓ accepts the Windows absolute workspace path \\work\alpha under win32 semantics 0ms
+     ✓ accepts the Windows absolute workspace path \\server\share\alpha under win32 semantics 0ms
+     ✓ accepts the Windows absolute workspace path /work/alpha under win32 semantics 0ms
+     ✓ rejects an oversized project list 0ms
+     ✓ rejects an oversized task list and blocker list 1ms
+     ✓ rejects an oversized project id 0ms
+     ✓ rejects an oversized blocker id 0ms
+     ✓ rejects an oversized task id 0ms
+     ✓ rejects an oversized workspace title 0ms
+     ✓ rejects an oversized workspace path 0ms
+     ✓ rejects an oversized goal text 0ms
+     ✓ rejects an oversized blocker text 0ms
+     ✓ rejects an empty blocker text and an empty required id 0ms
+     ✓ renders RFC 6901 JSON pointers and an empty root pointer 0ms
+     ✓ maps every validation issue to a pointer plus message 0ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  packages/protocol/tests/board.spec.ts > shared board wire constants > pins the schema version, byte cap, and every count/length limit
+AssertionError: expected 51 to be 50 // Object.is equality
+
+- Expected
++ Received
+
+- 50
++ 51
+
+ ❯ packages/protocol/tests/board.spec.ts:101:40
+     99|     expect(DEVLEAD_BOARD_SCHEMA_VERSION).toBe(1)
+    100|     expect(DEVLEAD_BOARD_MAX_BYTES).toBe(262_144)
+    101|     expect(DEVLEAD_BOARD_MAX_PROJECTS).toBe(50)
+       |                                        ^
+    102|     expect(DEVLEAD_BOARD_MAX_TASKS).toBe(200)
+    103|     expect(DEVLEAD_BOARD_MAX_BLOCKERS).toBe(50)
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 46 passed (47)
+   Start at  17:26:37
+   Duration  110ms (transform 21ms, setup 0ms, import 42ms, tests 10ms, environment 0ms)
+
+===== MUTATION: disable empty-state polling =====
+
+ RUN  v4.1.12 /Users/guoyk/Workspace/src/dsh-devlead
+
+ ❯ packages/client-ui/tests/useBoardFile.spec.tsx (19 tests | 2 failed) 21ms
+     ✓ is disabled without a global and performs no I/O 4ms
+     ✓ stats then reads the absolute board path and returns a valid board 3ms
+     ✓ maps stat not-found to empty, not an error 1ms
+     ✓ maps readBytes not-found to empty, not an error 0ms
+     ✓ distinguishes a Remote read failure from malformed content 0ms
+     ✓ retains only last-success metadata when a later refresh has bad JSON 1ms
+     ✓ treats schema drift and truncated reads as parse errors 1ms
+     ✓ debounces bursts of change frames before rereading 1ms
+     ✓ refreshes after watch readiness to close the initial subscription race 0ms
+     ✓ does not let a stale failed request replace a newer successful revision 0ms
+     ✓ marks an ended stream stale and reconnects it on manual refresh 1ms
+     ✓ degrades to an ended watch when the change stream cannot start 1ms
+     ✓ degrades on a rejected stream and never reconnects without a manual refresh 1ms
+     × polls a missing board with bounded backoff until it appears 4ms
+     ✓ stops empty-state polling on unmount 1ms
+     × keeps polling a missing board after the watch ends 1ms
+     ✓ aborts an in-flight stat on unmount and ignores its late result 0ms
+     ✓ aborts an in-flight readBytes on unmount and ignores its late result 0ms
+     ✓ aborts the watch and disposes its direct handle on unmount 0ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  packages/client-ui/tests/useBoardFile.spec.tsx > useBoardFile > polls a missing board with bounded backoff until it appears
+AssertionError: expected 1 to be 2 // Object.is equality
+
+- Expected
++ Received
+
+- 2
++ 1
+
+ ❯ packages/client-ui/tests/useBoardFile.spec.tsx:454:41
+    452|     })
+    453|     await flush()
+    454|     expect(fake.stat.mock.calls.length).toBe(initial + 1)
+       |                                         ^
+    455|     expect(stateOf(renderer)['data-status']).toBe('empty')
+    456|     // The retry delay doubles after each tick: no retry on the next 4…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  packages/client-ui/tests/useBoardFile.spec.tsx > useBoardFile > keeps polling a missing board after the watch ends
+AssertionError: expected { 'data-probe': 'state', …(6) } to match object { 'data-status': 'ready', …(2) }
+(4 matching properties omitted from actual)
+
+- Expected
++ Received
+
+  {
+-   "data-revision": 1,
+-   "data-status": "ready",
++   "data-revision": "",
++   "data-status": "empty",
+    "data-watch": "ended",
+  }
+
+ ❯ packages/client-ui/tests/useBoardFile.spec.tsx:524:31
+    522|     })
+    523|     await flush()
+    524|     expect(stateOf(renderer)).toMatchObject({
+       |                               ^
+    525|       'data-status': 'ready',
+    526|       'data-revision': 1,
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  2 failed | 17 passed (19)
+   Start at  17:26:38
+   Duration  133ms (transform 28ms, setup 0ms, import 58ms, tests 21ms, environment 0ms)
+
+===== RESTORED TREE =====
+ M docs/DESIGN.md
+ M docs/OPTIONAL-DEPENDENCIES.md
+ docs/DESIGN.md                | 28 +++++++++++++++++-----------
+ docs/OPTIONAL-DEPENDENCIES.md |  8 ++++++--
+ 2 files changed, 23 insertions(+), 13 deletions(-)

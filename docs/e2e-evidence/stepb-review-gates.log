@@ -1,0 +1,108 @@
+$ pnpm install --frozen-lockfile
+Scope: all 7 workspace projects
+✓ Lockfile passes supply-chain policies (verified 18m ago)
+Lockfile is up to date, resolution step is skipped
+Done in 38ms using pnpm v12.16.1
+INSTALL_EXIT=0
+
+$ pnpm run verify
+$ pnpm run typecheck && pnpm run test && pnpm run build
+$ tsc -p tsconfig.json --noEmit
+$ vitest run
+
+ RUN  v4.1.12 /Users/guoyk/Workspace/src/dsh-devlead
+
+ ✓ packages/client-ui/tests/useBoardFile.spec.tsx (19 tests) 30ms
+ ✓ packages/devlead/tests/board-race.spec.ts (6 tests) 74ms
+ ✓ packages/devlead/tests/isolation.spec.ts (13 tests) 102ms
+ ✓ packages/tool/tests/board-tools.spec.ts (11 tests) 38ms
+ ✓ packages/client-ui/tests/board-render.spec.tsx (15 tests) 46ms
+ ✓ packages/devlead/tests/board-io.spec.ts (8 tests) 53ms
+ ✓ packages/devlead/tests/supervision-log-recovery.spec.ts (25 tests) 211ms
+ ✓ packages/devlead/tests/lanes.spec.ts (43 tests) 253ms
+ ✓ packages/devlead/tests/notification.spec.ts (97 tests) 282ms
+ ✓ packages/devlead/tests/fold.spec.ts (87 tests) 30ms
+ ✓ packages/client-ui/tests/board.spec.ts (46 tests) 18ms
+ ✓ packages/client-ui/tests/render.spec.tsx (55 tests) 50ms
+ ✓ packages/tool/tests/tools.spec.ts (194 tests) 299ms
+ ✓ packages/devlead/tests/outbox.spec.ts (27 tests) 20ms
+ ✓ packages/protocol/tests/board.spec.ts (47 tests) 14ms
+ ✓ packages/devlead/tests/regressions.spec.ts (4 tests) 21ms
+ ✓ packages/devlead/tests/record-api.spec.ts (9 tests) 19ms
+ ✓ packages/protocol/tests/format.spec.ts (45 tests) 6ms
+ ✓ packages/devlead/tests/answers.spec.ts (41 tests) 17ms
+ ✓ packages/client-ui/tests/locales.spec.ts (15 tests) 7ms
+ ✓ packages/devlead/tests/idempotency.spec.ts (10 tests) 12ms
+ ✓ packages/client-ui/tests/styles.spec.ts (28 tests) 7ms
+ ✓ packages/devlead/tests/message-policy.spec.ts (109 tests) 11ms
+ ✓ packages/client-ui/tests/format.spec.ts (50 tests) 4ms
+ ✓ packages/command/tests/handler.spec.ts (56 tests) 9ms
+ ✓ packages/devlead/tests/plugin-metadata.spec.ts (22 tests) 6ms
+ ✓ packages/devlead/tests/mode-projection.spec.ts (10 tests) 5ms
+ ✓ packages/devlead/tests/board-watcher.spec.ts (1 test) 5ms
+ ✓ packages/devlead/tests/domain.spec.ts (31 tests) 10ms
+ ✓ packages/command/tests/render.spec.ts (21 tests) 6ms
+ ✓ packages/devlead/tests/active.spec.ts (8 tests) 7ms
+ ✓ packages/command/tests/parse.spec.ts (21 tests) 5ms
+ ✓ packages/client-ui/tests/results.spec.ts (23 tests) 5ms
+ ✓ packages/command/tests/resolve.spec.ts (19 tests) 3ms
+ ✓ packages/devlead/tests/watch-projection.spec.ts (7 tests) 3ms
+ ✓ packages/devlead/tests/metrics.spec.ts (6 tests) 3ms
+ ✓ packages/client-ui/tests/sessionMark.spec.ts (10 tests) 2ms
+ ✓ packages/devlead/tests/runtime-projections.spec.ts (5 tests) 5ms
+ ✓ packages/client-ui/tests/apply.spec.ts (5 tests) 4ms
+ ✓ packages/protocol/tests/types.spec.ts (8 tests) 2ms
+ ✓ packages/client-ui/tests/board-inject.spec.ts (2 tests) 1ms
+ ✓ packages/tool/tests/errors.spec.ts (17 tests) 2ms
+ ✓ packages/devlead/tests/board.spec.ts (30 tests) 2432ms
+     ✓ maps writer-lock timeout to a retryable BOARD_IO_ERROR without changing bytes  2129ms
+ ✓ packages/devlead/tests/service.spec.ts (301 tests) 16547ms
+     ✓ keeps an action report queued behind an unclaimed action wake and delivers it when the inbox clears  1105ms
+     ✓ retries a cold outbox replay receipt failure and clears the row without injecting  1308ms
+     ✓ loads and serves live leads when the corpus never becomes consistent  2029ms
+     ✓ bounds the readiness barrier when the persistence listing keeps failing  2027ms
+     ✓ never fails the plugin load when the persisted scan rejects  2278ms
+     ✓ the retry timer drains a queued discard without any activation or prompt  5304ms
+ ✓ packages/devlead/tests/phase2.spec.ts (71 tests) 17747ms
+     ✓ clears live-only authorization before a late corpus read finishes  314ms
+     ✓ recovers prompt authorization after an incomplete scan succeeds on retry  318ms
+     ✓ reschedules after a slow first scan fails without requiring another injection  2562ms
+     ✓ resumes beyond 64 benign rows and mixed missing/legacy cache rows  909ms
+     ✓ recovers a no-cache corpus without a hot retry loop  912ms
+     ✓ bounds failed retries and recovers after the cause clears  1314ms
+     ✓ retains query lifecycle retries when persistence arrives before sessionQuery  311ms
+     ✓ keeps a corrupt first batch closed after later benign batches  466ms
+     ✓ does not start a timer when no corpus service exists  353ms
+     ✓ re-lists after corpus readiness instead of trusting a pre-ready partial snapshot  2543ms
+     ✓ keeps terminal corruption across lifecycle events without resetting the retry budget  579ms
+     ✓ does not count live-only early returns against the retry budget  556ms
+     ✓ refuses delivery when the listing authorized by the barrier changes before finalize  410ms
+     ✓ does not trust a scan re-list that omits a stored foreign supervisor  2547ms
+     ✓ stays fail-closed when the corpus binding is removed after a proof  585ms
+     ✓ stays fail-closed when a real cordis corpus Service is removed with ctx.set(undefined)  580ms
+     ✓ does not finalize while the finalize refresh budget is exhausted and new persisted rows keep appearing  764ms
+
+ Test Files  45 passed (45)
+      Tests  1678 passed (1678)
+   Start at  17:37:04
+   Duration  18.23s (transform 2.35s, setup 0ms, import 6.00s, tests 38.43s, environment 2ms)
+
+$ node scripts/build.mjs
+built packages/protocol/lib/index.js
+built packages/protocol/lib/client.js
+built packages/devlead/lib/index.js
+built packages/tool/lib/index.js
+built packages/command/lib/index.js
+built packages/client-ui/lib/index.js
+built packages/client-ui/lib/client.js
+validated bundle (patch-only)
+build complete (6 targets)
+VERIFY_EXIT=0
+
+$ pnpm run check:packages
+$ node scripts/check-packages.mjs
+check-packages: OK (6 packages)
+CHECK_PACKAGES_EXIT=0
+
+$ git rev-parse HEAD
+b9988e721007a89491257f688cd173eceeebabfd
