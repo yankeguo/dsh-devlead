@@ -30,8 +30,11 @@
  *                 rejected;
  *               - a watched child `turn/end` writes a durable notification into
  *                 the lead Session and the projection exposes it;
- *               - `/devlead status` reports `Worktree isolation: unavailable`.
- *             27 checks. The final `/devlead status` + `/devlead off` checks
+ *               - `/devlead status` reports `Worktree isolation: unavailable`;
+ *               - the board is disabled in this default composition: the client
+ *                 plugin still statically declares its board client services,
+ *                 but no `__DSH_DEVLEAD_BOARD__` global is injected.
+ *             28 checks. The final `/devlead status` + `/devlead off` checks
  *             move to phase 1b, so this instance is stopped with the enabled
  *             mode, watch set, and notification digest still durable for the
  *             restart assertions.
@@ -195,10 +198,10 @@
  * still run.
  *
  * Check counts are PINNED per phase (EXPECTED_CHECKS, baseline DSH
- * 0.2.2-rc.5): phase 1 = 27, phase 1b = 12, phase 2 = 23, phase 3 = 132,
- * phase 1e = 31, so every flow reports 225/225 checks (222 PASS + 3
+ * 0.2.2-rc.5): phase 1 = 28, phase 1b = 12, phase 2 = 23, phase 3 = 132,
+ * phase 1e = 31, so every flow reports 226/226 checks (223 PASS + 3
  * credential-less SKIP) when all five phases pass (`--no-worktree` skips
- * phase 2: 202/202). A deleted or added check fails the phase through the count
+ * phase 2: 203/203). A deleted or added check fails the phase through the count
  * pin. Run both flows before a release:
  *
  *   node scripts/e2e-smoke.mjs --flow patch
@@ -311,7 +314,7 @@ const PROBE_LANES_METRICS_COMMAND = 'devlead-e2e-lanes-metrics'
  * 0.2.2-rc.5). `Checks.summarize` fails when a phase reports a different
  * count, so deleting or silently skipping a check cannot pass unnoticed.
  */
-const EXPECTED_CHECKS = { phase1: 27, phase1b: 12, phase2: 23, phase3: 132, phase1e: 31 }
+const EXPECTED_CHECKS = { phase1: 28, phase1b: 12, phase2: 23, phase3: 132, phase1e: 31 }
 /** DSH version the pinned totals and scripted-turn contracts are verified against. */
 const BASELINE_DSH_VERSION = '0.2.2-rc.5'
 /** Probe command: queued-inbox visibility / ownership / idempotent retraction. */
@@ -904,6 +907,19 @@ class WebClient {
   }
 
   /**
+   * List the JSON global names present in the index HTML, without requiring
+   * any one of them. Used for negative injection assertions.
+   * @returns every `globalThis["<name>"]` key the webserver emitted.
+   */
+  async injectedGlobalNames() {
+    const response = await fetch(`${this.origin}/`, { headers: { cookie: this.#cookie } })
+    if (response.status !== 200) throw new Error(`GET / answered HTTP ${response.status}`)
+    const html = await response.text()
+    return [...html.matchAll(/globalThis\["((?:[^"\\]|\\.)*)"\]/gu)]
+      .map(match => JSON.parse(`"${match[1]}"`))
+  }
+
+  /**
    * Call one unary Remote method through the browser-facing HTTP bridge.
    * @param method - `<namespace>/<method>` endpoint.
    * @param args - named argument object.
@@ -1043,6 +1059,18 @@ async function runChecks(client, paths) {
     'client plugin declares its package.json injects',
     inject.includes('@deepseek-ai/dsh-api-remotes') && inject.includes('@deepseek-ai/dsh-client-ui-primitives'),
     `${String(inject.length)} injects`,
+  )
+  // The board tab/button/global are gated by the deployment-published config,
+  // not by the static inject table (the DSH client loader needs the table at
+  // boot). With no boardPath this default composition must publish no global.
+  const globalNames = await client.injectedGlobalNames()
+  checks.expect(
+    'disabled board publishes no global while its client injects stay declared',
+    !globalNames.includes('__DSH_DEVLEAD_BOARD__')
+      && inject.includes('@deepseek-ai/dsh-api-workspace-files')
+      && inject.includes('@deepseek-ai/dsh-client-ui-sidebar-right'),
+    `${String(globalNames.length)} globals; board injects declared: ${
+      String(inject.includes('@deepseek-ai/dsh-api-workspace-files'))}`,
   )
 
   const lead = await client.createSession(paths)
@@ -2833,7 +2861,10 @@ async function runFlow(options) {
     if (options.flow === 'patch') devleadOverlay = writePatchOverlay(paths)
     else installProfile(paths)
     const boardOverlay = writeBoardConfigPatch(paths)
-    const phaseOnePatches = devleadOverlay === undefined ? [boardOverlay] : [devleadOverlay, boardOverlay]
+    // Phase 1 and 1b boot the shipped default composition with the board
+    // disabled (no board overlay), so the negative no-global assertion above
+    // exercises the real default. Later phases configure the scratch board.
+    const phaseOnePatches = devleadOverlay === undefined ? [] : [devleadOverlay]
 
     // ------------------------------------------------------------------------
     // Phase 1: the shipped default composition (no experimental bundle).

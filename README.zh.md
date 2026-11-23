@@ -361,12 +361,13 @@ config）：
 | `wakeColdSession` | `true` | 为 `true` 时，带排队通知的冷 lead Session 会被恢复以完成投递；设为 `false` 可让队列留在内存里，直到人类打开该 lead Session |
 | `defaultAgentPreset` | `''` | 创建会话未指定 `preset` 时使用的默认值；空表示 Host 的实际默认值。无效 id 会让创建失败并返回结构化错误 |
 | `questionTtlMs` | `86400000` | 非负安全整数；open question 的 lazy TTL（24 小时），`0` 禁用过期。已回答的问题不会追溯过期 |
-| `boardPath` | `''` | trim 后为空白则禁用；非空必须是项目看板 JSON 的绝对路径。相对路径直接拒绝，不按 cwd resolve。只有 lead AI 通过工具写入，人类/浏览器只读。详见 [docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md) |
+| `boardPath` | `''` | trim 后为空白则禁用；非空必须是项目看板 JSON 的绝对路径。相对路径直接拒绝，不按 cwd resolve。路径**最终组件不能是 symlink**（原子替换会换掉链接本身而不是目标文件）；父目录链中的 symlink 可以。只有 lead AI 通过工具写入，人类/浏览器只读。详见 [docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md) |
 
 可选看板在锁内 fresh read，并支持 `expected_revision` CAS。update 返回的 project 省略 tasks；
 单项目 read 最多返回 50 条 tasks，超出时标记 `truncated:true`。I/O 故障使用 `BOARD_IO_ERROR`；
 重试前先重新读取，因为原子替换后的 `stat` 失败可能发生在 revision 已提交之后。严格 schema、
 坏文件处理与持久性边界见 [docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md)。
+看板 wire schema 与 limits 由 `@yankeguo/dsh-devlead-protocol` 单点维护，Host 校验器与浏览器解码器共用。
 
 `tool` / `command` / `client-ui` 没有部署配置；领域限制（watch 上限、通知保留条数等）由核心
 服务与 protocol 常量决定。可选 worktree 隔离**没有配置键**：只有当 profile 组合了实验性
@@ -389,8 +390,10 @@ worktree 服务时才存在，并且每次派发通过 `isolation` 参数使用�
   DSH 0.2.2-rc.1 不对空白（尚未开始 turn）的 Session 行渲染 trailing seat，所以全新 Session
   要等第一轮结束后才显示标记；搜索结果使用独立行表面，不显示标记。
 - **项目看板（配置 `boardPath` 时）：** 会话头部的「项目看板」按钮打开右侧栏只读 tab。项目按状态分组
-  （blocked 置顶），同组按优先级与更新时间排序，展示 focus/next/blockers 和可展开任务摘要。面板跟随
-  文件变更，区分文件不存在与读取/解析失败；折叠区还列出未在看板中的已注册 workspace、会话数与最近活动。
+  （blocked 置顶），同组按优先级与更新时间排序，展示 focus/next/blockers 和可展开任务摘要。面板优先
+  跟随文件 watch，看板文件尚不存在时用有界轮询兜底（4s 起、退避到 30s）；watch 断开时明确显示
+  「自动更新已断开，请手动刷新」而不是假装正常。它区分文件不存在与读取/解析失败；折叠区还列出
+  未在看板中的已注册 workspace、会话数与最近活动（清单读取失败时错误优先于「读取中」）。
   用户只能刷新与展开，不能编辑看板。
 
 关闭（工具条开关是唯一控件）：

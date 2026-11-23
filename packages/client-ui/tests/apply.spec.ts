@@ -166,6 +166,30 @@ describe('client apply', () => {
     expect(state.tabDefinitions).toEqual([])
     expect(state.injects).not.toContain('sidebar.right.pane.tab')
     expect(state.injects).not.toContain('conversation.session.header.utilities')
+    // Regression anchor for the packaging contract: the board-only services
+    // stay statically declared because the DSH client loader seeds the module
+    // table from `dsh.client.inject` at boot. A disabled board therefore
+    // registers nothing and performs no Remote I/O; it does not hide its
+    // service declarations, which every default web-app composition satisfies.
+    expect(clientInject).toEqual([
+      'slots',
+      'sessions',
+      'remote',
+      'remote.commands',
+      'remote.workspaceFiles',
+      'locale',
+      'sidebarRight',
+      'sidebarRightTabs',
+      'workspaces',
+    ])
+    expect(state.registrations).toHaveLength(4)
+    expect(state.registrations.map(entry => entry.name)).toEqual([
+      'conversation.input.left',
+      'conversation.input.dock',
+      'sidebar.session.row.trailing',
+      'sidebar.session.row.hover',
+    ])
+    expect(state.effects).toEqual(['devlead: dictionaries', 'devlead: styles'])
   })
 
   it('registers the board type, keyed body, guide entry, and opening header action when configured', () => {
@@ -175,6 +199,8 @@ describe('client apply', () => {
     })
     const { ctx, state } = fakeContext()
     apply(ctx)
+    // Same static declarations as the disabled case: the global only gates
+    // registrations, never the service table.
     expect(clientInject).toEqual(expect.arrayContaining(['remote.workspaceFiles', 'sidebarRight', 'sidebarRightTabs', 'workspaces']))
     expect(state.conditionalInjects).toEqual([])
     expect(state.tabDefinitions).toHaveLength(1)

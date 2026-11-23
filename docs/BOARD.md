@@ -19,6 +19,11 @@
     boardPath: /path/to/workbox/.dsh/devlead/board.json
 ```
 
+`boardPath` 的**最终组件不能是 symlink**：写入是把同目录临时文件原子 rename 到该路径，会替换
+symlink 本身而不是它指向的目标文件，外部对目标的编辑因此不会被看板读到；目录链中的 symlink
+可以正常工作（`mkdir`、`stat` 与目录 watch 都按解析后的目录进行）。插件不做 realpath
+canonicalization。
+
 配置 board 后，`DevLeadBoardStore.start()` 先以 `mkdir(dirname, {recursive:true, mode:0o700})`
 幂等预创建父目录（不修改已有目录权限），再启动读取/监听；预创建失败以 `BOARD_IO_ERROR` reject。
 这保证浏览器 chokidar 首开时父目录已存在，Host 首次写入能触发 `add` 事件。`update()` 仍先完成
@@ -29,7 +34,12 @@
 ## 文件 schema v1
 
 所有对象均 strict：未知字段、重复 project id、重复 workspace.path、重复 blocker/task id、
-错误枚举、非绝对 workspace 路径和非法时间都会拒绝。时间只接受 ISO-8601 UTC `Z` 形式，带
+错误枚举、非绝对 workspace 路径和非法时间都会拒绝。该 schema、limits 与重复规则只有一份实现：
+`@yankeguo/dsh-devlead-protocol` 的 `createDevLeadBoardSchema(isAbsolutePath)`，Host 与浏览器
+共用；Host 传入自己的 `node:path.isAbsolute`，浏览器按 Host 发布的 `pathPlatform` 传入
+POSIX/Windows 谓词。`packages/protocol/tests/board.spec.ts` 固化 accept/reject 矩阵，
+`packages/devlead/tests/board.spec.ts` 与 `packages/client-ui/tests/board.spec.ts` 分别固定
+两端消费面。时间只接受 ISO-8601 UTC `Z` 形式，带
 offset 的时间拒绝。`updatedBy` 是最后写入的 lead Session id/title；写入时 title 先 trim，
 空白回退为 `DevLead`，再截到最多 200 个 UTF-16 code units。
 
@@ -154,11 +164,14 @@ window.__DSH_DEVLEAD_BOARD__ = {
 }
 ```
 
-禁用时 global 不注入。Step B 的 `dsh.client.inject` 另声明
-`@deepseek-ai/dsh-api-workspace-files`、`@deepseek-ai/dsh-api-workspace-controller` 与
-`@deepseek-ai/dsh-client-ui-sidebar-right`，但不新增 board RPC，也不向浏览器暴露任何写能力。
-client 按官方右栏插件契约静态组合 `remote.workspaceFiles`、`sidebarRight`、`sidebarRightTabs`
-与 `workspaces`；global 是否存在只控制下列 UI 注册，未配置时不显示任何看板入口：
+禁用时 global 不注入，`apply()` 也不注册任何看板入口。`dsh.client.inject` 是**静态**包声明：
+`@deepseek-ai/dsh-api-workspace-files`、`@deepseek-ai/dsh-api-workspace-controller`、
+`@deepseek-ai/dsh-client-ui-sidebar-right` 等始终在表中（DSH client loader 在 boot 时据此
+seed module table，默认 web-app 组合均提供这些服务），不由 boardPath 增删。实现不新增 board
+RPC，也不向浏览器暴露任何写能力；client 按官方右栏插件契约静态组合
+`remote.workspaceFiles`、`sidebarRight`、`sidebarRightTabs` 与 `workspaces`。global 是否存在
+只控制下列 UI 注册，未配置时不显示任何看板入口（`apply.spec.ts` 的零注册锚点与 rc.5 e2e 的
+负向 global 断言固定该区分）：
 
 - tab definition：`kind: 'devlead-board'`，`id: '@yankeguo/dsh-client-ui-devlead/board'`；标准
   guide entry 与会话头 `conversation.session.header.utilities` 按钮通过
@@ -166,11 +179,17 @@ client 按官方右栏插件契约静态组合 `remote.workspaceFiles`、`sideba
   的 **id**（不是 kind）。
 - `useBoardFile`：以当前 tab 的 SessionId 调 `stat` + `readBytes(..., {})`，并直接消费
   `changes`。首读与 ready 后重读关闭订阅竞态，change 经 120ms debounce 重读；卸载 abort 读取/
-  watch 并 `dispose()` stream。旧 request generation 不能覆盖新结果。watch 断开单独显示警告，
-  不再把旧内容标为“正常”；手动刷新同时重读并重建 watch。
-- 浏览器自己的 strict schema v1 解码器（不引入 Host/Node 模块）拒绝坏 UTF-8、坏 JSON、未知
-  字段、重复 id、错误枚举和超限文件。绝对路径按 Host 显式发布的 `pathPlatform` 选择
-  `node:path.posix` 或 `node:path.win32` 语义，不从路径字符串或浏览器 OS 猜测。文件不存在是
+  watch 并 `dispose()` stream。旧 request generation 不能覆盖新结果。**文件不存在（空态）时
+  由有界轮询兜底**：默认 4s 起、指数退避到 30s 上限，读到数据、切状态或卸载即停，复用同一
+  abort/generation；Host 预创建父目录只保证 watch 首开可见 `add` 事件，host 未升级、外部编辑
+  或 watch 不可用时仍能自愈。轮询只由 `status === 'empty'` 驱动，与 watch 的 `live`/`ended`
+  状态无关；`refreshing` 切换不重置退避延迟（effect 依赖只含 `state.status`），避免在途读取把
+  退避打回 4s。watch 断开单独显示“自动更新已断开，请手动刷新”警告，不再把旧
+  内容标为“正常”，也不静默自动重连；手动刷新同时重读并重建 watch。
+- 浏览器解码器直接使用 protocol 的同一份 strict schema v1（不 import Host/Node 模块；zod 随
+  protocol 浏览器 bundle 内联），拒绝坏 UTF-8、坏 JSON、未知字段、重复 id/重复 workspace path、
+  错误枚举和超限文件。绝对路径按 Host 显式发布的 `pathPlatform` 选择 `node:path.posix` 或
+  `node:path.win32` 语义，不从路径字符串或浏览器 OS 猜测。文件不存在是
   「还没有看板数据」；Remote 错误是读取错误；JSON/schema 错误是
   解析错误，显示最后成功时间与重试，不保留旧项目卡片。
 - 项目按 blocked / active / paused / done 分组，同组按 high / medium / low、updatedAt 倒序、id
@@ -178,9 +197,15 @@ client 按官方右栏插件契约静态组合 `remote.workspaceFiles`、`sideba
   revision、updatedAt 相对时间与读取状态。
 - 「未在看板中的项目」折叠区只连接 Host 的 `useWorkspaces` / `useSessions` 投影，按 workspace
   path 过滤（POSIX 尾斜杠、Windows 分隔符/大小写做语法规范化），显示名称、path、会话数和这些
-  Sessions 的最新 updatedAt；Session 清单 pending 时显示读取中，不谎报无活动。symlink/realpath
-  别名仍需 Step C 由 Host 权威解析，浏览器不伪造 canonicalization。清单 pending/error 也明确标注。
+  Sessions 的最新 updatedAt；Session 清单 pending 时显示读取中，不谎报无活动。workspace 清单
+  读取失败时**错误优先于 pending**（即使投影 phase 仍为 pending 也显示错误，不把失败误标成
+  “读取中”），看板文件未就绪时只显示「不可用」。symlink/realpath 别名仍需 Step C 由 Host
+  权威解析，浏览器不伪造 canonicalization。组标题的 DOM id 用 React `useId` 前缀，多个面板
+  实例同时挂载也不会冲突。
 
 所有样式沿用 `ensureStyleTag` 与 `--dsw-*` token，文案在 `devlead` namespace 的 zh/en 词典。
-纯函数、Remote hook、注册和 `react-test-renderer` 组件测试覆盖上述状态与排序契约。Step C 可在
+自动化覆盖的边界：纯函数（schema/分组/排序/相对时间/unlisted 规范化）、`Remote` hook 的
+加载/分帧/轮询/降级/abort 状态机，以及 `react-test-renderer` 的组件分支、只读性、XSS 文本
+转义与 a11y 属性；真实浏览器中的视觉、主题与交互仍按
+[UI-VERIFICATION](UI-VERIFICATION.md) 在隔离 profile 人工验收，不由单测替代。Step C 可在
 不修改文件所有权的前提下复用 `DevLeadBoardPanelView` 做全页视图，或另加 Session 跳转/自动状态合并。

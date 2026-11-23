@@ -436,8 +436,8 @@ git -C "$REPO" add -f \
 ```
 
 当前 harness 的 pin 来自 `scripts/e2e-smoke.mjs` 的 `EXPECTED_CHECKS`
-（phase 1=27、1b=12、2=23、3=132、1e=31）：patch / installed 完整流必须各为 **225/225**，
-no-worktree 必须为 **202/202**（仅跳过 phase 2）；完整流目标计数为 **222 PASS + 3** 条有真实
+（phase 1=28、1b=12、2=23、3=132、1e=31）：patch / installed 完整流必须各为 **226/226**，
+no-worktree 必须为 **203/203**（仅跳过 phase 2）；完整流目标计数为 **223 PASS + 3** 条有真实
 原因的正向模型选择 SKIP，其他检查不得通过删除或放宽断言来凑数。未来 pin 变化只能先更新
 `EXPECTED_CHECKS` 并在证据中解释。
 
@@ -508,9 +508,10 @@ E2E 重跑（含真实 `*_EXIT=0` 与总计行）记录在
 
 当前 board 加固轮保留上述全部旧检查，并在 phase 3 新增 4 项：真实 `ctx.devLead.updateBoard`
 两次写入（第二次 CAS）、`webserver/index-inject` board global、独立磁盘 revision/内容 read-back。
-因此当前目标 pin 是 phase 3=132、完整流=225（222 PASS + 3 credential-less SKIP）、
-no-worktree=202；上表 Phase 1e 行（221/198、218 PASS）是 Phase 1e 历史实测，不改写为新一轮
-证据。
+Step B 复核修复轮把 phase 1 与 1b 改回**未配置 boardPath** 的默认组合，并新增 1 项负向断言：
+static inject 仍声明看板客户端服务，但 index HTML 不注入 `__DSH_DEVLEAD_BOARD__`。因此当前目标
+pin 是 phase 1=28、phase 3=132、完整流=226（223 PASS + 3 credential-less SKIP）、no-worktree=203；
+上表 Phase 1e 行（221/198、218 PASS）是 Phase 1e 历史实测，不改写为新一轮证据。
 
 每条 flow 有 3 条正向模型选择检查因无 provider 凭据 SKIP（打印真实原因）；负向
 `DEVLEAD_MODEL_UNAVAILABLE`、`devlead_list_models`、preset roster 与 watched-child
@@ -528,7 +529,11 @@ no-worktree=202；上表 Phase 1e 行（221/198、218 PASS）是 Phase 1e 历史
   含 enabled / sessions / notifications / reports；组件级渲染断言由 `pnpm test` 覆盖。
 - 项目看板右栏的 definition id/kind 分工、keyed body、header utilities、Workspace Files unary/stream
   类型与 Workspace/Session hooks 已逐行核对 rc.5 tag；这些 API 在 rc.1 npm typings 同样存在并通过
-  全仓 typecheck。未配置 boardPath 时看板的可选服务不进入 static inject。
+  全仓 typecheck。`dsh.client.inject` 是**静态**包声明：`remote.workspaceFiles` /
+  `sidebarRight` / `sidebarRightTabs` / `workspaces` 始终在表中（默认 web-app 组合均提供），
+  不由 boardPath 增删；未配置 boardPath 时 `apply()` 不注册任何看板 tab/按钮，Host 入口也不
+  注入 browser global，因此默认部署的既有 UI 行为不变。该区分由 `apply.spec.ts` 的零注册锚点
+  与 rc.5 e2e 的负向 global 断言固定。
 - rc.5 Web UI 的视觉行为本轮没有截图工具证据；自动化侧的判定依据是 slot/DOM 源码未变、boot
   graph 加载成功、projection 数据与渲染测试通过。视觉部分（composer 开关、DevLeadBar、lane
   着色、question 状态、`provisional` 标记、侧栏 active ring / watched 准星）按

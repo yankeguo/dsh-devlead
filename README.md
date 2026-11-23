@@ -393,13 +393,14 @@ profile's `cordis.patch.yml` — DSH replaces a row's whole config):
 | `wakeColdSession` | `true` | when `true`, a cold lead Session with queued notifications is resumed to deliver them; set `false` to keep the queues in memory until a human opens the lead Session |
 | `defaultAgentPreset` | `''` | default value used when a created session names no `preset`; empty means the Host's effective default. An invalid id fails creation with a structured error |
 | `questionTtlMs` | `86400000` | non-negative safe integer; lazy open-question TTL (24h), `0` disables expiry. Answered questions do not retroactively expire |
-| `boardPath` | `''` | trimmed blank disables the board; a non-blank value must be an absolute project-board JSON path. Relative paths are rejected, never resolved against cwd. Only the lead AI writes through tools; humans/browser clients are read-only. See [docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md) |
+| `boardPath` | `''` | trimmed blank disables the board; a non-blank value must be an absolute project-board JSON path. Relative paths are rejected, never resolved against cwd. The final path component must not be a symlink (the atomic replace would swap the link itself, not its target); symlinks in the parent directory chain are fine. Only the lead AI writes through tools; humans/browser clients are read-only. See [docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md) |
 
 The optional board uses locked fresh reads and `expected_revision` CAS. Update results omit tasks; a
 selected-project read includes at most 50 tasks and sets `truncated:true` when more exist. I/O failures use
 `BOARD_IO_ERROR`; re-read before retrying because a post-replace `stat` failure can occur after the new
 revision has committed. See [docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md)
-for the strict schema, corruption handling, and durability boundary.
+for the strict schema, corruption handling, and durability boundary. The wire schema and limits are
+owned by `@yankeguo/dsh-devlead-protocol` and shared by the Host validator and the browser decoder.
 
 `tool` / `command` / `client-ui` have no deployment configuration; domain limits (watch cap,
 notification retention, etc.) are owned by the core service and protocol constants. Optional
@@ -427,10 +428,12 @@ permanent bar on every conversation:
   search results use a separate row surface and show no mark.
 - **Project board (when `boardPath` is configured):** a Session-header button opens the read-only
   right-Sidebar tab. It groups project cards by status (blocked first), sorts by priority and update
-  time, and shows focus/next/blockers plus expandable task summaries. The panel follows file changes,
-  distinguishes missing files from read/parse failures, and lists registered Workspaces absent from
-  the board in a collapsed section with Session counts and recent activity. People can refresh and
-  expand disclosures, but cannot edit the board.
+  time, and shows focus/next/blockers plus expandable task summaries. The panel follows file changes
+  through a file watch and falls back to a bounded poll (4s, backing off to 30s) while the board file
+  does not exist yet; if the watch ends it shows an explicit "auto-update disconnected, refresh
+  manually" state instead of pretending to be live. It distinguishes missing files from read/parse
+  failures, and lists registered Workspaces absent from the board in a collapsed section with Session
+  counts and recent activity. People can refresh and expand disclosures, but cannot edit the board.
 
 Off (the toolbar toggle is the only control):
 
