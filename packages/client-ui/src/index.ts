@@ -22,7 +22,13 @@ export function apply(ctx: Context): void {
     table.push({
       kind: 'global',
       name: '__DSH_DEVLEAD_BOARD__',
-      value: { boardPath, schemaVersion: DEVLEAD_BOARD_SCHEMA_VERSION },
+      value: {
+        boardPath,
+        schemaVersion: DEVLEAD_BOARD_SCHEMA_VERSION,
+        // Browser schema validation must use the Host's node:path semantics,
+        // not an operating-system guess from the path string or user agent.
+        pathPlatform: process.platform === 'win32' ? 'win32' : 'posix',
+      },
     })
   })
 }

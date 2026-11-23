@@ -20,7 +20,7 @@ agent 就能在人可见、可参与的标准界面里统管多个仓库。
 | **16 个主工具 + 1 个汇报工具** | 注册/列出/移除 Workspace，列出 Host 模型与 Agent preset，创建/读取/续写/归档/恢复/关注 Session，查看并撤回排队的 inbox 输入，读取通知与汇报摘要，并维护可选的用户可见项目看板。被关注的子会话另有单向的 `devlead_report`。 |
 | **人类命令** | `/devlead`、`/devlead on\|off`、`/devlead reset`、`/devlead watch\|unwatch <session>`——会话可用完整 id 或唯一前缀寻址。 |
 | **可选的 worktree 隔离** | 当 Host 组合了 DSH 的实验性 Git worktree 服务时，被派发的 Session 可以拥有自己的分支和检出，而不必共享 Workspace checkout。缺少该能力时退化为共享 checkout，并在结果里如实上报状态。 |
-| **Web 界面** | composer 工具条里的带文本 DevLead 开关（两态都在）、开启后 composer 上方的只读 DevLeadBar，以及侧边栏的 active/watched 标记。 |
+| **Web 界面** | composer 工具条里的带文本 DevLead 开关（两态都在）、开启后的只读 DevLeadBar、侧边栏 active/watched 标记，以及可选的右侧栏只读项目看板。 |
 
 ## 与 subagent / agent-team 的对比
 
@@ -383,6 +383,10 @@ worktree 服务时才存在，并且每次派发通过 `isolation` 参数使用�
   准星图标。两者都来自 summary projection，因此冷行和重启后也能渲染，无需逐行读取 Host。
   DSH 0.2.2-rc.1 不对空白（尚未开始 turn）的 Session 行渲染 trailing seat，所以全新 Session
   要等第一轮结束后才显示标记；搜索结果使用独立行表面，不显示标记。
+- **项目看板（配置 `boardPath` 时）：** 会话头部的「项目看板」按钮打开右侧栏只读 tab。项目按状态分组
+  （blocked 置顶），同组按优先级与更新时间排序，展示 focus/next/blockers 和可展开任务摘要。面板跟随
+  文件变更，区分文件不存在与读取/解析失败；折叠区还列出未在看板中的已注册 workspace、会话数与最近活动。
+  用户只能刷新与展开，不能编辑看板。
 
 关闭（工具条开关是唯一控件）：
 

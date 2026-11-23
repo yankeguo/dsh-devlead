@@ -20,7 +20,7 @@ pnpm workspace（`packages/*`，根 `package.json` 为私有、不发布），�
 | 发布顺序 | 目录 | 包名 | 角色 |
 | --- | --- | --- | --- |
 | 1 | `protocol` | `@yankeguo/dsh-devlead-protocol` | 纯类型 + 常量 + 格式化（host 与浏览器共用），声明 `devLead`/`devLeadMode`/`devLeadWatch` projection 类型 |
-| 2 | `client-ui` | `@yankeguo/dsh-client-ui-devlead` | 浏览器 UI：composer 工具条开关、只读 DevLeadBar、侧边栏 active/watched 标记 |
+| 2 | `client-ui` | `@yankeguo/dsh-client-ui-devlead` | 浏览器 UI：composer 工具条开关、只读 DevLeadBar、侧边栏标记、右侧栏只读项目看板 |
 | 3 | `devlead` | `@yankeguo/dsh-devlead` | 核心 Service `ctx.devLead`：模式、Workspace/Session 编排、watch 索引、通知投递、projection fold |
 | 4 | `command` | `@yankeguo/dsh-command-devlead` | `/devlead` 人类命令 |
 | 5 | `tool` | `@yankeguo/dsh-tool-devlead` | 模型工具 `devlead_*` + 条件系统提示 |

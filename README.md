@@ -22,7 +22,7 @@ everything.
 | **16 lead tools + 1 report tool** | Register/list/remove Workspaces, list Host models and Agent presets, create/read/continue/archive/restore/watch Sessions, inspect and retract queued inbox inputs, read the notification and report digest, and maintain an optional user-visible project board. Watched children get a one-way `devlead_report`. |
 | **Human commands** | `/devlead`, `/devlead on\|off`, `/devlead reset`, `/devlead watch\|unwatch <session>` — Sessions are addressable by full id or unique prefix. |
 | **Optional worktree isolation** | When the Host composes DSH's experimental Git worktree service, a dispatched Session can get its own branch and checkout instead of sharing the Workspace checkout. Missing capability degrades to the shared checkout with a reported status. |
-| **Web UI** | A labelled DevLead toggle in the composer toolbar (present in both states), a status-only DevLeadBar above the composer while the mode is on, and active/watched marks in the sidebar. |
+| **Web UI** | A labelled DevLead toggle, a status-only DevLeadBar, active/watched sidebar marks, and an optional read-only project-board tab in the right Sidebar. |
 
 ## How it compares with subagent / agent-team
 
@@ -419,6 +419,12 @@ permanent bar on every conversation:
   after a restart without per-row Host reads. DSH 0.2.2-rc.1 does not render the trailing seat on
   a blank (no-turn-yet) Session row, so a brand-new Session shows its mark after the first turn;
   search results use a separate row surface and show no mark.
+- **Project board (when `boardPath` is configured):** a Session-header button opens the read-only
+  right-Sidebar tab. It groups project cards by status (blocked first), sorts by priority and update
+  time, and shows focus/next/blockers plus expandable task summaries. The panel follows file changes,
+  distinguishes missing files from read/parse failures, and lists registered Workspaces absent from
+  the board in a collapsed section with Session counts and recent activity. People can refresh and
+  expand disclosures, but cannot edit the board.
 
 Off (the toolbar toggle is the only control):
 

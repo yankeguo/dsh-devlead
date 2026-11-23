@@ -1,7 +1,7 @@
 {
   "name": "@yankeguo/dsh-client-ui-devlead",
   "version": "0.4.1",
-  "description": "DevLead surfaces: the composer-toolbar toggle that switches the mode on or off, the status strip above the composer while the mode is on, and a DevLead mark on the Session's sidebar row.",
+  "description": "DevLead surfaces: the mode toggle and status strip, Session sidebar marks, and a read-only right-Sidebar project board.",
   "license": "MIT",
   "type": "module",
   "main": "lib/index.js",
@@ -22,11 +22,14 @@
       "inject": [
         "@deepseek-ai/dsh-api-remotes",
         "@deepseek-ai/dsh-api-session-controller",
+        "@deepseek-ai/dsh-api-workspace-controller",
+        "@deepseek-ai/dsh-api-workspace-files",
         "@deepseek-ai/dsh-client-locale",
         "@deepseek-ai/dsh-client-ui-conversation",
         "@deepseek-ai/dsh-client-ui-primitives",
         "@deepseek-ai/dsh-client-ui-renderer",
         "@deepseek-ai/dsh-client-ui-session",
+        "@deepseek-ai/dsh-client-ui-sidebar-right",
         "@deepseek-ai/dsh-client-ui-workspace"
       ],
       "platform": "web"
@@ -34,6 +37,9 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "~4.1.0",
+    "@deepseek-ai/dsh-api-workspace-controller": ">=0.2.2-rc.1 <0.3.0",
+    "@deepseek-ai/dsh-api-workspace-files": ">=0.2.2-rc.1 <0.3.0",
+    "@deepseek-ai/dsh-client-ui-sidebar-right": ">=0.2.2-rc.1 <0.3.0",
     "@deepseek-ai/dsh-host-webserver": ">=0.2.2-rc.1 <0.3.0"
   },
   "dependencies": {

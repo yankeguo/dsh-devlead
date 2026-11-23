@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "DevLead UI",
-    "description": "Web UI for DevLead mode: the composer-toolbar toggle that switches the mode on or off, the status strip shown while the mode is on, and the active-DevLead and watched-session marks in the sidebar."
+    "description": "Web UI for DevLead mode: the mode toggle and status strip, sidebar Session marks, and the read-only project board."
   }
 }

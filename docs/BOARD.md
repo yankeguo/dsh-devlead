@@ -2,7 +2,7 @@
 
 项目看板为 DevLead 提供跨 Session 的持久项目状态。**唯一事实源是 `boardPath` 指向的 JSON
 文件**；人类/浏览器只读，只有启用 DevLead 模式的 lead AI 可以通过 `devlead_board_update`
-写入。Step A 实现 Host 数据层、AI 工具、动态摘要和浏览器 global；右侧栏 UI 属于 Step B。
+写入。Step A 实现 Host 数据层、AI 工具、动态摘要和浏览器 global；Step B 实现右侧栏只读 UI。
 
 ## 配置
 
@@ -129,11 +129,37 @@ board 启用时，client-ui 的 Host 入口在每次 `webserver/index-inject` �
 window.__DSH_DEVLEAD_BOARD__ = {
   boardPath: '/path/to/workbox/.dsh/devlead/board.json',
   schemaVersion: 1,
+  pathPlatform: 'posix', // Windows Host 为 'win32'
 }
 ```
 
-禁用时 global 不注入。Step B 应在 `dsh.client.inject` 增加
-`@deepseek-ai/dsh-api-workspace-files` 与 `@deepseek-ai/dsh-client-ui-sidebar-right`，用现有
-`remote.workspaceFiles.readBytes/stat/changes` 对该绝对路径只读，再注册
-`sidebar.right.pane.tab`。不要新增 board RPC，不要把写能力暴露到浏览器。本步没有改变现有
-client bundle 的 UI 行为。
+禁用时 global 不注入。Step B 的 `dsh.client.inject` 另声明
+`@deepseek-ai/dsh-api-workspace-files`、`@deepseek-ai/dsh-api-workspace-controller` 与
+`@deepseek-ai/dsh-client-ui-sidebar-right`，但不新增 board RPC，也不向浏览器暴露任何写能力。
+client 按官方右栏插件契约静态组合 `remote.workspaceFiles`、`sidebarRight`、`sidebarRightTabs`
+与 `workspaces`；global 是否存在只控制下列 UI 注册，未配置时不显示任何看板入口：
+
+- tab definition：`kind: 'devlead-board'`，`id: '@yankeguo/dsh-client-ui-devlead/board'`；标准
+  guide entry 与会话头 `conversation.session.header.utilities` 按钮通过
+  `sidebarRight.openTab(kind)` 打开。body slot 是 `sidebar.right.pane.tab`，其 `key` 是 definition
+  的 **id**（不是 kind）。
+- `useBoardFile`：以当前 tab 的 SessionId 调 `stat` + `readBytes(..., {})`，并直接消费
+  `changes`。首读与 ready 后重读关闭订阅竞态，change 经 120ms debounce 重读；卸载 abort 读取/
+  watch 并 `dispose()` stream。旧 request generation 不能覆盖新结果。watch 断开单独显示警告，
+  不再把旧内容标为“正常”；手动刷新同时重读并重建 watch。
+- 浏览器自己的 strict schema v1 解码器（不引入 Host/Node 模块）拒绝坏 UTF-8、坏 JSON、未知
+  字段、重复 id、错误枚举和超限文件。绝对路径按 Host 显式发布的 `pathPlatform` 选择
+  `node:path.posix` 或 `node:path.win32` 语义，不从路径字符串或浏览器 OS 猜测。文件不存在是
+  「还没有看板数据」；Remote 错误是读取错误；JSON/schema 错误是
+  解析错误，显示最后成功时间与重试，不保留旧项目卡片。
+- 项目按 blocked / active / paused / done 分组，同组按 high / medium / low、updatedAt 倒序、id
+  稳定排序；卡片展示 workspace、focus/next/blockers 和原生 `<details>` 任务清单。顶部展示
+  revision、updatedAt 相对时间与读取状态。
+- 「未在看板中的项目」折叠区只连接 Host 的 `useWorkspaces` / `useSessions` 投影，按 workspace
+  path 过滤（POSIX 尾斜杠、Windows 分隔符/大小写做语法规范化），显示名称、path、会话数和这些
+  Sessions 的最新 updatedAt；Session 清单 pending 时显示读取中，不谎报无活动。symlink/realpath
+  别名仍需 Step C 由 Host 权威解析，浏览器不伪造 canonicalization。清单 pending/error 也明确标注。
+
+所有样式沿用 `ensureStyleTag` 与 `--dsw-*` token，文案在 `devlead` namespace 的 zh/en 词典。
+纯函数、Remote hook、注册和 `react-test-renderer` 组件测试覆盖上述状态与排序契约。Step C 可在
+不修改文件所有权的前提下复用 `DevLeadBoardPanelView` 做全页视图，或另加 Session 跳转/自动状态合并。

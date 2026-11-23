@@ -442,6 +442,21 @@ describe('styles', () => {
     expect(styles).toContain('--dsw-alias-label-error')
   })
 
+  it('keeps the read-only board inside the right Sidebar without horizontal overflow', () => {
+    expect(styles).toContain('.devlead-board {')
+    expect(styles).toMatch(/\.devlead-board \{[^}]*min-width: 0;/u)
+    expect(styles).toMatch(/\.devlead-board \{[^}]*overflow: hidden;/u)
+    expect(styles).toMatch(/\.devlead-board-content \{[^}]*overflow-x: hidden;/u)
+    expect(styles).toMatch(/\.devlead-board-content \{[^}]*overflow-y: auto;/u)
+    expect(styles).toContain('.devlead-board-unlisted-list')
+    expect(styles).toMatch(/\.devlead-board-card-badges \{[^}]*min-width: 0;/u)
+    expect(styles).toMatch(/\.devlead-board-card-badges \{[^}]*max-width: 100%;/u)
+    expect(styles).toContain('@media (max-width: 480px)')
+    // Board styling uses the same public token/refcount path, never CSS Modules.
+    expect(styles).toContain('.devlead-board-card {')
+    expect(styles).not.toMatch(/\.devlead-board[^{]*module/u)
+  })
+
   it('uses only harness theme custom properties for colors and geometry', () => {
     const properties = [...themeProperties()]
     expect(properties.length).toBeGreaterThan(10)

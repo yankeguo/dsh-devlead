@@ -25,6 +25,13 @@ plugin-market 等）。审计对象是本仓库的 6 个包（`protocol`、`devl
 > **143/143**（阶段 3 = 81），rc.1–rc.3 installed `--no-worktree` 各 **120/120**；§7 中较早的
 > 12 工具 / 130 / 108 计数均为 0.2.0–0.2.3 审计时点快照。
 > 下表 §4.3 的 `Switch` 是审计时点的引入形态，当前实现见 `docs/DESIGN.md` §7。
+>
+> **Step B 增量（项目看板）**：当前 `dsh.client.inject` 另含默认 Web 组合提供的
+> `dsh-api-workspace-files`、`dsh-api-workspace-controller` 与 `dsh-client-ui-sidebar-right`，
+> 因而下文的 8 项计数是历史快照。三者的 type-only API 在 rc.1–rc.5 均存在，peer 使用同一
+> `>=0.2.2-rc.1 <0.3.0` 范围；static inject 另含默认 Web 组合提供的 `remote.workspaceFiles` /
+> `workspaces` / `sidebarRight` / `sidebarRightTabs`，没有新增默认关闭或实验性插件硬依赖。
+> global 只控制看板 UI 注册；右栏读取只有 stat/readBytes/changes，没有写 Remote。
 
 ## 1. 结论摘要
 

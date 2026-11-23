@@ -23,8 +23,11 @@ staged publish + 人工 approve 公开；`0.4.0-rc.1` 已于同日以 `next` dis
   - rc.5 只改 web search provider 选择（见下）；DevLead 不读取或调用该 API。
   - 可选项目看板使用 rc.1 typings 与 rc.5 安装版源码均存在的
     `@deepseek-ai/dsh-atomic-write`（`writeFileAtomic` / `withFileLock`）、
-    `systemPrompt.context()` 和 `webserver/index-inject`；不依赖 0.2.3-only API，engines/peer
-    DSH range 不变。boardPath 默认为空，未配置时行为与既有版本一致。
+    `systemPrompt.context()` 和 `webserver/index-inject`；只读右栏使用同版本范围的
+    `sidebarRightTabs` / `sidebarRight.openTab`、`sidebar.right.pane.tab`、
+    `remote.workspaceFiles.stat/readBytes/changes` 与 `useWorkspaces` / `useSessions`。
+    不依赖 0.2.3-only API，engines/peer DSH range 不变。boardPath 默认为空，未配置时不注册
+    看板 tab 或按钮，既有 UI 行为不变。
 - `plugin records`（`appendPluginRecord` / `PluginRecordMap`）：rc.1–rc.5 均存在；这是
   **experimental、调用方受限**的扩展点，不是公开契约，Session format migration 为
   best-effort（详见下节）。DevLead 的全部 durable 状态都依赖它。
@@ -516,6 +519,9 @@ E2E 重跑（含真实 `*_EXIT=0` 与总计行）记录在
   `devLead` / `devLeadMode` / `devLeadWatch` projection 均存在，summary 携带
   `devLeadMode` 与 `devLeadWatch`，且不携带 digest。DevLeadBar 读取的 `devLead` projection
   含 enabled / sessions / notifications / reports；组件级渲染断言由 `pnpm test` 覆盖。
+- 项目看板右栏的 definition id/kind 分工、keyed body、header utilities、Workspace Files unary/stream
+  类型与 Workspace/Session hooks 已逐行核对 rc.5 tag；这些 API 在 rc.1 npm typings 同样存在并通过
+  全仓 typecheck。未配置 boardPath 时看板的可选服务不进入 static inject。
 - rc.5 Web UI 的视觉行为本轮没有截图工具证据；自动化侧的判定依据是 slot/DOM 源码未变、boot
   graph 加载成功、projection 数据与渲染测试通过。视觉部分（composer 开关、DevLeadBar、lane
   着色、question 状态、`provisional` 标记、侧栏 active ring / watched 准星）按

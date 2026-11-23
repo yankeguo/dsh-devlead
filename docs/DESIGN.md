@@ -2625,6 +2625,17 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   - rc.1 对 blank（尚无 turn）行不渲染 trailing seat：空白新会话上的标记/hover 说明要等第一次
     turn；active ring 也随 mark 无法显示，这是 shell seat 限制。搜索视图复用另一套结果行，同
     样不挂载该 seat；搜索期间不显示 active/watched 标识。
+- **右侧栏只读项目看板**：所需服务按官方插件方式静态组合；Host global 存在时才注册 tab、
+  guide 与头部按钮，未配置时没有看板 UI。tab `kind='devlead-board'`，definition id
+  `@yankeguo/dsh-client-ui-devlead/board`；keyed body slot 使用 id，`openTab` 使用 kind。
+  `useBoardFile` 用 tab SessionId + 配置绝对路径执行 `stat` / `readBytes` / `changes`，首读与
+  ready 重读、change debounce、request generation 淘汰、卸载 abort + stream dispose 共同保证
+  freshness 与清理。浏览器独立 strict schema v1 解码器不 import Host/Node；not-found、Remote
+  read error、parse error 分别呈现 empty / read error / parse error，错误时只保留 lastSuccessAt，
+  不把旧卡片当当前数据；watch ended 单独警告且手动刷新会重连。项目 blocked 置顶，组内
+  priority + updatedAt 排序，tasks/blockers 只读；unlisted 折叠区连接 Host Workspace/Session
+  投影，path 做有限语法规范化并显示会话数与最近 Session 活动，Session pending 不谎报无活动；
+  symlink/realpath 别名留待 Host 权威解析。完整契约见 [BOARD](BOARD.md#step-b-浏览器契约)。
 - i18n：namespace `devlead`，`zh`/`en` 词典；`locale/zh.json`、`locale/en.json` 提供
   `meta.title`/`meta.description`（插件市场展示）。
 - 客户端 bundle 构建：esbuild CJS + `window.__ModuleLoader__.load({ id, factory })` 包装；
@@ -2632,8 +2643,9 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   seed（`packages/client/web/src/{platform,seed}.ts`）逐项且同序一致；构建期守卫会让任何
   module-table 之外的 `@deepseek-ai/*` 浏览器导入直接失败。
 - 包 `package.json` 的 `dsh.client.inject` 列出运行期依赖（api-remotes、api-session-controller、
-  client-locale、client-ui-conversation、client-ui-primitives、client-ui-renderer、
-  client-ui-session、client-ui-workspace），`platform: "web"`。`client-ui-workspace` 只以
+  api-workspace-controller、api-workspace-files、client-locale、client-ui-conversation、
+  client-ui-primitives、client-ui-renderer、client-ui-session、client-ui-sidebar-right、
+  client-ui-workspace），`platform: "web"`。`client-ui-workspace` 只以
   type-only 导入进程序（取 Session 行 seat 的 SlotMap 声明），构建期 module-table 守卫不会
   把它当成浏览器运行期依赖。loader 只对真实 client entry 的 inject 名字做工厂等待，platform
   module 名字（如 primitives）会被忽略；`check-packages.mjs` 断言 `@deepseek-ai/*` 浏览器
@@ -2736,7 +2748,9 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   文案与隐藏失败活区，SessionMark/HoverMark，以及 `useDevLeadAdmission` 的单击提交、双击
   单次提交、卸载不 setState、失败保留与 `resetKey` 清空。`ensureStyleTag` 的跨模块实例引用计数用
   `vi.resetModules()` + 动态 import 模拟第二个模块实例，断言旧实例 dispose 后标签仍在、
-  全部 dispose 后移除。
+  全部 dispose 后移除。Step B 另覆盖 board strict schema/跨平台路径/分组排序/unlisted 纯函数、
+  `useBoardFile` 的 stat/read/not-found/坏 JSON/debounce/旧请求淘汰/abort+dispose、注册开关与
+  `openTab`，以及看板卡片、空态、错误态、折叠区与 zh/en 渲染。
 - 全仓 `pnpm typecheck && pnpm test && pnpm build` 是 `pnpm verify`；`pnpm check:packages`
   校验包不变式；`pnpm e2e` 是本机真实 DSH 的端到端冒烟（见 §10）。
 

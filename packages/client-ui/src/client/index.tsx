@@ -21,8 +21,11 @@
  */
 
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
-// Type-only: pulls the Client Remote merge (ctx.remote, ctx.remote.commands) into this program.
+// Type-only: pulls the Client Remote merge (ctx.remote, including workspaceFiles) into this program.
 import type {} from '@deepseek-ai/dsh-api-remotes/client'
+import type {} from '@deepseek-ai/dsh-api-workspace-files/remote'
+// Type-only: Host-authoritative Workspace catalog hooks for unlisted projects.
+import type {} from '@deepseek-ai/dsh-api-workspace-controller/client'
 // Type-only: pulls the Client Session Controller service (ctx.sessions) into this program.
 import type {} from '@deepseek-ai/dsh-api-session-controller/client'
 // Type-only: pulls the locale plugin's Context merge (ctx.locale) into this program.
@@ -31,12 +34,22 @@ import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 // Type-only: pulls the renderer-owned slots service (ctx.slots) into this program.
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
+// Type-only: right-Sidebar tab registry/controller and keyed body slot.
+import type {} from '@deepseek-ai/dsh-client-ui-sidebar-right/client'
 // Type-only: pulls the Session standard kit (`useProjection` seat) into this program.
 import type {} from '@deepseek-ai/dsh-client-ui-session/client'
 // Type-only: pulls the ui-workspace SlotMap merge (the sidebar Session-row seats).
 import type {} from '@deepseek-ai/dsh-client-ui-workspace/client'
 import type { SessionIdOf } from '@deepseek-ai/dsh-client-ui-slots'
+import { IconFlatListOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
 import { DevLeadBar } from './DevLeadBar.tsx'
+import { DevLeadBoardButton, DevLeadBoardTitle } from './DevLeadBoardButton.tsx'
+import { DevLeadBoardPanel } from './DevLeadBoardPanel.tsx'
+import {
+  currentDevLeadBoardConfig,
+  DEVLEAD_BOARD_TAB_ID,
+  DEVLEAD_BOARD_TAB_KIND,
+} from './board.ts'
 import { DevLeadIconToggle, type DevLeadCommandInjected } from './DevLeadIconToggle.tsx'
 import { DevLeadSessionHoverMark } from './DevLeadSessionHoverMark.tsx'
 import { DevLeadSessionMark } from './DevLeadSessionMark.tsx'
@@ -53,8 +66,18 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 /** Dictionary namespace owned by this plugin. */
 const NS = 'devlead'
 
-/** Required services: slot registration, Session scope, Remote commands, and copy. */
-export const inject = ['slots', 'sessions', 'remote', 'remote.commands', 'locale']
+/** Required services: slots, Session scope, read-only files, right Sidebar, commands, and copy. */
+export const inject = [
+  'slots',
+  'sessions',
+  'remote',
+  'remote.commands',
+  'remote.workspaceFiles',
+  'locale',
+  'sidebarRight',
+  'sidebarRightTabs',
+  'workspaces',
+]
 
 /**
  * Client plugin body: dictionaries, the plugin stylesheet, the both-state
@@ -112,4 +135,42 @@ export function apply(ctx: ClientContext): void {
     order: 20,
     locale: NS,
   }, DevLeadSessionHoverMark))
+
+  // No deployment-published board config means no tab, guide card, or header
+  // button. Existing UI and Remote behavior stay exactly as before Step B.
+  const board = currentDevLeadBoardConfig()
+  if (board !== undefined) {
+    const t = ctx.locale.bind(NS)
+    ctx.effect(() => ctx.sidebarRightTabs.register({
+      id: DEVLEAD_BOARD_TAB_ID,
+      kind: DEVLEAD_BOARD_TAB_KIND,
+      title: () => t('board.title'),
+      guide: [{
+        id: 'open',
+        order: 30,
+        title: () => t('board.title'),
+        description: () => t('board.guide'),
+        icon: IconFlatListOutlineRegular,
+      }],
+    }), 'devlead: board tab')
+    ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register({
+      name: 'sidebar.right.pane.tab',
+      key: DEVLEAD_BOARD_TAB_ID,
+      locale: NS,
+      inject: () => ({ config: board, files: ctx.remote.workspaceFiles }),
+    }, DevLeadBoardPanel))
+    ctx.slots.inject('sidebar.right.pane.tab.title', () => ctx.slots.register({
+      name: 'sidebar.right.pane.tab.title',
+      key: DEVLEAD_BOARD_TAB_ID,
+      locale: NS,
+    }, DevLeadBoardTitle))
+    ctx.slots.inject('conversation.session.header.utilities', () => ctx.slots.register({
+      name: 'conversation.session.header.utilities',
+      id: 'devlead-board',
+      // Next to the shipped Schedule entry (-5), left of the overflow menu.
+      order: -4,
+      locale: NS,
+      inject: () => ({ onOpen: () => { ctx.sidebarRight.openTab(DEVLEAD_BOARD_TAB_KIND) } }),
+    }, DevLeadBoardButton))
+  }
 }

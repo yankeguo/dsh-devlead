@@ -69,6 +69,22 @@
    最新通知与 question 后缀；长 session 标题/长 question 文案以 ellipsis 截断，不撑高 composer
    dock、不产生横向滚动；关闭态与 subagent Session 不渲染 strip，开关仍留在 composer 工具栏原位。
 
+### Step B 项目看板验收项
+
+在隔离 profile 的 devlead config 中设置一个临时 `boardPath`，刷新页面后检查：
+
+1. **开关与入口**：未配置 global 时没有看板按钮/tab；配置后会话头出现图标按钮，guide 也有入口，
+   点击打开 `devlead-board`，同一 pane 重复点击复用页面。
+2. **项目卡片**：准备含四种状态、不同 priority/updatedAt 的 schema v1 文件；blocked 组与顶部提示优先，
+   同组排序正确；focus/next/blocker since、任务 done/total、展开任务与截断 owner id 均可读，没有编辑控件。
+3. **文件状态**：文件不存在显示「还没有看板数据」而非错误；坏 JSON/schema 显示「看板文件解析失败」、
+   最后成功时间和重试；改回合法文件后 change 触发自动恢复，手动刷新也可恢复。watch 断开时显示
+   警告而非“正常”，手动刷新会同时重连。
+4. **其余项目**：折叠区只列未出现在 board 的已注册 workspace，名称/path、会话数与最近 Session 活动正确；
+   无活动、全部已列出、清单 pending/error 不编造内容。
+5. **布局与主题**：右栏拉窄及桌面窄屏时长路径、自由文本和任务标题均换行，不出现横向溢出；light/dark
+   下 pill/tag、warning/error、refresh/empty 状态可辨，刷新与重试按钮保持可用。
+
 ### 清理
 
 ```sh

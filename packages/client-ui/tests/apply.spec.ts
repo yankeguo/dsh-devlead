@@ -9,7 +9,7 @@
  * seats without needing a browser.
  */
 
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
 
 // The primitives package is a browser platform module whose own dependencies
@@ -22,15 +22,22 @@ vi.mock('@deepseek-ai/dsh-client-ui-primitives', () => {
     Tooltip: Placeholder,
     IconGoalOutlineRegular: Placeholder,
     IconUsersOutlineRegular: Placeholder,
+    IconFlatListOutlineRegular: Placeholder,
+    IconRefreshOutlineRegular: Placeholder,
+    IconWarningOutlineRegular: Placeholder,
+    Pill: Placeholder,
+    Tag: Placeholder,
+    StateDot: Placeholder,
   }
 })
 
-import { apply } from '../src/client/index.tsx'
+import { apply, inject as clientInject } from '../src/client/index.tsx'
 
 /** One recorded `slots.register` call. */
 interface RecordedRegistration {
   readonly name: string
-  readonly id: string
+  readonly id: string | undefined
+  readonly key: string | undefined
   readonly order: number | undefined
   readonly locale: string | undefined
   readonly inject: unknown
@@ -42,6 +49,9 @@ interface FakeContext {
   readonly effects: string[]
   readonly injects: string[]
   readonly registrations: RecordedRegistration[]
+  readonly conditionalInjects: string[][]
+  readonly tabDefinitions: Record<string, unknown>[]
+  readonly openTabs: string[]
 }
 
 /**
@@ -50,7 +60,14 @@ interface FakeContext {
  * @returns the fake context and its record of the plugin's calls.
  */
 function fakeContext(): { ctx: ClientContext; state: FakeContext } {
-  const state: FakeContext = { effects: [], injects: [], registrations: [] }
+  const state: FakeContext = {
+    effects: [],
+    injects: [],
+    registrations: [],
+    conditionalInjects: [],
+    tabDefinitions: [],
+    openTabs: [],
+  }
   const register = (options: Omit<RecordedRegistration, 'component'>, component: unknown): (() => void) => {
     state.registrations.push({ ...options, component })
     return () => {}
@@ -61,9 +78,25 @@ function fakeContext(): { ctx: ClientContext; state: FakeContext } {
       const dispose = effect()
       return typeof dispose === 'function' ? dispose : () => {}
     },
+    inject(services: string[], callback: () => void) {
+      state.conditionalInjects.push(services)
+      callback()
+    },
     locale: {
       register: () => () => {},
+      bind: () => (key: string) => key,
       provideRoot: () => () => {},
+    },
+    sidebarRightTabs: {
+      register(definition: Record<string, unknown>) {
+        state.tabDefinitions.push(definition)
+        return () => {}
+      },
+    },
+    sidebarRight: {
+      openTab(kind: string) {
+        state.openTabs.push(kind)
+      },
     },
     slots: {
       inject(name: string, callback: () => () => void) {
@@ -75,10 +108,19 @@ function fakeContext(): { ctx: ClientContext; state: FakeContext } {
     },
     remote: {
       commands: { execute: () => Promise.resolve({ ok: true, value: undefined }) },
+      workspaceFiles: {
+        stat: () => Promise.resolve({ ok: true, value: {} }),
+        readBytes: () => Promise.resolve({ ok: true, value: {} }),
+        changes: () => ({ async *[Symbol.asyncIterator]() {}, dispose() {} }),
+      },
     },
   }
   return { ctx: ctx as unknown as ClientContext, state }
 }
+
+afterEach(() => {
+  Reflect.deleteProperty(globalThis, '__DSH_DEVLEAD_BOARD__')
+})
 
 describe('client apply', () => {
   it('registers the dictionaries and the stylesheet as effects', () => {
@@ -115,5 +157,39 @@ describe('client apply', () => {
     // The row seats are different React components; the mark must not be
     // mounted into the hover-card section (it is inline-only there).
     expect(rowMark?.component).not.toBe(hoverMark?.component)
+  })
+
+  it('registers no board tab, body, title, or header button without the Host global', () => {
+    const { ctx, state } = fakeContext()
+    apply(ctx)
+    expect(state.conditionalInjects).toEqual([])
+    expect(state.tabDefinitions).toEqual([])
+    expect(state.injects).not.toContain('sidebar.right.pane.tab')
+    expect(state.injects).not.toContain('conversation.session.header.utilities')
+  })
+
+  it('registers the board type, keyed body, guide entry, and opening header action when configured', () => {
+    Object.defineProperty(globalThis, '__DSH_DEVLEAD_BOARD__', {
+      value: { boardPath: '/work/.dsh/devlead/board.json', schemaVersion: 1, pathPlatform: 'posix' },
+      configurable: true,
+    })
+    const { ctx, state } = fakeContext()
+    apply(ctx)
+    expect(clientInject).toEqual(expect.arrayContaining(['remote.workspaceFiles', 'sidebarRight', 'sidebarRightTabs', 'workspaces']))
+    expect(state.conditionalInjects).toEqual([])
+    expect(state.tabDefinitions).toHaveLength(1)
+    expect(state.tabDefinitions[0]).toMatchObject({
+      id: '@yankeguo/dsh-client-ui-devlead/board',
+      kind: 'devlead-board',
+    })
+    const body = state.registrations.find(entry => entry.name === 'sidebar.right.pane.tab')
+    expect(body).toMatchObject({ key: '@yankeguo/dsh-client-ui-devlead/board', locale: 'devlead' })
+    const title = state.registrations.find(entry => entry.name === 'sidebar.right.pane.tab.title')
+    expect(title).toMatchObject({ key: '@yankeguo/dsh-client-ui-devlead/board', locale: 'devlead' })
+    const header = state.registrations.find(entry => entry.name === 'conversation.session.header.utilities')
+    expect(header).toMatchObject({ id: 'devlead-board', order: -4, locale: 'devlead' })
+    const injected = (header?.inject as () => { onOpen: () => void })()
+    injected.onOpen()
+    expect(state.openTabs).toEqual(['devlead-board'])
   })
 })

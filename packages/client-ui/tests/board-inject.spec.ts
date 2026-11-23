@@ -32,7 +32,11 @@ describe('board index injection', () => {
     expect(harness.emit()).toEqual([{
       kind: 'global',
       name: '__DSH_DEVLEAD_BOARD__',
-      value: { boardPath: '/workbox/.dsh/devlead/board.json', schemaVersion: 1 },
+      value: {
+        boardPath: '/workbox/.dsh/devlead/board.json',
+        schemaVersion: 1,
+        pathPlatform: process.platform === 'win32' ? 'win32' : 'posix',
+      },
     }])
   })
 
