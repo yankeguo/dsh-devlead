@@ -1,9 +1,9 @@
 /** Filesystem, validation, concurrency, and cache behavior of the project board. */
 
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   DEVLEAD_BOARD_MAX_BYTES,
@@ -85,13 +85,32 @@ describe('DevLeadBoardStore', () => {
     expect(disabled.enabled).toBe(false)
     expect(disabled.summary()).toBe('')
     expect((await failureOf(disabled.read())).code).toBe('BOARD_DISABLED')
-    expect(new DevLeadBoardStore('relative/board.json').path).toBe(resolve('relative/board.json'))
+    expect(() => new DevLeadBoardStore('relative/board.json')).toThrowError(expect.objectContaining({
+      code: 'BOARD_INVALID',
+    }))
+    await expect(disabled.update({ project: 'alpha', updatedBy: actor })).rejects.toMatchObject({ code: 'BOARD_DISABLED' })
+    const configured = new DevLeadBoardStore(join(tmpdir(), 'devlead-invalid-revision.json'))
+    stores.push(configured)
+    await expect(configured.update({ project: 'alpha', updatedBy: actor }, -1)).rejects.toMatchObject({ code: 'BOARD_INVALID' })
   })
 
-  it('reports a missing file without creating it at startup', async () => {
+  it('precreates the watchable parent at startup without creating the board file', async () => {
     const { store, file } = await boot()
     expect((await failureOf(store.read())).code).toBe('BOARD_NOT_FOUND')
+    expect(existsSync(dirname(file))).toBe(true)
     expect(existsSync(file)).toBe(false)
+  })
+
+  it('keeps an existing parent and its permissions across idempotent starts', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-devlead-board-start-'))
+    roots.push(root)
+    const parent = join(root, 'existing')
+    await mkdir(parent, { mode: 0o755 })
+    const store = new DevLeadBoardStore(join(parent, 'board.json'))
+    stores.push(store)
+    await store.start()
+    await store.start()
+    expect((await stat(parent)).mode & 0o777).toBe(0o755)
   })
 
   it('creates parent directories and schema-v1 JSON on the first atomic write', async () => {
@@ -133,6 +152,8 @@ describe('DevLeadBoardStore', () => {
     expect((await failureOf(store.update({ project: 'alpha', updatedBy: actor }))).code).toBe('BOARD_PROJECT_NOT_FOUND')
     expect((await failureOf(store.update({ project: 'alpha', create: true, updatedBy: actor }))).code).toBe('BOARD_INVALID')
     expect(existsSync(file)).toBe(false)
+    // start() owns parent creation for browser watchers; failed updates add nothing else.
+    expect(existsSync(dirname(file))).toBe(true)
   })
 
   it('applies scalar, blocker, and task patches and keeps no-op revisions stable', async () => {
@@ -150,7 +171,9 @@ describe('DevLeadBoardStore', () => {
       'set.status', 'set.priority', 'set.goal', 'set.focus', 'set.next', 'blockers.add:b1', 'tasks.upsert:t1',
     ])
     expect(changed.project.blockers[0]?.sessionId).toBeUndefined()
-    expect(changed.project.tasks[0]?.ownerSessionId).toBe('session-child')
+    expect(changed.project.tasks).toBeUndefined()
+    const detail = await store.read({ project: 'alpha' })
+    expect(detail.projects[0]?.tasks?.[0]?.ownerSessionId).toBe('session-child')
     const before = await readFile(file, 'utf8')
     const noop = await store.update({ project: 'alpha', updatedBy: actor, set: { focus: 'tests' } })
     expect(noop.revision).toBe(2)
@@ -163,7 +186,8 @@ describe('DevLeadBoardStore', () => {
       tasks: { remove: ['t1'] },
     })
     expect(removed.project.blockers).toEqual([])
-    expect(removed.project.tasks).toEqual([])
+    expect(removed.project.tasks).toBeUndefined()
+    expect((await store.read({ project: 'alpha' })).projects[0]?.tasks).toEqual([])
   })
 
   it('resolves one project by id, title, and path and bounds unfiltered reads', async () => {
@@ -292,6 +316,135 @@ describe('DevLeadBoardStore', () => {
     }, { timeout: 3_000, interval: 20 })
     expect((await store.read()).revision).toBe(2)
   })
+
+  it('rejects duplicate project ids and workspace paths, non-UTC timestamps, and relative workspaces', () => {
+    const duplicateId = board([project(), project('alpha', '/tmp/other')])
+    expect(devLeadBoardSchema.safeParse(duplicateId).success).toBe(false)
+    const duplicatePath = board([project('alpha', '/tmp/shared'), project('beta', '/tmp/shared')])
+    expect(devLeadBoardSchema.safeParse(duplicatePath).success).toBe(false)
+    const offsetTime = board([project()])
+    offsetTime.updatedAt = '2026-01-01T08:00:00+08:00'
+    expect(devLeadBoardSchema.safeParse(offsetTime).success).toBe(false)
+    const invalidTime = board([project()])
+    invalidTime.projects[0]!.updatedAt = 'yesterday'
+    expect(devLeadBoardSchema.safeParse(invalidTime).success).toBe(false)
+    const relativePath = board([project('alpha', 'relative/workspace')])
+    expect(devLeadBoardSchema.safeParse(relativePath).success).toBe(false)
+  })
+
+  it('reports ambiguous titles and accepts a matching CAS revision', async () => {
+    const { store, file } = await boot()
+    await store.update({
+      ...patch('alpha', '/tmp/alpha'), updatedBy: actor, set: { workspace: { path: '/tmp/alpha', title: 'same' } },
+    })
+    await store.update({
+      ...patch('beta', '/tmp/beta'), updatedBy: actor, set: { workspace: { path: '/tmp/beta', title: 'same' } },
+    })
+    expect((await failureOf(store.read({ project: 'same' }))).code).toBe('BOARD_PROJECT_AMBIGUOUS')
+    const before = await readFile(file, 'utf8')
+    expect((await failureOf(store.update({ project: 'alpha', updatedBy: actor, set: { focus: 'lost' } }, 1))).code)
+      .toBe('BOARD_REVISION_CONFLICT')
+    expect(await readFile(file, 'utf8')).toBe(before)
+    const result = await store.update({ project: 'alpha', updatedBy: actor, set: { focus: 'fresh' } }, 2)
+    expect(result.revision).toBe(3)
+    expect((await store.read({ project: 'alpha' })).projects[0]?.focus).toBe('fresh')
+  })
+
+  it('recovers when an external actor deletes and recreates the file', async () => {
+    const { store, file } = await boot()
+    await store.update({ ...patch(), updatedBy: actor })
+    await rm(file)
+    expect((await failureOf(store.read())).code).toBe('BOARD_NOT_FOUND')
+    const recreated = board([project()])
+    recreated.revision = 7
+    await writeFile(file, JSON.stringify(recreated), 'utf8')
+    expect((await store.read()).revision).toBe(7)
+  })
+
+  it('normalizes blank and overlong lead titles on the write path', async () => {
+    const { store, file } = await boot()
+    await store.update({ ...patch(), updatedBy: { sessionId: 'lead', title: ' \n ' } })
+    let persisted = JSON.parse(await readFile(file, 'utf8')) as DevLeadBoard
+    expect(persisted.updatedBy.title).toBe('DevLead')
+    await store.update({
+      project: 'alpha', updatedBy: { sessionId: 'lead', title: `  ${'x'.repeat(210)}  ` }, set: { focus: 'next' },
+    })
+    persisted = JSON.parse(await readFile(file, 'utf8')) as DevLeadBoard
+    expect(persisted.updatedBy.title).toBe('x'.repeat(200))
+  })
+
+  it('keeps omitted blocker fields and treats a repeated add as a no-op', async () => {
+    const { store, file } = await boot()
+    await store.update({ ...patch(), updatedBy: actor })
+    await store.update({
+      project: 'alpha', updatedBy: actor,
+      blockers: { add: [{ id: 'b1', text: 'waiting', sessionId: 'child' }] },
+    })
+    const before = await readFile(file, 'utf8')
+    const repeated = await store.update({
+      project: 'alpha', updatedBy: actor,
+      blockers: { add: [{ id: 'b1', text: 'waiting' }] },
+    })
+    expect(repeated.changed).toEqual([])
+    expect(repeated.revision).toBe(2)
+    expect(await readFile(file, 'utf8')).toBe(before)
+    expect((await store.read({ project: 'alpha' })).projects[0]?.blockers[0]?.sessionId).toBe('child')
+  })
+
+  it('bounds selected-project task output and reports truncation', async () => {
+    const { store, file } = await boot()
+    const value = board([{
+      ...project(),
+      tasks: Array.from({ length: 60 }, (_, index) => ({
+        id: `t${index}`, title: `task ${index}`, status: 'todo' as const, updatedAt: '2026-01-01T00:00:00.000Z',
+      })),
+    }])
+    await mkdir(dirname(file), { recursive: true })
+    await writeFile(file, JSON.stringify(value), 'utf8')
+    const result = await store.read({ project: 'alpha' })
+    expect(result.projects[0]?.tasks).toHaveLength(50)
+    expect(result.truncated).toBe(true)
+  })
+
+  it('single-lines project ids and workspace titles in dynamic summaries', () => {
+    const value = board([{
+      ...project('alpha\ninjected'),
+      workspace: { path: '/tmp/alpha', title: 'title\r\n\u0007injected' },
+    }])
+    const summary = renderDevLeadBoardSummary(value)
+    expect(summary).toContain('- alpha injected/title injected')
+    expect(summary).not.toMatch(/[\r\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u)
+  })
+
+  it.skipIf(process.geteuid?.() === 0)('maps a read-only parent to BOARD_IO_ERROR without changing bytes', async () => {
+    const { store, file } = await boot()
+    await store.update({ ...patch(), updatedBy: actor })
+    const before = await readFile(file, 'utf8')
+    const parent = dirname(file)
+    await chmod(parent, 0o500)
+    try {
+      expect((await failureOf(store.update({ project: 'alpha', updatedBy: actor, set: { focus: 'no' } }))).code)
+        .toBe('BOARD_IO_ERROR')
+      expect(await readFile(file, 'utf8')).toBe(before)
+    } finally {
+      await chmod(parent, 0o700)
+    }
+  })
+
+  it('maps writer-lock timeout to a retryable BOARD_IO_ERROR without changing bytes', async () => {
+    const { store, file } = await boot()
+    await store.update({ ...patch(), updatedBy: actor })
+    const before = await readFile(file, 'utf8')
+    await writeFile(`${file}.lock`, `${process.pid}\n`, { flag: 'wx' })
+    try {
+      const failure = await failureOf(store.update({ project: 'alpha', updatedBy: actor, set: { focus: 'no' } }))
+      expect(failure.code).toBe('BOARD_IO_ERROR')
+      expect(failure.message).toMatch(/retry/iu)
+      expect(await readFile(file, 'utf8')).toBe(before)
+    } finally {
+      await rm(`${file}.lock`, { force: true })
+    }
+  }, 5_000)
 
   it('renders stable, status-counted summaries capped at 1.5 KiB', () => {
     const projects = Array.from({ length: 50 }, (_, index) => ({

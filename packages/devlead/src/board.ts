@@ -12,7 +12,7 @@
 import { watch } from 'node:fs'
 import type { FSWatcher } from 'node:fs'
 import { mkdir, readFile, stat } from 'node:fs/promises'
-import { basename, dirname, isAbsolute, resolve } from 'node:path'
+import { basename, dirname, isAbsolute } from 'node:path'
 import { withFileLock, writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
 import { z as zod } from 'zod'
 import type { ZodIssue } from 'zod'
@@ -37,6 +37,10 @@ export const DEVLEAD_BOARD_TITLE_MAX = 200
 export const DEVLEAD_BOARD_PATH_MAX = 4_096
 /** Maximum UTF-8 bytes in the dynamic board summary. */
 export const DEVLEAD_BOARD_SUMMARY_MAX_BYTES = 1_536
+/** Maximum task rows returned by one selected-project read. */
+export const DEVLEAD_BOARD_READ_MAX_TASKS = 50
+/** Maximum attempts to obtain a stable file snapshot during concurrent edits. */
+const DEVLEAD_BOARD_READ_ATTEMPTS = 4
 
 /** Stable board failure codes exposed through the AI tools. */
 export type DevLeadBoardErrorCode =
@@ -134,6 +138,7 @@ export const devLeadBoardSchema = zod.object({
   projects: zod.array(projectSchema).max(DEVLEAD_BOARD_MAX_PROJECTS),
 }).strict().superRefine((board, context) => {
   const projectIds = new Set<string>()
+  const workspacePaths = new Set<string>()
   board.projects.forEach((project, projectIndex) => {
     if (projectIds.has(project.id)) {
       context.addIssue({
@@ -143,6 +148,14 @@ export const devLeadBoardSchema = zod.object({
       })
     }
     projectIds.add(project.id)
+    if (workspacePaths.has(project.workspace.path)) {
+      context.addIssue({
+        code: 'custom',
+        path: ['projects', projectIndex, 'workspace', 'path'],
+        message: `duplicate workspace path "${project.workspace.path}"`,
+      })
+    }
+    workspacePaths.add(project.workspace.path)
     for (const [field, entries] of [['blockers', project.blockers], ['tasks', project.tasks]] as const) {
       const ids = new Set<string>()
       entries.forEach((entry, entryIndex) => {
@@ -279,7 +292,7 @@ export interface DevLeadBoardReadResult {
 export interface DevLeadBoardUpdateResult {
   readonly revision: number
   readonly updatedAt: string
-  readonly project: DevLeadBoardProject
+  readonly project: DevLeadBoardProjectView
   readonly changed: string[]
 }
 
@@ -330,6 +343,49 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
+const FILESYSTEM_ERROR_CODES = new Set([
+  'EACCES', 'EBUSY', 'EEXIST', 'EIO', 'EISDIR', 'ELOOP', 'EMFILE', 'ENAMETOOLONG', 'ENFILE',
+  'ENOENT', 'ENOSPC', 'ENOTDIR', 'ENOTEMPTY', 'EPERM', 'EROFS', 'ETXTBSY',
+])
+
+function errorCode(error: unknown): string | undefined {
+  if (typeof error !== 'object' || error === null) return undefined
+  const code = (error as { code?: unknown }).code
+  return typeof code === 'string' ? code : undefined
+}
+
+function isWriterLockTimeout(error: unknown): boolean {
+  const message = errorMessage(error)
+  const code = errorCode(error)
+  return code === 'FILE_LOCK_TIMEOUT'
+    || code === 'ATOMIC_WRITE_LOCK_TIMEOUT'
+    || /timed out waiting for the writer lock|writer lock timed out/iu.test(message)
+}
+
+function isWriteIoError(error: unknown): boolean {
+  const code = errorCode(error)
+  return (code !== undefined && FILESYSTEM_ERROR_CODES.has(code))
+    || (error instanceof Error && error.name === 'FileLockError')
+    || isWriterLockTimeout(error)
+}
+
+function writeIoError(filePath: string, error: unknown): DevLeadBoardError {
+  const retry = isWriterLockTimeout(error)
+  return new DevLeadBoardError(
+    `could not write board ${filePath}: ${errorMessage(error)}${retry ? '; retry after the current writer finishes' : ''}`,
+    'BOARD_IO_ERROR',
+  )
+}
+
+function normalizeUpdatedBy(updatedBy: DevLeadBoardUpdatedBy): DevLeadBoardUpdatedBy {
+  const title = updatedBy.title.trim().slice(0, DEVLEAD_BOARD_TITLE_MAX)
+  return { sessionId: updatedBy.sessionId, title: title.length === 0 ? 'DevLead' : title }
+}
+
+function singleLine(value: string): string {
+  return value.replaceAll(/[\p{Cc}\p{Cf}]+/gu, ' ').replaceAll(/\s+/gu, ' ').trim()
+}
+
 function resolveProject(board: DevLeadBoard, reference: string): DevLeadBoardProject {
   const trimmed = reference.trim()
   if (trimmed.length === 0) {
@@ -362,6 +418,56 @@ function emptyBoard(updatedBy: DevLeadBoardUpdatedBy, updatedAt: string): DevLea
   }
 }
 
+function validateUpdateInput(patch: DevLeadBoardUpdate): DevLeadBoardUpdate {
+  const normalized = { ...patch, updatedBy: normalizeUpdatedBy(patch.updatedBy) }
+  const timestamp = new Date(0).toISOString()
+  const candidate = emptyBoard(normalized.updatedBy, timestamp)
+  if (patch.create !== true) {
+    const id = patch.project.trim()
+    if (id.length === 0) resolveProject(candidate, id)
+    candidate.projects.push({
+      id,
+      workspace: { path: '/devlead-validation', title: 'DevLead validation' },
+      status: 'active',
+      priority: 'medium',
+      goal: '',
+      focus: '',
+      next: '',
+      blockers: [],
+      tasks: [],
+      updatedAt: timestamp,
+    })
+  }
+  applyProjectPatch(candidate, normalized, timestamp)
+  parseBoard(candidate)
+  return normalized
+}
+
+function validateMissingFileUpdate(patch: DevLeadBoardUpdate, expectedRevision: number | undefined): void {
+  const timestamp = new Date(0).toISOString()
+  const current = emptyBoard(patch.updatedBy, timestamp)
+  if (expectedRevision !== undefined && expectedRevision !== 0) {
+    throw new DevLeadBoardError(
+      `board revision conflict: expected r${expectedRevision}, current r0`,
+      'BOARD_REVISION_CONFLICT',
+      [{ pointer: '/revision', message: `expected ${expectedRevision}, current 0` }],
+    )
+  }
+  const next = structuredClone(current)
+  applyProjectPatch(next, patch, timestamp)
+  next.revision = 1
+  next.updatedAt = timestamp
+  next.updatedBy = structuredClone(patch.updatedBy)
+  parseBoard(next)
+}
+
+function projectView(project: DevLeadBoardProject, includeTasks: boolean): DevLeadBoardProjectView {
+  const view = structuredClone(project) as DevLeadBoardProjectView
+  if (includeTasks) view.tasks = (view.tasks ?? []).slice(0, DEVLEAD_BOARD_READ_MAX_TASKS)
+  else delete view.tasks
+  return view
+}
+
 function appendUtf8(target: { text: string; bytes: number }, addition: string, maximum: number): boolean {
   const bytes = Buffer.byteLength(addition, 'utf8')
   if (target.bytes + bytes > maximum) return false
@@ -380,9 +486,9 @@ export function renderDevLeadBoardSummary(board: DevLeadBoard | undefined): stri
     + `active ${counts.active}, blocked ${counts.blocked}, paused ${counts.paused}, done ${counts.done}`,
   ]
   for (const project of board.projects) {
-    const focus = Array.from(project.focus.replaceAll(/\s+/gu, ' ').trim()).slice(0, 120).join('')
+    const focus = Array.from(singleLine(project.focus)).slice(0, 120).join('')
     lines.push(
-      `- ${project.id}/${project.workspace.title} [${project.status}/${project.priority}]`
+      `- ${singleLine(project.id)}/${singleLine(project.workspace.title)} [${project.status}/${project.priority}]`
       + `${focus.length === 0 ? '' : ` focus: ${focus}`}`
       + `${project.blockers.length === 0 ? '' : ` !blockers:${project.blockers.length}`}`,
     )
@@ -399,8 +505,8 @@ export function renderDevLeadBoardSummary(board: DevLeadBoard | undefined): stri
 }
 
 /**
- * Host-owned board store. Construction resolves the configured path once;
- * callers can never redirect an individual operation to another file.
+ * Host-owned board store. Construction validates the configured absolute path
+ * once; callers can never redirect an individual operation to another file.
  */
 export class DevLeadBoardStore {
   private readonly filePath: string | undefined
@@ -414,7 +520,7 @@ export class DevLeadBoardStore {
   private closed = false
 
   /**
-   * @param boardPath - deployment-configured path; blank/undefined disables the board.
+   * @param boardPath - absolute deployment-configured path; blank/undefined disables the board.
    * @param logger - Host logger for best-effort watcher failures.
    * @param now - injectable clock used by tests.
    */
@@ -424,7 +530,12 @@ export class DevLeadBoardStore {
     private readonly now: () => number = Date.now,
   ) {
     const trimmed = boardPath?.trim() ?? ''
-    this.filePath = trimmed.length === 0 ? undefined : resolve(trimmed)
+    if (trimmed.length > 0 && !isAbsolute(trimmed)) {
+      throw new DevLeadBoardError('boardPath must be an absolute path', 'BOARD_INVALID', [
+        { pointer: '/boardPath', message: 'boardPath must be an absolute path' },
+      ])
+    }
+    this.filePath = trimmed.length === 0 ? undefined : trimmed
   }
 
   /** Absolute configured file path, or undefined when disabled. */
@@ -437,9 +548,18 @@ export class DevLeadBoardStore {
     return this.filePath !== undefined
   }
 
-  /** Load the initial snapshot without making a corrupt file prevent plugin load. */
+  /** Prepare the watchable parent, then load without rejecting for a malformed file. */
   async start(): Promise<void> {
     if (this.filePath === undefined) return
+    try {
+      // Browser watchers subscribe to the parent before the first Host write.
+      // Create it up front so their ready -> add transition is observable.
+      await mkdir(dirname(this.filePath), { recursive: true, mode: 0o700 })
+    } catch (error) {
+      if (isDevLeadBoardError(error)) throw error
+      if (isWriteIoError(error)) throw writeIoError(this.filePath, error)
+      throw error
+    }
     await this.refresh(true)
     this.startWatcher()
   }
@@ -471,11 +591,12 @@ export class DevLeadBoardStore {
       })
       this.watcher.on('error', error => {
         this.logger.warn(`devlead: board watcher failed for ${filePath}: ${errorMessage(error)}`)
+        this.watcher?.close()
         this.watcher = undefined
       })
     } catch (error) {
-      // A missing parent is created by the first write; stat freshness still
-      // protects explicit reads until a watcher can be installed afterwards.
+      // start() normally prepares the parent; a direct update can also create
+      // it. Stat freshness protects reads until a watcher can be installed.
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
         this.logger.warn(`devlead: could not watch board ${filePath}: ${errorMessage(error)}`)
       }
@@ -485,52 +606,79 @@ export class DevLeadBoardStore {
   private async refresh(force = false): Promise<void> {
     if (this.filePath === undefined) return
     if (this.dirty) force = true
-    if (this.loading !== undefined) return this.loading
-    this.loading = this.load(force).finally(() => {
-      this.loading = undefined
-    })
-    return this.loading
+    for (;;) {
+      const pending = this.loading
+      if (pending !== undefined) {
+        await pending
+        // A forced caller (notably the locked writer) must own a subsequent
+        // fresh read; another caller's in-flight snapshot is never sufficient.
+        if (!force) return
+        // Another forced waiter may have started first. Await that load rather
+        // than overwriting the shared loading handle with a concurrent read.
+        continue
+      }
+      const operation = this.load(force)
+      this.loading = operation
+      try {
+        await operation
+        return
+      } finally {
+        if (this.loading === operation) this.loading = undefined
+      }
+    }
   }
 
   private async load(force: boolean): Promise<void> {
     const filePath = this.requirePath()
     this.dirty = false
     try {
-      const before = await stat(filePath)
-      if (!force && this.cache !== undefined && this.lastError === undefined && sameFingerprint(this.fingerprint, before)) return
-      if (before.size > DEVLEAD_BOARD_MAX_BYTES) {
-        this.lastError = new DevLeadBoardError(
-          `board file exceeds ${DEVLEAD_BOARD_MAX_BYTES} bytes`,
-          'BOARD_LIMIT_EXCEEDED',
-          [{ pointer: '', message: `file size ${before.size} exceeds ${DEVLEAD_BOARD_MAX_BYTES} bytes` }],
-        )
+      for (let attempt = 0; attempt < DEVLEAD_BOARD_READ_ATTEMPTS; attempt += 1) {
+        const before = await stat(filePath)
+        if (!force && this.cache !== undefined && this.lastError === undefined && sameFingerprint(this.fingerprint, before)) {
+          this.startWatcher()
+          return
+        }
+        if (before.size > DEVLEAD_BOARD_MAX_BYTES) {
+          this.lastError = new DevLeadBoardError(
+            `board file exceeds ${DEVLEAD_BOARD_MAX_BYTES} bytes`,
+            'BOARD_LIMIT_EXCEEDED',
+            [{ pointer: '', message: `file size ${before.size} exceeds ${DEVLEAD_BOARD_MAX_BYTES} bytes` }],
+          )
+          return
+        }
+        const content = await readFile(filePath, 'utf8')
+        const after = await stat(filePath)
+        if (!sameFingerprint(before, after) || Buffer.byteLength(content, 'utf8') !== after.size) continue
+        let value: unknown
+        try {
+          value = JSON.parse(content)
+        } catch (error) {
+          this.lastError = new DevLeadBoardError(
+            `board file is not valid JSON: ${errorMessage(error)}`,
+            'BOARD_INVALID',
+            [{ pointer: '', message: errorMessage(error) }],
+          )
+          return
+        }
+        let board: DevLeadBoard
+        try {
+          board = parseBoard(value)
+        } catch (error) {
+          this.lastError = error instanceof DevLeadBoardError
+            ? error
+            : new DevLeadBoardError(errorMessage(error), 'BOARD_INVALID')
+          return
+        }
+        this.cache = board
+        this.fingerprint = { mtimeMs: after.mtimeMs, size: after.size, ino: after.ino }
+        this.lastError = undefined
+        this.startWatcher()
         return
       }
-      const content = await readFile(filePath, 'utf8')
-      let value: unknown
-      try {
-        value = JSON.parse(content)
-      } catch (error) {
-        this.lastError = new DevLeadBoardError(
-          `board file is not valid JSON: ${errorMessage(error)}`,
-          'BOARD_INVALID',
-          [{ pointer: '', message: errorMessage(error) }],
-        )
-        return
-      }
-      let board: DevLeadBoard
-      try {
-        board = parseBoard(value)
-      } catch (error) {
-        this.lastError = error instanceof DevLeadBoardError
-          ? error
-          : new DevLeadBoardError(errorMessage(error), 'BOARD_INVALID')
-        return
-      }
-      const after = await stat(filePath)
-      this.cache = board
-      this.fingerprint = { mtimeMs: after.mtimeMs, size: after.size, ino: after.ino }
-      this.lastError = undefined
+      this.lastError = new DevLeadBoardError(
+        `board file changed repeatedly while reading ${filePath}; retry`,
+        'BOARD_IO_ERROR',
+      )
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
         this.cache = undefined
@@ -581,9 +729,8 @@ export class DevLeadBoardStore {
       revision: board.revision,
       updatedAt: board.updatedAt,
       projects: projects.map(project => {
-        const view = structuredClone(project) as DevLeadBoardProjectView
-        if (!includeTasks) delete view.tasks
-        return view
+        if (includeTasks && project.tasks.length > DEVLEAD_BOARD_READ_MAX_TASKS) truncated = true
+        return projectView(project, includeTasks)
       }),
       ...truncated ? { truncated: true } : {},
     }
@@ -593,7 +740,7 @@ export class DevLeadBoardStore {
    * Apply one project mutation. Host calls share one promise chain; every call
    * then performs its own locked disk read-modify-write cycle.
    */
-  update(patch: DevLeadBoardUpdate, expectedRevision?: number, signal?: AbortSignal): Promise<DevLeadBoardUpdateResult> {
+  async update(patch: DevLeadBoardUpdate, expectedRevision?: number, signal?: AbortSignal): Promise<DevLeadBoardUpdateResult> {
     this.requirePath()
     if (expectedRevision !== undefined && (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0)) {
       throw new DevLeadBoardError('expectedRevision must be a non-negative safe integer', 'BOARD_INVALID', [
@@ -607,63 +754,79 @@ export class DevLeadBoardStore {
   }
 
   private async updateLocked(
-    patch: DevLeadBoardUpdate,
+    input: DevLeadBoardUpdate,
     expectedRevision: number | undefined,
     signal: AbortSignal | undefined,
   ): Promise<DevLeadBoardUpdateResult> {
     const filePath = this.requirePath()
-    await mkdir(dirname(filePath), { recursive: true, mode: 0o700 })
-    this.startWatcher()
-    return withFileLock(filePath, async () => {
-      signal?.throwIfAborted()
-      await this.refresh(true)
-      if (this.lastError !== undefined && this.lastError.code !== 'BOARD_NOT_FOUND') throw this.lastError
-      const timestamp = new Date(this.now()).toISOString()
-      const current = this.cache ?? emptyBoard(patch.updatedBy, timestamp)
-      if (expectedRevision !== undefined && current.revision !== expectedRevision) {
-        throw new DevLeadBoardError(
-          `board revision conflict: expected r${expectedRevision}, current r${current.revision}`,
-          'BOARD_REVISION_CONFLICT',
-          [{ pointer: '/revision', message: `expected ${expectedRevision}, current ${current.revision}` }],
-        )
+    try {
+      const patch = validateUpdateInput(input)
+      try {
+        await stat(dirname(filePath))
+      } catch (error) {
+        if (errorCode(error) !== 'ENOENT') throw error
+        // The lock needs a parent directory. Validate against the real empty
+        // state before creating it so a failed first update leaves no tree.
+        validateMissingFileUpdate(patch, expectedRevision)
       }
-      const next = structuredClone(current)
-      const changed = applyProjectPatch(next, patch, timestamp)
-      const project = resolveProject(next, patch.project)
-      if (changed.length === 0) {
+      await mkdir(dirname(filePath), { recursive: true, mode: 0o700 })
+      this.startWatcher()
+      return await withFileLock(filePath, async () => {
+        signal?.throwIfAborted()
+        await this.refresh(true)
+        if (this.lastError !== undefined && this.lastError.code !== 'BOARD_NOT_FOUND') throw this.lastError
+        const timestamp = new Date(this.now()).toISOString()
+        const current = this.cache ?? emptyBoard(patch.updatedBy, timestamp)
+        if (expectedRevision !== undefined && current.revision !== expectedRevision) {
+          throw new DevLeadBoardError(
+            `board revision conflict: expected r${expectedRevision}, current r${current.revision}`,
+            'BOARD_REVISION_CONFLICT',
+            [{ pointer: '/revision', message: `expected ${expectedRevision}, current ${current.revision}` }],
+          )
+        }
+        const next = structuredClone(current)
+        const changed = applyProjectPatch(next, patch, timestamp)
+        const project = resolveProject(next, patch.project)
+        if (changed.length === 0) {
+          return {
+            revision: current.revision,
+            updatedAt: current.updatedAt,
+            project: projectView(project, false),
+            changed,
+          }
+        }
+        next.revision = current.revision + 1
+        next.updatedAt = timestamp
+        next.updatedBy = structuredClone(patch.updatedBy)
+        const validated = parseBoard(next)
+        const content = `${JSON.stringify(validated, null, 2)}\n`
+        const bytes = Buffer.byteLength(content, 'utf8')
+        if (bytes > DEVLEAD_BOARD_MAX_BYTES) {
+          throw new DevLeadBoardError(
+            `board update would exceed ${DEVLEAD_BOARD_MAX_BYTES} bytes (${bytes})`,
+            'BOARD_LIMIT_EXCEEDED',
+            [{ pointer: '', message: `serialized size ${bytes} exceeds ${DEVLEAD_BOARD_MAX_BYTES} bytes` }],
+          )
+        }
+        await writeFileAtomic(filePath, content, { mode: 0o600, dirMode: 0o700 })
+        const written = await stat(filePath)
+        this.cache = validated
+        this.lastError = undefined
+        this.dirty = false
+        this.fingerprint = { mtimeMs: written.mtimeMs, size: written.size, ino: written.ino }
+        this.startWatcher()
         return {
-          revision: current.revision,
-          updatedAt: current.updatedAt,
-          project: structuredClone(project),
+          revision: validated.revision,
+          updatedAt: validated.updatedAt,
+          project: projectView(resolveProject(validated, project.id), false),
           changed,
         }
-      }
-      next.revision = current.revision + 1
-      next.updatedAt = timestamp
-      next.updatedBy = structuredClone(patch.updatedBy)
-      const validated = parseBoard(next)
-      const content = `${JSON.stringify(validated, null, 2)}\n`
-      const bytes = Buffer.byteLength(content, 'utf8')
-      if (bytes > DEVLEAD_BOARD_MAX_BYTES) {
-        throw new DevLeadBoardError(
-          `board update would exceed ${DEVLEAD_BOARD_MAX_BYTES} bytes (${bytes})`,
-          'BOARD_LIMIT_EXCEEDED',
-          [{ pointer: '', message: `serialized size ${bytes} exceeds ${DEVLEAD_BOARD_MAX_BYTES} bytes` }],
-        )
-      }
-      await writeFileAtomic(filePath, content, { mode: 0o600, dirMode: 0o700 })
-      this.cache = validated
-      this.lastError = undefined
-      this.dirty = false
-      const written = await stat(filePath)
-      this.fingerprint = { mtimeMs: written.mtimeMs, size: written.size, ino: written.ino }
-      return {
-        revision: validated.revision,
-        updatedAt: validated.updatedAt,
-        project: structuredClone(resolveProject(validated, project.id)),
-        changed,
-      }
-    }, signal === undefined ? {} : { signal })
+      }, signal === undefined ? {} : { signal })
+    } catch (error) {
+      if (isDevLeadBoardError(error)) throw error
+      if (isWriteIoError(error)) throw writeIoError(filePath, error)
+      throw error
+    }
   }
 
   /** Synchronous cache-only text for `systemPrompt.context()`. */
@@ -746,11 +909,12 @@ function applyProjectPatch(board: DevLeadBoard, patch: DevLeadBoardUpdate, times
   }
   for (const addition of blockers?.add ?? []) {
     const existing = project.blockers.find(blocker => blocker.id === addition.id)
+    const sessionId = addition.sessionId ?? existing?.sessionId
     const blocker: DevLeadBoardBlocker = {
       id: addition.id,
       text: addition.text,
       since: existing?.since ?? timestamp,
-      ...addition.sessionId === undefined ? {} : { sessionId: addition.sessionId },
+      ...sessionId === undefined ? {} : { sessionId },
     }
     if (existing === undefined) {
       project.blockers.push(blocker)

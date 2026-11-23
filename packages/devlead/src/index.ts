@@ -10,7 +10,7 @@
  */
 
 import { mkdir } from 'node:fs/promises'
-import { resolve as resolvePath } from 'node:path'
+import { isAbsolute } from 'node:path'
 import { Service } from '@deepseek-ai/cordis'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
@@ -688,6 +688,9 @@ function resolveConfig(config: Config): DevLeadSettings {
   const boardPath = config.boardPath ?? ''
   if (typeof boardPath !== 'string') throw new TypeError('boardPath must be a string')
   const trimmedBoardPath = boardPath.trim()
+  if (trimmedBoardPath.length > 0 && !isAbsolute(trimmedBoardPath)) {
+    throw new TypeError('boardPath must be an absolute path')
+  }
   return {
     notificationBatchMs,
     actionRequiredBatchMs,
@@ -696,7 +699,7 @@ function resolveConfig(config: Config): DevLeadSettings {
     wakeColdSession,
     defaultAgentPreset: defaultAgentPreset.trim().length === 0 ? undefined : defaultAgentPreset.trim(),
     questionTtlMs,
-    ...trimmedBoardPath.length === 0 ? {} : { boardPath: resolvePath(trimmedBoardPath) },
+    ...trimmedBoardPath.length === 0 ? {} : { boardPath: trimmedBoardPath },
   }
 }
 
