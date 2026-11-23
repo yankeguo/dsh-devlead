@@ -186,8 +186,10 @@ RPC，也不向浏览器暴露任何写能力；client 按官方右栏插件契�
   状态无关；`refreshing` 切换不重置退避延迟（effect 依赖只含 `state.status`），避免在途读取把
   退避打回 4s。watch 断开单独显示“自动更新已断开，请手动刷新”警告，不再把旧
   内容标为“正常”，也不静默自动重连；手动刷新同时重读并重建 watch。
-- 浏览器解码器直接使用 protocol 的同一份 strict schema v1（不 import Host/Node 模块；zod 随
-  protocol 浏览器 bundle 内联），拒绝坏 UTF-8、坏 JSON、未知字段、重复 id/重复 workspace path、
+- 浏览器解码器直接使用 protocol 的同一份 strict schema v1（不 import Host/Node 模块；schema
+  源码内联进浏览器 bundle，`zod` 走 DSH 冻结 module table 的 platform singleton——Step B 起
+  `board.ts` 就依赖它，本轮没有新增浏览器运行期依赖），拒绝坏 UTF-8、坏 JSON、未知字段、
+  重复 id/重复 workspace path、
   错误枚举和超限文件。绝对路径按 Host 显式发布的 `pathPlatform` 选择 `node:path.posix` 或
   `node:path.win32` 语义，不从路径字符串或浏览器 OS 猜测。文件不存在是
   「还没有看板数据」；Remote 错误是读取错误；JSON/schema 错误是

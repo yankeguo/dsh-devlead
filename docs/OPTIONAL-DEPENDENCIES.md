@@ -34,8 +34,12 @@ plugin-market 等）。审计对象是本仓库的 6 个包（`protocol`、`devl
 > global 只控制看板 UI 注册；右栏读取只有 stat/readBytes/changes，没有写 Remote。本机运行验证
 > DSH 为 rc.5，依赖/编译基线仍为 rc.1；board 不使用 0.2.3-only API，兼容范围不变。E2E 阶段 3
 > 保留旧检查并新增 4 项真实 board 检查（Host 写入/CAS、webserver/index-inject global、磁盘
-> revision/内容 read-back），目标 pin 为阶段 3=132、no-worktree=202、完整=225（222 PASS + 3
-> credential-less SKIP）；这些是本轮验收 pin，不把旧的 143/143 等历史实测改写为新证据。
+> revision/内容 read-back），Step B 复核修复轮再在 phase 1 增加 1 条「未配置 boardPath 时不注入
+> browser global、static inject 仍声明看板服务」的负向断言，目标 pin 为阶段 1=28、阶段 3=132、
+> no-worktree=203、完整=226（223 PASS + 3 credential-less SKIP）；这些是本轮验收 pin，不把旧的
+> 143/143 等历史实测改写为新证据。Step B 复核修复轮还把 board wire schema 收敛到 protocol：
+> `zod` 成为 protocol 的 peer range（`^4.4.3`，与 devlead 相同）并被打包进 protocol 的两个入口，
+> 因此 profile 不需要额外解析 zod；这不是对可选插件的硬依赖。
 
 ## 1. 结论摘要
 

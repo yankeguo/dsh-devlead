@@ -433,7 +433,8 @@ permanent bar on every conversation:
   does not exist yet; if the watch ends it shows an explicit "auto-update disconnected, refresh
   manually" state instead of pretending to be live. It distinguishes missing files from read/parse
   failures, and lists registered Workspaces absent from the board in a collapsed section with Session
-  counts and recent activity. People can refresh and expand disclosures, but cannot edit the board.
+  counts and recent activity (a failed Workspace-catalog read is reported as an error, never as a
+  pending read). People can refresh and expand disclosures, but cannot edit the board.
 
 Off (the toolbar toggle is the only control):
 

@@ -91,7 +91,7 @@ pnpm install
 | --- | --- |
 | 任意改动 | `pnpm verify` |
 | 包边界、`exports`、`dsh.client.inject`、包元数据 | `pnpm check:packages` |
-| Session、命令、projection、通知、浏览器加载路径、board 写路径/global | `pnpm e2e`（完整流 225/225；调试可用 `--no-worktree`，须说明跳过阶段 2 的理由） |
+| Session、命令、projection、通知、浏览器加载路径、board 写路径/global | `pnpm e2e`（完整流 226/226；调试可用 `--no-worktree`，须说明跳过阶段 2 的理由） |
 | 浏览器端视觉行为 | 自动化断言之外，按 [UI-VERIFICATION.md](UI-VERIFICATION.md) 在隔离 profile 人工验收 |
 
 CI 的 [`verify.yml`](../.github/workflows/verify.yml) 在 PR 与 main push 上跑
@@ -182,12 +182,12 @@ PASS 与 SKIP 分开输出：
 
 | 流 | pin | 阶段 |
 | --- | --- | --- |
-| `pnpm e2e`（patch，默认） | **225/225** | 1 + 1b + 2 + 3 + 1e |
-| `pnpm e2e --flow installed` | **225/225** | 同上 |
-| `pnpm e2e --no-worktree` | **202/202** | 1 + 1b + 3 + 1e（跳过阶段 2） |
+| `pnpm e2e`（patch，默认） | **226/226** | 1 + 1b + 2 + 3 + 1e |
+| `pnpm e2e --flow installed` | **226/226** | 同上 |
+| `pnpm e2e --no-worktree` | **203/203** | 1 + 1b + 3 + 1e（跳过阶段 2） |
 
-阶段 pin 为 27 / 12 / 23 / **132** / 31。基线 DSH `0.2.2-rc.5` 的完整流目标计数是
-**222 PASS + 3** 条无 provider 凭据的正向模型检查 SKIP；SKIP 未执行、不能算通过。原始日志与
+阶段 pin 为 28 / 12 / 23 / **132** / 31。基线 DSH `0.2.2-rc.5` 的完整流目标计数是
+**223 PASS + 3** 条无 provider 凭据的正向模型检查 SKIP；SKIP 未执行、不能算通过。原始日志与
 证据在 [e2e-evidence/](e2e-evidence/)；逐 rc 升级门禁与可执行 recipe 见
 [COMPATIBILITY.md](COMPATIBILITY.md)。probe 是 `scripts/e2e-probe/` 下的私有测试包，不发布；
 profile 变更只发生在系统临时目录的一次性 profile 里。
@@ -255,7 +255,7 @@ gh release create v<version> --repo yankeguo/dsh-devlead --title v<version> \
 - [ ] `pnpm verify` 通过（typecheck + test + build）。
 - [ ] 触及包边界、导出、`dsh.client.inject` 或包元数据：`pnpm check:packages` 通过。
 - [ ] 触及 Session、命令、projection、通知、浏览器加载路径或 board 写路径/global：`pnpm e2e`
-  两条流通过（完整流 225/225；只跑 `--no-worktree` 时说明 202/202 与跳过阶段 2 的理由）。
+  两条流通过（完整流 226/226；只跑 `--no-worktree` 时说明 203/203 与跳过阶段 2 的理由）。
 - [ ] 浏览器端视觉行为：按 [UI-VERIFICATION.md](UI-VERIFICATION.md) 在隔离 profile 人工验收并
   记录结论（`pnpm e2e` 的自动化断言不能替代）。
 - [ ] 文档同步：README 中英面向使用者的段落、对应 docs、版本变化时的 `docs/releases/` 与证据。

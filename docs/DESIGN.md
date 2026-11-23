@@ -111,15 +111,17 @@ pnpm workspace，`packages/*`：
 
 | 目录 | 包名 | 角色 |
 | --- | --- | --- |
-| `protocol` | `@yankeguo/dsh-devlead-protocol` | 纯类型 + 常量 + 格式化（host 与浏览器共用），并声明 `devLead` / `devLeadMode` / `devLeadWatch` projection 的类型 |
+| `protocol` | `@yankeguo/dsh-devlead-protocol` | 纯类型 + 常量 + 格式化 + 项目看板 wire schema（host 与浏览器共用），并声明 `devLead` / `devLeadMode` / `devLeadWatch` projection 的类型 |
 | `devlead` | `@yankeguo/dsh-devlead` | 核心 Service `ctx.devLead`：模式状态、Workspace/Session 编排、关注关系索引、通知投递、`devLead` 与两个 summary 级 projection（`devLeadMode` / `devLeadWatch`）的 fold |
 | `tool` | `@yankeguo/dsh-tool-devlead` | 模型工具 `devlead_*` + 条件系统提示 |
 | `command` | `@yankeguo/dsh-command-devlead` | 人类命令 `/devlead` |
 | `client-ui` | `@yankeguo/dsh-client-ui-devlead` | 浏览器 UI：两态都显示的图标 + 文本工具条开关 + 开启后的只读 DevLead 状态条 + 侧边栏会话行标记；Host 入口另注入只读 board global |
 | `bundle` | `@yankeguo/dsh-devlead-bundle` | bundle：`cordis.patch.yml` 插入全部插件 |
 
-依赖方向：`protocol ← devlead ← {tool, command, client-ui}`；`client-ui` 浏览器侧仍只直接使用
-`protocol`，Host 入口读取 `ctx.devLead.board` 并注入 global。项目看板完整契约见 [BOARD](BOARD.md)。
+依赖方向：`protocol ← devlead ← {tool, command, client-ui}`；`client-ui` 浏览器侧直接使用
+`protocol`（包括看板 wire schema；它不 import Host/Node，浏览器侧 `zod` 来自 DSH 冻结
+module table 的 platform singleton），Host 入口读取
+`ctx.devLead.board` 并注入 global。项目看板完整契约见 [BOARD](BOARD.md)。
 构建时 host 入口 external `@deepseek-ai/*`、`@yankeguo/*`、`node:*`；浏览器入口只 external
 DSH shell 的 platform singletons（单一来源 `scripts/client-externals.mjs`）。构建期守卫会
 拒绝任何不在 module table 里的 `@deepseek-ai/*` 浏览器导入（第三方纯库会按需内联，
@@ -2630,11 +2632,14 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   `@yankeguo/dsh-client-ui-devlead/board`；keyed body slot 使用 id，`openTab` 使用 kind。
   `useBoardFile` 用 tab SessionId + 配置绝对路径执行 `stat` / `readBytes` / `changes`，首读与
   ready 重读、change debounce、request generation 淘汰、卸载 abort + stream dispose 共同保证
-  freshness 与清理。浏览器独立 strict schema v1 解码器不 import Host/Node；not-found、Remote
-  read error、parse error 分别呈现 empty / read error / parse error，错误时只保留 lastSuccessAt，
-  不把旧卡片当当前数据；watch ended 单独警告且手动刷新会重连。项目 blocked 置顶，组内
-  priority + updatedAt 排序，tasks/blockers 只读；unlisted 折叠区连接 Host Workspace/Session
-  投影，path 做有限语法规范化并显示会话数与最近 Session 活动，Session pending 不谎报无活动；
+  freshness 与清理；文件不存在时按 4s→30s 有界退避轮询（status 驱动、refreshing 不重置），
+  watch ended 单独警告且只由手动刷新重连。浏览器 strict schema v1 直接复用 protocol 的
+  `createDevLeadBoardSchema`（不 import Host/Node；绝对路径谓词由 Host 发布的 `pathPlatform`
+  决定）；not-found、Remote read error、parse error 分别呈现 empty / read error / parse error，
+  错误时只保留 lastSuccessAt，不把旧卡片当当前数据。项目 blocked 置顶，组内 priority +
+  updatedAt 排序，tasks/blockers 只读；unlisted 折叠区连接 Host Workspace/Session 投影，path
+  做有限语法规范化并显示会话数与最近 Session 活动，Session pending 不谎报无活动、workspace
+  清单 error 优先于 pending；组标题 DOM id 以 `useId` 前缀隔离多个面板实例；
   symlink/realpath 别名留待 Host 权威解析。完整契约见 [BOARD](BOARD.md#step-b-浏览器契约)。
 - i18n：namespace `devlead`，`zh`/`en` 词典；`locale/zh.json`、`locale/en.json` 提供
   `meta.title`/`meta.description`（插件市场展示）。
@@ -2748,9 +2753,11 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   文案与隐藏失败活区，SessionMark/HoverMark，以及 `useDevLeadAdmission` 的单击提交、双击
   单次提交、卸载不 setState、失败保留与 `resetKey` 清空。`ensureStyleTag` 的跨模块实例引用计数用
   `vi.resetModules()` + 动态 import 模拟第二个模块实例，断言旧实例 dispose 后标签仍在、
-  全部 dispose 后移除。Step B 另覆盖 board strict schema/跨平台路径/分组排序/unlisted 纯函数、
-  `useBoardFile` 的 stat/read/not-found/坏 JSON/debounce/旧请求淘汰/abort+dispose、注册开关与
-  `openTab`，以及看板卡片、空态、错误态、折叠区与 zh/en 渲染。
+  全部 dispose 后移除。Step B 另覆盖 protocol 共享 board schema 的 accept/reject 契约矩阵
+  （两端消费面各自补矩阵）、跨平台路径、分组排序/unlisted 纯函数、`useBoardFile` 的
+  stat/read/not-found/坏 JSON/debounce/旧请求淘汰/abort+dispose/空态轮询/watch 降级、
+  注册开关与 `openTab`，以及看板卡片、空态、错误态、XSS 文本转义、a11y 属性、`useId`
+  id 隔离、折叠区与 zh/en 渲染。
 - 全仓 `pnpm typecheck && pnpm test && pnpm build` 是 `pnpm verify`；`pnpm check:packages`
   校验包不变式；`pnpm e2e` 是本机真实 DSH 的端到端冒烟（见 §10）。
 

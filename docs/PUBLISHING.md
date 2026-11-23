@@ -222,14 +222,14 @@ client-ui 的 `index`/`client`；`bundle` 只有 patch 文件与 icon，不产�
 可选（本机，需要已安装的 DSH 桌面端）：真实 DSH 端到端冒烟：
 
 ```sh
-pnpm e2e --no-build                       # patch 完整流（阶段 1 + 1b + 2 + 3 + 1e，报 225/225）
-pnpm e2e --flow installed --no-build      # installed 完整流（同 pin，报 225/225）
-pnpm e2e --no-worktree --no-build         # 跳过实验 forge bundle 组合（报 202/202，阶段 1 + 1b + 3 + 1e）
+pnpm e2e --no-build                       # patch 完整流（阶段 1 + 1b + 2 + 3 + 1e，报 226/226）
+pnpm e2e --flow installed --no-build      # installed 完整流（同 pin，报 226/226）
+pnpm e2e --no-worktree --no-build         # 跳过实验 forge bundle 组合（报 203/203，阶段 1 + 1b + 3 + 1e）
 ```
 
-阶段 pin 以 `scripts/e2e-smoke.mjs` 的 `EXPECTED_CHECKS` 为准（27 / 12 / 23 / 132 / 31；删增 check
-都会使对应阶段失败），不要在本页复制旧数字作为验收依据。完整流必须 **225/225**、`--no-worktree`
-必须 **202/202**，数字以当次真实输出为准；完整流的 225/225 是 **222 PASS + 3** 条无 provider
+阶段 pin 以 `scripts/e2e-smoke.mjs` 的 `EXPECTED_CHECKS` 为准（28 / 12 / 23 / 132 / 31；删增 check
+都会使对应阶段失败），不要在本页复制旧数字作为验收依据。完整流必须 **226/226**、`--no-worktree`
+必须 **203/203**，数字以当次真实输出为准；完整流的 226/226 是 **223 PASS + 3** 条无 provider
 凭据的正向模型选择 SKIP（SKIP 未执行、不能算通过）。阶段 3 在全部旧检查之上另含 4 项 board
 检查：真实 `updateBoard` 写入/CAS、webserver/index-inject global 与独立磁盘 revision/内容
 read-back。上一稳定版 `0.4.0` 冻结树的历史真实输出（含真实
