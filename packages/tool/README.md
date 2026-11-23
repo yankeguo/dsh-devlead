@@ -29,7 +29,7 @@ active lead.
 - `devlead_archive_session` (DSH archive; `stop_running` asks the Host to stop running work)
 - `devlead_unarchive_session` (restore to the recorded Workspace position)
 
-Every lead tool requires an enabled DevLead mode; `devlead_report` requires the inverse watched state. Mutations and Host-identity reads require a live calling Agent (`exec.agent`); `devlead_list_workspaces` and `devlead_board_read` do not inspect its identity. Since 0.2.0 `devlead_use_workspace` forwards the live Agent to the core
+Every lead tool requires an enabled DevLead mode; `devlead_report` requires the inverse watched state. Mutations and Host-identity reads require a live calling Agent (`exec.agent`); `devlead_list_workspaces` does not inspect its identity. The two board tools are **lead-only**: the caller must be the current active lead that owns the board file, otherwise they fail with `BOARD_DISABLED` (no active lead, no absolute workspace root, a recorded workspace root that no longer exists, or a different Session than the active lead). Since 0.2.0 `devlead_use_workspace` forwards the live Agent to the core
 `useWorkspace(agent, { path, title?, create? }, signal)`; `create` defaults to `false` (a missing
 directory is `DEVLEAD_DIRECTORY_MISSING`), and `create: true` is only for a human-explicit request
 to create the directory. Domain failures are translated to `HarnessError` with a stable
@@ -38,7 +38,10 @@ their declared output schemas.
 
 The board tools follow the board's default-on lifecycle: the active lead Session's original
 workspace root owns `<header.cwd>/.dsh/devlead/board.json` (the optional deployment `boardPath` wins
-when configured), and with no active lead / workspace root they report `BOARD_DISABLED`. They never
+when configured), and with no active lead / workspace root they report `BOARD_DISABLED`. A derived
+(non-override) board also requires that recorded workspace root to still exist as a directory: the
+Host never recreates a deleted or moved workspace just to host the board, so the tools report
+`BOARD_DISABLED` until the workspace comes back or an explicit `boardPath` covers it. They never
 accept a board file path argument — the path is derived by the Host or set by deployment config only.
 `devlead_board_read` defaults to project summaries without tasks; a selected project includes at most
 50 tasks by default and reports `truncated:true` beyond that. The whole serialized result is also
@@ -158,7 +161,7 @@ supported platform.
 
 ## 中文
 
-`@yankeguo/dsh-tool-devlead` 提供 16 个主工具 + 1 个 `devlead_report` 与条件 system prompt/context。主工具只在 DevLead 模式开启时可见；`devlead_report` 只在非 DevLead、被唯一 active lead 关注的会话可见。写操作与需要调用者身份的读取要求 live Agent（`exec.agent`）；`devlead_list_workspaces` / `devlead_board_read` 不读取其身份。0.2.0 起
+`@yankeguo/dsh-tool-devlead` 提供 16 个主工具 + 1 个 `devlead_report` 与条件 system prompt/context。主工具只在 DevLead 模式开启时可见；`devlead_report` 只在非 DevLead、被唯一 active lead 关注的会话可见。写操作与需要调用者身份的读取要求 live Agent（`exec.agent`）；`devlead_list_workspaces` 不读取其身份。两个看板工具是 **lead-only**：调用者必须是持有看板文件的当前 active lead，否则返回 `BOARD_DISABLED`（没有 active lead、没有绝对 workspace 根、记录的 workspace 根已不存在，或调用者不是 active lead）。0.2.0 起
 `devlead_use_workspace` 把 live Agent 转发给 core 的 `useWorkspace(agent, request, signal)`，
 `create` 默认 `false`（缺目录报 `DEVLEAD_DIRECTORY_MISSING`，只有人类明确要求建目录时才传
 `true`）。`devlead_create_session` 还支持创建时指定 `provider`+`model`（可选

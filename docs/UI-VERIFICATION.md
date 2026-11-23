@@ -83,13 +83,19 @@
    `<workspace>/.dsh/devlead/board.json`），而不是 worktree/effective cwd；在 lead 刚开启后让 AI 调一次
    `devlead_board_update` 写入，面板应出现项目卡片。**先加载页面、后开启 lead** 的场景：默认路径
    部署不刷新页面也应出现入口（client 从 lead Session summary 的 `cwd` 自行派生路径）。
+   Host 在派生默认路径前要求 lead 的原始 workspace 根**仍是已存在目录**：把该目录删除/移走后，
+   Host 侧看板保持 disabled（不 `mkdir` 重建、不写入，工具报 `BOARD_DISABLED`，`boardDisabledReason =
+   missing-workspace`）；页面在 self-heal 下仍可能显示入口并读到空态/读取错误，这是只读读取，
+   不得在磁盘上重新创建该 workspace 目录。
 3. **Config override + late enable 需要刷新**：如测试 `boardPath` override，先改 profile 配置再
    启动；若页面在 lead 启用前已加载，late-enable 场景必须刷新页面才能读到 override 路径与
    `override:true` 的 global（这是预期行为，不是 bug；默认路径不需要刷新）。
 4. **项目卡片**：准备含四种状态、不同 priority/updatedAt 的 schema v1 文件；blocked 组与顶部提示优先，
    同组排序正确；focus/next/blocker since、任务 done/total、展开任务与截断 owner id 均可读，没有编辑控件。
-   读取结果超过 64 KiB 时 Host 会按 tasks → blockers → project 行从尾部裁剪并标 `truncated:true`；
-   面板仍只读展示，不出现“内容缺失”误导。
+   面板**直接读取看板文件**并按 schema v1 解码（文件上限 256 KiB），不受工具层 64 KiB 裁剪影响；
+   贴满一次工具读取上限的 64 KiB 内容也应完整显示，模型工具结果里的 `truncated:true` 不该出现在面板。
+   `devlead_board_read` 的 64 KiB 上限只约束**工具返回给模型的结果**（按 tasks → blockers → project
+   行从尾部裁剪并标 `truncated:true`），不是右栏面板的行为。
 5. **文件状态**：文件不存在显示「还没有看板数据」而非错误，并保持页面打开——Host 首次写入创建
    文件后应由 change 或空态有界轮询（4s 起、退避到 30s）自动出现，无需手动刷新；坏 JSON/schema
    显示「看板文件解析失败」、最后成功时间和重试；改回合法文件后 change 触发自动恢复，手动刷新也

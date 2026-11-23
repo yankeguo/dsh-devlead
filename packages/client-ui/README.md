@@ -21,7 +21,14 @@ Browser half of the DevLead suite, loaded on the DSH **Web** platform.
   register the right-Sidebar page (`devlead-board`), its guide card, live tab title, and Session
   header action; the header action itself stays registered statically and renders nothing for any
   other Session. The page strictly validates schema v1 bytes, follows `workspaceFiles.changes`,
-  groups/sorts project cards, and exposes only refresh/disclosure controls. A collapsed section
+  groups/sorts project cards, and exposes only refresh/disclosure controls. The page reads the
+  board file directly through the Workspace Files Remote: the schema's 256 KiB file cap applies and
+  the model tool's separate 64 KiB read cap does not. A not-yet-existing file is not an error — the
+  panel keeps polling on a bounded backoff (4s growing to 30s) until the first Host write appears —
+  and the decoder is the same protocol schema implementation the Host validates with (the browser
+  uses DSH's frozen `zod` platform singleton; no extra runtime dependency). A restored right-Sidebar
+  board tab whose on-screen Session is no longer an eligible lead is closed on the first sync even
+  when this page instance never registered the board surfaces. A collapsed section
   joins the authoritative Workspace/Session projections to show registered Workspaces absent from
   the board.
   The path comes from the Host global `__DSH_DEVLEAD_BOARD__` when it names this lead
@@ -72,6 +79,11 @@ dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 （top-level Session 且 summary 里 DevLead 模式开启）：只有这时才注册右侧栏只读项目看板 tab、
 guide 卡片、标题与 Session 头部按钮（头部按钮本身静态注册，其他 Session 下不渲染）。看板严格
 校验 schema v1、跟随文件变更、分组展示项目与任务，并从未看板 workspace 的 Host 投影生成折叠清单。
+面板直接经 Workspace Files Remote 读取看板文件（schema 的 256 KiB 文件上限；模型工具另有的
+64 KiB 读取裁剪不作用于面板）；文件尚不存在时按有界退避轮询（4s 起、上限 30s）等待首次写入，
+解码器与 Host 共用同一份 protocol schema（浏览器侧 `zod` 来自 DSH 冻结 module table，无额外运行期
+依赖）。恢复出来但当前 on-screen Session 已非合规 lead 的 board tab 会在首次 sync 时被关闭
+（即使本页从未注册过看板 surface）。
 路径优先取 Host global `__DSH_DEVLEAD_BOARD__`（新 Host 带 `leadSessionId` 与 `override`），否则由
 Session 原始 workspace root 派生 `<cwd>/.dsh/devlead/board.json`；配置 `boardPath` 仍是部署级覆盖，
 但页面若在 lead 出现之前加载，需要刷新才能看到覆盖路径。模式关闭或切换到非 lead Session 会注销全部

@@ -28,7 +28,8 @@ const BOARD_READ_DESCRIPTION =
   + 'absolute workspace path for full detail. This board is read-only for the human and writable only by the lead AI '
   + 'through devlead_board_update. The board belongs to the active lead Session; its file location is derived from '
   + 'that Session workspace (or a deployment override) and is never a tool argument. Results are bounded and may be '
-  + 'truncated:true; no lead workspace means BOARD_DISABLED.'
+  + 'truncated:true; no active lead workspace (including a recorded workspace root that no longer exists) means '
+  + 'BOARD_DISABLED.'
 
 const BOARD_UPDATE_DESCRIPTION =
   'Update one project on the user-visible DevLead board; the human is read-only and only the enabled lead AI may '
