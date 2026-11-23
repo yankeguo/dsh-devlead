@@ -7,7 +7,7 @@
 **Session**（会话），创建并续写其他会话、读取它们的状态、在状态变化时被唤醒——于是一个
 agent 就能在人可见、可参与的标准界面里统管多个仓库。
 
-当前候选版 **0.4.2-rc.1**（prerelease，npm dist-tag `next`；稳定版 `latest` 仍为 **0.4.1**） ·
+当前候选版 **0.4.2-rc.2**（prerelease，npm dist-tag `next`；稳定版 `latest` 仍为 **0.4.1**） ·
 DSH **0.2.2-rc.1 – 0.2.2-rc.5** · 一条 `dsh plugin` 命令即可装好全部组件。
 
 ## 核心能力
@@ -67,15 +67,17 @@ Web 页面。
 固定到精确版本：
 
 ```sh
-dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.1
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.2
 ```
 
-0.4.2-rc.1 是计划中 0.4.2 补丁版的当前 prerelease 候选：项目看板对 active lead **默认启用**
+0.4.2-rc.2 是计划中 0.4.2 补丁版的当前 prerelease 候选，取代 0.4.2-rc.1（功能集合相同，rc.2
+只把两个看板 I/O 测试改成确定性的，无产品代码变更）：项目看板对 active lead **默认启用**
 （由该 Session 的原始 workspace 根派生），右侧栏提供 **仅 lead 可见的只读看板 UI**；模型侧看板
 读取有 64 KiB 上限，修复长 workspace path/title 作为 project 引用的误判；看板 start 失败时只降级、
 不阻塞插件加载。没有公网 API 破坏性变更，DSH 兼容面不变。本候选以 npm dist-tag `next` stage，
-在稳定版 0.4.2 被 approve 前请按上面的精确版本安装；`latest` 仍为 **0.4.1**。详见
-[0.4.2-rc.1 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.2-rc.1.md)；
+在稳定版 0.4.2 被 approve 前请按上面的精确版本安装；`latest` 仍为 **0.4.1**。从未 approve 的
+0.4.2-rc.1 staged 记录不得 approve。详见
+[0.4.2-rc.2 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.2-rc.2.md)；
 上一个稳定补丁的说明见
 [0.4.1 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.1.md)。
 
@@ -89,7 +91,7 @@ dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.1
 dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 
 # 或固定到某个版本（prerelease 必须写精确版本）
-dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.1
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.2
 ```
 
 > **从旧版本（低于 0.4.0）升级：** 0.4.0 会直接丢弃旧的 DevLead 会话状态（模式、关注集合、

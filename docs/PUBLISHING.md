@@ -155,12 +155,13 @@ git status                 # 必须干净
 
 ### 2. 统一升级 6 个包的版本
 
-所有包使用同一版本号。一行命令改完（示例 `0.4.2-rc.1`；`0.4.0-rc.1` 的 bump 在 Batch 2 完成，
+所有包使用同一版本号。一行命令改完（示例 `0.4.2-rc.2`；`0.4.2-rc.1` 的 bump 在 rc.1 发布准备中
+完成，`0.4.0-rc.1` 的 bump 在 Batch 2 完成，
 稳定版 `0.4.0` 与补丁版 `0.4.1` 的 bump 分别在各自发布准备中完成，此命令保留为流程模板，
 重复执行同版本无副作用）：
 
 ```sh
-export VERSION=0.4.2-rc.1
+export VERSION=0.4.2-rc.2
 node -e '
   const fs = require("node:fs")
   const files = ["package.json"]
@@ -267,16 +268,16 @@ pnpm e2e --no-worktree --no-build         # 跳过实验 forge bundle 组合（�
 
 ```sh
 git add -A
-git commit -m "chore(release): v0.4.2-rc.1"
+git commit -m "chore(release): v0.4.2-rc.2"
 git push origin main
-git tag -a v0.4.2-rc.1 -m "v0.4.2-rc.1"
-git push origin v0.4.2-rc.1       # 触发 .github/workflows/publish.yml
+git tag -a v0.4.2-rc.2 -m "v0.4.2-rc.2"
+git push origin v0.4.2-rc.2       # 触发 .github/workflows/publish.yml
 ```
 
-> 本版 `0.4.2-rc.1` 是 **prerelease 候选**：CI 按版本自动推导 dist-tag 为 `next`
+> 本版 `0.4.2-rc.2` 是 **prerelease 候选**：CI 按版本自动推导 dist-tag 为 `next`
 > （稳定版才是 `latest`）。打 tag 与 push 属于人类批准动作；本次由人类明确指示后执行。
 > 通用检查清单可参考下文 [「0.4.0 稳定版发布步骤与检查」](#9-040-稳定版发布步骤与检查)
-> （历史稳定版实例）与首个 RC 的检查记录。
+> （历史稳定版实例）与 0.4.2-rc.1 的检查记录（历史）。
 
 `publish.yml` 的行为：
 
@@ -318,9 +319,11 @@ stage 成功后**什么都不会公开**。维护者在 npmjs.com 网页上批�
 1. 用对 `@yankeguo` 有写权限的维护者账号登录 [npmjs.com](https://www.npmjs.com/)，按提示完成 2FA。
 2. 打开 staged 队列 / pending approvals 页面（账号下的 staged packages；每个包的 **Versions**
    页也会显示该版本的 staged / 待批准状态与审批入口，页面约每分钟自动刷新）。
-3. **先核对再批准**：6 条 staged 记录的包名、版本号（例如全部为 `0.4.2-rc.1`）与记录携带的
+3. **先核对再批准**：6 条 staged 记录的包名、版本号（例如全部为 `0.4.2-rc.2`）与记录携带的
    dist-tag（稳定版 `latest`；prerelease `next`）必须与 CI job summary 一致。
-   **版本或 dist-tag 不对的记录不要批准**，先按本节末尾的 reject 说明清理。
+   **版本或 dist-tag 不对的记录不要批准**，先按本节末尾的 reject 说明清理。历史候选
+   `0.4.2-rc.1` 的 6 条 staged 记录从未 approve，**不要批准**；批准 rc.2 前请 reject 或明确忽略
+   （rc.1 的 main `verify` 因 board-io 测试时序 flake 是红的）。
 4. 勾选该版本全部 6 个包后**批量 approve**（网页要求 2FA 确认）。npm **每批准一个就立即公开
    该包**：approve 即公开、**不可撤销**；中途中断时已批准的包已经公开，剩余包仍留在 staged
    队列，可继续批准。网页批量批准不保证逐包先后顺序；若需要严格控制“依赖先、bundle 最后”
@@ -335,7 +338,7 @@ approve 后逐包核对 npm `dist-tags`（`latest` 指向稳定版；`next`/其�
 npm view @yankeguo/dsh-devlead-bundle dist-tags
 npm view @yankeguo/dsh-devlead dist-tags
 # 本次候选期望：approve 前 latest = 0.4.1、next = 0.4.0-rc.1；
-# approve 0.4.2-rc.1 后 next = 0.4.2-rc.1，latest 仍为 0.4.1
+# approve 0.4.2-rc.2 后 next = 0.4.2-rc.2，latest 仍为 0.4.1
 ```
 
 也可以在 npmjs.com 各包页面的 **Versions** 里核对哪个版本带 `latest` / `next` 标签。
@@ -361,9 +364,9 @@ reject staged 记录**不会**撤销任何已 approve 的版本（已 approve = 
 在仓库根目录执行：
 
 ```sh
-# 预发布版（本次 0.4.2-rc.1；tag 已存在，--verify-tag 保证只对既有 tag 建 Release，绝不创建/移动 tag）
-gh release create v0.4.2-rc.1 --repo yankeguo/dsh-devlead --title v0.4.2-rc.1 \
-  --notes-file docs/releases/v0.4.2-rc.1.md --verify-tag --prerelease --latest=false
+# 预发布版（本次 0.4.2-rc.2；tag 已存在，--verify-tag 保证只对既有 tag 建 Release，绝不创建/移动 tag）
+gh release create v0.4.2-rc.2 --repo yankeguo/dsh-devlead --title v0.4.2-rc.2 \
+  --notes-file docs/releases/v0.4.2-rc.2.md --verify-tag --prerelease --latest=false
 
 # 稳定版（历史示例 0.4.1）
 gh release create v0.4.1 --repo yankeguo/dsh-devlead --title v0.4.1 \
@@ -384,15 +387,15 @@ gh release create v0.4.1 --repo yankeguo/dsh-devlead --title v0.4.1 \
 创建后核对「npm dist-tags ↔ git tag ↔ GitHub Release」三者一致：
 
 ```sh
-git rev-parse v0.4.2-rc.1^{commit}             # tag 指向的 commit
-gh release view v0.4.2-rc.1 --repo yankeguo/dsh-devlead \
+git rev-parse v0.4.2-rc.2^{commit}             # tag 指向的 commit
+gh release view v0.4.2-rc.2 --repo yankeguo/dsh-devlead \
   --json tagName,isPrerelease,isDraft,targetCommitish
 gh release list --repo yankeguo/dsh-devlead --limit 5 --json tagName,isLatest
 npm view @yankeguo/dsh-devlead-bundle dist-tags
 ```
 
-本次候选期望：6 个包的 `@0.4.2-rc.1` 在 npm 可见；`dist-tags.next = 0.4.2-rc.1`、`latest` 仍为
-`0.4.1`；GitHub Release 指向 tag `v0.4.2-rc.1` 与同一 commit，`isPrerelease=true`、
+本次候选期望：6 个包的 `@0.4.2-rc.2` 在 npm 可见；`dist-tags.next = 0.4.2-rc.2`、`latest` 仍为
+`0.4.1`；GitHub Release 指向 tag `v0.4.2-rc.2` 与同一 commit，`isPrerelease=true`、
 `isLatest` 仍指向稳定版、`isDraft=false`。稳定版发布时则是 6 个包的 `@<version>` 可见、
 `dist-tags.latest = <version>`、`next` 保持 `0.4.0-rc.1` 的前一候选，Release `isLatest=true`、
 `isPrerelease=false`。
@@ -402,15 +405,15 @@ npm view @yankeguo/dsh-devlead-bundle dist-tags
 网页 approve 完成、并按第 7 步手动创建 GitHub Release 后执行：
 
 ```sh
-npm view @yankeguo/dsh-devlead-bundle@0.4.2-rc.1 version dist-tags
-npm view @yankeguo/dsh-devlead@0.4.2-rc.1 version
-npm view @yankeguo/dsh-command-devlead@0.4.2-rc.1 version
+npm view @yankeguo/dsh-devlead-bundle@0.4.2-rc.2 version dist-tags
+npm view @yankeguo/dsh-devlead@0.4.2-rc.2 version
+npm view @yankeguo/dsh-command-devlead@0.4.2-rc.2 version
 
-gh release view v0.4.2-rc.1 --repo yankeguo/dsh-devlead
+gh release view v0.4.2-rc.2 --repo yankeguo/dsh-devlead
 ```
 
-本次候选三方核对：6 个包的 `@0.4.2-rc.1` 在 npm 可见、`dist-tags.next` 指向 **`0.4.2-rc.1`**、
-`dist-tags.latest` 保持 **`0.4.1`**；GitHub Release 指向 tag `v0.4.2-rc.1` 与同一 commit
+本次候选三方核对：6 个包的 `@0.4.2-rc.2` 在 npm 可见、`dist-tags.next` 指向 **`0.4.2-rc.2`**、
+`dist-tags.latest` 保持 **`0.4.1`**；GitHub Release 指向 tag `v0.4.2-rc.2` 与同一 commit
 （`isPrerelease=true`、`isLatest` 仍为稳定版）。
 npmjs.com 上每个包应显示 **provenance / attestation**（公开仓库 + GitHub-hosted runner 自动
 生成）。
@@ -419,7 +422,7 @@ npmjs.com 上每个包应显示 **provenance / attestation**（公开仓库 + Gi
 
 ```sh
 dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
-# 或：dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.1
+# 或：dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.2
 ```
 
 然后刷新 Web 页面，开一个会话执行 `/devlead on`，再让模型
@@ -579,6 +582,12 @@ bundle 依赖，把它加进 workspace 后 `pnpm install` 会同步锁文件；�
   64 KiB 工具读取上限与长 path/title 引用修复、start 失败降级与冷 workspace 缺失处理，并修正
   client-ui 包拓扑（不再依赖 core 包）；无公网 API 破坏性变更。发布说明见
   `docs/releases/v0.4.2-rc.1.md`。
+  **0.4.2-rc.2**（prerelease，dist-tag `next`）取代未 approve 的 `0.4.2-rc.1`（rc.1 的 main
+  `verify` 因 board-io 测试的时序 flake 失败，其 6 条 staged 记录不得 approve）：功能集合与
+  rc.1 相同（项目看板默认启用并跟随 active lead workspace、lead-only 只读看板 UI、64 KiB 工具
+  读取上限与长 path/title 引用修复、start 失败降级与冷 workspace 缺失处理、client-ui 包拓扑
+  修正），仅追加 test-only 的读取失败用例与 writer-lock 权限用例确定性修复；无产品代码/公网
+  API 变更。发布说明见 `docs/releases/v0.4.2-rc.2.md`。
   各版发布时同步 README / README.zh 与 `docs/releases/v<version>.md`；0.2.0 另复核
   旧 core + 新 tool 混装时 `isolation` 的防御性降级（tool 对缺失字段回退
   `{requested:'none',status:'none'}`）。

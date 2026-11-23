@@ -1,11 +1,13 @@
 # DSH 兼容性矩阵
 
 本仓库的目标兼容面是 **DeepSeek Harness `0.2.2-rc.1` – `0.2.2-rc.5`**；当前候选发布版本是插件版本
-**`0.4.2-rc.1`**（6 个可发布包共用同一版本号；prerelease，CI 以 npm dist-tag `next` stage，维护者
+**`0.4.2-rc.2`**（6 个可发布包共用同一版本号；prerelease，CI 以 npm dist-tag `next` stage，维护者
 approve 后公开）。稳定版 `latest` 当前为 **`0.4.1`**（2026-11-22 北京时间经 staged publish +
-人工 approve 公开）；approve `0.4.2-rc.1` 后 `next` 指向本候选、`latest` 仍为 `0.4.1`，直到计划中
+人工 approve 公开）；approve `0.4.2-rc.2` 后 `next` 指向本候选、`latest` 仍为 `0.4.1`，直到计划中
 的稳定版 `0.4.2` 发布。`0.4.0`（2026-11-21 公开）与 `0.4.0-rc.1`（同日以 `next` 发布）是历史
-版本。`0.4.2-rc.1` 只是**插件版本**，**不代表 DSH 0.4.2**——DSH 兼容面与
+版本。`0.4.2-rc.1`（2026-11-23 已 stage 但**未 approve、从未公开**；其 main `verify` 因一个看板
+读取测试的时序 flake 失败）由本候选取代，其 staged 记录不得 approve。`0.4.2-rc.2` 只是
+**插件版本**，**不代表 DSH 0.4.2**——DSH 兼容面与
 `engines.dsh` 都不变。6 个可发布包的
 `engines.dsh` 均为 `>=0.2.2-rc.1 <0.3.0`（根 `package.json` 是 private 包，不声明
 `engines.dsh`，只声明 `engines.node`），所有
@@ -506,7 +508,7 @@ lane/deliveryState、blocked/decision action steer、真实 T1 followup / T2 rev
 
 上表 Phase 1e 行即 **Batch 1 最终树**的 pin 实测：installed / patch 完整流各 **221/221**
 （218 PASS + 3 SKIP；phase 1 27 + 1b 12 + 2 23 + 3 128 + 1e 31），`--no-worktree` **198/198**
-（phase 2 skipped）。当前候选发布版本是插件 **`0.4.2-rc.1`**（prerelease，dist-tag `next`；
+（phase 2 skipped）。当前候选发布版本是插件 **`0.4.2-rc.2`**（prerelease，dist-tag `next`；
 approve 前 `next` 仍为 `0.4.0-rc.1`，`latest` 为 `0.4.1`；DSH 兼容面仍为 rc.1–rc.5）。
 `0.4.0-rc.1` 候选的三条真实
 E2E 重跑（含真实 `*_EXIT=0` 与总计行）记录在
@@ -534,6 +536,12 @@ active lead workspace、lead-only 浏览器入口、工具 64 KiB 读取上限�
 `boardDisabledReason`、same-path start 重试、restored board tab 首轮关闭、64 KiB 文案与
 client-ui/package 拓扑文档修正），全部使用 0.2.2-rc.1 typings 与 rc.5 安装版共有的 API，
 engines/peer range 不变。
+
+**0.4.2-rc.2 发布轮**（相对 rc.1 只有测试确定性修复）不改 DSH 兼容面、不改产品代码：
+`board-io.spec.ts` 的 read-failure 用例改为在从未 `start()` 的新 store 上命中注入的
+`stat`/`readFile` 错误，不再依赖 watcher/缓存的并发 reload 时机；`board.spec.ts` 的只读父目录
+writer-lock 用例改为在 `withFileLock` seam 注入 errno，不再依赖 `chmod`/非 root uid。功能内容
+仍是上一段 rc.1 收口轮的内容。
 
 每条 flow 有 3 条正向模型选择检查因无 provider 凭据 SKIP（打印真实原因）；负向
 `DEVLEAD_MODEL_UNAVAILABLE`、`devlead_list_models`、preset roster 与 watched-child
