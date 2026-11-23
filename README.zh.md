@@ -7,7 +7,7 @@
 **Session**（会话），创建并续写其他会话、读取它们的状态、在状态变化时被唤醒——于是一个
 agent 就能在人可见、可参与的标准界面里统管多个仓库。
 
-当前候选版 **0.4.2-rc.2**（prerelease，npm dist-tag `next`；稳定版 `latest` 仍为 **0.4.1**） ·
+当前候选版 **0.4.2-rc.3**（prerelease，npm dist-tag `next`；稳定版 `latest` 仍为 **0.4.1**） ·
 DSH **0.2.2-rc.1 – 0.2.2-rc.5** · 一条 `dsh plugin` 命令即可装好全部组件。
 
 ## 核心能力
@@ -21,7 +21,7 @@ DSH **0.2.2-rc.1 – 0.2.2-rc.5** · 一条 `dsh plugin` 命令即可装好全�
 | **16 个主工具 + 1 个汇报工具** | 注册/列出/移除 Workspace，列出 Host 模型与 Agent preset，创建/读取/续写/归档/恢复/关注 Session，查看并撤回排队的 inbox 输入，读取通知与汇报摘要，并维护对 active lead 默认启用的用户可见项目看板。被关注的子会话另有单向的 `devlead_report`。 |
 | **人类命令** | `/devlead`、`/devlead on\|off`、`/devlead reset`、`/devlead watch\|unwatch <session>`——会话可用完整 id 或唯一前缀寻址。 |
 | **可选的 worktree 隔离** | 当 Host 组合了 DSH 的实验性 Git worktree 服务时，被派发的 Session 可以拥有自己的分支和检出，而不必共享 Workspace checkout。缺少该能力时退化为共享 checkout，并在结果里如实上报状态。 |
-| **Web 界面** | composer 工具条里的带文本 DevLead 开关（两态都在）、开启后的只读 DevLeadBar、侧边栏 active/watched 标记，以及仅 lead 可见的右侧栏只读项目看板。 |
+| **Web 界面** | composer 工具条里的带文本 DevLead 开关（两态都在）、开启后的只读 DevLeadBar、侧边栏 active/watched 标记，以及仅 lead 可见的右侧栏只读项目看板；看板支持随页面可见性/焦点自动刷新、状态 KPI、响应式卡片与次级折叠。 |
 
 ## 与 subagent / agent-team 的对比
 
@@ -67,17 +67,18 @@ Web 页面。
 固定到精确版本：
 
 ```sh
-dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.2
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.3
 ```
 
-0.4.2-rc.2 是计划中 0.4.2 补丁版的当前 prerelease 候选，取代 0.4.2-rc.1（功能集合相同，rc.2
-只把两个看板 I/O 测试改成确定性的，无产品代码变更）：项目看板对 active lead **默认启用**
-（由该 Session 的原始 workspace 根派生），右侧栏提供 **仅 lead 可见的只读看板 UI**；模型侧看板
-读取有 64 KiB 上限，修复长 workspace path/title 作为 project 引用的误判；看板 start 失败时只降级、
-不阻塞插件加载。没有公网 API 破坏性变更，DSH 兼容面不变。本候选以 npm dist-tag `next` stage，
-在稳定版 0.4.2 被 approve 前请按上面的精确版本安装；`latest` 仍为 **0.4.1**。从未 approve 的
-0.4.2-rc.1 staged 记录不得 approve。详见
-[0.4.2-rc.2 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.2-rc.2.md)；
+0.4.2-rc.3 是计划中 0.4.2 补丁版的当前 prerelease 候选，取代 0.4.2-rc.2。相对 rc.2，client
+看板新增覆盖所有文件状态的自动刷新并重做整体视觉；Host 看板 schema/API 不变。0.4.2 系列让项目
+看板对 active lead **默认启用**（由该 Session 的原始 workspace 根派生），右侧栏提供 **仅 lead
+可见的只读看板 UI**；模型侧看板读取有 64 KiB 上限，修复长 workspace path/title 作为 project
+引用的误判；看板 start 失败时只降级、不阻塞插件加载。没有公网 API 破坏性变更，DSH 兼容面不变。
+本候选以 npm dist-tag `next` stage，在稳定版 0.4.2 被 approve 前请按上面的精确版本安装；`latest`
+仍为 **0.4.1**。历史 rc.1/rc.2 release notes 保持原样；从未 approve 的 0.4.2-rc.1 staged 记录
+不得 approve。详见
+[0.4.2-rc.3 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.2-rc.3.md)；
 上一个稳定补丁的说明见
 [0.4.1 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.1.md)。
 
@@ -91,7 +92,7 @@ dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.2
 dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 
 # 或固定到某个版本（prerelease 必须写精确版本）
-dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.2
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.3
 ```
 
 > **从旧版本（低于 0.4.0）升级：** 0.4.0 会直接丢弃旧的 DevLead 会话状态（模式、关注集合、
@@ -413,13 +414,16 @@ worktree 服务时才存在，并且每次派发通过 `isolation` 参数使用�
   只在 lead 持有看板时发布到浏览器。如果页面在 lead 启用之前就已加载，客户端会从该 lead Session
   summary 的 `cwd` 自行派生默认路径；**用配置固定 `boardPath` 的部署在这种 late-enable 场景需要
   刷新页面**，因为只有刷新后的页面才携带 override 路径。关闭模式或切换 lead 会立即重渲染，绝不
-  继续读旧文件。项目按状态分组
-  （blocked 置顶），同组按优先级与更新时间排序，展示 focus/next/blockers 和可展开任务摘要。面板优先
-  跟随文件 watch，看板文件尚不存在时用有界轮询兜底（4s 起、退避到 30s）；watch 断开时明确显示
-  「自动更新已断开，请手动刷新」而不是假装正常。它区分文件不存在与读取/解析失败；折叠区还列出
-  未在看板中的已注册 workspace、会话数与最近活动（清单读取失败时错误优先于「读取中」）。
-  用户只能刷新与展开，不能编辑看板。若 lead 记录的原始 workspace 根已不存在，Host 保持看板 disabled
-  且不重建目录；client 侧自愈派生的入口仍可能显示空态/读取错误，但不会写盘。
+  继续读旧文件。顶部显示 active/blocked/paused/done KPI、revision/updated 与 Live 自动状态；blocked
+  强警示置顶，active 主区响应式 2 列（窄栏 1 列），同组按优先级与更新时间排序，卡片展示 focus/next/
+  blockers、任务进度和可展开详情；paused/done/unlisted 使用次级折叠。文件 change 保留 120ms debounce，
+  所有状态都有轮询：ready/loading 默认固定 5s，empty/error 从 5s 起指数退避到 30s 上限。仅 document
+  visible 且 focused 时轮询；恢复立即 coalesced read，blur/hidden/unmount/path change 清理 timer，
+  watch/poll/恢复共享 in-flight 读取去重。watch ended 不静默重连，但轮询继续；手动刷新仍可强制重读并
+  重连。面板区分文件不存在与读取/解析失败；未在看板中的已注册 workspace 折叠区显示会话数与最近活动
+  （清单读取失败时错误优先于「读取中」）。用户只能刷新与展开，不能编辑看板。若 lead 记录的原始
+  workspace 根已不存在，Host 保持看板 disabled 且不重建目录；client 侧自愈派生的入口仍可能显示空态/
+  读取错误，但不会写盘。
 
 关闭（工具条开关是唯一控件）：
 

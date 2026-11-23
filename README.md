@@ -8,7 +8,7 @@ upgrades **one ordinary session** into a **DevLead session**: it can operate DSH
 their state changes — so one agent can orchestrate multiple repositories inside a standard
 interface the human can see and interact with.
 
-Current release candidate **0.4.2-rc.2** (prerelease, npm dist-tag `next`; stable `latest` stays
+Current release candidate **0.4.2-rc.3** (prerelease, npm dist-tag `next`; stable `latest` stays
 **0.4.1**) · DSH **0.2.2-rc.1 – 0.2.2-rc.5** · one `dsh plugin` command installs everything.
 
 ## What you get
@@ -22,7 +22,7 @@ Current release candidate **0.4.2-rc.2** (prerelease, npm dist-tag `next`; stabl
 | **16 lead tools + 1 report tool** | Register/list/remove Workspaces, list Host models and Agent presets, create/read/continue/archive/restore/watch Sessions, inspect and retract queued inbox inputs, read the notification and report digest, and maintain the user-visible project board that is on by default for the active lead. Watched children get a one-way `devlead_report`. |
 | **Human commands** | `/devlead`, `/devlead on\|off`, `/devlead reset`, `/devlead watch\|unwatch <session>` — Sessions are addressable by full id or unique prefix. |
 | **Optional worktree isolation** | When the Host composes DSH's experimental Git worktree service, a dispatched Session can get its own branch and checkout instead of sharing the Workspace checkout. Missing capability degrades to the shared checkout with a reported status. |
-| **Web UI** | A labelled DevLead toggle, a status-only DevLeadBar, active/watched sidebar marks, and a lead-only read-only project-board tab in the right Sidebar. |
+| **Web UI** | A labelled DevLead toggle, a status-only DevLeadBar, active/watched sidebar marks, and a lead-only read-only project board with visibility-aware automatic refresh, status KPIs, responsive cards, and secondary disclosures in the right Sidebar. |
 
 ## How it compares with subagent / agent-team
 
@@ -70,20 +70,20 @@ page.
 To pin an exact version:
 
 ```sh
-dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.2
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.3
 ```
 
-0.4.2-rc.2 is the current prerelease candidate for the planned 0.4.2 patch release, superseding
-0.4.2-rc.1 (same feature set; rc.2 only makes two board I/O tests deterministic, with no product
-code change). It makes the
+0.4.2-rc.3 is the current prerelease candidate for the planned 0.4.2 patch release, superseding
+0.4.2-rc.2. Relative to rc.2, the client board adds automatic refresh across every file state and a
+comprehensive visual redesign; the Host board schema and API are unchanged. The 0.4.2 line makes the
 project board **on by default** for the active lead (derived from that Session's original workspace
 root), adds a **lead-only read-only board UI** in the right Sidebar, bounds the model-facing board
 read at 64 KiB, fixes long workspace path/title project references, and degrades instead of blocking
 when the board cannot start. There is no public API break and the DSH compatibility surface is
 unchanged. It is staged with npm dist-tag `next`, so pin the exact version above until the stable
-0.4.2 is approved; `latest` remains **0.4.1**. The never-approved 0.4.2-rc.1 staged records must
-not be approved. See the
-[0.4.2-rc.2 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.2-rc.2.md);
+0.4.2 is approved; `latest` remains **0.4.1**. The historical rc.1/rc.2 release notes remain
+unchanged; the never-approved 0.4.2-rc.1 staged records must not be approved. See the
+[0.4.2-rc.3 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.2-rc.3.md);
 the previous stable patch is documented in the
 [0.4.1 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.1.md).
 
@@ -97,7 +97,7 @@ profile's `cordis.patch.yml` themselves; the bundle is the recommended path.
 dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 
 # or pin a specific version (required for prereleases)
-dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.2
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.3
 ```
 
 > **Upgrading from an older release (below 0.4.0):** 0.4.0 intentionally discards older DevLead
@@ -459,15 +459,19 @@ permanent bar on every conversation:
   off or switching leads re-renders immediately and never keeps reading the old file and closes the
   on-screen Session's lingering board tab (including a tab restored from a previous page load). The panel
   reads the board file directly — the schema's 256 KiB file cap applies, not the model tool's 64 KiB
-  read cap — and groups
-  project cards by status (blocked first), sorts by priority and update time, and shows
-  focus/next/blockers plus expandable task summaries. It follows file changes
-  through a file watch and falls back to a bounded poll (4s, backing off to 30s) while the board file
-  does not exist yet; if the watch ends it shows an explicit "auto-update disconnected, refresh
-  manually" state instead of pretending to be live. It distinguishes missing files from read/parse
-  failures, and lists registered Workspaces absent from the board in a collapsed section with Session
-  counts and recent activity (a failed Workspace-catalog read is reported as an error, never as a
-  pending read). People can refresh and expand disclosures, but cannot edit the board. If the lead's
+  read cap. Its header shows active/blocked/paused/done KPIs, revision/updated time, and Live refresh
+  health. Blocked projects lead with a strong warning; active cards use a responsive two-column main
+  area (one column when narrow), sort by priority and update time, and show focus/next/blockers plus
+  task progress and expandable details. Paused/done and unlisted projects use secondary disclosures.
+  File changes retain a 120 ms debounce, and every state is polled: ready/loading at a fixed 5 s
+  cadence by default, empty/error with 5 s exponential backoff capped at 30 s. Polling runs only
+  while the document is visible and focused; resume triggers an immediate coalesced read, while blur,
+  hidden, unmount, and path changes clear timers. Watch/poll/resume reads share one in-flight request.
+  An ended watch does not reconnect silently, but polling continues; manual refresh still forces a
+  read and reconnects it. The panel distinguishes missing files from read/parse failures; the unlisted
+  section shows registered Workspaces with Session counts and recent activity, and reports catalog
+  failures as errors, never as pending reads. People can refresh and expand
+  disclosures, but cannot edit the board. If the lead's
   recorded workspace root is gone, the Host keeps the board disabled without recreating it; the
   client-side derived entry may still render an empty/read-error state, which never writes to disk.
 

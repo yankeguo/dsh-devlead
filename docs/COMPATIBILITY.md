@@ -1,19 +1,20 @@
 # DSH 兼容性矩阵
 
 本仓库的目标兼容面是 **DeepSeek Harness `0.2.2-rc.1` – `0.2.2-rc.5`**；当前候选发布版本是插件版本
-**`0.4.2-rc.2`**（6 个可发布包共用同一版本号；prerelease，CI 以 npm dist-tag `next` stage，维护者
+**`0.4.2-rc.3`**（6 个可发布包共用同一版本号；prerelease，CI 以 npm dist-tag `next` stage，维护者
 approve 后公开）。稳定版 `latest` 当前为 **`0.4.1`**（2026-11-22 北京时间经 staged publish +
-人工 approve 公开）；approve `0.4.2-rc.2` 后 `next` 指向本候选、`latest` 仍为 `0.4.1`，直到计划中
+人工 approve 公开）；approve `0.4.2-rc.3` 后 `next` 指向本候选、`latest` 仍为 `0.4.1`，直到计划中
 的稳定版 `0.4.2` 发布。`0.4.0`（2026-11-21 公开）与 `0.4.0-rc.1`（同日以 `next` 发布）是历史
 版本。`0.4.2-rc.1`（2026-11-23 已 stage 但**未 approve、从未公开**；其 main `verify` 因一个看板
-读取测试的时序 flake 失败）由本候选取代，其 staged 记录不得 approve。`0.4.2-rc.2` 只是
-**插件版本**，**不代表 DSH 0.4.2**——DSH 兼容面与
-`engines.dsh` 都不变。6 个可发布包的
+读取测试的时序 flake 失败）的 staged 记录不得 approve。`0.4.2-rc.2` 相对 rc.1 只做两个 board I/O
+测试的确定性修复、无产品代码变化；这些历史事实及其 release notes 不改写。当前 rc.3 相对 rc.2 只重做
+client 看板自动刷新与视觉，Host 看板 schema/API、DSH 兼容面与 `engines.dsh` 都不变。`0.4.2-rc.3`
+只是**插件版本**，**不代表 DSH 0.4.2**。6 个可发布包的
 `engines.dsh` 均为 `>=0.2.2-rc.1 <0.3.0`（根 `package.json` 是 private 包，不声明
 `engines.dsh`，只声明 `engines.node`），所有
 `@deepseek-ai/dsh-*` peer 使用同一范围；本地 devDependencies 与编译基线仍固定 rc.1，用最旧 API
-做类型检查，本机运行验证使用安装版 rc.5。board 加固不使用 0.2.3-only API，兼容范围保持
-`>=0.2.2-rc.1 <0.3.0`。
+做类型检查，本机运行验证使用安装版 rc.5。board 与本轮 client 自动刷新不使用 0.2.3-only API，兼容范围
+保持 `>=0.2.2-rc.1 <0.3.0`。
 
 ## 契约
 
@@ -508,8 +509,9 @@ lane/deliveryState、blocked/decision action steer、真实 T1 followup / T2 rev
 
 上表 Phase 1e 行即 **Batch 1 最终树**的 pin 实测：installed / patch 完整流各 **221/221**
 （218 PASS + 3 SKIP；phase 1 27 + 1b 12 + 2 23 + 3 128 + 1e 31），`--no-worktree` **198/198**
-（phase 2 skipped）。当前候选发布版本是插件 **`0.4.2-rc.2`**（prerelease，dist-tag `next`；
-approve 前 `next` 仍为 `0.4.0-rc.1`，`latest` 为 `0.4.1`；DSH 兼容面仍为 rc.1–rc.5）。
+（phase 2 skipped）。当前候选发布版本是插件 **`0.4.2-rc.3`**（prerelease，dist-tag `next`；
+stage 本身不改变公开 dist-tag，approve 后 `next` 才指向本候选，`latest` 仍为 `0.4.1`；DSH 兼容面
+仍为 rc.1–rc.5）。
 `0.4.0-rc.1` 候选的三条真实
 E2E 重跑（含真实 `*_EXIT=0` 与总计行）记录在
 [`docs/e2e-evidence/batch2-release-prep.md`](e2e-evidence/batch2-release-prep.md)；稳定版 `0.4.0`
@@ -543,6 +545,16 @@ engines/peer range 不变。
 writer-lock 用例改为在 `withFileLock` seam 注入 errno，不再依赖 `chmod`/非 root uid。功能内容
 仍是上一段 rc.1 收口轮的内容。
 
+**0.4.2-rc.3 发布轮**相对 rc.2 只改变 client 看板：保留 `workspaceFiles.changes` 与 120ms
+debounce，增加所有状态的 visibility/focus-gated 轮询、共享 in-flight + watch 在途触发一次 trailing refresh 和手动强制刷新/重连，
+并重做 KPI、响应式分组卡片与次级折叠。它继续使用既有 `remote.workspaceFiles.stat/readBytes/changes`
+与浏览器 focus/visibility 事件，不新增 Host schema、工具/API、Remote 或 `dsh.client.inject` 项，
+DSH 兼容范围与 engines/peer range 不变。自动化覆盖范围包括 ready 固定节奏、empty/error 退避、
+隐藏/失焦暂停、恢复立即读取、watch ended 后仍轮询、coalescing 与 path timer 清理。
+最终冻结树 `pnpm verify` 为 **46 文件 / 1756 测试通过**，`check:packages` 为 **OK (6 packages)**；
+rc.5 的 patch / installed E2E 各 **238/238**，`--no-worktree` **214/214**，三个退出码均为 0。
+  精确节奏、主题与交互的后续人工复验仍按 [UI-VERIFICATION](UI-VERIFICATION.md) 执行。
+
 每条 flow 有 3 条正向模型选择检查因无 provider 凭据 SKIP（打印真实原因）；负向
 `DEVLEAD_MODEL_UNAVAILABLE`、`devlead_list_models`、preset roster 与 watched-child
 `devlead_report` 均真实运行。
@@ -568,12 +580,12 @@ writer-lock 用例改为在 `withFileLock` seam 注入 errno，不再依赖 `chm
   该 lead Session summary 的 `cwd` 派生默认路径；使用 Config `boardPath` override 的部署在
   late-enable 场景需要刷新页面（只有新 HTML 携带 override 路径与 `override:true`）。模式 off、
   Session 切换、路径切换会立即 dispose 旧面板并重读新文件。
-- rc.5 Web UI 的视觉行为本轮没有截图工具证据；自动化侧的判定依据是 slot/DOM 源码未变、boot
-  graph 加载成功、projection 数据与渲染测试通过。视觉部分（composer 开关、DevLeadBar、lane
-  着色、question 状态、`provisional` 标记、侧栏 active ring / watched 准星，以及看板 lead-only
-  入口、默认派生路径与面板状态）按 [UI-VERIFICATION](UI-VERIFICATION.md) 在隔离 profile 里做
-  **人工验收**，以该 checklist 的记录为准。此项是发布前的人工验收项，不由 e2e 或渲染断言替代，
-  也不以本轮的无截图状态视为已通过。
+- rc.5 Web UI 的看板本轮已在隔离 profile 留存 light/dark、宽栏双列、窄栏单列与极窄 KPI 截图，
+  三种宽度均无横向溢出；外部 r42→r43 未点刷新即更新，blur/focus 的 Live 状态和键盘 disclosure/
+  卡片焦点均实测通过。精确退避序列、watch ended 后持续轮询与 in-flight 去重由 fake-timer 覆盖。
+  composer 开关、DevLeadBar、lane 着色、question 状态、`provisional` 标记和侧栏 active/watched 标记
+  仍以 slot/DOM 源码、boot graph 与渲染测试为依据；所有视觉行为的后续人工复验按
+  [UI-VERIFICATION](UI-VERIFICATION.md) 留存时间戳调用记录、截图/录屏，不由 e2e 或单测替代。
 
 ## 维护注意
 

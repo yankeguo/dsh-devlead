@@ -1,6 +1,6 @@
 {
   "name": "@yankeguo/dsh-client-ui-devlead",
-  "version": "0.4.2-rc.2",
+  "version": "0.4.2-rc.3",
   "description": "DevLead surfaces: the mode toggle and status strip, Session sidebar marks, and a read-only right-Sidebar project board.",
   "license": "MIT",
   "type": "module",
