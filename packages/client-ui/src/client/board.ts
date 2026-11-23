@@ -2,107 +2,69 @@
  * Browser-owned, read-only projection of the DevLead board schema v1.
  *
  * The Host package deliberately stays out of the browser bundle: it imports
- * Node filesystem modules. This module mirrors only the durable wire schema and
- * contains pure parsing, grouping, sorting, and formatting helpers.
+ * Node filesystem modules. The durable wire schema, its limits, and its strict
+ * duplicate/absolute-path rules live in the shared protocol package, so the
+ * browser decoder and the Host validator cannot drift. This module adds only
+ * the browser-owned pieces: the platform-specific absolute-path predicate
+ * (chosen from the Host-published `pathPlatform`), the global-config reader,
+ * the UTF-8/size pre-checks, and the pure grouping/sorting/formatting helpers.
  */
-import { z as zod } from 'zod'
 import type { TagTone } from '@deepseek-ai/dsh-client-ui-primitives'
+import {
+  createDevLeadBoardSchema,
+  devLeadBoardIssueViews,
+  DEVLEAD_BOARD_ID_MAX,
+  DEVLEAD_BOARD_MAX_BLOCKERS,
+  DEVLEAD_BOARD_MAX_BYTES,
+  DEVLEAD_BOARD_MAX_PROJECTS,
+  DEVLEAD_BOARD_MAX_TASKS,
+  DEVLEAD_BOARD_PATH_MAX,
+  DEVLEAD_BOARD_SCHEMA_VERSION,
+  DEVLEAD_BOARD_TEXT_MAX,
+  DEVLEAD_BOARD_TITLE_MAX,
+  type DevLeadBoard,
+  type DevLeadBoardBlocker,
+  type DevLeadBoardIssue,
+  type DevLeadBoardPriority,
+  type DevLeadBoardProject,
+  type DevLeadBoardProjectStatus,
+  type DevLeadBoardTask,
+  type DevLeadBoardTaskStatus,
+  type DevLeadBoardUpdatedBy,
+} from '@yankeguo/dsh-devlead-protocol/client'
+import type { ZodType } from 'zod'
 
-/** Current board wire version published by the Host. */
-export const DEVLEAD_BOARD_SCHEMA_VERSION = 1
-/** The Host's maximum board file size; larger input is never decoded. */
-export const DEVLEAD_BOARD_MAX_BYTES = 256 * 1024
+// The wire contract is re-exported so existing browser modules and tests keep
+// one import site for board constants, types, and decoders.
+export {
+  DEVLEAD_BOARD_ID_MAX,
+  DEVLEAD_BOARD_MAX_BLOCKERS,
+  DEVLEAD_BOARD_MAX_BYTES,
+  DEVLEAD_BOARD_MAX_PROJECTS,
+  DEVLEAD_BOARD_MAX_TASKS,
+  DEVLEAD_BOARD_PATH_MAX,
+  DEVLEAD_BOARD_SCHEMA_VERSION,
+  DEVLEAD_BOARD_TEXT_MAX,
+  DEVLEAD_BOARD_TITLE_MAX,
+}
+export type {
+  DevLeadBoard,
+  DevLeadBoardBlocker,
+  DevLeadBoardIssue,
+  DevLeadBoardPriority,
+  DevLeadBoardProject,
+  DevLeadBoardProjectStatus,
+  DevLeadBoardTask,
+  DevLeadBoardTaskStatus,
+  DevLeadBoardUpdatedBy,
+}
+
 /** Host global present only when boardPath is configured. */
 export const DEVLEAD_BOARD_GLOBAL = '__DSH_DEVLEAD_BOARD__'
 /** Right-Sidebar page discriminator passed to `sidebarRight.openTab`. */
 export const DEVLEAD_BOARD_TAB_KIND = 'devlead-board'
 /** Registration id; keyed Sidebar body slots use this id, not the kind. */
 export const DEVLEAD_BOARD_TAB_ID = '@yankeguo/dsh-client-ui-devlead/board'
-
-const MAX_PROJECTS = 50
-const MAX_TASKS = 200
-const MAX_BLOCKERS = 50
-const MAX_TEXT = 4_000
-const MAX_ID = 128
-const MAX_TITLE = 200
-const MAX_PATH = 4_096
-
-/** Durable project status. */
-export type DevLeadBoardProjectStatus = 'active' | 'blocked' | 'paused' | 'done'
-/** Durable priority. */
-export type DevLeadBoardPriority = 'low' | 'medium' | 'high'
-/** Durable task status. */
-export type DevLeadBoardTaskStatus = 'todo' | 'doing' | 'blocked' | 'done'
-
-const idSchema = zod.string().min(1).max(MAX_ID)
-const titleSchema = zod.string().min(1).max(MAX_TITLE)
-const textSchema = zod.string().max(MAX_TEXT)
-const timestampSchema = zod.string().max(64).pipe(zod.iso.datetime())
-// Absolute-path semantics are checked against the Host-published pathPlatform:
-// POSIX and Windows Hosts do not accept the same path forms.
-const pathSchema = zod.string().min(1).max(MAX_PATH)
-
-const blockerSchema = zod.object({
-  id: idSchema,
-  text: zod.string().min(1).max(MAX_TEXT),
-  since: timestampSchema,
-  sessionId: idSchema.optional(),
-}).strict()
-
-const taskSchema = zod.object({
-  id: idSchema,
-  title: zod.string().min(1).max(MAX_TEXT),
-  status: zod.enum(['todo', 'doing', 'blocked', 'done']),
-  ownerSessionId: idSchema.optional(),
-  updatedAt: timestampSchema,
-}).strict()
-
-const projectSchema = zod.object({
-  id: idSchema,
-  workspace: zod.object({ path: pathSchema, title: titleSchema }).strict(),
-  status: zod.enum(['active', 'blocked', 'paused', 'done']),
-  priority: zod.enum(['low', 'medium', 'high']),
-  goal: textSchema,
-  focus: textSchema,
-  next: textSchema,
-  blockers: zod.array(blockerSchema).max(MAX_BLOCKERS),
-  tasks: zod.array(taskSchema).max(MAX_TASKS),
-  updatedAt: timestampSchema,
-}).strict()
-
-/** Strict fields and duplicate-id checks, before platform-specific paths. */
-const baseDevLeadBoardSchema = zod.object({
-  schemaVersion: zod.literal(DEVLEAD_BOARD_SCHEMA_VERSION),
-  revision: zod.number().int().nonnegative().safe(),
-  updatedAt: timestampSchema,
-  updatedBy: zod.object({ sessionId: idSchema, title: titleSchema }).strict(),
-  projects: zod.array(projectSchema).max(MAX_PROJECTS),
-}).strict().superRefine((board, context) => {
-  const projectIds = new Set<string>()
-  board.projects.forEach((project, projectIndex) => {
-    if (projectIds.has(project.id)) {
-      context.addIssue({
-        code: 'custom',
-        path: ['projects', projectIndex, 'id'],
-        message: `duplicate project id "${project.id}"`,
-      })
-    }
-    projectIds.add(project.id)
-    for (const [field, entries] of [['blockers', project.blockers], ['tasks', project.tasks]] as const) {
-      const ids = new Set<string>()
-      entries.forEach((entry, entryIndex) => {
-        if (ids.has(entry.id)) {
-          context.addIssue({
-            code: 'custom',
-            path: ['projects', projectIndex, field, entryIndex, 'id'],
-            message: `duplicate ${field} id "${entry.id}"`,
-          })
-        }
-        ids.add(entry.id)
-      })
-    }
-  })
-})
 
 /** Host path implementation, published explicitly by the Host global. */
 export type DevLeadBoardPathPlatform = 'posix' | 'win32'
@@ -117,31 +79,30 @@ function isAbsoluteWorkspacePath(value: string, platform: DevLeadBoardPathPlatfo
   return value.startsWith('/')
 }
 
-/** Build the v1 decoder for the Host's actual path implementation. */
-export function devLeadBoardSchemaFor(platform: DevLeadBoardPathPlatform = 'posix') {
-  return baseDevLeadBoardSchema.superRefine((board, context) => {
-    board.projects.forEach((project, index) => {
-      if (isAbsoluteWorkspacePath(project.workspace.path, platform)) return
-      context.addIssue({
-        code: 'custom',
-        path: ['projects', index, 'workspace', 'path'],
-        message: 'workspace path must be absolute',
-      })
-    })
-  })
+/** One strict decoder per Host path implementation, built once per realm. */
+const schemas = new Map<DevLeadBoardPathPlatform, ZodType<DevLeadBoard>>()
+
+/**
+ * The strict schema-v1 decoder for one Host path implementation.
+ *
+ * The shared protocol schema owns every structural rule; only the absolute-path
+ * predicate differs, and it comes from the Host-published `pathPlatform` rather
+ * than from the path string or the browser's own operating system.
+ * @param platform - the Host's path implementation.
+ * @returns the cached strict complete-board decoder.
+ */
+export function devLeadBoardSchemaFor(
+  platform: DevLeadBoardPathPlatform = 'posix',
+): ZodType<DevLeadBoard> {
+  const cached = schemas.get(platform)
+  if (cached !== undefined) return cached
+  const schema = createDevLeadBoardSchema(value => isAbsoluteWorkspacePath(value, platform))
+  schemas.set(platform, schema)
+  return schema
 }
 
 /** Strict schema v1 decoder using POSIX semantics by default. */
 export const devLeadBoardSchema = devLeadBoardSchemaFor()
-
-/** One durable blocker. */
-export type DevLeadBoardBlocker = zod.infer<typeof blockerSchema>
-/** One durable task. */
-export type DevLeadBoardTask = zod.infer<typeof taskSchema>
-/** One durable project. */
-export type DevLeadBoardProject = zod.infer<typeof projectSchema>
-/** Complete durable board. */
-export type DevLeadBoard = zod.infer<typeof devLeadBoardSchema>
 
 /** Host-published browser configuration. */
 export interface DevLeadBoardConfig {
@@ -168,7 +129,7 @@ export function readDevLeadBoardConfig(value: unknown): DevLeadBoardConfig | und
   if (record.schemaVersion !== DEVLEAD_BOARD_SCHEMA_VERSION) return undefined
   if (record.pathPlatform !== 'posix' && record.pathPlatform !== 'win32') return undefined
   if (typeof record.boardPath !== 'string' || record.boardPath.trim().length === 0) return undefined
-  if (!pathSchema.safeParse(record.boardPath).success
+  if (record.boardPath.length > DEVLEAD_BOARD_PATH_MAX
     || !isAbsoluteWorkspacePath(record.boardPath, record.pathPlatform)) return undefined
   return {
     boardPath: record.boardPath,
@@ -212,8 +173,8 @@ export function parseDevLeadBoard(
   }
   const parsed = devLeadBoardSchemaFor(pathPlatform).safeParse(value)
   if (!parsed.success) {
-    const first = parsed.error.issues[0]
-    const pointer = first === undefined || first.path.length === 0 ? '/' : `/${first.path.join('/')}`
+    const first = devLeadBoardIssueViews(parsed.error.issues)[0]
+    const pointer = first === undefined || first.pointer.length === 0 ? '/' : first.pointer
     throw new DevLeadBoardParseError(
       `board schema v1 validation failed at ${pointer}: ${first?.message ?? 'unknown issue'}`,
       { cause: parsed.error },

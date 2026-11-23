@@ -14,27 +14,56 @@ import type { FSWatcher } from 'node:fs'
 import { mkdir, readFile, stat } from 'node:fs/promises'
 import { basename, dirname, isAbsolute } from 'node:path'
 import { withFileLock, writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
-import { z as zod } from 'zod'
+import {
+  createDevLeadBoardSchema,
+  devLeadBoardIssueViews,
+  DEVLEAD_BOARD_ID_MAX,
+  DEVLEAD_BOARD_MAX_BLOCKERS,
+  DEVLEAD_BOARD_MAX_BYTES,
+  DEVLEAD_BOARD_MAX_PROJECTS,
+  DEVLEAD_BOARD_MAX_TASKS,
+  DEVLEAD_BOARD_PATH_MAX,
+  DEVLEAD_BOARD_SCHEMA_VERSION,
+  DEVLEAD_BOARD_TEXT_MAX,
+  DEVLEAD_BOARD_TITLE_MAX,
+  type DevLeadBoard,
+  type DevLeadBoardBlocker,
+  type DevLeadBoardIssue,
+  type DevLeadBoardPriority,
+  type DevLeadBoardProject,
+  type DevLeadBoardProjectStatus,
+  type DevLeadBoardTask,
+  type DevLeadBoardTaskStatus,
+  type DevLeadBoardUpdatedBy,
+} from '@yankeguo/dsh-devlead-protocol'
 import type { ZodIssue } from 'zod'
 
-/** Current on-disk schema version. */
-export const DEVLEAD_BOARD_SCHEMA_VERSION = 1
-/** Maximum serialized board size (256 KiB). */
-export const DEVLEAD_BOARD_MAX_BYTES = 256 * 1024
-/** Maximum number of projects. */
-export const DEVLEAD_BOARD_MAX_PROJECTS = 50
-/** Maximum tasks in one project. */
-export const DEVLEAD_BOARD_MAX_TASKS = 200
-/** Maximum blockers in one project (bounds tool and prompt projections). */
-export const DEVLEAD_BOARD_MAX_BLOCKERS = 50
-/** Maximum UTF-16 code units in a long free-text field. */
-export const DEVLEAD_BOARD_TEXT_MAX = 4_000
-/** Maximum UTF-16 code units in an id. */
-export const DEVLEAD_BOARD_ID_MAX = 128
-/** Maximum UTF-16 code units in a display title. */
-export const DEVLEAD_BOARD_TITLE_MAX = 200
-/** Maximum UTF-16 code units in a filesystem path. */
-export const DEVLEAD_BOARD_PATH_MAX = 4_096
+// The durable schema, its limits, and its duplicate/absolute-path rules are
+// shared with the browser decoder through the protocol package. Re-export them
+// so this package's existing surface (and its tests) stay in one place.
+export {
+  DEVLEAD_BOARD_ID_MAX,
+  DEVLEAD_BOARD_MAX_BLOCKERS,
+  DEVLEAD_BOARD_MAX_BYTES,
+  DEVLEAD_BOARD_MAX_PROJECTS,
+  DEVLEAD_BOARD_MAX_TASKS,
+  DEVLEAD_BOARD_PATH_MAX,
+  DEVLEAD_BOARD_SCHEMA_VERSION,
+  DEVLEAD_BOARD_TEXT_MAX,
+  DEVLEAD_BOARD_TITLE_MAX,
+}
+export type {
+  DevLeadBoard,
+  DevLeadBoardBlocker,
+  DevLeadBoardIssue,
+  DevLeadBoardPriority,
+  DevLeadBoardProject,
+  DevLeadBoardProjectStatus,
+  DevLeadBoardTask,
+  DevLeadBoardTaskStatus,
+  DevLeadBoardUpdatedBy,
+}
+
 /** Maximum UTF-8 bytes in the dynamic board summary. */
 export const DEVLEAD_BOARD_SUMMARY_MAX_BYTES = 1_536
 /** Maximum task rows returned by one selected-project read. */
@@ -52,13 +81,6 @@ export type DevLeadBoardErrorCode =
   | 'BOARD_REVISION_CONFLICT'
   | 'BOARD_LIMIT_EXCEEDED'
   | 'BOARD_IO_ERROR'
-
-/** One path-qualified validation failure. */
-export interface DevLeadBoardIssue {
-  /** RFC 6901 JSON pointer into the board; the empty string identifies the root. */
-  readonly pointer: string
-  readonly message: string
-}
 
 /** Structured board failure, including validation pointers where available. */
 export class DevLeadBoardError extends Error {
@@ -85,140 +107,13 @@ export function isDevLeadBoardError(error: unknown): error is DevLeadBoardError 
   return typeof code === 'string' && code.startsWith('BOARD_')
 }
 
-const idSchema = zod.string().min(1).max(DEVLEAD_BOARD_ID_MAX)
-const titleSchema = zod.string().min(1).max(DEVLEAD_BOARD_TITLE_MAX)
-const textSchema = zod.string().max(DEVLEAD_BOARD_TEXT_MAX)
-const timestampSchema = zod.string().max(64).pipe(zod.iso.datetime())
-const pathSchema = zod.string().min(1).max(DEVLEAD_BOARD_PATH_MAX).refine(isAbsolute, {
-  message: 'workspace path must be absolute',
-})
-
-const updatedBySchema = zod.object({
-  sessionId: idSchema,
-  title: titleSchema,
-}).strict()
-
-const blockerSchema = zod.object({
-  id: idSchema,
-  text: zod.string().min(1).max(DEVLEAD_BOARD_TEXT_MAX),
-  since: timestampSchema,
-  sessionId: idSchema.optional(),
-}).strict()
-
-const taskSchema = zod.object({
-  id: idSchema,
-  title: zod.string().min(1).max(DEVLEAD_BOARD_TEXT_MAX),
-  status: zod.enum(['todo', 'doing', 'blocked', 'done']),
-  ownerSessionId: idSchema.optional(),
-  updatedAt: timestampSchema,
-}).strict()
-
-const projectSchema = zod.object({
-  id: idSchema,
-  workspace: zod.object({
-    path: pathSchema,
-    title: titleSchema,
-  }).strict(),
-  status: zod.enum(['active', 'blocked', 'paused', 'done']),
-  priority: zod.enum(['low', 'medium', 'high']),
-  goal: textSchema,
-  focus: textSchema,
-  next: textSchema,
-  blockers: zod.array(blockerSchema).max(DEVLEAD_BOARD_MAX_BLOCKERS),
-  tasks: zod.array(taskSchema).max(DEVLEAD_BOARD_MAX_TASKS),
-  updatedAt: timestampSchema,
-}).strict()
-
-/** Strict schema of the complete board file; unknown fields are rejected. */
-export const devLeadBoardSchema = zod.object({
-  schemaVersion: zod.literal(DEVLEAD_BOARD_SCHEMA_VERSION),
-  revision: zod.number().int().nonnegative().safe(),
-  updatedAt: timestampSchema,
-  updatedBy: updatedBySchema,
-  projects: zod.array(projectSchema).max(DEVLEAD_BOARD_MAX_PROJECTS),
-}).strict().superRefine((board, context) => {
-  const projectIds = new Set<string>()
-  const workspacePaths = new Set<string>()
-  board.projects.forEach((project, projectIndex) => {
-    if (projectIds.has(project.id)) {
-      context.addIssue({
-        code: 'custom',
-        path: ['projects', projectIndex, 'id'],
-        message: `duplicate project id "${project.id}"`,
-      })
-    }
-    projectIds.add(project.id)
-    if (workspacePaths.has(project.workspace.path)) {
-      context.addIssue({
-        code: 'custom',
-        path: ['projects', projectIndex, 'workspace', 'path'],
-        message: `duplicate workspace path "${project.workspace.path}"`,
-      })
-    }
-    workspacePaths.add(project.workspace.path)
-    for (const [field, entries] of [['blockers', project.blockers], ['tasks', project.tasks]] as const) {
-      const ids = new Set<string>()
-      entries.forEach((entry, entryIndex) => {
-        if (ids.has(entry.id)) {
-          context.addIssue({
-            code: 'custom',
-            path: ['projects', projectIndex, field, entryIndex, 'id'],
-            message: `duplicate ${field} id "${entry.id}"`,
-          })
-        }
-        ids.add(entry.id)
-      })
-    }
-  })
-})
-
-/** Durable project status. */
-export type DevLeadBoardProjectStatus = 'active' | 'blocked' | 'paused' | 'done'
-/** Durable project priority. */
-export type DevLeadBoardPriority = 'low' | 'medium' | 'high'
-/** Durable task status. */
-export type DevLeadBoardTaskStatus = 'todo' | 'doing' | 'blocked' | 'done'
-/** One durable blocker. */
-export interface DevLeadBoardBlocker {
-  id: string
-  text: string
-  since: string
-  sessionId?: string
-}
-/** One durable task. */
-export interface DevLeadBoardTask {
-  id: string
-  title: string
-  status: DevLeadBoardTaskStatus
-  ownerSessionId?: string
-  updatedAt: string
-}
-/** One durable project. */
-export interface DevLeadBoardProject {
-  id: string
-  workspace: { path: string; title: string }
-  status: DevLeadBoardProjectStatus
-  priority: DevLeadBoardPriority
-  goal: string
-  focus: string
-  next: string
-  blockers: DevLeadBoardBlocker[]
-  tasks: DevLeadBoardTask[]
-  updatedAt: string
-}
-/** Lead identity stamped on each committed revision. */
-export interface DevLeadBoardUpdatedBy {
-  sessionId: string
-  title: string
-}
-/** Complete durable board. */
-export interface DevLeadBoard {
-  schemaVersion: 1
-  revision: number
-  updatedAt: string
-  updatedBy: DevLeadBoardUpdatedBy
-  projects: DevLeadBoardProject[]
-}
+/**
+ * Strict schema of the complete board file, built with this Host's own
+ * `node:path.isAbsolute` so the acceptance set matches every writer/reader on
+ * this platform. Unknown fields, duplicate ids/paths, bad enums, non-UTC
+ * timestamps, and size/count overflows are rejected.
+ */
+export const devLeadBoardSchema = createDevLeadBoardSchema(isAbsolute)
 
 /** Project fields accepted by one update. */
 export interface DevLeadBoardSetPatch {
@@ -310,19 +205,8 @@ function sameFingerprint(left: FileFingerprint | undefined, right: FileFingerpri
   return left !== undefined && left.mtimeMs === right.mtimeMs && left.size === right.size && left.ino === right.ino
 }
 
-function pointerSegment(value: string | number | symbol): string {
-  return String(value).replaceAll('~', '~0').replaceAll('/', '~1')
-}
-
-function issueViews(issues: readonly ZodIssue[]): DevLeadBoardIssue[] {
-  return issues.map(issue => ({
-    pointer: issue.path.length === 0 ? '' : `/${issue.path.map(pointerSegment).join('/')}`,
-    message: issue.message,
-  }))
-}
-
 function validationError(error: { issues: readonly ZodIssue[] }): DevLeadBoardError {
-  const issues = issueViews(error.issues)
+  const issues = devLeadBoardIssueViews(error.issues)
   const limited = error.issues.some(issue => issue.code === 'too_big')
   const code: DevLeadBoardErrorCode = limited ? 'BOARD_LIMIT_EXCEEDED' : 'BOARD_INVALID'
   const first = issues[0]
@@ -336,7 +220,7 @@ function validationError(error: { issues: readonly ZodIssue[] }): DevLeadBoardEr
 function parseBoard(value: unknown): DevLeadBoard {
   const parsed = devLeadBoardSchema.safeParse(value)
   if (!parsed.success) throw validationError(parsed.error)
-  return parsed.data as DevLeadBoard
+  return parsed.data
 }
 
 function errorMessage(error: unknown): string {
