@@ -277,6 +277,13 @@ export function apply(ctx: ClientContext): void {
         ensureBoardSurfaces(onScreen)
       } else {
         disposeBoardSurfaces()
+        // A restored right-Sidebar tab can predate this page's registration:
+        // the tab was persisted for the on-screen Session while that Session is
+        // not (or is no longer) an eligible lead and the surfaces were never
+        // registered here. Leaving it open would only show the shell's fallback
+        // notice, so close the on-screen Session's board tabs even when
+        // `disposeBoardSurfaces` had nothing to dispose.
+        closeBoardTabs()
       }
     }
     const offMounted = ctx.sidebarRight.mounted.subscribe(sync)
@@ -286,6 +293,8 @@ export function apply(ctx: ClientContext): void {
       offMounted()
       offSessions()
       disposeBoardSurfaces()
+      // Also sweep a restored tab that no surface group owned in this page life.
+      closeBoardTabs()
     }
   }, 'devlead: board surfaces')
 }

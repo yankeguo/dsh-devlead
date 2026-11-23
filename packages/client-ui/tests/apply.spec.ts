@@ -96,6 +96,8 @@ function fakeStore<T>(initial: T): FakeStoreHandle<T> {
 /** Everything the fake context recorded. */
 interface FakeState {
   readonly effects: string[]
+  /** Disposers returned by the recorded effects, newest last. */
+  readonly effectDisposers: (() => void)[]
   readonly injects: string[]
   readonly registrations: RecordedRegistration[]
   readonly conditionalInjects: string[][]
@@ -119,6 +121,8 @@ interface Harness {
   publishRows(rows: Record<string, FakeSummary>): void
   /** Publish the open-tab inventory and notify subscribers. */
   publishTabs(tabs: readonly FakeOpenTab[]): void
+  /** Run every recorded effect's disposer, newest first. */
+  disposeEffects(): void
 }
 
 /** Active-key collision check, like the real keyed/list slot registries. */
@@ -139,6 +143,7 @@ function assertNoDuplicateRegistration(
 function fakeContext(): Harness {
   const state: FakeState = {
     effects: [],
+    effectDisposers: [],
     injects: [],
     registrations: [],
     conditionalInjects: [],
@@ -163,7 +168,9 @@ function fakeContext(): Harness {
     effect(effect: () => unknown, label?: string) {
       state.effects.push(label ?? '')
       const dispose = effect()
-      return typeof dispose === 'function' ? dispose : () => {}
+      const disposer = typeof dispose === 'function' ? () => { dispose() } : () => {}
+      state.effectDisposers.push(disposer)
+      return disposer
     },
     inject(services: string[], callback: () => void) {
       state.conditionalInjects.push(services)
@@ -196,7 +203,11 @@ function fakeContext(): Harness {
         state.openedTabs.push(kind)
       },
       close(tabId: string) {
+        if (state.closedTabs.includes(tabId)) return
         state.closedTabs.push(tabId)
+        // Model the shell: a closed tab leaves the inventory and notifies
+        // subscribers, so a sweep cannot act on the same tab twice.
+        state.inventory.set(state.inventory.source.getSnapshot().filter(tab => tab.tabId !== tabId))
       },
     },
     slots: {
@@ -227,6 +238,9 @@ function fakeContext(): Harness {
     mount(sessionId) { state.mounted.set(sessionId) },
     publishRows(byId) { state.rows.set({ byId }) },
     publishTabs(tabs) { state.inventory.set(tabs) },
+    disposeEffects() {
+      for (const dispose of state.effectDisposers.splice(0).reverse()) dispose()
+    },
   }
 }
 
@@ -526,5 +540,35 @@ describe('client apply', () => {
     expect(state.tabDefinitions).toEqual([])
     // Without an on-screen Session there is no close target to act on.
     expect(state.closedTabs).toEqual([])
+  })
+
+  it('closes a restored board tab on the initial sync when the on-screen Session is not a lead', () => {
+    // Page restore: the inventory and the on-screen Session exist before this
+    // plugin instance ever registered the board tab type, so the usual
+    // dispose-time sweep has no surface group to trigger it. The initial sync
+    // still closes the on-screen Session's board tab best-effort.
+    const { ctx, state, mount, publishRows, publishTabs } = fakeContext()
+    mount('session-idle')
+    publishRows({ 'session-idle': IDLE })
+    publishTabs([
+      { sessionId: 'session-idle', tabId: 'tab-restored', kind: 'devlead-board', contentId: 'devlead-board' },
+      { sessionId: 'session-other', tabId: 'tab-other-session', kind: 'devlead-board', contentId: 'devlead-board' },
+    ])
+    apply(ctx)
+    expect(state.tabDefinitions).toEqual([])
+    // Another Session's inventory entry is not reachable from this pane.
+    expect(state.closedTabs).toEqual(['tab-restored'])
+  })
+
+  it('closes the on-screen board tab when the plugin is disposed', () => {
+    const { ctx, state, mount, publishRows, publishTabs, disposeEffects } = fakeContext()
+    apply(ctx)
+    publishRows({ 'session-lead': LEAD })
+    mount('session-lead')
+    publishTabs([{ sessionId: 'session-lead', tabId: 'tab-board', kind: 'devlead-board', contentId: 'devlead-board' }])
+    disposeEffects()
+    expect(state.tabDefinitions).toEqual([])
+    expect(state.registrations).toHaveLength(5)
+    expect(state.closedTabs).toEqual(['tab-board'])
   })
 })
