@@ -195,11 +195,28 @@ describe('DevLeadBoardPanelView', () => {
     expect(empty.root.findAllByProps({ 'data-devlead-board-error': 'read' })).toHaveLength(0)
   })
 
-  it('warns instead of claiming up-to-date content after live updates end', async () => {
-    const renderer = await mount(view(READY, { watch: 'ended' }))
+  it('keeps automatic polling explicit when the file watch ends', async () => {
+    const renderer = await mount(view(READY, { watch: 'ended', autoRefresh: 'active' }))
     expect(textOf(renderer.root)).toContain(zh['board.watch.ended'])
-    expect(textOf(renderer.root)).not.toContain(zh['board.refresh.ready'])
+    expect(textOf(renderer.root)).toContain('自动轮询仍开启')
+    expect(textOf(renderer.root)).not.toContain(zh['board.watch.ended.disabled'])
     expect(renderer.root.findByProps({ 'data-mock-state-dot': 'warning' })).toBeDefined()
+  })
+
+  it('renders active, paused, and disabled auto-refresh states distinctly', async () => {
+    for (const autoRefresh of ['active', 'paused', 'disabled'] as const) {
+      const renderer = await mount(view(READY, { autoRefresh }))
+      const live = renderer.root.findByProps({ 'data-auto-refresh': autoRefresh })
+      expect(textOf(live)).toContain(zh['board.live'])
+      expect(textOf(live)).toContain(zh[`board.autoRefresh.${autoRefresh}`])
+    }
+    const pausedEnded = await mount(view(READY, { autoRefresh: 'paused', watch: 'ended' }))
+    expect(textOf(pausedEnded.root)).toContain(zh['board.watch.ended.paused'])
+    const disabledEnded = await mount(view(READY, { autoRefresh: 'disabled', watch: 'ended' }))
+    expect(textOf(disabledEnded.root)).toContain(zh['board.watch.ended.disabled'])
+    const pausedConnecting = await mount(view(READY, { autoRefresh: 'paused', watch: 'connecting' }))
+    expect(textOf(pausedConnecting.root)).toContain(zh['board.autoRefresh.paused'])
+    expect(textOf(pausedConnecting.root)).not.toContain(zh['board.watch.connecting'])
   })
 
   it('renders parse failure, last success, technical detail, and a working retry', async () => {
@@ -225,9 +242,12 @@ describe('DevLeadBoardPanelView', () => {
     expect(textOf(renderer.root)).toContain('r42')
     expect(textOf(renderer.root)).toContain('2 分钟前')
     expect(textOf(renderer.root.findByProps({ className: 'devlead-board-blocked-notice' }))).toContain('1 个项目已阻塞')
-    const groups = renderer.root.findAllByProps({ className: 'devlead-board-group' })
+    const groups = renderer.root.findAll(instance => instance.props['data-board-group'] !== undefined)
     expect(groups.map(group => group.props['data-board-group'])).toEqual(['blocked', 'active', 'paused', 'done'])
     const card = renderer.root.findByProps({ 'data-devlead-board-project': 'blocked' })
+    expect(card.children.slice(0, 3).map(child => typeof child === 'string' ? child : child.props.className)).toEqual([
+      'devlead-board-card-header', 'devlead-board-workspace', 'devlead-board-card-badges',
+    ])
     expect(textOf(card)).toContain('Project blocked')
     expect(textOf(card)).toContain('/work/blocked')
     expect(textOf(card)).toContain('Focus blocked')
@@ -236,11 +256,52 @@ describe('DevLeadBoardPanelView', () => {
     expect(textOf(card)).toContain('高优先级')
     const tasks = renderer.root.findByProps({ 'data-devlead-board-tasks': 'blocked' })
     expect(tasks.type).toBe('details')
-    expect(textOf(tasks)).toContain('任务 1/2 已完成')
+    expect(textOf(tasks)).toContain(zh['board.tasks.summary'].replace('{done}', '1').replace('{total}', '2'))
     expect(textOf(tasks)).toContain('Verify panel')
     expect(textOf(tasks)).toContain('session-12…bcdef')
     // The only buttons in a healthy board are refresh controls, never writes.
     expect(renderer.root.findAllByType('button')).toHaveLength(1)
+  })
+
+  it('renders labelled KPI counts for every project status', async () => {
+    const renderer = await mount(view(READY))
+    const overview = renderer.root.findByProps({ className: 'devlead-board-kpis' })
+    expect(overview.type).toBe('dl')
+    expect(overview.props['aria-label']).toBe(zh['board.kpi.aria'])
+    const kpis = renderer.root.findAll(instance => instance.props['data-devlead-board-kpi'] !== undefined)
+    expect(kpis.map(kpi => kpi.props['data-devlead-board-kpi'])).toEqual(['active', 'blocked', 'paused', 'done'])
+    expect(kpis.map(kpi => textOf(kpi.findByType('dd')))).toEqual(['1', '1', '1', '1'])
+    expect(kpis[0]?.findByType('dd').props['aria-label']).toBe('进行中：1 个项目')
+  })
+
+  it('exposes native task progress with explicit values and accessible copy', async () => {
+    const renderer = await mount(view(READY))
+    const progress = renderer.root.findByProps({ 'data-devlead-board-progress': 'blocked' })
+    expect(progress.type).toBe('progress')
+    expect(progress.props.value).toBe(1)
+    expect(progress.props.max).toBe(2)
+    expect(progress.props['aria-label']).toBe('任务进度：2 项中已完成 1 项')
+    expect(progress.props['aria-valuetext']).toBe(progress.props['aria-label'])
+    const card = renderer.root.findByProps({ 'data-devlead-board-project': 'blocked' })
+    expect(card.props.tabIndex).toBe(0)
+    expect(textOf(card.findByProps({ className: 'devlead-board-progress-heading' }))).toContain('1/2')
+  })
+
+  it('collapses paused, done, and unlisted into native secondary disclosures', async () => {
+    const renderer = await mount(view(READY))
+    for (const status of ['paused', 'done']) {
+      const group = renderer.root.findByProps({ 'data-board-group': status })
+      expect(group.type).toBe('details')
+      expect(group.props.open).not.toBe(true)
+      expect(group.props.className).toContain('devlead-board-secondary')
+      expect(group.findAllByType('summary').length).toBeGreaterThan(0)
+    }
+    for (const status of ['blocked', 'active']) {
+      expect(renderer.root.findByProps({ 'data-board-group': status }).type).toBe('section')
+    }
+    const unlisted = renderer.root.findByProps({ 'data-devlead-board-unlisted': 'true' })
+    expect(unlisted.type).toBe('details')
+    expect(unlisted.props.open).not.toBe(true)
   })
 
   it('renders a valid empty project list separately from a missing file', async () => {
@@ -288,7 +349,8 @@ describe('DevLeadBoardPanelView', () => {
     const english = await mount(view(READY, { t: translate(en) as DevLeadBoardPanelViewProps['t'] }))
     expect(textOf(english.root)).toContain('Project board')
     expect(textOf(english.root)).toContain('Read-only')
-    expect(textOf(english.root)).toContain('Tasks 1/2 done')
+    expect(textOf(english.root)).toContain('View task details (1/2 done)')
+    expect(textOf(english.root)).toContain('Auto refresh on')
   })
 
   it('reports a workspace-list failure ahead of pending and unavailable hints', async () => {
@@ -342,9 +404,10 @@ describe('DevLeadBoardPanelView', () => {
     const busy = await mount(view({ status: 'loading', refreshing: true }))
     expect(busy.root.findByType('button').props['aria-busy']).toBe(true)
     const live = renderer.root.findByProps({ role: 'status', 'aria-live': 'polite' })
-    expect(textOf(live)).toContain(zh['board.refresh.ready'])
+    expect(textOf(live)).toContain(zh['board.autoRefresh.active'])
+    expect(live.props['aria-atomic']).toBe('true')
     expect(renderer.root.findByProps({ className: 'devlead-board-blocked-notice' }).props.role).toBe('status')
-    const groups = renderer.root.findAllByProps({ className: 'devlead-board-group' })
+    const groups = renderer.root.findAll(instance => instance.props['data-board-group'] !== undefined)
     expect(groups).toHaveLength(4)
     for (const group of groups) {
       const headingId = String(group.props['aria-labelledby'])
@@ -358,7 +421,7 @@ describe('DevLeadBoardPanelView', () => {
     expect(disclosures.length).toBeGreaterThanOrEqual(5)
     expect(renderer.root.findAllByType('summary')).toHaveLength(disclosures.length)
     expect(disclosures.some(disclosure => disclosure.props.className === 'devlead-board-tasks')).toBe(true)
-    expect(disclosures.some(disclosure => disclosure.props.className === 'devlead-board-unlisted')).toBe(true)
+    expect(disclosures.some(disclosure => disclosure.props['data-devlead-board-unlisted'] === 'true')).toBe(true)
     // Read-only: no editable control, and every button is a refresh action.
     for (const control of ['input', 'textarea', 'select'] as const) {
       expect(renderer.root.findAllByType(control)).toHaveLength(0)
@@ -378,7 +441,7 @@ describe('DevLeadBoardPanelView', () => {
     const first = await mount(view(READY))
     const second = await mount(view(READY))
     const groupIds = (renderer: ReactTestRenderer): string[] =>
-      renderer.root.findAllByProps({ className: 'devlead-board-group' })
+      renderer.root.findAll(instance => instance.props['data-board-group'] !== undefined)
         .map(group => String(group.props['aria-labelledby']))
     const firstIds = groupIds(first)
     const secondIds = groupIds(second)
@@ -473,6 +536,7 @@ function panelProps(rows: GateRows, files: DevLeadBoardFiles): DevLeadBoardPanel
     useSessions: (selector: (state: SessionListState) => unknown) =>
       selector({ byId: rows } as unknown as SessionListState),
     useWorkspaces: (selector: (snapshot: WorkspaceSnapshot) => unknown) => selector(WORKSPACES),
+    useTabInfo: () => ({ tab: { visible: true } }),
   } as unknown as DevLeadBoardPanelProps
 }
 

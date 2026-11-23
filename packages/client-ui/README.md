@@ -23,14 +23,12 @@ Browser half of the DevLead suite, loaded on the DSH **Web** platform.
   other Session. The page strictly validates schema v1 bytes, follows `workspaceFiles.changes`,
   groups/sorts project cards, and exposes only refresh/disclosure controls. The page reads the
   board file directly through the Workspace Files Remote: the schema's 256 KiB file cap applies and
-  the model tool's separate 64 KiB read cap does not. A not-yet-existing file is not an error — the
-  panel keeps polling on a bounded backoff (4s growing to 30s) until the first Host write appears —
-  and the decoder is the same protocol schema implementation the Host validates with (the browser
-  uses DSH's frozen `zod` platform singleton; no extra runtime dependency). A restored right-Sidebar
+  the model tool's separate 64 KiB read cap does not. A not-yet-existing file is not an error, and
+  the decoder is the same protocol schema implementation the Host validates with (the browser uses
+  DSH's frozen `zod` platform singleton; no extra runtime dependency). A restored right-Sidebar
   board tab whose on-screen Session is no longer an eligible lead is closed on the first sync even
-  when this page instance never registered the board surfaces. A collapsed section
-  joins the authoritative Workspace/Session projections to show registered Workspaces absent from
-  the board.
+  when this page instance never registered the board surfaces. A collapsed section joins the
+  authoritative Workspace/Session projections to show registered Workspaces absent from the board.
   The path comes from the Host global `__DSH_DEVLEAD_BOARD__` when it names this lead
   (`{ boardPath, schemaVersion, pathPlatform, leadSessionId, override }`); otherwise it is derived
   from the Session's *original* workspace root as `<cwd>/.dsh/devlead/board.json`. A deployment
@@ -39,6 +37,19 @@ Browser half of the DevLead suite, loaded on the DSH **Web** platform.
   board registration and closes the on-screen Session's lingering board tab, so the panel never
   keeps reading a previous lead's file. The required services follow the default Web composition,
   and this package has no runtime dependency on the Host package.
+
+  Automatic refresh retains the 120 ms change debounce and polls **every** file state: ready/loading
+  use a fixed 5 s cadence by default, while empty/error back off exponentially from 5 s to a 30 s
+  ceiling. Timers run only while the document is visible and focused. Visibility/focus resume
+  triggers an immediate coalesced read; blur, hidden, unmount, and path changes clear timers. Watch,
+  poll, and resume triggers share one in-flight read. A watch ready/change received during that read schedules
+  at most one trailing refresh; poll/focus triggers only coalesce, so later changes are neither duplicated nor dropped. Manual refresh can still force a fresh read
+  and reconnect the watch; an ended watch never reconnects silently, but polling continues. The
+  redesigned header shows active/blocked/paused/done KPIs, revision/updated time, and Live refresh
+  health. Blocked projects lead with a strong warning; active cards use a responsive two-column
+  main area (one column when narrow), with focus/next/blockers and task progress. Paused/done and
+  unlisted projects are secondary disclosures. Light/dark styling, aria labelling, keyboard-native
+  disclosures, and read-only operation are part of the browser acceptance checklist.
 
 The browser bundle only registers into DSH client slots and sends `/devlead` commands from the
 toolbar toggle. It has no custom Remote API, no optimistic state flips, and no direct Host access;
@@ -80,15 +91,24 @@ dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 guide 卡片、标题与 Session 头部按钮（头部按钮本身静态注册，其他 Session 下不渲染）。看板严格
 校验 schema v1、跟随文件变更、分组展示项目与任务，并从未看板 workspace 的 Host 投影生成折叠清单。
 面板直接经 Workspace Files Remote 读取看板文件（schema 的 256 KiB 文件上限；模型工具另有的
-64 KiB 读取裁剪不作用于面板）；文件尚不存在时按有界退避轮询（4s 起、上限 30s）等待首次写入，
-解码器与 Host 共用同一份 protocol schema（浏览器侧 `zod` 来自 DSH 冻结 module table，无额外运行期
-依赖）。恢复出来但当前 on-screen Session 已非合规 lead 的 board tab 会在首次 sync 时被关闭
-（即使本页从未注册过看板 surface）。
+64 KiB 读取裁剪不作用于面板），解码器与 Host 共用同一份 protocol schema（浏览器侧 `zod` 来自 DSH
+冻结 module table，无额外运行期依赖）。恢复出来但当前 on-screen Session 已非合规 lead 的 board tab
+会在首次 sync 时被关闭（即使本页从未注册过看板 surface）。
 路径优先取 Host global `__DSH_DEVLEAD_BOARD__`（新 Host 带 `leadSessionId` 与 `override`），否则由
 Session 原始 workspace root 派生 `<cwd>/.dsh/devlead/board.json`；配置 `boardPath` 仍是部署级覆盖，
 但页面若在 lead 出现之前加载，需要刷新才能看到覆盖路径。模式关闭或切换到非 lead Session 会注销全部
 看板注册并关闭当前 Session 遗留的看板 tab，绝不继续读上一个 lead 的文件。所需服务由默认 Web 组合
 提供，本包不依赖 Host 包运行期代码。
+
+自动刷新保留 120ms change debounce，并覆盖**所有**文件状态：ready/loading 默认固定 5s 一轮，
+empty/error 从 5s 起指数退避到 30s 上限。只有 document visible 且 focused 时才运行 timer；
+visibility/focus 恢复立即 coalesced read，blur/hidden/unmount/path change 清理 timer；watch、poll 与
+恢复触发共享 in-flight 读取；在途期间新到的 watch ready/change 合并为一次 trailing refresh（poll/focus
+只共享当前读取），避免叠发或丢失后续 change。
+手动刷新仍可强制重读并重连 watch；watch ended 不静默重连，但轮询
+继续。重做后的顶部显示 active/blocked/paused/done KPI、revision/updated 与 Live 自动状态；blocked
+强警示置顶，active 主区响应式 2 列（窄栏 1 列），卡片含 focus/next/blocker 与任务进度，paused/done/
+unlisted 为次级折叠。light/dark、aria、键盘 disclosure 与只读行为均纳入浏览器人工验收。
 0.2.0 起样式注入用跨模块实例引用计数（HMR 新旧实例交替不误删标签），组件与准入 hook 用
 `react-test-renderer` 做渲染测试。已知 mark 回填与 blank 行限制见根 README。完整中文文档见
 [根 README.zh.md](https://github.com/yankeguo/dsh-devlead/blob/main/README.zh.md)与[设计说明](https://github.com/yankeguo/dsh-devlead/blob/main/docs/DESIGN.md)。

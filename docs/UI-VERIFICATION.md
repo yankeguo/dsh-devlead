@@ -90,22 +90,41 @@
 3. **Config override + late enable 需要刷新**：如测试 `boardPath` override，先改 profile 配置再
    启动；若页面在 lead 启用前已加载，late-enable 场景必须刷新页面才能读到 override 路径与
    `override:true` 的 global（这是预期行为，不是 bug；默认路径不需要刷新）。
-4. **项目卡片**：准备含四种状态、不同 priority/updatedAt 的 schema v1 文件；blocked 组与顶部提示优先，
-   同组排序正确；focus/next/blocker since、任务 done/total、展开任务与截断 owner id 均可读，没有编辑控件。
-   面板**直接读取看板文件**并按 schema v1 解码（文件上限 256 KiB），不受工具层 64 KiB 裁剪影响；
-   贴满一次工具读取上限的 64 KiB 内容也应完整显示，模型工具结果里的 `truncated:true` 不该出现在面板。
-   `devlead_board_read` 的 64 KiB 上限只约束**工具返回给模型的结果**（按 tasks → blockers → project
-   行从尾部裁剪并标 `truncated:true`），不是右栏面板的行为。
-5. **文件状态**：文件不存在显示「还没有看板数据」而非错误，并保持页面打开——Host 首次写入创建
-   文件后应由 change 或空态有界轮询（4s 起、退避到 30s）自动出现，无需手动刷新；坏 JSON/schema
-   显示「看板文件解析失败」、最后成功时间和重试；改回合法文件后 change 触发自动恢复，手动刷新也
-   可恢复。watch 断开时显示「自动更新已断开，请手动刷新」警告而非“正常”，手动刷新会同时重连
-   （不会静默自动重连）。
-6. **其余项目**：折叠区只列未出现在 board 的已注册 workspace，名称/path、会话数与最近 Session 活动正确；
-   无活动、全部已列出、清单 pending/error 不编造内容；清单同时处于 pending 与 error 时显示错误而不是
-   「正在读取」。多个面板实例（例如快速开关 tab 后残留的旧实例）的组标题 DOM id 不得冲突。
-7. **布局与主题**：右栏拉窄及桌面窄屏时长路径、自由文本和任务标题均换行，不出现横向溢出；light/dark
-   下 pill/tag、warning/error、refresh/empty 状态可辨，刷新与重试按钮保持可用。
+4. **顶部与项目卡片**：准备含四种状态、不同 priority/updatedAt 的 schema v1 文件；顶部
+   active/blocked/paused/done KPI 数量、revision、updated 相对时间与 Live 自动状态正确。blocked
+   强警示与项目组置顶，active 位于主区；宽右栏为响应式 2 列、窄栏降为 1 列，同组排序正确。
+   focus/next/blocker since、任务 done/total 进度条、展开任务与截断 owner id 均可读；paused/done
+   是次级折叠，且没有编辑控件。面板**直接读取看板文件**并按 schema v1 解码（文件上限 256 KiB），
+   不受工具层 64 KiB 裁剪影响；贴满一次工具读取上限的 64 KiB 内容也应完整显示，模型工具结果里的
+   `truncated:true` 不该出现在面板。`devlead_board_read` 的 64 KiB 上限只约束**工具返回给模型的
+   结果**（按 tasks → blockers → project 行从尾部裁剪并标 `truncated:true`），不是右栏面板的行为。
+5. **文件状态与自动刷新**：文件不存在显示「还没有看板数据」而非错误；坏 JSON/schema 显示
+   「看板文件解析失败」、最后成功时间和重试。watch change 仍在 120ms debounce 后触发重读；与此同时
+   **所有状态都有轮询**，不是只有 empty 才轮询。按下面逐项留存带时间戳的 Remote 调用记录/录屏、
+   文件写入时间与 revision/内容变化，不能只凭“最后更新了”判通过：
+   - **节奏**：ready/loading 连续至少 3 个周期均为默认 5s 固定节奏，不退化成 10s；empty 与 error
+     分别记录 5s → 10s → 20s → 30s → 30s 的实际 tick。empty 首次写入、error 修复为合法文件后均
+     能由 change 或下一轮 poll 自动恢复，无需手动刷新。
+   - **隐藏暂停与恢复**：页面 hidden 或 window blur 后 Live 显示自动刷新暂停；等待超过 30s 应没有
+     poll。恢复 visible + focused 时立即发生一次读取；同时到达的 visibilitychange/focus 与 watch/poll
+     在途期间新到的 watch ready/change 应合并为一次 trailing refresh（poll/focus 只共享当前读取），不叠发也不丢后续 change。记录隐藏前后、恢复前后的调用次数；另确认
+     unmount/path change 后旧 timer 不再读旧路径。
+   - **watch ended**：让 change stream 断开，警告应明确「文件监听断开，自动轮询仍开启」（页面活跃时），
+     不得再写「请手动刷新」作为唯一恢复路径。随后外部修改文件且不点刷新，下一固定/退避 tick 仍应
+     读到新 revision；watch 不得静默自动重连。手动刷新仍可强制重读并重连 watch。
+6. **其余项目**：次级折叠区只列未出现在 board 的已注册 workspace，名称/path、会话数与最近 Session
+   活动正确；无活动、全部已列出、清单 pending/error 不编造内容；清单同时处于 pending 与 error 时显示
+   错误而不是「正在读取」。多个面板实例（例如快速开关 tab 后残留的旧实例）的组标题 DOM id 不得冲突。
+7. **布局、主题与可访问性**：container 已上移到 `.devlead-board` 根，header KPI 与 cards 都应按**右栏
+   container 宽度**（不是只看 viewport）响应；右栏拉窄时主区从 2 列降为 1 列。长路径/自由文本/任务标题
+   按设计以 ellipsis/line-clamp 截断，原生 `title` 可读全文，且不得出现横向溢出；light/dark 下 KPI、
+   pill/tag、blocked 强警示、warning/error、loading/empty 与 Live active/paused 状态可辨。只用键盘即可
+   操作刷新、paused/done/unlisted 与任务 disclosure，焦点可见；检查标题关联、状态 live region、任务进度
+   aria 值及按钮名称。全程只读，刷新与重试按钮保持可用。
+
+以上自动刷新证据与视觉走查均为**发布前人工浏览器验收项**：fake-timer 单测、渲染断言和 `pnpm e2e`
+不能证明真实 document focus/visibility、实际 5s/退避节奏、watch 断开后的持续轮询、响应式布局或
+light/dark 对比度，因此不能替代本节的隔离 profile 人工验收。未逐项留存证据前不得标记为已通过。
 
 ### 清理
 

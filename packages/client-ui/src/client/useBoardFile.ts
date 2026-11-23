@@ -3,9 +3,11 @@
  * debounced `workspaceFiles.changes` subscription. Every Remote operation is
  * scoped to the tab's Session and the deployment-published absolute path.
  *
- * The watch is the primary update source. Because a watch may be unavailable,
- * a missing file is also covered by bounded polling; an ended watch keeps the
- * explicit manual-refresh status and never silently reconnects.
+ * The watch is the primary update source. A visible, focused panel also polls
+ * every state (including ready and error), so missed/unsupported watch events,
+ * a missing file, and malformed content all recover without manual intervention.
+ * Background reads share one in-flight request; only an explicit manual refresh
+ * may supersede it and reconnect an ended watch.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { RemoteResult } from '@deepseek-ai/dsh-api-remotes/client'
@@ -61,9 +63,13 @@ export interface DevLeadBoardFileState {
 /** Live-update health, independent from file parse/read health. */
 export type DevLeadBoardWatchStatus = 'disabled' | 'connecting' | 'live' | 'ended'
 
+/** Whether the visibility/focus-gated polling fallback is currently running. */
+export type DevLeadBoardAutoRefreshStatus = 'disabled' | 'active' | 'paused'
+
 /** Hook result plus the manual, read-only retry/reconnect operation. */
 export interface DevLeadBoardFileResult extends DevLeadBoardFileState {
   readonly watch: DevLeadBoardWatchStatus
+  readonly autoRefresh: DevLeadBoardAutoRefreshStatus
   readonly refresh: () => void
 }
 
@@ -81,47 +87,74 @@ function isNotFound(result: RemoteResult<unknown>): boolean {
   return !result.ok && result.error.code === 'workspace-file/not-found'
 }
 
+/** Server/test renderers without a DOM behave as a visible, focused panel. */
+function panelPageActive(): boolean {
+  if (typeof document === 'undefined') return true
+  return document.visibilityState !== 'hidden'
+    && (typeof document.hasFocus !== 'function' || document.hasFocus())
+}
+
 /**
  * Load and follow one configured board file.
  *
- * A missing file is the empty state, never a parse failure; while empty,
- * bounded polling retries until the file appears. Read/schema errors retain
- * only the last successful timestamp, not stale project cards. A dead change
- * stream leaves manual refresh usable and never throws through React.
+ * A missing file is the empty state, never a parse failure. Read/schema errors
+ * retain only the last successful timestamp, not stale project cards. Polling
+ * covers every file state: ready polls at the base cadence, while empty/error
+ * back off exponentially. Timers run only while the document is visible and
+ * focused; either resume event triggers one immediate coalesced read. A dead
+ * change stream still leaves both polling and manual reconnect usable.
  */
 export function useBoardFile({
   sessionId,
   config,
   files,
+  visible = true,
   debounceMs = 120,
-  pollMs = 4_000,
+  pollMs = 5_000,
   pollMaxMs = 30_000,
   now = Date.now,
 }: {
   readonly sessionId: SessionId
   readonly config: DevLeadBoardConfig | undefined
   readonly files: DevLeadBoardFiles
+  /** Right-Sidebar tab visibility from DSH's `useTabInfo` projection. */
+  readonly visible?: boolean
   readonly debounceMs?: number
-  /** Initial delay before retrying a missing board; doubles after every tick. */
+  /** Base polling cadence; empty/error states double it after every tick. */
   readonly pollMs?: number
-  /** Upper bound for the empty-state retry delay. */
+  /** Upper bound for empty/error retry backoff. */
   readonly pollMaxMs?: number
   readonly now?: () => number
 }): DevLeadBoardFileResult {
   const [state, setState] = useState<DevLeadBoardFileState>(() => initialState(config))
   const [watch, setWatch] = useState<DevLeadBoardWatchStatus>(config === undefined ? 'disabled' : 'connecting')
+  const [autoRefresh, setAutoRefresh] = useState<DevLeadBoardAutoRefreshStatus>(() =>
+    config === undefined ? 'disabled' : visible && panelPageActive() ? 'active' : 'paused')
   const [watchGeneration, setWatchGeneration] = useState(0)
   const generation = useRef(0)
   const readAbort = useRef<AbortController | undefined>(undefined)
+  const trailingRead = useRef(false)
 
-  const refreshRead = useCallback((): void => {
+  const refreshRead = useCallback((force = false, queueTrailing = false): void => {
     if (config === undefined) {
       generation.current += 1
       readAbort.current?.abort()
+      readAbort.current = undefined
       setState(DISABLED)
       return
     }
+    // Watch readiness/change, polling, focus, and visibility resume can arrive
+    // together. They share the current read; a watch event during it adds one
+    // trailing refresh. Only a human retry supersedes the active request.
+    if (!force && readAbort.current !== undefined && !readAbort.current.signal.aborted) {
+      // Poll/focus duplicates simply share this request. A watch event that
+      // arrives during it also schedules one trailing read, because the file
+      // may have changed after the current stat/read snapshot began.
+      if (queueTrailing) trailingRead.current = true
+      return
+    }
     const request = ++generation.current
+    trailingRead.current = false
     readAbort.current?.abort()
     const controller = new AbortController()
     readAbort.current = controller
@@ -191,6 +224,16 @@ export function useBoardFile({
       } catch (error) {
         if (generation.current !== request || controller.signal.aborted) return
         fail('read', error)
+      } finally {
+        if (readAbort.current === controller) {
+          readAbort.current = undefined
+          if (trailingRead.current && generation.current === request && !controller.signal.aborted) {
+            trailingRead.current = false
+            queueMicrotask(() => {
+              if (generation.current === request && !controller.signal.aborted) refreshRead()
+            })
+          }
+        }
       }
     })()
   }, [config, files, now, sessionId])
@@ -209,7 +252,7 @@ export function useBoardFile({
       if (timer !== undefined) clearTimeout(timer)
       timer = setTimeout(() => {
         timer = undefined
-        refreshRead()
+        refreshRead(false, true)
       }, debounceMs)
     }
     const pump = async (): Promise<void> => {
@@ -220,15 +263,15 @@ export function useBoardFile({
             if (disposed) return
             if (frame.kind === 'ready') {
               setWatch('live')
-              refreshRead()
+              refreshRead(false, true)
             } else if (frame.kind === 'change') schedule()
           }
         } finally {
           stream.dispose()
         }
       } catch {
-        // Unsupported/ended watches degrade to manual refresh. They do not
-        // invalidate a good board or masquerade as malformed board content.
+        // Unsupported/ended watches degrade to the polling fallback. They do
+        // not invalidate a good board or masquerade as malformed board content.
       } finally {
         if (!disposed) setWatch('ended')
       }
@@ -244,19 +287,59 @@ export function useBoardFile({
     }
   }, [config, debounceMs, files, refreshRead, sessionId, watchGeneration])
 
-  // A missing file may never emit a watch frame (unsupported watch, missing
-  // parent directory, or an older Host), so retry it with bounded exponential
-  // backoff. Keying only on the status keeps an in-flight poll from resetting
-  // the delay: `refreshing` toggles while the status stays empty.
+  // Poll only a visible, focused page. A focus/visibility resume immediately
+  // refreshes once; refreshRead coalesces the common case where both events
+  // arrive together. Blur/hidden transitions synchronously clear the timer via
+  // the state-driven polling effect below.
   useEffect(() => {
-    if (config === undefined || state.status !== 'empty') return
+    if (config === undefined) {
+      setAutoRefresh('disabled')
+      return
+    }
+    if (!visible) {
+      setAutoRefresh('paused')
+      return
+    }
+    if (typeof document === 'undefined') {
+      setAutoRefresh('active')
+      refreshRead()
+      return
+    }
+    const sync = (resume: boolean): void => {
+      const active = resume && panelPageActive()
+      setAutoRefresh(active ? 'active' : 'paused')
+      if (active) refreshRead()
+    }
+    const onVisibility = (): void => { sync(document.visibilityState !== 'hidden') }
+    const onFocus = (): void => { sync(true) }
+    const onBlur = (): void => { setAutoRefresh('paused') }
+    sync(panelPageActive())
+    document.addEventListener('visibilitychange', onVisibility)
+    window.addEventListener('focus', onFocus)
+    window.addEventListener('blur', onBlur)
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility)
+      window.removeEventListener('focus', onFocus)
+      window.removeEventListener('blur', onBlur)
+    }
+  }, [config, refreshRead, visible])
+
+  // Watch events can be lost or unsupported, so every state gets a polling
+  // fallback. Healthy/loading reads retain the base cadence; empty/error reads
+  // use bounded exponential backoff. Depending on status (not refreshing)
+  // keeps an in-flight read from resetting the delay. Changing config, hiding,
+  // blurring, or unmounting clears the old timer synchronously through cleanup.
+  useEffect(() => {
+    if (config === undefined || autoRefresh !== 'active') return
     let delay = pollMs
     let timer: ReturnType<typeof setTimeout> | undefined
     const schedule = (): void => {
       timer = setTimeout(() => {
         timer = undefined
         refreshRead()
-        delay = Math.min(delay * 2, pollMaxMs)
+        if (state.status === 'empty' || state.status === 'error') {
+          delay = Math.min(delay * 2, pollMaxMs)
+        }
         schedule()
       }, delay)
     }
@@ -264,13 +347,13 @@ export function useBoardFile({
     return () => {
       if (timer !== undefined) clearTimeout(timer)
     }
-  }, [config, pollMs, pollMaxMs, refreshRead, state.status])
+  }, [autoRefresh, config, pollMs, pollMaxMs, refreshRead, state.status])
 
-  /** Manual retry also reopens a dead watch; background reads only refresh bytes. */
+  /** Manual retry also supersedes an in-flight read and reopens a dead watch. */
   const refresh = useCallback((): void => {
-    refreshRead()
+    refreshRead(true)
     if (config !== undefined) setWatchGeneration(current => current + 1)
   }, [config, refreshRead])
 
-  return { ...state, watch, refresh }
+  return { ...state, watch, autoRefresh, refresh }
 }

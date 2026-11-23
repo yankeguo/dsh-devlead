@@ -272,14 +272,16 @@ client 按旧部署级宽路径语义继续工作；旧 client 会忽略新字�
   guide entry 与会话头按钮通过 `sidebarRight.openTab(kind)` 打开。body slot 是
   `sidebar.right.pane.tab`，其 `key` 是 definition 的 **id**（不是 kind）。
 - `useBoardFile`：以当前 tab 的 SessionId 与解析出的看板路径调 `stat` + `readBytes(..., {})`，
-  并直接消费 `changes`。首读与 ready 后重读关闭订阅竞态，change 经 120ms debounce 重读；卸载
-  abort 读取/watch 并 `dispose()` stream。旧 request generation 不能覆盖新结果。**文件不存在
-  （空态）时由有界轮询兜底**：默认 4s 起、指数退避到 30s 上限，读到数据、切状态或卸载即停，
-  复用同一 abort/generation；Host 预创建父目录只保证 watch 首开可见 `add` 事件，host 未升级、
-  外部编辑或 watch 不可用时仍能自愈。轮询只由 `status === 'empty'` 驱动，与 watch 的
-  `live`/`ended` 状态无关；`refreshing` 切换不重置退避延迟（effect 依赖只含 `state.status`），
-  避免在途读取把退避打回 4s。watch 断开单独显示“自动更新已断开，请手动刷新”警告，不再把旧
-  内容标为“正常”，也不静默自动重连；手动刷新同时重读并重建 watch。路径/lead 变化时重新
+  并直接消费 `changes`。首读与 ready 后重读关闭订阅竞态，change 经 **120ms debounce** 重读；卸载
+  abort 读取/watch 并 `dispose()` stream，旧 request generation 不能覆盖新结果。**所有文件状态都有
+  周期轮询**：ready/loading 默认按固定 **5s** 节奏读取，empty/error 从 **5s** 起指数退避
+  （5s → 10s → 20s → 30s），上限 **30s**；`refreshing` 切换不重置退避。只有 document 同时
+  visible 且 focused 时才运行 timer，顶部 Live 状态区分自动刷新 active/paused/disabled。
+  `visibilitychange` / focus 恢复立即触发一次 coalesced read；blur、hidden、unmount 与 path change
+  都清理旧 timer。watch、poll、focus/visibility 恢复共享同一 in-flight 读取，在途期间新到的 watch ready/change 合并为
+  **一次 trailing refresh**（poll/focus 只共享当前读取），避免叠发或丢失后续 change；手动刷新仍可强制取代在途读取、重读文件并
+  重建 watch。**watch ended 不静默自动重连，但周期轮询继续**，
+  面板明确区分文件监听与自动轮询状态，不再要求只能靠手动刷新获得后续更新。路径/lead 变化时重新
   resolve 配置并从空态开始，旧文件的缓存内容不得延续。
 - 浏览器解码器直接使用 protocol 的同一份 strict schema v1（不 import Host/Node 模块；schema
   源码内联进浏览器 bundle，`zod` 走 DSH 冻结 module table 的 platform singleton——Step B 起
@@ -292,8 +294,11 @@ client 按旧部署级宽路径语义继续工作；旧 client 会忽略新字�
   裁剪只作用于**模型工具结果**；右栏面板直接读取看板文件（受 schema 的 256 KiB 文件上限约束，
   不经工具层裁剪），两者互不影响。
 - 项目按 blocked / active / paused / done 分组，同组按 high / medium / low、updatedAt 倒序、id
-  稳定排序；卡片展示 workspace、focus/next/blockers 和原生 `<details>` 任务清单。顶部展示
-  revision、updatedAt 相对时间与读取状态。
+  稳定排序。顶部展示 active/blocked/paused/done KPI、revision、updatedAt 相对时间与 Live 自动
+  刷新状态；blocked 以强警示置顶，active 为主内容区，宽右栏响应式 2 列、窄栏 1 列。卡片展示
+  workspace、focus/next/blockers、任务 done/total 进度条与原生 `<details>` 任务清单；paused/done
+  与「未在看板中的项目」使用次级折叠。样式覆盖 light/dark，标题关联、状态 live region、进度值等
+  aria 与原生键盘 disclosure 均可验收，且没有编辑控件。
 - 「未在看板中的项目」折叠区只连接 Host 的 `useWorkspaces` / `useSessions` 投影，按 workspace
   path 过滤（POSIX 尾斜杠、Windows 分隔符/大小写做语法规范化），显示名称、path、会话数和这些
   Sessions 的最新 updatedAt；Session 清单 pending 时显示读取中，不谎报无活动。workspace 清单
@@ -304,7 +309,8 @@ client 按旧部署级宽路径语义继续工作；旧 client 会忽略新字�
 
 所有样式沿用 `ensureStyleTag` 与 `--dsw-*` token，文案在 `devlead` namespace 的 zh/en 词典。
 自动化覆盖的边界：纯函数（schema/分组/排序/相对时间/unlisted 规范化）、`Remote` hook 的
-加载/分帧/轮询/降级/abort 状态机，以及 `react-test-renderer` 的组件分支、只读性、XSS 文本
-转义与 a11y 属性；真实浏览器中的视觉、主题与交互仍按
+加载/分帧/全状态轮询/退避/visibility-focus 暂停恢复/in-flight 去重/降级/abort 状态机，以及
+`react-test-renderer` 的组件分支、只读性、XSS 文本转义与 a11y 属性；真实浏览器中的视觉、主题、
+轮询节奏与交互仍按
 [UI-VERIFICATION](UI-VERIFICATION.md) 在隔离 profile 人工验收，不由单测替代。Step C 可在
 不修改文件所有权的前提下复用 `DevLeadBoardPanelView` 做全页视图，或另加 Session 跳转/自动状态合并。

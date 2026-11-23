@@ -2651,16 +2651,23 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   旧面板，不继续读旧文件。tab `kind='devlead-board'`，definition id
   `@yankeguo/dsh-client-ui-devlead/board`；keyed body slot 使用 id，`openTab` 使用 kind。
   `useBoardFile` 用 tab SessionId + 解析出的看板路径执行 `stat` / `readBytes` / `changes`，首读与
-  ready 重读、change debounce、request generation 淘汰、卸载 abort + stream dispose 共同保证
-  freshness 与清理；文件不存在时按 4s→30s 有界退避轮询（status 驱动、refreshing 不重置），
-  watch ended 单独警告且只由手动刷新重连。浏览器 strict schema v1 直接复用 protocol 的
-  `createDevLeadBoardSchema`（不 import Host/Node；绝对路径谓词由 Host 发布的 `pathPlatform`
-  决定）；not-found、Remote read error、parse error 分别呈现 empty / read error / parse error，
-  错误时只保留 lastSuccessAt，不把旧卡片当当前数据。项目 blocked 置顶，组内 priority +
-  updatedAt 排序，tasks/blockers 只读；unlisted 折叠区连接 Host Workspace/Session 投影，path
-  做有限语法规范化并显示会话数与最近 Session 活动，Session pending 不谎报无活动、workspace
-  清单 error 优先于 pending；组标题 DOM id 以 `useId` 前缀隔离多个面板实例；
-  symlink/realpath 别名留待 Host 权威解析。完整契约见 [BOARD](BOARD.md#step-b-浏览器契约)。
+  ready 重读、120ms change debounce、request generation 淘汰、卸载 abort + stream dispose 共同保证
+  freshness 与清理。所有文件状态都有轮询：ready/loading 固定 5s，empty/error 从 5s 指数退避到 30s
+  （status 驱动、refreshing 不重置）；只有 `useTabInfo().tab.visible` 且 document visible + focused
+  时运行，blur/hidden/unmount/path change 清理 timer，恢复时立即读。watch、poll、focus/visibility
+  恢复共享在途读取；在途期间新到的 watch ready/change 合并为**一次 trailing refresh**（poll/focus
+  只共享当前读取），既不叠发也不丢后续 change；
+  手动刷新可强制重读并重连。watch ended 不静默重连，但轮询继续并明确显示监听与轮询状态。
+  浏览器 strict schema v1 直接复用 protocol 的 `createDevLeadBoardSchema`（不 import Host/Node；
+  绝对路径谓词由 Host 发布的 `pathPlatform` 决定）；not-found、Remote read error、parse error 分别呈现
+  empty / read error / parse error，错误时只保留 lastSuccessAt，不把旧卡片当当前数据。
+  视觉采用根 `.devlead-board` container：顶部四状态 KPI、revision/updated/Live 概览，blocked 强警示
+  置顶，active 宽栏 2 列/窄栏 1 列；卡片按项目名、workspace、状态/priority、focus、next、blockers、
+  任务进度与 disclosure、updated 排列，paused/done/unlisted 为次级折叠。组内 priority + updatedAt
+  排序，tasks/blockers 只读；unlisted 连接 Host Workspace/Session 投影，path 做有限语法规范化并显示
+  会话数与最近 Session 活动，Session pending 不谎报无活动、workspace 清单 error 优先于 pending；
+  组标题 DOM id 以 `useId` 前缀隔离多个面板实例；symlink/realpath 别名留待 Host 权威解析。
+  完整契约见 [BOARD](BOARD.md#step-b-浏览器契约)。
 - i18n：namespace `devlead`，`zh`/`en` 词典；`locale/zh.json`、`locale/en.json` 提供
   `meta.title`/`meta.description`（插件市场展示）。
 - 客户端 bundle 构建：esbuild CJS + `window.__ModuleLoader__.load({ id, factory })` 包装；

@@ -149,13 +149,14 @@ function fakeFiles(): FakeFiles {
 interface ProbeProps {
   readonly config?: DevLeadBoardConfig | undefined
   readonly files: DevLeadBoardFiles
+  readonly visible?: boolean
   readonly debounceMs?: number
   readonly pollMs?: number
   readonly pollMaxMs?: number
 }
 
-function Probe({ config, files, debounceMs = 20, pollMs = 4_000, pollMaxMs = 30_000 }: ProbeProps) {
-  const state = useBoardFile({ sessionId: SESSION, config, files, debounceMs, now: NOW_FN, pollMs, pollMaxMs })
+function Probe({ config, files, visible = true, debounceMs = 20, pollMs = 5_000, pollMaxMs = 30_000 }: ProbeProps) {
+  const state = useBoardFile({ sessionId: SESSION, config, files, visible, debounceMs, now: NOW_FN, pollMs, pollMaxMs })
   return (
     <>
       <span
@@ -166,6 +167,7 @@ function Probe({ config, files, debounceMs = 20, pollMs = 4_000, pollMaxMs = 30_
         data-last-success={state.lastSuccessAt ?? ''}
         data-refreshing={state.refreshing ? 'true' : 'false'}
         data-watch={state.watch}
+        data-auto-refresh={state.autoRefresh}
       />
       <button data-probe="refresh" onClick={state.refresh} />
     </>
@@ -200,11 +202,57 @@ function stateOf(renderer: ReactTestRenderer): Record<string, unknown> {
   return renderer.root.findByProps({ 'data-probe': 'state' }).props as Record<string, unknown>
 }
 
+/** Minimal browser visibility/focus event target; no jsdom dependency. */
+function fakeBrowserPage() {
+  let visible = true
+  let focused = true
+  const documentListeners = new Set<() => void>()
+  const windowListeners = new Map<string, Set<() => void>>()
+  vi.stubGlobal('document', {
+    get visibilityState() { return visible ? 'visible' : 'hidden' },
+    hasFocus: () => focused,
+    addEventListener: (_name: string, listener: () => void) => { documentListeners.add(listener) },
+    removeEventListener: (_name: string, listener: () => void) => { documentListeners.delete(listener) },
+  })
+  vi.stubGlobal('window', {
+    addEventListener: (name: string, listener: () => void) => {
+      const listeners = windowListeners.get(name) ?? new Set<() => void>()
+      listeners.add(listener)
+      windowListeners.set(name, listeners)
+    },
+    removeEventListener: (name: string, listener: () => void) => { windowListeners.get(name)?.delete(listener) },
+  })
+  const emitWindow = (name: string): void => {
+    for (const listener of windowListeners.get(name) ?? []) listener()
+  }
+  return {
+    hide(): void {
+      visible = false
+      focused = false
+      for (const listener of documentListeners) listener()
+    },
+    show(): void {
+      visible = true
+      focused = true
+      for (const listener of documentListeners) listener()
+    },
+    blur(): void {
+      focused = false
+      emitWindow('blur')
+    },
+    focus(): void {
+      focused = true
+      emitWindow('focus')
+    },
+  }
+}
+
 afterEach(async () => {
   await act(async () => {
     for (const renderer of mounted.splice(0)) renderer.unmount()
   })
   vi.restoreAllMocks()
+  vi.unstubAllGlobals()
   vi.useRealTimers()
 })
 
@@ -396,7 +444,7 @@ describe('useBoardFile', () => {
     expect(stateOf(renderer)['data-watch']).toBe('live')
   })
 
-  it('degrades on a rejected stream and never reconnects without a manual refresh', async () => {
+  it('keeps polling after a rejected stream but reconnects only on manual refresh', async () => {
     vi.useFakeTimers()
     const fake = fakeFiles()
     const renderer = await mount(<Probe config={CONFIG} files={fake.files} />)
@@ -423,7 +471,7 @@ describe('useBoardFile', () => {
     })
     await flush()
     expect(fake.changes).toHaveBeenCalledTimes(1)
-    expect(fake.readBytes.mock.calls.length).toBe(reads)
+    expect(fake.readBytes.mock.calls.length).toBeGreaterThan(reads)
     await act(async () => {
       renderer.root.findByProps({ 'data-probe': 'refresh' }).props.onClick()
     })
@@ -477,11 +525,119 @@ describe('useBoardFile', () => {
       'data-error': '',
     })
     const settled = fake.stat.mock.calls.length
+    // Recovery does not disable the fallback: a healthy board now polls at the
+    // base cadence so later external edits do not depend on the ended watch.
     await act(async () => {
-      vi.advanceTimersByTime(300_000)
+      vi.advanceTimersByTime(4_000)
     })
     await flush()
-    expect(fake.stat.mock.calls.length).toBe(settled)
+    expect(fake.stat.mock.calls.length).toBe(settled + 1)
+  })
+
+  it('polls a healthy board at the base cadence without exponential drift', async () => {
+    vi.useFakeTimers()
+    const fake = fakeFiles()
+    const renderer = await mount(<Probe config={CONFIG} files={fake.files} pollMs={5_000} />)
+    await flush()
+    expect(stateOf(renderer)).toMatchObject({ 'data-status': 'ready', 'data-auto-refresh': 'active' })
+    expect(fake.stat).toHaveBeenCalledTimes(1)
+    await act(async () => { vi.advanceTimersByTime(4_999) })
+    await flush()
+    expect(fake.stat).toHaveBeenCalledTimes(1)
+    await act(async () => { vi.advanceTimersByTime(1) })
+    await flush()
+    expect(fake.stat).toHaveBeenCalledTimes(2)
+    // The second healthy interval is still 5s, not the empty/error 10s step.
+    await act(async () => { vi.advanceTimersByTime(5_000) })
+    await flush()
+    expect(fake.stat).toHaveBeenCalledTimes(3)
+  })
+
+  it('automatically recovers an initial read error through polling', async () => {
+    vi.useFakeTimers()
+    const fake = fakeFiles()
+    fake.stat.mockResolvedValueOnce(failure('gateway/lookup-not-found'))
+    const renderer = await mount(<Probe config={CONFIG} files={fake.files} pollMs={5_000} />)
+    await flush()
+    expect(stateOf(renderer)).toMatchObject({ 'data-status': 'error', 'data-error': 'read' })
+    await act(async () => { vi.advanceTimersByTime(5_000) })
+    await flush()
+    expect(stateOf(renderer)).toMatchObject({ 'data-status': 'ready', 'data-revision': 1, 'data-error': '' })
+  })
+
+  it('pauses while hidden or blurred and refreshes immediately on resume', async () => {
+    vi.useFakeTimers()
+    const page = fakeBrowserPage()
+    const fake = fakeFiles()
+    const renderer = await mount(<Probe config={CONFIG} files={fake.files} pollMs={5_000} />)
+    await flush()
+    expect(fake.stat).toHaveBeenCalledTimes(1)
+    await act(async () => { page.hide() })
+    expect(stateOf(renderer)['data-auto-refresh']).toBe('paused')
+    await act(async () => { vi.advanceTimersByTime(60_000) })
+    await flush()
+    expect(fake.stat).toHaveBeenCalledTimes(1)
+    await act(async () => { page.show() })
+    await flush()
+    expect(stateOf(renderer)['data-auto-refresh']).toBe('active')
+    expect(fake.stat).toHaveBeenCalledTimes(2)
+    await act(async () => { page.blur() })
+    await act(async () => { vi.advanceTimersByTime(60_000) })
+    await flush()
+    expect(fake.stat).toHaveBeenCalledTimes(2)
+    await act(async () => { page.focus() })
+    await flush()
+    expect(fake.stat).toHaveBeenCalledTimes(3)
+  })
+
+  it('pauses while the Sidebar tab is hidden and resumes on its first visible render', async () => {
+    vi.useFakeTimers()
+    const fake = fakeFiles()
+    const renderer = await mount(<Probe config={CONFIG} files={fake.files} visible={false} pollMs={5_000} />)
+    await flush()
+    expect(stateOf(renderer)['data-auto-refresh']).toBe('paused')
+    const initial = fake.stat.mock.calls.length
+    await act(async () => { vi.advanceTimersByTime(60_000) })
+    await flush()
+    expect(fake.stat.mock.calls.length).toBe(initial)
+    await act(async () => { renderer.update(<Probe config={CONFIG} files={fake.files} visible pollMs={5_000} />) })
+    await flush()
+    expect(stateOf(renderer)['data-auto-refresh']).toBe('active')
+    expect(fake.stat.mock.calls.length).toBe(initial + 1)
+  })
+
+  it('coalesces simultaneous triggers into one in-flight read and one trailing refresh', async () => {
+    vi.useFakeTimers()
+    const fake = fakeFiles()
+    const renderer = await mount(<Probe config={CONFIG} files={fake.files} debounceMs={5_000} pollMs={5_000} />)
+    await flush()
+    let resolveStat!: (value: StatResult) => void
+    fake.stat.mockImplementationOnce(() => new Promise<StatResult>(resolve => { resolveStat = resolve }))
+    await act(async () => {
+      fake.streams[0]!.push({ kind: 'change', change: { absolutePath: CONFIG.boardPath, version: 'v2' } })
+      await Promise.resolve()
+      vi.advanceTimersByTime(5_000)
+    })
+    await flush()
+    expect(fake.stat).toHaveBeenCalledTimes(2)
+    // A newer change arrives while that read is pending. It shares the current
+    // request but must leave exactly one trailing read behind.
+    await act(async () => {
+      fake.streams[0]!.push({ kind: 'change', change: { absolutePath: CONFIG.boardPath, version: 'v4' } })
+      await Promise.resolve()
+      vi.advanceTimersByTime(5_000)
+    })
+    await flush()
+    expect(fake.stat).toHaveBeenCalledTimes(2)
+    resolveStat(statOk())
+    await flush()
+    // No additional timer advance: the triggers received during the pending
+    // stat produce exactly one immediate trailing read, never a dropped change.
+    expect(fake.stat).toHaveBeenCalledTimes(3)
+    expect(stateOf(renderer)['data-status']).toBe('ready')
+    await act(async () => { vi.advanceTimersByTime(1_000) })
+    await flush()
+    expect(fake.stat).toHaveBeenCalledTimes(3)
   })
 
   it('stops empty-state polling on unmount', async () => {
@@ -590,6 +746,22 @@ describe('useBoardFile', () => {
     expect(fake.readBytes.mock.calls.map(call => call[1])).toEqual([CONFIG.boardPath, next.boardPath])
     expect(fake.changes.mock.calls.map(call => call[1])).toEqual([CONFIG.boardPath, next.boardPath])
     expect(stateOf(renderer)).toMatchObject({ 'data-status': 'ready', 'data-revision': 1 })
+  })
+
+  it('clears the old path timer and polls only the replacement config', async () => {
+    vi.useFakeTimers()
+    const fake = fakeFiles()
+    const renderer = await mount(<Probe config={CONFIG} files={fake.files} pollMs={5_000} />)
+    await flush()
+    const next: DevLeadBoardConfig = { ...CONFIG, boardPath: '/work/next/.dsh/devlead/board.json' }
+    await act(async () => { renderer.update(<Probe config={next} files={fake.files} pollMs={5_000} />) })
+    await flush()
+    const callsAfterSwitch = fake.stat.mock.calls.length
+    await act(async () => { vi.advanceTimersByTime(5_000) })
+    await flush()
+    expect(fake.stat.mock.calls.length).toBe(callsAfterSwitch + 1)
+    expect(fake.stat).toHaveBeenLastCalledWith(SESSION, next.boardPath, expect.any(AbortSignal))
+    expect(fake.stat.mock.calls.filter(call => call[1] === CONFIG.boardPath)).toHaveLength(1)
   })
 
   it('aborts the watch and disposes its direct handle on unmount', async () => {

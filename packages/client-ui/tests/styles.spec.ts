@@ -454,6 +454,14 @@ describe('styles', () => {
     expect(styles).toContain('@media (max-width: 480px)')
     // Board styling uses the same public token/refcount path, never CSS Modules.
     expect(styles).toContain('.devlead-board-card {')
+    // One root container observes both header KPIs and content cards. Placing
+    // it on content would make the narrow-KPI rule permanently inert.
+    expect(styles).toMatch(/\.devlead-board \{[^}]*container: devlead-board \/ inline-size;/u)
+    expect(styles).not.toMatch(/\.devlead-board-content \{[^}]*container:/u)
+    expect(styles).toMatch(/@container devlead-board \(min-width: 620px\)[\s\S]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);/u)
+    expect(styles).toMatch(/@container devlead-board \(max-width: 340px\)[\s\S]*\.devlead-board-kpis \{[^}]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);/u)
+    expect(styles).toContain('.devlead-board-card:focus-visible')
+    expect(styles).toContain('@media (prefers-reduced-motion: reduce)')
     expect(styles).not.toMatch(/\.devlead-board[^{]*module/u)
   })
 
@@ -463,6 +471,9 @@ describe('styles', () => {
     for (const property of properties) {
       expect(property.startsWith('--dsw-') || property.startsWith('--dsh-'), property).toBe(true)
     }
+    // color-mix needs the same neutral fallback as a plain var() read; a token
+    // miss must not invalidate the whole background/border declaration.
+    expect(styles).not.toMatch(/color-mix\(in srgb, var\(--[a-z0-9-]+\)/u)
   })
 
   it('pins the token set verified against the DSH 0.2.2-rc.1 through rc.5 themes', () => {
@@ -476,6 +487,8 @@ describe('styles', () => {
       '--dsw-alias-border-l1',
       '--dsw-elevation-stroke-color',
       '--dsw-radius-lg',
+      '--dsw-radius-md',
+      '--dsw-radius-sm',
       '--dsw-elevation-panel',
       '--dsw-specific-menu',
       '--dsw-menu-backdrop-filter',
