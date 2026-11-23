@@ -2,6 +2,10 @@
  * Read-only board file loader: stat + complete bytes, strict parse, and a
  * debounced `workspaceFiles.changes` subscription. Every Remote operation is
  * scoped to the tab's Session and the deployment-published absolute path.
+ *
+ * The watch is the primary update source. Because a watch may be unavailable,
+ * a missing file is also covered by bounded polling; an ended watch keeps the
+ * explicit manual-refresh status and never silently reconnects.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { RemoteResult } from '@deepseek-ai/dsh-api-remotes/client'
@@ -80,21 +84,28 @@ function isNotFound(result: RemoteResult<unknown>): boolean {
 /**
  * Load and follow one configured board file.
  *
- * A missing file is the empty state, never a parse failure. Read/schema errors
- * retain only the last successful timestamp, not stale project cards. A dead
- * change stream leaves manual refresh usable and never throws through React.
+ * A missing file is the empty state, never a parse failure; while empty,
+ * bounded polling retries until the file appears. Read/schema errors retain
+ * only the last successful timestamp, not stale project cards. A dead change
+ * stream leaves manual refresh usable and never throws through React.
  */
 export function useBoardFile({
   sessionId,
   config,
   files,
   debounceMs = 120,
+  pollMs = 4_000,
+  pollMaxMs = 30_000,
   now = Date.now,
 }: {
   readonly sessionId: SessionId
   readonly config: DevLeadBoardConfig | undefined
   readonly files: DevLeadBoardFiles
   readonly debounceMs?: number
+  /** Initial delay before retrying a missing board; doubles after every tick. */
+  readonly pollMs?: number
+  /** Upper bound for the empty-state retry delay. */
+  readonly pollMaxMs?: number
   readonly now?: () => number
 }): DevLeadBoardFileResult {
   const [state, setState] = useState<DevLeadBoardFileState>(() => initialState(config))
@@ -232,6 +243,28 @@ export function useBoardFile({
       readAbort.current?.abort()
     }
   }, [config, debounceMs, files, refreshRead, sessionId, watchGeneration])
+
+  // A missing file may never emit a watch frame (unsupported watch, missing
+  // parent directory, or an older Host), so retry it with bounded exponential
+  // backoff. Keying only on the status keeps an in-flight poll from resetting
+  // the delay: `refreshing` toggles while the status stays empty.
+  useEffect(() => {
+    if (config === undefined || state.status !== 'empty') return
+    let delay = pollMs
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const schedule = (): void => {
+      timer = setTimeout(() => {
+        timer = undefined
+        refreshRead()
+        delay = Math.min(delay * 2, pollMaxMs)
+        schedule()
+      }, delay)
+    }
+    schedule()
+    return () => {
+      if (timer !== undefined) clearTimeout(timer)
+    }
+  }, [config, pollMs, pollMaxMs, refreshRead, state.status])
 
   /** Manual retry also reopens a dead watch; background reads only refresh bytes. */
   const refresh = useCallback((): void => {

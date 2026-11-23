@@ -70,13 +70,18 @@ function readValue(value: unknown, eof = true) {
   }
 }
 
-/** Single-consumer stream with explicit frames and idempotent disposal. */
+function statOk() {
+  return ok({ absolutePath: CONFIG.boardPath, version: 'v1', bytes: 100 })
+}
+
+/** Single-consumer stream with explicit frames, a failure path, and idempotent disposal. */
 class FakeStream implements DevLeadBoardChangeStream {
   readonly dispose = vi.fn(() => {
     this.ended = true
     this.wake?.()
   })
   private readonly frames: WorkspaceFileWatchFrame[] = []
+  private failure: unknown
   private wake: (() => void) | undefined
   private ended = false
 
@@ -90,8 +95,19 @@ class FakeStream implements DevLeadBoardChangeStream {
     this.wake?.()
   }
 
+  /** Terminate iteration with an error, mimicking a dropped Remote stream. */
+  fail(error: unknown): void {
+    this.failure = error
+    this.ended = true
+    this.wake?.()
+  }
+
   async *[Symbol.asyncIterator](): AsyncIterator<WorkspaceFileWatchFrame> {
-    while (!this.ended) {
+    while (true) {
+      if (this.ended) {
+        if (this.failure !== undefined) throw this.failure
+        return
+      }
       const frame = this.frames.shift()
       if (frame !== undefined) {
         yield frame
@@ -112,14 +128,13 @@ interface FakeFiles {
   readonly signals: AbortSignal[]
 }
 
+type StatResult = Awaited<ReturnType<DevLeadBoardFiles['stat']>>
+type ReadBytesResult = Awaited<ReturnType<DevLeadBoardFiles['readBytes']>>
+
 function fakeFiles(): FakeFiles {
   const streams: FakeStream[] = []
   const signals: AbortSignal[] = []
-  const stat = vi.fn<DevLeadBoardFiles['stat']>(async () => ok({
-    absolutePath: CONFIG.boardPath,
-    version: 'v1',
-    bytes: 100,
-  }))
+  const stat = vi.fn<DevLeadBoardFiles['stat']>(async () => statOk())
   const readBytes = vi.fn<DevLeadBoardFiles['readBytes']>(async () => ok(readValue(board())))
   const changes = vi.fn<DevLeadBoardFiles['changes']>((_sessionId, _path, signal) => {
     if (signal !== undefined) signals.push(signal)
@@ -135,10 +150,12 @@ interface ProbeProps {
   readonly config?: DevLeadBoardConfig | undefined
   readonly files: DevLeadBoardFiles
   readonly debounceMs?: number
+  readonly pollMs?: number
+  readonly pollMaxMs?: number
 }
 
-function Probe({ config, files, debounceMs = 20 }: ProbeProps) {
-  const state = useBoardFile({ sessionId: SESSION, config, files, debounceMs, now: NOW_FN })
+function Probe({ config, files, debounceMs = 20, pollMs = 4_000, pollMaxMs = 30_000 }: ProbeProps) {
+  const state = useBoardFile({ sessionId: SESSION, config, files, debounceMs, now: NOW_FN, pollMs, pollMaxMs })
   return (
     <>
       <span
@@ -349,6 +366,209 @@ describe('useBoardFile', () => {
     })
     await flush()
     expect(stateOf(renderer)['data-watch']).toBe('live')
+  })
+
+  it('degrades to an ended watch when the change stream cannot start', async () => {
+    const fake = fakeFiles()
+    fake.changes.mockImplementationOnce(() => {
+      throw new Error('watch unsupported')
+    })
+    const renderer = await mount(<Probe config={CONFIG} files={fake.files} />)
+    await flush()
+    expect(stateOf(renderer)).toMatchObject({
+      'data-status': 'ready',
+      'data-revision': 1,
+      'data-error': '',
+      'data-watch': 'ended',
+    })
+    expect(fake.changes).toHaveBeenCalledTimes(1)
+    await act(async () => {
+      renderer.root.findByProps({ 'data-probe': 'refresh' }).props.onClick()
+    })
+    await flush()
+    expect(fake.changes).toHaveBeenCalledTimes(2)
+    expect(stateOf(renderer)['data-watch']).toBe('connecting')
+    await act(async () => {
+      fake.streams[0]!.push({ kind: 'ready' })
+      await Promise.resolve()
+    })
+    await flush()
+    expect(stateOf(renderer)['data-watch']).toBe('live')
+  })
+
+  it('degrades on a rejected stream and never reconnects without a manual refresh', async () => {
+    vi.useFakeTimers()
+    const fake = fakeFiles()
+    const renderer = await mount(<Probe config={CONFIG} files={fake.files} />)
+    await act(async () => {
+      fake.streams[0]!.push({ kind: 'ready' })
+      await Promise.resolve()
+    })
+    await flush()
+    expect(stateOf(renderer)['data-watch']).toBe('live')
+    await act(async () => {
+      fake.streams[0]!.fail(new Error('watch transport failed'))
+      await Promise.resolve()
+    })
+    await flush()
+    expect(stateOf(renderer)).toMatchObject({
+      'data-status': 'ready',
+      'data-revision': 1,
+      'data-error': '',
+      'data-watch': 'ended',
+    })
+    const reads = fake.readBytes.mock.calls.length
+    await act(async () => {
+      vi.advanceTimersByTime(300_000)
+    })
+    await flush()
+    expect(fake.changes).toHaveBeenCalledTimes(1)
+    expect(fake.readBytes.mock.calls.length).toBe(reads)
+    await act(async () => {
+      renderer.root.findByProps({ 'data-probe': 'refresh' }).props.onClick()
+    })
+    await flush()
+    expect(fake.changes).toHaveBeenCalledTimes(2)
+    expect(stateOf(renderer)['data-watch']).toBe('connecting')
+    await act(async () => {
+      fake.streams[1]!.push({ kind: 'ready' })
+      await Promise.resolve()
+    })
+    await flush()
+    expect(stateOf(renderer)['data-watch']).toBe('live')
+  })
+
+  it('polls a missing board with bounded backoff until it appears', async () => {
+    vi.useFakeTimers()
+    const fake = fakeFiles()
+    fake.stat.mockResolvedValue(failure('workspace-file/not-found'))
+    const renderer = await mount(<Probe config={CONFIG} files={fake.files} pollMs={4_000} pollMaxMs={30_000} />)
+    await flush()
+    expect(stateOf(renderer)['data-status']).toBe('empty')
+    const initial = fake.stat.mock.calls.length
+    expect(initial).toBe(1)
+    await act(async () => {
+      vi.advanceTimersByTime(4_000)
+    })
+    await flush()
+    expect(fake.stat.mock.calls.length).toBe(initial + 1)
+    expect(stateOf(renderer)['data-status']).toBe('empty')
+    // The retry delay doubles after each tick: no retry on the next 4s.
+    await act(async () => {
+      vi.advanceTimersByTime(4_000)
+    })
+    await flush()
+    expect(fake.stat.mock.calls.length).toBe(initial + 1)
+    // ...but the following 4s completes the doubled (8s) delay.
+    await act(async () => {
+      vi.advanceTimersByTime(4_000)
+    })
+    await flush()
+    expect(fake.stat.mock.calls.length).toBe(initial + 2)
+    // Publish the file; the next tick, 16s out, loads it.
+    fake.stat.mockResolvedValue(statOk())
+    await act(async () => {
+      vi.advanceTimersByTime(16_000)
+    })
+    await flush()
+    expect(stateOf(renderer)).toMatchObject({
+      'data-status': 'ready',
+      'data-revision': 1,
+      'data-error': '',
+    })
+    const settled = fake.stat.mock.calls.length
+    await act(async () => {
+      vi.advanceTimersByTime(300_000)
+    })
+    await flush()
+    expect(fake.stat.mock.calls.length).toBe(settled)
+  })
+
+  it('stops empty-state polling on unmount', async () => {
+    vi.useFakeTimers()
+    const fake = fakeFiles()
+    fake.stat.mockResolvedValue(failure('workspace-file/not-found'))
+    const renderer = await mount(<Probe config={CONFIG} files={fake.files} pollMs={4_000} />)
+    await flush()
+    expect(stateOf(renderer)['data-status']).toBe('empty')
+    const before = fake.stat.mock.calls.length
+    await act(async () => {
+      renderer.unmount()
+    })
+    mounted.splice(mounted.indexOf(renderer), 1)
+    await act(async () => {
+      vi.advanceTimersByTime(120_000)
+    })
+    await flush()
+    expect(fake.stat.mock.calls.length).toBe(before)
+  })
+
+  it('keeps polling a missing board after the watch ends', async () => {
+    vi.useFakeTimers()
+    const fake = fakeFiles()
+    fake.stat.mockResolvedValue(failure('workspace-file/not-found'))
+    const renderer = await mount(<Probe config={CONFIG} files={fake.files} pollMs={4_000} />)
+    await flush()
+    expect(stateOf(renderer)).toMatchObject({ 'data-status': 'empty', 'data-watch': 'connecting' })
+    await act(async () => {
+      fake.streams[0]!.finish()
+      await Promise.resolve()
+    })
+    await flush()
+    expect(stateOf(renderer)['data-watch']).toBe('ended')
+    fake.stat.mockResolvedValue(statOk())
+    await act(async () => {
+      vi.advanceTimersByTime(4_000)
+    })
+    await flush()
+    expect(stateOf(renderer)).toMatchObject({
+      'data-status': 'ready',
+      'data-revision': 1,
+      'data-watch': 'ended',
+    })
+  })
+
+  it('aborts an in-flight stat on unmount and ignores its late result', async () => {
+    const fake = fakeFiles()
+    let resolveStat!: (value: StatResult) => void
+    const pending = new Promise<StatResult>(resolve => { resolveStat = resolve })
+    fake.stat.mockImplementationOnce(() => pending)
+    const consoleError = vi.spyOn(console, 'error')
+    const renderer = await mount(<Probe config={CONFIG} files={fake.files} />)
+    expect(fake.stat).toHaveBeenCalledTimes(1)
+    const signal = fake.stat.mock.calls[0]?.[2]
+    expect(signal?.aborted).toBe(false)
+    await act(async () => {
+      renderer.unmount()
+    })
+    mounted.splice(mounted.indexOf(renderer), 1)
+    expect(signal?.aborted).toBe(true)
+    resolveStat(statOk())
+    await Promise.resolve()
+    await flush()
+    expect(fake.readBytes).not.toHaveBeenCalled()
+    expect(consoleError).not.toHaveBeenCalled()
+  })
+
+  it('aborts an in-flight readBytes on unmount and ignores its late result', async () => {
+    const fake = fakeFiles()
+    let resolveRead!: (value: ReadBytesResult) => void
+    const pending = new Promise<ReadBytesResult>(resolve => { resolveRead = resolve })
+    fake.readBytes.mockImplementationOnce(() => pending)
+    const consoleError = vi.spyOn(console, 'error')
+    const renderer = await mount(<Probe config={CONFIG} files={fake.files} />)
+    expect(fake.readBytes).toHaveBeenCalledTimes(1)
+    const signal = fake.readBytes.mock.calls[0]?.[3]
+    expect(signal?.aborted).toBe(false)
+    await act(async () => {
+      renderer.unmount()
+    })
+    mounted.splice(mounted.indexOf(renderer), 1)
+    expect(signal?.aborted).toBe(true)
+    resolveRead(ok(readValue('{late bad json')))
+    await Promise.resolve()
+    await flush()
+    expect(consoleError).not.toHaveBeenCalled()
   })
 
   it('aborts the watch and disposes its direct handle on unmount', async () => {
