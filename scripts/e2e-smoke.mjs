@@ -94,7 +94,7 @@
  *             bundle is not required) and drives the close lifecycle through
  *             `ctx.devLead`:
  *               - a real step-time tool activation (`ctx.tools.resolve`) admits
- *                 exactly the sixteen lead `devlead_*` tools while the mode is on
+ *                 exactly the eighteen lead `devlead_*` tools while the mode is on
  *                 and none while it is off, both before and after a toggle;
  *               - a real watched non-lead child step admits exactly
  *                 `devlead_report`, receives the one-way report policy, and a
@@ -176,9 +176,11 @@
  *                 Agent Teams is version-adaptive: rc.2+ (default composition)
  *                 must apply it, while an rc.1 Host must reject the explicit
  *                 request with DEVLEAD_TEAM_UNAVAILABLE and create nothing.
- *             135 checks (including the derived board path, four real Host
- *             writes — CAS plus workspace-path/title references — the injected
- *             browser global, independent disk read-back, lead-off store
+ *             140 checks (including the derived board path, four real Host
+ *             board writes — CAS plus workspace-path/title references — real
+  *             markdown-note create/append, the injected
+ *             browser global, independent index/markdown disk read-back,
+  *             browser-facing workspaceFiles stat/readBytes, lead-off store
  *             release and the mode-off board state; the pre-board
  *             total was 128).
  *
@@ -211,10 +213,10 @@
  * still run.
  *
  * Check counts are PINNED per phase (EXPECTED_CHECKS, baseline DSH
- * 0.2.2-rc.5): phase 1 = 30, phase 1b = 18, phase 2 = 24, phase 3 = 135,
- * phase 1e = 31, so every flow reports 238/238 checks (235 PASS + 3
+ * 0.2.2-rc.5): phase 1 = 30, phase 1b = 18, phase 2 = 24, phase 3 = 140,
+ * phase 1e = 31, so every flow reports 243/243 checks (240 PASS + 3
  * credential-less SKIP) when all five phases pass (`--no-worktree` skips
- * phase 2: 214/214). A deleted or added check fails the phase through the count
+ * phase 2: 219/219). A deleted or added check fails the phase through the count
  * pin. Run both flows before a release:
  *
  *   node scripts/e2e-smoke.mjs --flow patch
@@ -329,12 +331,30 @@ function derivedBoardPath(workspaceRoot) {
   return join(workspaceRoot, '.dsh', 'devlead', 'board.json')
 }
 
+/** Notes are siblings of board.json, never fields inside its 256 KiB budget. */
+function derivedNotesIndexPath(workspaceRoot) {
+  return join(dirname(derivedBoardPath(workspaceRoot)), 'notes', 'index.json')
+}
+
+/** Decode the HTTP bridge's Uint8Array JSON representation without assuming one envelope spelling. */
+function decodeRemoteBytes(value) {
+  const data = value?.data
+  if (typeof data === 'string') return Buffer.from(data, 'base64').toString('utf8')
+  if (Array.isArray(data)) return Buffer.from(data).toString('utf8')
+  if (data?.type === 'Buffer' && Array.isArray(data.data)) return Buffer.from(data.data).toString('utf8')
+  if (typeof data === 'object' && data !== null) {
+    const keys = Object.keys(data).filter(key => /^\d+$/u.test(key)).sort((a, b) => Number(a) - Number(b))
+    return Buffer.from(keys.map(key => data[key])).toString('utf8')
+  }
+  throw new Error(`workspaceFiles/readBytes returned an unknown binary shape: ${JSON.stringify(data)?.slice(0, 120)}`)
+}
+
 /**
  * Pinned per-phase check totals of the current harness (baseline: DSH
  * 0.2.2-rc.5). `Checks.summarize` fails when a phase reports a different
  * count, so deleting or silently skipping a check cannot pass unnoticed.
  */
-const EXPECTED_CHECKS = { phase1: 30, phase1b: 18, phase2: 24, phase3: 135, phase1e: 31 }
+const EXPECTED_CHECKS = { phase1: 30, phase1b: 18, phase2: 24, phase3: 140, phase1e: 31 }
 /** DSH version the pinned totals and scripted-turn contracts are verified against. */
 const BASELINE_DSH_VERSION = '0.2.2-rc.5'
 /** Probe command: queued-inbox visibility / ownership / idempotent retraction. */
@@ -342,6 +362,8 @@ const PROBE_INBOX_COMMAND = 'devlead-e2e-inbox'
 /** Exact DevLead tool surface an enabled lead step admits. */
 const DEVLEAD_TOOL_NAMES = [
   'devlead_archive_session',
+  'devlead_board_note_read',
+  'devlead_board_note_write',
   'devlead_board_read',
   'devlead_board_update',
   'devlead_create_session',
@@ -956,20 +978,48 @@ class WebClient {
         body: JSON.stringify({ type: 'client-request', rpcId, method, payload: { args } }),
         signal: controller.signal,
       })
-      const body = await response.text()
-      if (response.status !== 200) throw new Error(`${method} answered HTTP ${response.status}: ${body.slice(0, 300)}`)
+      const mediaType = response.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase()
+      let body = ''
       let envelope
+      let form
       try {
-        envelope = JSON.parse(body)
+        if (mediaType === 'multipart/form-data') {
+          // workspaceFiles/readBytes uses DSH's binary RPC envelope: a JSON
+          // metadata part plus Blob attachments whose paths point at null
+          // placeholders in result.value. Rehydrate those bytes just like the
+          // real browser client instead of trying to JSON.parse the raw body.
+          form = await response.formData()
+          const metadata = form.get('metadata')
+          if (typeof metadata !== 'string') throw new Error('missing multipart metadata')
+          envelope = JSON.parse(metadata)
+        } else {
+          body = await response.text()
+          if (response.status !== 200) throw new Error(`${method} answered HTTP ${response.status}: ${body.slice(0, 300)}`)
+          envelope = JSON.parse(body)
+        }
       } catch (error) {
-        throw new Error(`${method} returned non-JSON (${messageOf(error)}): ${body.slice(0, 300)}`)
+        throw new Error(`${method} returned an invalid RPC envelope (${messageOf(error)}): ${body.slice(0, 300)}`)
       }
       if (envelope?.result?.ok !== true) {
         const code = envelope?.result?.error?.code ?? 'unknown'
         const message = envelope?.result?.error?.message ?? body.slice(0, 300)
         throw new Error(`${method} failed: ${code}: ${message}`)
       }
-      return envelope.result.value
+      const value = envelope.result.value
+      for (const attachment of envelope.attachments ?? []) {
+        const data = form?.get(attachment.part)
+        if (!(data instanceof Blob) || !Array.isArray(attachment.path) || attachment.path.length === 0) {
+          throw new Error(`${method} returned an invalid binary attachment`)
+        }
+        let parent = value
+        for (const segment of attachment.path.slice(0, -1)) parent = parent?.[segment]
+        const key = attachment.path.at(-1)
+        if ((typeof parent !== 'object' || parent === null) || parent[key] !== null) {
+          throw new Error(`${method} returned an invalid binary attachment path`)
+        }
+        parent[key] = new Uint8Array(await data.arrayBuffer())
+      }
+      return value
     } finally {
       clearTimeout(timer)
     }
@@ -1677,6 +1727,75 @@ async function runCloseChecks(client, paths, dshVersion) {
     JSON.stringify({ revision: persistedBoard?.revision, project: persistedBoard?.projects?.[0] }).slice(0, 500),
   )
 
+  checks.expect(
+    'phase 3 real notes create + append + project references + bounded summary succeed',
+    board.report?.noteCreated?.revision === 1
+      && board.report?.noteAppended?.revision === 2
+      && board.text.includes('verify automatic refresh')
+      && String(board.report?.boardSummary ?? '').includes('E2E implementation plan'),
+    board.text.slice(-900),
+  )
+  const notesIndexPath = derivedNotesIndexPath(paths.workspace)
+  const persistedNotesIndex = existsSync(notesIndexPath)
+    ? JSON.parse(readFileSync(notesIndexPath, 'utf8'))
+    : undefined
+  const persistedNoteProject = persistedNotesIndex?.projects?.find(project => project.id === 'e2e-board')
+  const persistedNote = persistedNoteProject?.notes?.find(note => note.id === 'e2e-plan')
+  const notePath = persistedNote?.path === undefined
+    ? undefined
+    : join(dirname(notesIndexPath), ...String(persistedNote.path).split('/'))
+  const persistedMarkdown = notePath !== undefined && existsSync(notePath)
+    ? readFileSync(notePath, 'utf8')
+    : undefined
+  checks.expect(
+    'phase 3 notes index and markdown disk bytes agree after atomic Host writes',
+    persistedNotesIndex?.schemaVersion === 1
+      && persistedNotesIndex?.revision === 2
+      && persistedNote?.title === 'E2E implementation plan'
+      && persistedNote?.bytes === Buffer.byteLength(persistedMarkdown ?? '', 'utf8')
+      && persistedMarkdown?.includes('# E2E implementation plan')
+      && persistedMarkdown?.includes('## Next'),
+    JSON.stringify({ index: persistedNotesIndex, notePath, markdown: persistedMarkdown }).slice(0, 700),
+  )
+  const remoteIndexStat = await client.rpc('workspaceFiles/stat', {
+    workspaceFileScopeId: leadId,
+    path: notesIndexPath,
+  })
+  const remoteNoteStat = notePath === undefined ? undefined : await client.rpc('workspaceFiles/stat', {
+    workspaceFileScopeId: leadId,
+    path: notePath,
+  })
+  checks.expect(
+    'phase 3 browser-facing workspaceFiles can stat the notes index and current note',
+    remoteIndexStat?.absolutePath === notesIndexPath
+      && remoteIndexStat?.bytes === readFileSync(notesIndexPath).byteLength
+      && remoteNoteStat?.absolutePath === notePath
+      && remoteNoteStat?.bytes === persistedNote?.bytes,
+    JSON.stringify({ remoteIndexStat, remoteNoteStat }),
+  )
+  const remoteIndex = JSON.parse(decodeRemoteBytes(await client.rpc('workspaceFiles/readBytes', {
+    workspaceFileScopeId: leadId,
+    path: notesIndexPath,
+    options: {},
+  })))
+  checks.expect(
+    'phase 3 browser-facing readBytes returns the committed notes index',
+    remoteIndex?.revision === 2
+      && remoteIndex?.projects?.[0]?.id === 'e2e-board'
+      && remoteIndex?.projects?.[0]?.notes?.[0]?.path === persistedNote?.path,
+    JSON.stringify(remoteIndex).slice(0, 600),
+  )
+  const remoteMarkdown = decodeRemoteBytes(await client.rpc('workspaceFiles/readBytes', {
+    workspaceFileScopeId: leadId,
+    path: notePath,
+    options: {},
+  }))
+  checks.expect(
+    'phase 3 browser-facing readBytes returns complete markdown for the client reader',
+    remoteMarkdown === persistedMarkdown && remoteMarkdown.includes('Read-only in the browser.'),
+    remoteMarkdown.slice(0, 500),
+  )
+
   // Mode on: a real tool activation and prompt assembly for this Agent.
   const inspectOn = await runProbeCommand(client, leadId, PROBE_INSPECT_COMMAND)
   checks.expect(
@@ -1684,7 +1803,12 @@ async function runCloseChecks(client, paths, dshVersion) {
     inspectOn.execution?.result?.kind === 'success',
     inspectOn.text.slice(0, 300),
   )
-  checks.expect('phase 3 enabled inspect reports enabled', inspectOn.report?.enabled === true)
+  checks.expect(
+    'phase 3 enabled inspect reports enabled and publishes notes through systemPrompt.context',
+    inspectOn.report?.enabled === true
+      && String(inspectOn.report?.boardContext ?? '').includes('E2E implementation plan'),
+    JSON.stringify({ enabled: inspectOn.report?.enabled, boardContext: inspectOn.report?.boardContext }),
+  )
   checks.expect(
     'phase 3 default Host composes storage-domain for the durable outbox',
     inspectOn.report?.storageDomain === true,
@@ -1698,7 +1822,7 @@ async function runCloseChecks(client, paths, dshVersion) {
   )
   const devleadTools = inspectOn.report?.devleadTools ?? []
   checks.expect(
-    'phase 3 enabled exposes exactly the sixteen devlead tools',
+    'phase 3 enabled exposes exactly the eighteen devlead tools',
     JSON.stringify(devleadTools) === JSON.stringify(DEVLEAD_TOOL_NAMES),
     JSON.stringify(devleadTools),
   )

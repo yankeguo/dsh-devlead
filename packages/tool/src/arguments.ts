@@ -119,6 +119,24 @@ export interface BoardUpdateArgs {
   }
 }
 
+/** Arguments of `devlead_board_note_read`. */
+export interface BoardNoteReadArgs {
+  readonly project: string
+  readonly note?: string
+}
+
+/** Arguments of `devlead_board_note_write`. */
+export interface BoardNoteWriteArgs {
+  readonly project: string
+  readonly operation: 'create' | 'update' | 'append' | 'delete'
+  readonly note?: string
+  readonly title?: string
+  readonly summary?: string
+  readonly content?: string
+  readonly expected_revision?: number
+  readonly expected_bytes?: number
+}
+
 /** Arguments of `devlead_use_workspace`. */
 export interface UseWorkspaceArgs {
   readonly path: string
@@ -303,6 +321,14 @@ export function requireProjectRef(value: string): string {
 export function optionalProjectRef(value: string | undefined): string | undefined {
   if (value === undefined) return undefined
   return requireProjectRef(value)
+}
+
+/** Validate an optional note id; the Host applies the filename-safe id grammar. */
+export function optionalNoteRef(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined
+  const trimmed = value.trim()
+  if (trimmed.length === 0) throw new DevLeadToolInputError('note must not be empty when provided')
+  return trimmed
 }
 
 /**

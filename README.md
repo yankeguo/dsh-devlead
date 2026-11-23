@@ -8,7 +8,7 @@ upgrades **one ordinary session** into a **DevLead session**: it can operate DSH
 their state changes — so one agent can orchestrate multiple repositories inside a standard
 interface the human can see and interact with.
 
-Current release candidate **0.4.2-rc.3** (prerelease, npm dist-tag `next`; stable `latest` stays
+Current release candidate **0.4.2-rc.4** (prerelease, npm dist-tag `next`; stable `latest` stays
 **0.4.1**) · DSH **0.2.2-rc.1 – 0.2.2-rc.5** · one `dsh plugin` command installs everything.
 
 ## What you get
@@ -19,10 +19,10 @@ Current release candidate **0.4.2-rc.3** (prerelease, npm dist-tag `next`; stabl
 | **A dispatcher, not an implementer** | The DevLead decides which Workspace owns a request from registered metadata, sends a self-contained brief to a Session there, watches it, reviews the delivery, and reports. Deeper investigation and implementation stay in the child Session. |
 | **Real DSH entities** | Workspaces go through `ctx.workspaceRegistry`; children are ordinary Sessions visible in the sidebar that you can open, continue, archive — not hidden subagents. |
 | **Notification loop** | When a watched Session's turn settles, a durable notification wakes the DevLead so it can follow up, dispatch new work, or report. The watch index is rebuilt from durable records after a restart. |
-| **16 lead tools + 1 report tool** | Register/list/remove Workspaces, list Host models and Agent presets, create/read/continue/archive/restore/watch Sessions, inspect and retract queued inbox inputs, read the notification and report digest, and maintain the user-visible project board that is on by default for the active lead. Watched children get a one-way `devlead_report`. |
+| **18 lead tools + 1 report tool** | Register/list/remove Workspaces, list Host models and Agent presets, create/read/continue/archive/restore/watch Sessions, inspect and retract queued inbox inputs, read the notification and report digest, and maintain the user-visible project board and per-project Markdown notes that are on by default for the active lead. Watched children get a one-way `devlead_report`. |
 | **Human commands** | `/devlead`, `/devlead on\|off`, `/devlead reset`, `/devlead watch\|unwatch <session>` — Sessions are addressable by full id or unique prefix. |
 | **Optional worktree isolation** | When the Host composes DSH's experimental Git worktree service, a dispatched Session can get its own branch and checkout instead of sharing the Workspace checkout. Missing capability degrades to the shared checkout with a reported status. |
-| **Web UI** | A labelled DevLead toggle, a status-only DevLeadBar, active/watched sidebar marks, and a lead-only read-only project board with visibility-aware automatic refresh, status KPIs, responsive cards, and secondary disclosures in the right Sidebar. |
+| **Web UI** | A labelled DevLead toggle, a status-only DevLeadBar, active/watched sidebar marks, and a lead-only read-only project board with visibility-aware automatic refresh, a single-line KPI pill strip, compact responsive 2/3/1-column cards, per-project notes chips, and a safe full-pane Markdown notes reader in the right Sidebar. |
 
 ## How it compares with subagent / agent-team
 
@@ -70,20 +70,23 @@ page.
 To pin an exact version:
 
 ```sh
-dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.3
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.4
 ```
 
-0.4.2-rc.3 is the current prerelease candidate for the planned 0.4.2 patch release, superseding
-0.4.2-rc.2. Relative to rc.2, the client board adds automatic refresh across every file state and a
-comprehensive visual redesign; the Host board schema and API are unchanged. The 0.4.2 line makes the
-project board **on by default** for the active lead (derived from that Session's original workspace
-root), adds a **lead-only read-only board UI** in the right Sidebar, bounds the model-facing board
-read at 64 KiB, fixes long workspace path/title project references, and degrades instead of blocking
-when the board cannot start. There is no public API break and the DSH compatibility surface is
-unchanged. It is staged with npm dist-tag `next`, so pin the exact version above until the stable
-0.4.2 is approved; `latest` remains **0.4.1**. The historical rc.1/rc.2 release notes remain
-unchanged; the never-approved 0.4.2-rc.1 staged records must not be approved. See the
-[0.4.2-rc.3 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.2-rc.3.md);
+0.4.2-rc.4 is the current prerelease candidate for the planned 0.4.2 patch release, superseding
+the rc.3 candidate. It adds lead-only Markdown project notes beside `board.json`, compact board cards,
+a single-line KPI pill strip, responsive 2/3/1-column layouts, and a full-pane read-only notes reader
+with safe Markdown rendering and independent automatic refresh for the notes index and open note. The
+0.4.2 line makes the project board **on by default** for the active lead (derived from that Session's
+original workspace root), adds a **lead-only read-only board UI** in the right Sidebar, bounds the
+model-facing board read at 64 KiB, fixes long workspace path/title project references, and degrades
+instead of blocking when the board cannot start. There is no public API break and the DSH compatibility
+surface is unchanged. The release flow stages this prerelease with npm dist-tag `next`, so pin the exact
+version above until the stable 0.4.2 is approved; `latest` remains **0.4.1**. For history, the rc.3 candidate added automatic
+refresh across every board-file state and its visual redesign. The rc.1/rc.2/rc.3 release notes remain
+historical records; this candidate does not retroactively approve any earlier candidate, and the never-approved
+0.4.2-rc.1 staged records must not be approved. See the
+[0.4.2-rc.4 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.2-rc.4.md);
 the previous stable patch is documented in the
 [0.4.1 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.1.md).
 
@@ -97,7 +100,7 @@ profile's `cordis.patch.yml` themselves; the bundle is the recommended path.
 dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 
 # or pin a specific version (required for prereleases)
-dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.3
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.4
 ```
 
 > **Upgrading from an older release (below 0.4.0):** 0.4.0 intentionally discards older DevLead
@@ -323,9 +326,11 @@ whether the Host could isolate at all.
 
 ## Tool reference
 
-The sixteen lead tools are visible only in a DevLead session; `devlead_report` is visible only in
+The eighteen lead tools are visible only in a DevLead session; `devlead_report` is visible only in
 a watched non-lead Session. All `workspace` arguments accept an id, a registered path, or an exact
-title. All `session` arguments accept a full id, a unique prefix, or the uuid first segment.
+title. All `session` arguments accept a full id, a unique prefix, or the uuid first segment. Board-note
+`project` arguments accept a board project id, workspace title, or absolute workspace path; neither
+notes tool accepts a file path.
 
 | Tool | Purpose | Key arguments |
 | --- | --- | --- |
@@ -334,6 +339,8 @@ title. All `session` arguments accept a full id, a unique prefix, or the uuid fi
 | `devlead_list_agent_presets` | Host Agent preset roster with the effective default | — |
 | `devlead_board_read` | read the user-visible project board (bounded result) | `project?`, `include_tasks?`, `limit?` |
 | `devlead_board_update` | lead-only project status/blocker/task update | `project`, `expected_revision?`, `create?`, `set?`, `blockers?`, `tasks?` |
+| `devlead_board_note_read` | read one project's note metadata or one Markdown note | `project`, `note?` |
+| `devlead_board_note_write` | create/update/append/delete a project note with CAS | `project`, `operation`, `note?`, `title?`, `summary?`, `content?`, `expected_revision?`, `expected_bytes?` |
 | `devlead_use_workspace` | register a Workspace (idempotent) | `path` (absolute), `title?`, `create?` (default false) |
 | `devlead_list_sessions` | list Sessions | `workspace?`, `watched_only?`, `limit?` |
 | `devlead_create_session` | create + optionally prompt a child Session | `workspace?`, `prompt?`, `title?`, `watch?`, `preset?`, `isolation?`, `provider?`+`model?`, `agent_teams?` |
@@ -347,8 +354,9 @@ title. All `session` arguments accept a full id, a unique prefix, or the uuid fi
 | `devlead_archive_session` | archive a Session (reversible) | `session`, `stop_running?` |
 | `devlead_unarchive_session` | restore an archived Session | `session` |
 
-Domain failures use stable `DEVLEAD_*` error codes and are rendered as friendly text. Read state
-from `lastTurn` / `lastTransition` / `lastError` / `lastAssistant` instead of guessing.
+Domain failures use stable `DEVLEAD_*` / `BOARD_*` error codes (including notes CAS and missing-note
+failures) and are rendered as friendly text. Read state from `lastTurn` / `lastTransition` / `lastError` /
+`lastAssistant` instead of guessing.
 
 ## Waiting, waking, and reports
 
@@ -425,6 +433,15 @@ revision has committed. See [docs/BOARD.md](https://github.com/yankeguo/dsh-devl
 for the strict schema, corruption handling, and durability boundary. The wire schema and limits are
 owned by `@yankeguo/dsh-devlead-protocol` and shared by the Host validator and the browser decoder.
 
+Project notes live under `dirname(boardPath)/notes/`: a strict schema-v1 `index.json` contains metadata only,
+and each Markdown body is `<sanitized project>/<note-id>.md`. The index is capped at 128 KiB, each note at
+256 KiB, and each project at 100 notes; `board.json` itself is unchanged. Only the active lead AI writes notes,
+using locked atomic read-modify-write plus `expected_revision` and, for update/append/delete,
+`expected_bytes` body CAS. Humans and browser clients are read-only. The browser derives the notes root from
+the already-resolved board path and uses only the existing Workspace Files Remote; it never accepts an arbitrary
+path or exposes a write API. See [docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md)
+for the complete index schema, error codes, orphan handling, and durability boundary.
+
 `tool` / `command` / `client-ui` have no deployment configuration; domain limits (watch cap,
 notification retention, etc.) are owned by the core service and protocol constants. Optional
 worktree isolation has **no configuration key**: it exists only when the profile composes the
@@ -459,10 +476,11 @@ permanent bar on every conversation:
   off or switching leads re-renders immediately and never keeps reading the old file and closes the
   on-screen Session's lingering board tab (including a tab restored from a previous page load). The panel
   reads the board file directly — the schema's 256 KiB file cap applies, not the model tool's 64 KiB
-  read cap. Its header shows active/blocked/paused/done KPIs, revision/updated time, and Live refresh
-  health. Blocked projects lead with a strong warning; active cards use a responsive two-column main
-  area (one column when narrow), sort by priority and update time, and show focus/next/blockers plus
-  task progress and expandable details. Paused/done and unlisted projects use secondary disclosures.
+  read cap. Its header keeps active/blocked/paused/done KPIs in a single-line pill strip beside compact
+  revision/updated/Live metadata. Blocked projects lead with a strong warning; compact active cards use
+  responsive two- or three-column layouts (one column when narrow), avoid redundant visible field labels,
+  retain focus/next/blockers and task progress, and give icons accessible tooltips. Paused/done and
+  unlisted projects use secondary disclosures.
   File changes retain a 120 ms debounce, and every state is polled: ready/loading at a fixed 5 s
   cadence by default, empty/error with 5 s exponential backoff capped at 30 s. Polling runs only
   while the document is visible and focused; resume triggers an immediate coalesced read, while blur,
@@ -474,6 +492,13 @@ permanent bar on every conversation:
   disclosures, but cannot edit the board. If the lead's
   recorded workspace root is gone, the Host keeps the board disabled without recreating it; the
   client-side derived entry may still render an empty/read-error state, which never writes to disk.
+
+  Project cards also expose note count and latest-title chips when the notes index provides them. Opening
+  a note uses the full right-Sidebar pane rather than a card column. The reader renders a safe Markdown
+  subset as React text/elements (no raw-HTML sink), turns only explicit HTTP(S) destinations into links,
+  and remains read-only. The index and currently open note each follow the same Workspace Files watch +
+  visibility/focus-gated polling state machine as the board, so external edits refresh automatically;
+  a malformed index or note degrades only that notes surface and does not hide or corrupt the board.
 
 Off (the toolbar toggle is the only control):
 

@@ -1,20 +1,21 @@
 # DSH 兼容性矩阵
 
 本仓库的目标兼容面是 **DeepSeek Harness `0.2.2-rc.1` – `0.2.2-rc.5`**；当前候选发布版本是插件版本
-**`0.4.2-rc.3`**（6 个可发布包共用同一版本号；prerelease，CI 以 npm dist-tag `next` stage，维护者
+**`0.4.2-rc.4`**（6 个可发布包共用同一版本号；prerelease，CI 以 npm dist-tag `next` stage，维护者
 approve 后公开）。稳定版 `latest` 当前为 **`0.4.1`**（2026-11-22 北京时间经 staged publish +
-人工 approve 公开）；approve `0.4.2-rc.3` 后 `next` 指向本候选、`latest` 仍为 `0.4.1`，直到计划中
+人工 approve 公开）；approve `0.4.2-rc.4` 后 `next` 指向本候选、`latest` 仍为 `0.4.1`，直到计划中
 的稳定版 `0.4.2` 发布。`0.4.0`（2026-11-21 公开）与 `0.4.0-rc.1`（同日以 `next` 发布）是历史
 版本。`0.4.2-rc.1`（2026-11-23 已 stage 但**未 approve、从未公开**；其 main `verify` 因一个看板
 读取测试的时序 flake 失败）的 staged 记录不得 approve。`0.4.2-rc.2` 相对 rc.1 只做两个 board I/O
-测试的确定性修复、无产品代码变化；这些历史事实及其 release notes 不改写。当前 rc.3 相对 rc.2 只重做
-client 看板自动刷新与视觉，Host 看板 schema/API、DSH 兼容面与 `engines.dsh` 都不变。`0.4.2-rc.3`
-只是**插件版本**，**不代表 DSH 0.4.2**。6 个可发布包的
+测试的确定性修复、无产品代码变化；rc.3 相对 rc.2 只重做 client 看板自动刷新与视觉。这些历史事实及
+其 release notes 不改写，也不因当前候选而追认为新的 approve 事实。当前 rc.4 增加两个 notes 主工具、
+Host notes store、安全只读 Markdown reader 与紧凑 2/3/1 列看板，Host 原有 board schema 与 DSH 兼容面
+不变。`0.4.2-rc.4` 只是**插件版本**，**不代表 DSH 0.4.2**。6 个可发布包的
 `engines.dsh` 均为 `>=0.2.2-rc.1 <0.3.0`（根 `package.json` 是 private 包，不声明
 `engines.dsh`，只声明 `engines.node`），所有
 `@deepseek-ai/dsh-*` peer 使用同一范围；本地 devDependencies 与编译基线仍固定 rc.1，用最旧 API
-做类型检查，本机运行验证使用安装版 rc.5。board 与本轮 client 自动刷新不使用 0.2.3-only API，兼容范围
-保持 `>=0.2.2-rc.1 <0.3.0`。
+做类型检查，本机运行验证使用安装版 rc.5。board/notes 与本轮 client reader 不使用 0.2.3-only API，
+兼容范围保持 `>=0.2.2-rc.1 <0.3.0`。
 
 ## 契约
 
@@ -40,6 +41,11 @@ client 看板自动刷新与视觉，Host 看板 schema/API、DSH 兼容面与 `
     按需重试 `start()`。浏览器入口为 lead-only：tab/guide/header 只在屏幕上的 active lead Session
     出现，global 形状含 `leadSessionId` / `override`；恢复出来但已非合规 lead 的 board tab 在首次
     sync 即关闭。
+  - rc.4 项目 notes 的 Host 存储仍只使用 rc.1 已有的 `node:fs` 与
+    `@deepseek-ai/dsh-atomic-write`（`writeFileAtomic` / `withFileLock`）；active-lead service 方法与工具
+    属于本插件自身 API。client 只从既有 board config 派生 `dirname(boardPath)/notes/*`，继续只调用
+    rc.1 已有的 `remote.workspaceFiles.stat/readBytes/changes`；watch+poll、React elements/text Markdown
+    reader、CSS container queries 都不新增 Host API、Remote、`dsh.client.inject` 项或 DSH 版本要求。
 - `plugin records`（`appendPluginRecord` / `PluginRecordMap`）：rc.1–rc.5 均存在；这是
   **experimental、调用方受限**的扩展点，不是公开契约，Session format migration 为
   best-effort（详见下节）。DevLead 的全部 durable 状态都依赖它。
@@ -168,7 +174,7 @@ rc.5 的 `dsh-web` 在未配置 `web.searchProvider` 时按模型路由选择：
 
 | 能力 | rc.1 | rc.2 | rc.3 | rc.4 | rc.5 |
 | --- | --- | --- | --- | --- | --- |
-| 插件加载、16 个主工具 + `devlead_report`、`/devlead`、Web UI | 支持 | 支持 | 支持 | 支持 | 支持 |
+| 插件加载、18 个主工具（含 2 个 notes 工具）+ `devlead_report`、`/devlead`、Web UI | 支持 | 支持 | 支持 | 支持 | 支持 |
 | `devlead_list_agent_presets` / 真实 roster | 支持 | 支持 | 支持 | 支持 | 支持 |
 | 派发模型选择 + `reasoning_effort` | 支持 | 支持 | 支持 | 支持 | 支持 |
 | `devlead_list_models` | 支持 | 支持 | 支持 | 支持 | 支持 |
@@ -446,11 +452,12 @@ git -C "$REPO" add -f \
   "docs/e2e-evidence/upgrade-$RC-no-worktree.log"
 ```
 
-当前 harness 的 pin 来自 `scripts/e2e-smoke.mjs` 的 `EXPECTED_CHECKS`
-（phase 1=30、1b=18、2=24、3=135、1e=31）：patch / installed 完整流必须各为 **238/238**，
-no-worktree 必须为 **214/214**（仅跳过 phase 2）；完整流目标计数为 **235 PASS + 3** 条有真实
-原因的正向模型选择 SKIP，其他检查不得通过删除或放宽断言来凑数。未来 pin 变化只能先更新
-`EXPECTED_CHECKS` 并在证据中解释。
+当前 rc.4 harness 的 pin 来自 `scripts/e2e-smoke.mjs` 的 `EXPECTED_CHECKS`
+（phase 1=30、1b=18、2=24、**3=140**、1e=31）：patch / installed 完整流目标各为 **243/243**，
+no-worktree 目标为 **219/219**（仅跳过 phase 2）；完整流目标计数为 **240 PASS + 3** 条有真实
+原因的正向模型选择 SKIP，其他检查不得通过删除或放宽断言来凑数。rc.4 冻结树的真实输出、退出码
+与证据见 [v0.4.2-rc.4 release prep](e2e-evidence/v0.4.2-rc.4-release-prep.md)；未来 pin 变化
+只能先更新 `EXPECTED_CHECKS` 并在证据中解释。
 
 每个 rc 的 typings/build/三条 E2E 日志都必须复制到 `docs/e2e-evidence/`，保留真实 `*_EXIT=`
 行、`DSH_BIN --version` 输出与总计行；`*.log` 被 ignore 时用 `git add -f` 显式纳入证据 commit。
@@ -509,7 +516,7 @@ lane/deliveryState、blocked/decision action steer、真实 T1 followup / T2 rev
 
 上表 Phase 1e 行即 **Batch 1 最终树**的 pin 实测：installed / patch 完整流各 **221/221**
 （218 PASS + 3 SKIP；phase 1 27 + 1b 12 + 2 23 + 3 128 + 1e 31），`--no-worktree` **198/198**
-（phase 2 skipped）。当前候选发布版本是插件 **`0.4.2-rc.3`**（prerelease，dist-tag `next`；
+（phase 2 skipped）。当前候选发布版本是插件 **`0.4.2-rc.4`**（prerelease，dist-tag `next`；
 stage 本身不改变公开 dist-tag，approve 后 `next` 才指向本候选，`latest` 仍为 `0.4.1`；DSH 兼容面
 仍为 rc.1–rc.5）。
 `0.4.0-rc.1` 候选的三条真实
@@ -522,15 +529,18 @@ E2E 重跑（含真实 `*_EXIT=0` 与总计行）记录在
 当前 board 加固轮保留上述全部旧检查，并在 phase 3 新增真实 `ctx.devLead.updateBoard` 写入/CAS、
 `webserver/index-inject` board global 与独立磁盘 revision/内容 read-back；Step B 复核修复轮又把
 phase 1 与 1b 改回未配置 `boardPath` 的默认组合并固定当轮目标 pin（phase 1=28、phase 3=132、
-完整流=226、no-worktree=203）。**本轮的权威 pin 是 `scripts/e2e-smoke.mjs` 的
-`EXPECTED_CHECKS`：phase 1=30、phase 1b=18、phase 2=24、phase 3=135、phase 1e=31，完整流
-238/238（235 PASS + 3 credential-less SKIP），`--no-worktree` 214/214。** 本轮新增/改写的断言
+完整流=226、no-worktree=203）。**当前 rc.4 的权威 pin 是 `scripts/e2e-smoke.mjs` 的
+`EXPECTED_CHECKS`：phase 1=30、phase 1b=18、phase 2=24、phase 3=140、phase 1e=31，完整流
+243/243（240 PASS + 3 credential-less SKIP），`--no-worktree` 219/219；rc.4 三条流均按此 pin
+实测通过且退出码为 0。** 本轮新增/改写的断言
 包括：没有 lead 时不注入 board global、lead 开启后从 `SessionHeader.cwd` 派生默认路径并发布
 `{leadSessionId, override:false}`、预创建父目录、冷 lead 从持久 header 派生、`/devlead off`
 移除 global、换 workspace 后立即换源、phase 2 的 Config override 以 `override:true` 发布、
-phase 3 的 lead-off store 释放（没有 workspace 根的 `BOARD_DISABLED` 由 host 单测覆盖，e2e 的 HTTP session/create 总会落一个 cwd）。真实 PASS 日志与证据由 Lead
-记录在 `docs/e2e-evidence/`；上表 Phase 1e 行（221/198、218 PASS）与上一轮 226/203 均为历史
-实测，不改写为新一轮证据。
+phase 3 的 lead-off store 释放（没有 workspace 根的 `BOARD_DISABLED` 由 host 单测覆盖，e2e 的 HTTP session/create 总会落一个 cwd）。
+rc.4 另 pin 真实 notes create/append、id/title/path project 引用、有界 summary、index + Markdown 磁盘
+read-back、浏览器 `workspaceFiles.stat/readBytes` 与 systemPrompt.context 发布。真实 PASS 日志与证据由 Lead
+记录在 `docs/e2e-evidence/`；上表 Phase 1e 行（221/198、218 PASS）、上一轮 226/203 与 rc.3 的
+238/214 均为历史实测，不改写为 rc.4 证据。
 
 **0.4.2-rc.1 收口轮**（自 0.4.1 起的看板 follow-up）不改 DSH 兼容面：看板默认启用、路径跟随
 active lead workspace、lead-only 浏览器入口、工具 64 KiB 读取上限与长 path/title 引用修复来自
@@ -554,6 +564,17 @@ DSH 兼容范围与 engines/peer range 不变。自动化覆盖范围包括 read
 最终冻结树 `pnpm verify` 为 **46 文件 / 1756 测试通过**，`check:packages` 为 **OK (6 packages)**；
 rc.5 的 patch / installed E2E 各 **238/238**，`--no-worktree` **214/214**，三个退出码均为 0。
   精确节奏、主题与交互的后续人工复验仍按 [UI-VERIFICATION](UI-VERIFICATION.md) 执行。
+  上述 rc.3 数字与 UI 截图是**历史候选的实测记录**，不是 rc.4 的验证结果。
+
+**0.4.2-rc.4 发布轮**新增 `DevLeadBoardNotesStore`、`devlead_board_note_read/write`（主工具由 16 增至
+18）、严格 notes index schema、revision/bytes CAS、原子提交/orphan 语义、active 项目 notes 摘要，以及
+client notes chips + 全栏安全 Markdown reader；看板改为单行 KPI pill、紧凑卡片和 container 2/3/1 列。
+这些能力只使用 rc.1 已有的 atomic-write、Workspace Files、projection/systemPrompt 与浏览器 slot API，
+不新增 DSH peer 范围、Remote 或 client inject。最终冻结树 `pnpm verify` 为 **52 文件 / 1819 测试通过**，
+`check:packages` 为 **OK (6 packages)**；patch / installed E2E 各 **243/243**，`--no-worktree`
+**219/219**，三个退出码均为 0；6 包 `next` dry-run 为 **DRY RUN OK**。真实截图与 mutation/浏览器
+证据见 [v0.4.2-rc.4 release prep](e2e-evidence/v0.4.2-rc.4-release-prep.md)，人工验收按
+[UI-VERIFICATION](UI-VERIFICATION.md) 的 rc.4 必查项执行。
 
 每条 flow 有 3 条正向模型选择检查因无 provider 凭据 SKIP（打印真实原因）；负向
 `DEVLEAD_MODEL_UNAVAILABLE`、`devlead_list_models`、preset roster 与 watched-child
@@ -580,9 +601,12 @@ rc.5 的 patch / installed E2E 各 **238/238**，`--no-worktree` **214/214**，�
   该 lead Session summary 的 `cwd` 派生默认路径；使用 Config `boardPath` override 的部署在
   late-enable 场景需要刷新页面（只有新 HTML 携带 override 路径与 `override:true`）。模式 off、
   Session 切换、路径切换会立即 dispose 旧面板并重读新文件。
-- rc.5 Web UI 的看板本轮已在隔离 profile 留存 light/dark、宽栏双列、窄栏单列与极窄 KPI 截图，
+- rc.3 在 rc.5 Web UI 的隔离 profile 中留存过 light/dark、宽栏双列、窄栏单列与极窄 KPI 截图，
   三种宽度均无横向溢出；外部 r42→r43 未点刷新即更新，blur/focus 的 Live 状态和键盘 disclosure/
-  卡片焦点均实测通过。精确退避序列、watch ended 后持续轮询与 in-flight 去重由 fake-timer 覆盖。
+  卡片焦点均实测通过。这些是 rc.3 历史证据；精确退避序列、watch ended 后持续轮询与 in-flight 去重由
+  fake-timer 覆盖。rc.4 已在独立 profile 重新留存 3/2/1 列、light/dark 与 notes reader 截图，
+  实测 board/index/note 外部自动更新、XSS 文本、坏索引/坏 note 局部降级、键盘焦点恢复与展开后全文可读；
+  证据见 [v0.4.2-rc.4 release prep](e2e-evidence/v0.4.2-rc.4-release-prep.md)，未复用 rc.3 旧图。
   composer 开关、DevLeadBar、lane 着色、question 状态、`provisional` 标记和侧栏 active/watched 标记
   仍以 slot/DOM 源码、boot graph 与渲染测试为依据；所有视觉行为的后续人工复验按
   [UI-VERIFICATION](UI-VERIFICATION.md) 留存时间戳调用记录、截图/录屏，不由 e2e 或单测替代。

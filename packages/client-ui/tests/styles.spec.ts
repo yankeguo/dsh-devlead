@@ -442,27 +442,34 @@ describe('styles', () => {
     expect(styles).toContain('--dsw-alias-label-error')
   })
 
-  it('keeps the read-only board inside the right Sidebar without horizontal overflow', () => {
-    expect(styles).toContain('.devlead-board {')
+  it('keeps the compact board, responsive cards, and immersive reader inside the Sidebar', () => {
     expect(styles).toMatch(/\.devlead-board \{[^}]*min-width: 0;/u)
     expect(styles).toMatch(/\.devlead-board \{[^}]*overflow: hidden;/u)
     expect(styles).toMatch(/\.devlead-board-content \{[^}]*overflow-x: hidden;/u)
     expect(styles).toMatch(/\.devlead-board-content \{[^}]*overflow-y: auto;/u)
-    expect(styles).toContain('.devlead-board-unlisted-list')
-    expect(styles).toMatch(/\.devlead-board-card-badges \{[^}]*min-width: 0;/u)
-    expect(styles).toMatch(/\.devlead-board-card-badges \{[^}]*max-width: 100%;/u)
-    expect(styles).toContain('@media (max-width: 480px)')
-    // Board styling uses the same public token/refcount path, never CSS Modules.
-    expect(styles).toContain('.devlead-board-card {')
-    // One root container observes both header KPIs and content cards. Placing
-    // it on content would make the narrow-KPI rule permanently inert.
     expect(styles).toMatch(/\.devlead-board \{[^}]*container: devlead-board \/ inline-size;/u)
-    expect(styles).not.toMatch(/\.devlead-board-content \{[^}]*container:/u)
+    expect(styles).toMatch(/\.devlead-board-kpis \{[^}]*display: flex;/u)
+    expect(styles).toMatch(/\.devlead-board-kpis \{[^}]*overflow-x: auto;/u)
+    expect(styles).toMatch(/\.devlead-board-kpis > div \{[^}]*border-radius: 999px;/u)
+    expect(styles).not.toMatch(/\.devlead-board-kpis \{[^}]*grid-template-columns/u)
     expect(styles).toMatch(/@container devlead-board \(min-width: 620px\)[\s\S]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);/u)
-    expect(styles).toMatch(/@container devlead-board \(max-width: 340px\)[\s\S]*\.devlead-board-kpis \{[^}]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);/u)
+    expect(styles).toMatch(/@container devlead-board \(min-width: 980px\)[\s\S]*grid-template-columns: repeat\(3, minmax\(0, 1fr\)\);/u)
+    expect(styles).toMatch(/\.devlead-board-card\[data-priority="high"\]::before/u)
+    expect(styles).toMatch(/\.devlead-board-progress progress \{[^}]*height: 2px;/u)
+    expect(styles).toContain('.devlead-board-notes-chip')
+    expect(styles).toMatch(/\.devlead-board-notes-chip \{[\s\S]*min-height: 28px;/u)
+    expect(styles).toContain('.devlead-board-card:has(.devlead-board-tasks[open]) .devlead-board-field p')
+    expect(styles).toContain('.devlead-board-card:has(.devlead-board-tasks[open]) .devlead-board-blockers li > span:first-child')
+    expect(styles).toContain('.devlead-board-card:has(.devlead-board-tasks[open]) .devlead-board-task-title')
+    expect(styles).toMatch(/\.devlead-board-card:has\(\.devlead-board-tasks\[open\]\) \.devlead-board-task-title \{[\s\S]*-webkit-line-clamp: unset;/u)
+    expect(styles).toContain('.devlead-notes-reader-body')
+    expect(styles).toContain('.devlead-markdown')
+    expect(styles).toContain('@container devlead-board (max-width: 560px)')
     expect(styles).toContain('.devlead-board-card:focus-visible')
     expect(styles).toContain('@media (prefers-reduced-motion: reduce)')
     expect(styles).not.toMatch(/\.devlead-board[^{]*module/u)
+    const boardCss = styles.slice(styles.indexOf('/* Read-only board:'))
+    expect(boardCss).not.toContain('linear-gradient')
   })
 
   it('uses only harness theme custom properties for colors and geometry', () => {

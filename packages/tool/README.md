@@ -1,8 +1,8 @@
 # @yankeguo/dsh-tool-devlead
 
-The sixteen model-facing lead tools, one watched-Session report tool, and the conditional DevLead system-prompt sections/context.
+The eighteen model-facing lead tools, one watched-Session report tool, and the conditional DevLead system-prompt sections/context.
 
-The sixteen lead tools are registered with `when: ({ agent }) => ctx.devLead.isEnabled(agent)`,
+The eighteen lead tools are registered with `when: ({ agent }) => ctx.devLead.isEnabled(agent)`,
 so an ordinary Session never sees them. They become visible only after a human enables DevLead mode
 with `/devlead on` or the composer-toolbar toggle (shown in both states). `devlead_report` is the
 inverse condition: `ctx.devLead.isSupervised(agent)` — a non-DevLead Session watched by the unique
@@ -15,6 +15,8 @@ active lead.
 - `devlead_list_agent_presets` (Host Agent preset roster: id, name/description, default marker, broken reason)
 - `devlead_board_read` (user-visible project board, on by default for the active lead; id/title/workspace-path selection and bounded listings)
 - `devlead_board_update` (lead-only project create/set, blockers, tasks, and expected-revision CAS)
+- `devlead_board_note_read` (`project`, optional `note`; project note metadata or one Markdown body)
+- `devlead_board_note_write` (`project`, `operation: create|update|append|delete`, optional `note`, `title`, `summary`, `content`, `expected_revision`, and `expected_bytes` CAS)
 - `devlead_use_workspace`
 - `devlead_list_sessions`
 - `devlead_create_session` (optional `isolation: "none" | "worktree"`; creation-time
@@ -56,7 +58,17 @@ references still report `BOARD_PROJECT_NOT_FOUND`/`BOARD_PROJECT_AMBIGUOUS`. A b
 degrades the board only: the tools report `BOARD_IO_ERROR` while DevLead keeps working. The human is
 read-only; only the enabled lead AI writes.
 `devlead:board-summary` is a cache-safe `systemPrompt.context()` snapshot capped at 1536 UTF-8
-bytes. See [docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md).
+bytes; active-project rows include note counts and the latest note title when available.
+
+The two notes tools use the same active-lead gate and board-project id/title/absolute-path resolver,
+but never accept a notes file path. They read and mutate only `dirname(boardPath)/notes/`: the strict
+schema-v1 `index.json` contains `{ revision, updatedAt, projects:[{ id, directory, notes[] }] }` and
+metadata only, while each body is `<directory>/<note-id>.md`. Writes use a cross-process file lock,
+atomic replacement, index `expected_revision` CAS and note-body `expected_bytes` CAS. The index is
+limited to 128 KiB, each note to 256 KiB, and each project to 100 notes. The committed index is the
+source of truth; unindexed/orphan Markdown files are ignored. See
+[docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md) for operation-specific
+arguments, stable `BOARD_*` errors, and corruption semantics.
 
 `devlead_list_models` reports the compact Host model catalog (default selection, providers,
 models, reasoning efforts, and provider failures). `devlead_list_agent_presets` reports the
@@ -161,7 +173,7 @@ supported platform.
 
 ## 中文
 
-`@yankeguo/dsh-tool-devlead` 提供 16 个主工具 + 1 个 `devlead_report` 与条件 system prompt/context。主工具只在 DevLead 模式开启时可见；`devlead_report` 只在非 DevLead、被唯一 active lead 关注的会话可见。写操作与需要调用者身份的读取要求 live Agent（`exec.agent`）；`devlead_list_workspaces` 不读取其身份。两个看板工具是 **lead-only**：调用者必须是持有看板文件的当前 active lead，否则返回 `BOARD_DISABLED`（没有 active lead、没有绝对 workspace 根、记录的 workspace 根已不存在，或调用者不是 active lead）。0.2.0 起
+`@yankeguo/dsh-tool-devlead` 提供 18 个主工具 + 1 个 `devlead_report` 与条件 system prompt/context。主工具只在 DevLead 模式开启时可见；`devlead_report` 只在非 DevLead、被唯一 active lead 关注的会话可见。写操作与需要调用者身份的读取要求 live Agent（`exec.agent`）；`devlead_list_workspaces` 不读取其身份。两个看板工具是 **lead-only**：调用者必须是持有看板文件的当前 active lead，否则返回 `BOARD_DISABLED`（没有 active lead、没有绝对 workspace 根、记录的 workspace 根已不存在，或调用者不是 active lead）。0.2.0 起
 `devlead_use_workspace` 把 live Agent 转发给 core 的 `useWorkspace(agent, request, signal)`，
 `create` 默认 `false`（缺目录报 `DEVLEAD_DIRECTORY_MISSING`，只有人类明确要求建目录时才传
 `true`）。`devlead_create_session` 还支持创建时指定 `provider`+`model`（可选
@@ -179,8 +191,15 @@ project 行从尾部裁剪，`truncated:true`）；update 的 project 引用在�
 workspace path/title 不再误报 `BOARD_LIMIT_EXCEEDED`，未知引用仍是
 `BOARD_PROJECT_NOT_FOUND`/`BOARD_PROJECT_AMBIGUOUS`。start 失败只降级看板（`BOARD_IO_ERROR`），
 不阻塞 DevLead。用户只读，只有 enabled lead AI 可通过工具写入。
-动态 `devlead:board-summary` 使用 cache-safe `systemPrompt.context()`，上限 1536 UTF-8 bytes。
-详见 [docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md)。`devlead_report` 返回 `{ report, durable, queued, warning? }`：报告先写入
+动态 `devlead:board-summary` 使用 cache-safe `systemPrompt.context()`，上限 1536 UTF-8 bytes；active
+项目行在有数据时附带 note 数与最近标题。`devlead_board_note_read(project,note?)` 读取项目 notes
+metadata 或单条 Markdown 正文；`devlead_board_note_write` 接收 `project`、`operation`
+（create/update/append/delete）、可选 `note/title/summary/content` 与 `expected_revision/expected_bytes`
+CAS。project 仍按看板 id/title/绝对 path 解析，两个工具都不接受文件路径。notes 根目录固定为
+`dirname(boardPath)/notes/`，index 只含 metadata，正文路径固定为 `<directory>/<note-id>.md`；写入
+使用跨进程文件锁与原子替换，index 是提交事实、orphan Markdown 忽略。index ≤128 KiB、单 note
+≤256 KiB、每项目 ≤100 条。详见
+[docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md)。`devlead_report` 返回 `{ report, durable, queued, warning? }`：报告先写入
 durable outbox，lead 日志 flush 成功后才清理；Host 无 storage 时 `durable:false` 并带 warning。
 报告参数：`message`（≤4000 码点）、
 可选 `kind`（progress/blocked/decision/question/fyi，默认 progress）与 `summary`（≤200），无 target

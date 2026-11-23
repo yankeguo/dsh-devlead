@@ -1,7 +1,7 @@
 # @yankeguo/dsh-devlead-bundle
 
 The npm bundle that upgrades one ordinary [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)
-(DSH) session into a **DevLead session**: it ships the core host service, sixteen lead
+(DSH) session into a **DevLead session**: it ships the core host service, eighteen lead
 `devlead_*` tools plus the watched-child `devlead_report` tool, the human `/devlead` command, and
 the browser UI (composer-toolbar switch, read-only status strip, sidebar marks, and the lead-only
 read-only project board).
@@ -55,6 +55,12 @@ AI writes via `devlead_board_update`; humans and browser clients are read-only. 
 [docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md) for schema v1 and
 the `window.__DSH_DEVLEAD_BOARD__` contract. No user path is hardcoded in this package.
 
+Each project can also carry long-form Markdown notes outside `board.json`: the active lead uses
+`devlead_board_note_read` / `devlead_board_note_write` for list/read and create/update/append/delete,
+while people get a compact notes chip and an immersive, read-only Markdown reader in the board. Notes
+use a bounded metadata index under `dirname(boardPath)/notes/`, locked atomic Host writes, and the same
+Workspace Files read path as the board; the browser has no write API or custom Remote.
+
 ## What's inside
 
 The bundle's patch inserts four plugin rows:
@@ -62,7 +68,7 @@ The bundle's patch inserts four plugin rows:
 | entry id | package | role |
 | --- | --- | --- |
 | `devlead` | `@yankeguo/dsh-devlead` | Host core service `ctx.devLead`: durable mode switch, Workspace/Session orchestration, notification hub, Session projections |
-| `devlead-tool` | `@yankeguo/dsh-tool-devlead` | Sixteen lead `devlead_*` tools plus `devlead_report`, and the conditional DevLead system prompt/context |
+| `devlead-tool` | `@yankeguo/dsh-tool-devlead` | Eighteen lead `devlead_*` tools plus `devlead_report`, and the conditional DevLead system prompt/context |
 | `devlead-command` | `@yankeguo/dsh-command-devlead` | The human `/devlead` command: status, on/off, reset, watch/unwatch |
 | `devlead-ui` | `@yankeguo/dsh-client-ui-devlead` | Browser UI: composer-toolbar switch, read-only status strip, sidebar active/watched marks, and the lead-only read-only project board — renders on the DSH **Web** platform |
 
@@ -81,7 +87,7 @@ MIT. See [LICENSE](https://github.com/yankeguo/dsh-devlead/blob/main/LICENSE).
 ## 中文
 
 `@yankeguo/dsh-devlead-bundle` 是 DevLead 套件的安装入口：把 DSH 的一个普通会话升级为 DevLead
-会话，内含核心服务 `ctx.devLead`、16 个主 `devlead_*` 工具加 1 个 `devlead_report` 汇报工具、
+会话，内含核心服务 `ctx.devLead`、18 个主 `devlead_*` 工具加 1 个 `devlead_report` 汇报工具、
 人类 `/devlead` 命令，以及浏览器端 UI（composer 工具条开关、只读状态条、侧边栏标记，以及仅
 lead 可见的只读项目看板；UI 只在 DSH Web 平台渲染）。
 
@@ -102,6 +108,11 @@ dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 若页面在 lead 启用前加载且使用自定义 `boardPath`，需刷新一次页面以拿到 override 路径（默认
 派生路径不需要刷新）。只有 lead AI 通过 `devlead_board_update` 写入，人类/浏览器只读；详见
 [docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md)。
+
+每个项目还可在 `board.json` 之外保存长篇 Markdown notes：active lead 用
+`devlead_board_note_read` / `devlead_board_note_write` 读取列表/全文并创建、更新、追加、删除；
+用户通过项目卡上的紧凑 notes chip 打开全栏只读阅读器。notes 在 `dirname(boardPath)/notes/` 下
+使用有界元数据索引、文件锁与 Host 原子写，浏览器沿用 Workspace Files 只读路径，没有写 API 或新增 Remote。
 
 更多文档见[根 README.zh.md](https://github.com/yankeguo/dsh-devlead/blob/main/README.zh.md)与
 [设计说明](https://github.com/yankeguo/dsh-devlead/blob/main/docs/DESIGN.md)；License 为 MIT，

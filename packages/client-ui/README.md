@@ -45,11 +45,25 @@ Browser half of the DevLead suite, loaded on the DSH **Web** platform.
   poll, and resume triggers share one in-flight read. A watch ready/change received during that read schedules
   at most one trailing refresh; poll/focus triggers only coalesce, so later changes are neither duplicated nor dropped. Manual refresh can still force a fresh read
   and reconnect the watch; an ended watch never reconnects silently, but polling continues. The
-  redesigned header shows active/blocked/paused/done KPIs, revision/updated time, and Live refresh
-  health. Blocked projects lead with a strong warning; active cards use a responsive two-column
-  main area (one column when narrow), with focus/next/blockers and task progress. Paused/done and
-  unlisted projects are secondary disclosures. Light/dark styling, aria labelling, keyboard-native
-  disclosures, and read-only operation are part of the browser acceptance checklist.
+  compact header keeps active/blocked/paused/done KPIs in a single-line pill strip, with
+  revision/updated time and Live refresh health. Blocked projects lead with a strong warning; compact
+  active cards use responsive two/three-column layouts (one column when narrow), avoid redundant
+  visible field labels without dropping information, and give non-obvious icons accessible tooltips.
+  Paused/done and unlisted projects are secondary disclosures. Light/dark styling, aria labelling,
+  keyboard-native disclosures, narrow-pane focus order, and read-only operation are part of the
+  browser acceptance checklist.
+
+  The client derives `dirname(boardPath)/notes/index.json` from the already-resolved board config;
+  it never accepts a user path and performs all index/body I/O through the same read-only Workspace
+  Files state machine (`stat`, `readBytes`, `changes`, watch + poll). Cards show note count and
+  latest-title chips from index metadata; bodies are not embedded in the index. Opening a note loads
+  only that validated `<project.directory>/<note.id>.md` body into a full-pane, read-only reader.
+  Both the index and current note refresh automatically after external changes. Empty/missing,
+  loading, read, malformed, oversized, and watch-ended states remain distinct; a bad index or note
+  degrades only its notes surface, not the board. The dependency-free Markdown subset renders
+  headings, paragraphs, lists, quotes, fenced/inline code, emphasis, strikethrough, and explicit
+  HTTP(S) links as React elements/text. Raw HTML and dangerous link schemes stay inert text; there is
+  no `dangerouslySetInnerHTML` or browser write path.
 
 The browser bundle only registers into DSH client slots and sends `/devlead` commands from the
 toolbar toggle. It has no custom Remote API, no optimistic state flips, and no direct Host access;
@@ -106,9 +120,19 @@ visibility/focus 恢复立即 coalesced read，blur/hidden/unmount/path change �
 恢复触发共享 in-flight 读取；在途期间新到的 watch ready/change 合并为一次 trailing refresh（poll/focus
 只共享当前读取），避免叠发或丢失后续 change。
 手动刷新仍可强制重读并重连 watch；watch ended 不静默重连，但轮询
-继续。重做后的顶部显示 active/blocked/paused/done KPI、revision/updated 与 Live 自动状态；blocked
-强警示置顶，active 主区响应式 2 列（窄栏 1 列），卡片含 focus/next/blocker 与任务进度，paused/done/
-unlisted 为次级折叠。light/dark、aria、键盘 disclosure 与只读行为均纳入浏览器人工验收。
+继续。紧凑顶部以单行 pill strip 显示 active/blocked/paused/done KPI，并保留 revision/updated 与
+Live 自动状态；blocked 强警示置顶，active 主区响应式 2/3 列（窄栏 1 列）。卡片不重复显示可见
+field label，但保留 focus/next/blocker 与任务进度，非自明图标有可访问 tooltip；paused/done/unlisted
+为次级折叠。light/dark、aria、窄栏焦点顺序、键盘 disclosure 与只读行为均纳入浏览器人工验收。
+
+client 从已解析的 board config 派生 `dirname(boardPath)/notes/index.json`，不接受用户路径，index
+与正文 I/O 都只经既有 Workspace Files `stat/readBytes/changes` 和 watch+poll 状态机。卡片从 metadata
+显示 note 数与最近标题 chip，index 不含正文；打开 note 时才读取经过校验的
+`<project.directory>/<note.id>.md`，并用全栏只读 reader 展示。index 与当前 note 都会在外部修改后
+自动刷新；缺失/空、加载、读取/解析错误、超限与 watch ended 分开呈现，坏 index/note 只降级对应
+notes 区域，不影响 board。无依赖 Markdown 子集以 React 元素/文本渲染标题、段落、列表、引用、
+ fenced/inline code、强调、删除线与显式 HTTP(S) 链接；raw HTML 和危险 scheme 保持惰性文本，不使用
+`dangerouslySetInnerHTML`，浏览器没有写路径。
 0.2.0 起样式注入用跨模块实例引用计数（HMR 新旧实例交替不误删标签），组件与准入 hook 用
 `react-test-renderer` 做渲染测试。已知 mark 回填与 blank 行限制见根 README。完整中文文档见
 [根 README.zh.md](https://github.com/yankeguo/dsh-devlead/blob/main/README.zh.md)与[设计说明](https://github.com/yankeguo/dsh-devlead/blob/main/docs/DESIGN.md)。

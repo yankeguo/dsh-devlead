@@ -450,6 +450,7 @@ async function executeInspect(ctx, invocation) {
   }
   let policy = null
   let reportPolicy = null
+  let boardContext = null
   let policyError = null
   try {
     // Mirror the real step assembly (`agent-loop` passes agent + scope + the
@@ -463,6 +464,7 @@ async function executeInspect(ctx, invocation) {
     })
     policy = (assembly.sections ?? []).find(section => section.name === 'devlead:policy')?.text ?? null
     reportPolicy = (assembly.sections ?? []).find(section => section.name === 'devlead:report-policy')?.text ?? null
+    boardContext = (assembly.contexts ?? []).find(context => context.name === 'devlead:board-summary')?.text ?? null
   } catch (error) {
     policyError = messageOf(error)
   } finally {
@@ -476,6 +478,7 @@ async function executeInspect(ctx, invocation) {
       devleadTools: toolNames.filter(name => name.startsWith('devlead_')),
       policy,
       reportPolicy,
+      boardContext,
       supervised: ctx.devLead.isSupervised(agent),
       storageDomain: ctx.get('storageDomain') !== undefined,
       storage: ctx.get('storage') !== undefined,
@@ -524,6 +527,28 @@ async function executeBoard(ctx, invocation) {
     set: { next: 'updated through the workspace title' },
   })
   const detail = await ctx.devLead.readBoard(agent, { project: 'e2e-board' })
+  // Notes deliberately live outside board.json. Exercise the same active-lead
+  // service boundary as the AI tools, then leave one substantial markdown note
+  // on disk for the harness to read through the real workspaceFiles Remote.
+  const noteCreated = await ctx.devLead.writeBoardNote(agent, {
+    project: 'e2e-board',
+    operation: 'create',
+    note: 'e2e-plan',
+    title: 'E2E implementation plan',
+    summary: 'A persisted plan shared by the lead and the read-only board UI',
+    content: '# E2E implementation plan\n\n## Context\n\nThe lead and the human read the same project note.\n\n- persist markdown outside `board.json`\n- render **safe** project context\n\n> Read-only in the browser.\n',
+    expectedRevision: 0,
+  })
+  const noteAppended = await ctx.devLead.writeBoardNote(agent, {
+    project: workspacePath,
+    operation: 'append',
+    note: 'e2e-plan',
+    content: '\n## Next\n\n- [ ] verify automatic refresh\n',
+    expectedRevision: noteCreated.revision,
+    expectedBytes: noteCreated.note.bytes,
+  })
+  const noteListing = await ctx.devLead.readBoardNote(agent, { project: 'E2E Board' })
+  const noteRead = await ctx.devLead.readBoardNote(agent, { project: 'e2e-board', note: 'e2e-plan' })
   return {
     kind: 'success',
     text: JSON.stringify({
@@ -535,6 +560,11 @@ async function executeBoard(ctx, invocation) {
       byPath,
       byTitle,
       detail,
+      noteCreated,
+      noteAppended,
+      noteListing,
+      noteRead,
+      boardSummary: ctx.devLead.boardSummaryFor(agent),
     }),
   }
 }

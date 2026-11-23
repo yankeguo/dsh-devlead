@@ -111,22 +111,22 @@ pnpm workspace，`packages/*`：
 
 | 目录 | 包名 | 角色 |
 | --- | --- | --- |
-| `protocol` | `@yankeguo/dsh-devlead-protocol` | 纯类型 + 常量 + 格式化 + 项目看板 wire schema（host 与浏览器共用），并声明 `devLead` / `devLeadMode` / `devLeadWatch` projection 的类型 |
+| `protocol` | `@yankeguo/dsh-devlead-protocol` | 纯类型 + 常量 + 格式化 + 项目看板 / notes index wire schema（host 与浏览器共用），并声明 `devLead` / `devLeadMode` / `devLeadWatch` projection 的类型 |
 | `devlead` | `@yankeguo/dsh-devlead` | 核心 Service `ctx.devLead`：模式状态、Workspace/Session 编排、关注关系索引、通知投递、`devLead` 与两个 summary 级 projection（`devLeadMode` / `devLeadWatch`）的 fold |
 | `tool` | `@yankeguo/dsh-tool-devlead` | 模型工具 `devlead_*` + 条件系统提示 |
 | `command` | `@yankeguo/dsh-command-devlead` | 人类命令 `/devlead` |
-| `client-ui` | `@yankeguo/dsh-client-ui-devlead` | 浏览器 UI：两态都显示的图标 + 文本工具条开关 + 开启后的只读 DevLead 状态条 + 侧边栏会话行标记；Host 入口在 active lead 拥有看板时注入只读 board global，看板 tab/guide/header 按钮仅 lead 可见。只依赖 `protocol`，不依赖 `devlead` |
+| `client-ui` | `@yankeguo/dsh-client-ui-devlead` | 浏览器 UI：两态都显示的图标 + 文本工具条开关 + 开启后的只读 DevLead 状态条 + 侧边栏会话行标记；Host 入口在 active lead 拥有看板时注入只读 board global，看板 tab/guide/header 按钮仅 lead 可见；紧凑 2/3/1 列看板 + notes chips + 全栏安全 Markdown reader。只依赖 `protocol`，不依赖 `devlead` |
 | `bundle` | `@yankeguo/dsh-devlead-bundle` | bundle：`cordis.patch.yml` 插入全部插件 |
 
 依赖方向：`protocol → {client-ui, devlead}`，`devlead → {command, tool}`，四者都进 `bundle`。
-`protocol` 是 host 与浏览器共用的纯协议包（含看板 wire schema 与默认路径常量，不 import
+`protocol` 是 host 与浏览器共用的纯协议包（含看板 / notes index wire schema 与默认路径、大小限制常量，不 import
 Host/Node；浏览器侧 `zod` 来自 DSH 冻结 module table 的 platform singleton）。`client-ui`
 **只依赖 `protocol`**：浏览器侧直接复用其 schema/常量，node 入口从
 `@yankeguo/dsh-devlead-protocol` 导入 `DEVLEAD_BOARD_SCHEMA_VERSION`，读取
 `ctx.devLead.board`/`boardLeadSessionId`/`boardPathOverride` 后注入 board global，不再依赖
 `@yankeguo/dsh-devlead` 的 JS 入口。发布顺序由 `scripts/stage-release.mjs` 按该图做确定性
 拓扑排序（protocol、client-ui、devlead、command、tool、bundle；同层按包名）。项目看板完整
-契约（默认路径派生、lead 生命周期、global、读取上限与降级）见 [BOARD](BOARD.md)。
+契约（默认路径派生、lead 生命周期、notes 存储/CAS、global、浏览器 reader、读取上限与降级）见 [BOARD](BOARD.md)。
 构建时 host 入口 external `@deepseek-ai/*`、`@yankeguo/*`、`node:*`；浏览器入口只 external
 DSH shell 的 platform singletons（单一来源 `scripts/client-externals.mjs`）。构建期守卫会
 拒绝任何不在 module table 里的 `@deepseek-ai/*` 浏览器导入（第三方纯库会按需内联，
@@ -2373,7 +2373,7 @@ DSH peer 依赖。最小可交付闭环是 1b + 1c + 1d：question 快、answer 
 > 内存 deliveryState）与 policy/UI 文案、指标。工具输入 schema 在 1e 未变化。
 > `devlead_report` 的 question `turnEndRequested`（durable 检查 + 结果/policy）已在 Phase 1c 实现。
 
-16 个主工具都带 `when: ({ agent }) => ctx.devLead.isEnabled(agent)`，只在 DevLead 会话可见；
+18 个主工具都带 `when: ({ agent }) => ctx.devLead.isEnabled(agent)`，只在 DevLead 会话可见；
 `devlead_report` 是唯一的反向面：`when` 为 `ctx.devLead.isSupervised(agent)`，只在被唯一 active lead
 关注的非 DevLead 会话可见（见下文「中途汇报工具」）。
 
@@ -2384,6 +2384,8 @@ DSH peer 依赖。最小可交付闭环是 1b + 1c + 1d：question 快、answer 
 | `devlead_list_agent_presets` | `{}` | `DevLeadAgentPresetCatalog`（available / presets[id,name?,description?,default,broken?] / reason?） |
 | `devlead_board_read` | `project?`(id / workspace title / 绝对 path), `include_tasks?`, `limit?` | `{ revision, updatedAt, projects, truncated? }` |
 | `devlead_board_update` | `project`, `expected_revision?`, `create?`, `set?`, `blockers?`, `tasks?` | `{ revision, updatedAt, project, changed[] }`；仅 lead AI 可写，详见 [BOARD](BOARD.md) |
+| `devlead_board_note_read` | `project`(看板 id / workspace title / 绝对 path), `note?`；无路径参数 | 省略 note 返回该项目 metadata 列表；指定 note 返回 metadata + Markdown 正文，详见 [BOARD](BOARD.md) |
+| `devlead_board_note_write` | `project`, `operation: create/update/append/delete`, `note?`, `title?`, `summary?`, `content?`, `expected_revision?`, `expected_bytes?`；无路径参数 | 仅 active lead AI 可写；锁内 fresh read + index revision/body bytes CAS + 原子替换，详见 [BOARD](BOARD.md) |
 | `devlead_use_workspace` | `path`(必填，绝对路径), `title?`, `create?`(默认 false；显式 true 才 mkdir) | `{ workspace }` |
 | `devlead_list_sessions` | `workspace?`(id / 注册路径 / 精确 title), `watched_only?`, `limit?` | `{ sessions, watched: string[] }` |
 | `devlead_create_session` | `workspace?`(id / 注册路径 / 精确 title), `prompt?`, `title?`, `watch?`(默认 true), `preset?`(Host 定义 id；空白回退插件默认再 Host 默认), `isolation?`(默认 `none`；`worktree` = 尽力隔离), `provider?`+`model?`(成对；可选 `reasoning_effort?`), `agent_teams?` | `DevLeadCreatedSession`（含 `isolation`；请求时含已应用的 `model`/`agentTeams`） |
@@ -2409,7 +2411,14 @@ DSH peer 依赖。最小可交付闭环是 1b + 1c + 1d：question 快、answer 
   `devlead_board_read` 结果按 `DEVLEAD_BOARD_READ_MAX_BYTES`（64 KiB）裁剪 tasks → blockers →
   project 行；`devlead_board_update` 的 project 引用（id/title/path）在锁内快照上解析，预检使用
   固定 synthetic project id，长引用不再误报 `BOARD_LIMIT_EXCEEDED`。start/预创建失败只降级看板
-  （P2-2），不阻塞服务激活。完整 schema / lifecycle / global / Step B 衔接见 [BOARD](BOARD.md)。
+  （P2-2），不阻塞服务激活。notes store 固定派生 `dirname(boardPath)/notes/index.json`，正文为
+  `<sanitized project>/<note-id>.md`，index schema v1 只含 metadata；strict schema 拒绝未知字段、
+  重复 id/directory/path 与 traversal，index ≤128 KiB、单 note ≤256 KiB、每项目 ≤100 条，
+  `board.json` 不变。写入同样走 Host promise 链 + `withFileLock` + `writeFileAtomic`，以
+  `expected_revision` 做 index CAS，并在适用的 update/append/delete 上用 `expected_bytes` 做正文 CAS；
+  已提交 index 是事实源，orphan Markdown 忽略。摘要为 active 项目追加 `notes:N` 与最近标题，标题先
+  折叠为安全单行，整体仍 ≤1536 UTF-8 bytes。完整 schema / lifecycle / store / global / Step B
+  衔接见 [BOARD](BOARD.md)。
 - 输出 schema 用 `defineTool` 的 `ValueSchemaSpec`；`output.render` 把 canonical JSON 以文本
   返回（模型可读），`presentCall` 返回 `{ card: 'generic', title, kind }`（`kind` 取
   `read`/`search` 类似语义），只依赖已解析参数，保持 replay 纯函数。schema 与 protocol 视图
@@ -2428,7 +2437,7 @@ DSH peer 依赖。最小可交付闭环是 1b + 1c + 1d：question 快、answer 
   工具）都在 core 中重新校验 live + 模式。`devlead_use_workspace` 0.2.0 起转发 live lead Agent
   给 core 的 `useWorkspace(agent, request, signal)`，`create` 默认
   `false`，仅当人类明确要求建目录时才传 `create: true`（工具 schema 与 policy 文案同步）。
-- 关闭语义工具（共 3 个；0.2.0 时工具数 8 → 12，后续新增 `devlead_list_agent_presets` 后为 13 个主工具；另增 1 个 `devlead_report`；排队输入能力再增 `devlead_retract_input`，主工具 14、总计 15）：`devlead_remove_workspace` 执行 DSH **remove**：
+- 关闭语义工具（共 3 个；0.2.0 时工具数 8 → 12，后续新增 `devlead_list_agent_presets` 后为 13 个主工具；另增 1 个 `devlead_report`；排队输入能力再增 `devlead_retract_input`，主工具 14；board 两个工具后为 16，rc.4 两个 notes 工具后当前为 **18 个主工具 + 1 个汇报工具**）：`devlead_remove_workspace` 执行 DSH **remove**：
   只注销 Workspace 记录，目录、文件与 Session 日志保留，其 Session 变未分组；返回注销前快照
   与 `removed`。`devlead_archive_session` 执行 DSH **archive**：日志保留、可恢复；带运行中
   工作（turn / subagent / job / schedule）的 Session 默认报 `DEVLEAD_SESSION_ACTIVE`，
@@ -2661,13 +2670,22 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   浏览器 strict schema v1 直接复用 protocol 的 `createDevLeadBoardSchema`（不 import Host/Node；
   绝对路径谓词由 Host 发布的 `pathPlatform` 决定）；not-found、Remote read error、parse error 分别呈现
   empty / read error / parse error，错误时只保留 lastSuccessAt，不把旧卡片当当前数据。
-  视觉采用根 `.devlead-board` container：顶部四状态 KPI、revision/updated/Live 概览，blocked 强警示
-  置顶，active 宽栏 2 列/窄栏 1 列；卡片按项目名、workspace、状态/priority、focus、next、blockers、
-  任务进度与 disclosure、updated 排列，paused/done/unlisted 为次级折叠。组内 priority + updatedAt
-  排序，tasks/blockers 只读；unlisted 连接 Host Workspace/Session 投影，path 做有限语法规范化并显示
-  会话数与最近 Session 活动，Session pending 不谎报无活动、workspace 清单 error 优先于 pending；
-  组标题 DOM id 以 `useId` 前缀隔离多个面板实例；symlink/realpath 别名留待 Host 权威解析。
-  完整契约见 [BOARD](BOARD.md#step-b-浏览器契约)。
+  视觉采用根 `.devlead-board` container：顶部四状态 KPI 为单行可横滚 pill strip，
+  revision/updated/Live 是紧凑元信息；blocked 强警示置顶，active 默认 1 列、container ≥620px 2 列、
+  ≥980px 3 列。卡片不重复渲染可见 field label（保留 sr-only/aria），但项目名、workspace、status/
+  priority、focus/next/blockers、任务进度/disclosure 与 updated 信息完整，非自明图标有 tooltip；
+  paused/done/unlisted 为次级折叠。组内 priority + updatedAt 排序，tasks/blockers 只读；unlisted 连接
+  Host Workspace/Session 投影，path 做有限语法规范化并显示会话数与最近 Session 活动，Session pending
+  不谎报无活动、workspace 清单 error 优先于 pending；组标题 DOM id 以 `useId` 前缀隔离多个面板实例；
+  symlink/realpath 别名留待 Host 权威解析。
+  notes 由 `deriveDevLeadNotesPaths` 从同一 board config 派生，不另发 global。`useWorkspaceFile` 统一
+  board/index/当前 note 的 watch+poll/退避/abort/generation；index 持续刷新 chips，打开 reader 才读当前
+  note，valuePath 防止旧正文覆盖新选择。实际有 note 的项目显示 Icon + count + latest title chip，点击后
+  board content 切换为全栏 reader：宽栏 notes list + document 双栏，≤560px 堆叠，返回恢复项目 cards。
+  index/note 的 missing/loading/read/parse/limit error 局部降级，board 不被隐藏。`DevLeadMarkdown`
+  仅以 React elements/text 渲染 1–6 级标题、段落、列表、quote、backtick/tilde fenced code、inline code、bold/italic/
+  strikethrough 与 HTTP(S) links；HTML/XSS/其它 scheme 为文本，无 `dangerouslySetInnerHTML`、新依赖或
+  编辑入口。完整契约见 [BOARD](BOARD.md#step-b-浏览器契约)。
 - i18n：namespace `devlead`，`zh`/`en` 词典；`locale/zh.json`、`locale/en.json` 提供
   `meta.title`/`meta.description`（插件市场展示）。
 - 客户端 bundle 构建：esbuild CJS + `window.__ModuleLoader__.load({ id, factory })` 包装；
@@ -2710,14 +2728,16 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
 | `DEVLEAD_SELF_WATCH` | `watchSession` 试图关注自己（`promptSession` 向自己投递使用 `DEVLEAD_INVALID_INPUT`） |
 | `DEVLEAD_PROJECTION_INVALID` | 持久记录损坏（fold failure）；人类可用 `/devlead reset`（或冻结时的 `/devlead off`）恢复，`setEnabled(true)` 会拒绝并提示先 reset |
 
-| `BOARD_*` | 项目看板域错误：`BOARD_DISABLED`（没有 active lead/workspace 根、调用者不是当前 active lead，或看板被禁用）、`BOARD_NOT_FOUND`、`BOARD_INVALID`、`BOARD_PROJECT_NOT_FOUND` / `BOARD_PROJECT_AMBIGUOUS`（锁内快照解析失败）、`BOARD_REVISION_CONFLICT`、`BOARD_LIMIT_EXCEEDED`、`BOARD_IO_ERROR`（含 degraded start 后的真实 I/O 故障）。看板 start 失败本身不映射为服务加载失败，只记录 `boardStartError` 并 warn |
+| `BOARD_*` | 项目看板/notes 域错误：`BOARD_DISABLED`（没有 active lead/workspace 根、调用者不是当前 active lead，或看板被禁用）、`BOARD_NOT_FOUND`、`BOARD_INVALID`、`BOARD_PROJECT_NOT_FOUND` / `BOARD_PROJECT_AMBIGUOUS`（锁内快照解析失败）、`BOARD_REVISION_CONFLICT`（board 或 notes index CAS）、`BOARD_BYTES_CONFLICT`（notes 正文 bytes CAS）、`BOARD_NOTE_NOT_FOUND`（metadata 或 indexed body 缺失）、`BOARD_LIMIT_EXCEEDED`、`BOARD_IO_ERROR`（含 degraded start 后的真实 I/O 故障）。board/notes start 失败本身不映射为服务加载失败，只记录 `boardStartError` 并 warn |
 取消（`AbortSignal`）不映射到上面任何码：调用按标准 `AbortError` 拒绝。
 
 ## 9. 测试策略
 
 - `protocol`：格式化 / excerpt 边界（码点预算、代理对、非法预算）/ 转场表 / 持久记录词表 /
   projection map 类型增强与 summary 排除等纯函数与类型契约，以及看板 wire schema 的
-  accept/reject 矩阵、默认路径段常量（`.dsh`/`devlead`/`board.json`）与 64 KiB 读取上限常量。
+  accept/reject 矩阵、默认路径段常量（`.dsh`/`devlead`/`board.json`）与 64 KiB 读取上限常量；
+  notes index schema v1 另覆盖 strict 未知字段、重复 project/directory/note/path、精确 metadata path、
+  traversal、大小/数量/长度 limits 与正文不进 index。
 - `devlead`：真实 `SessionStore` + 真实 `SessionProjectionRegistry`（service spec；notification
   hub spec 直接用 fold 读取状态，见 §4.1），只把 `agents` /
   `workspaceRegistry` / `sessionController` / `sessionTitle` / `sessionQuery` 换成内存 fake，
@@ -2759,12 +2779,16 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   项目看板覆盖动态路径与生命周期（无 lead 时 disabled、`SessionHeader.cwd` 派生、Config
   override 优先、`/devlead off` 与 lead 切换释放旧 store/watcher、start/预创建失败只 degraded
   且服务照常激活）、板文件读写/CAS/watcher、64 KiB 读取裁剪与 `truncated`、以及长
-  workspace path/title 引用在锁内快照上解析（P2-1，不再误报 `BOARD_LIMIT_EXCEEDED`）。另有独立
+  workspace path/title 引用在锁内快照上解析（P2-1，不再误报 `BOARD_LIMIT_EXCEEDED`）。notes store 覆盖
+  directory/note id 派生、missing index、strict/corrupt/超限降级、metadata/full-body read、四种 write、
+  revision/bytes CAS、no-op、正文先写/index 提交/rollback、delete orphan、body bytes mismatch 与 lead
+  生命周期；summary 覆盖 active notes count/latest 和总 1536-byte cap。另有独立
   `active.spec.ts` 覆盖 `lastEnabledAt`（reset/坏记录）、`rankActiveSessions` 的确定性排序、
   `activeSessionLabel` 与两种 refusal 文案。
 - `tool`：用 fake `ctx.devLead` + fake `ctx.tools`/`ctx.systemPrompt` 捕获工具定义，验证
   `when` gating、参数校验、值渲染、编译期 schema↔protocol 一致性、运行时 output schema
-  校验、错误翻译、16 个主工具 + 1 个汇报工具的 execute 转发与取消信号转发（含 `listAgentPresets` 的 roster /
+  校验、错误翻译、18 个主工具 + 1 个汇报工具的 execute 转发与取消信号转发（含两个 notes 工具的
+  参数/结果/正文不进 presentation，以及 `listAgentPresets` 的 roster /
   unavailable / 失败投影）、presentCall replay 纯净性，以及
   policy 文案的角色边界契约（默认调度、写入归属、归属未明时先问或注册、无空会话）与派发后的
   等待契约（结束本轮、不 shell `sleep` / 不轮询 / 不用 `wait_agent`、唤醒以新 turn 恢复本
@@ -2793,7 +2817,9 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   id 隔离、折叠区与 zh/en 渲染。本轮动态看板另覆盖 global 形状
   （`leadSessionId`/`override` 的严格校验与旧 Host 缺字段兼容）、lead-only 入口门控、global
   缺失时从 Session summary `cwd` 派生默认路径、Config override 对所有 lead 生效、off/切换后
-  dispose 与不读旧文件。
+  dispose 与不读旧文件。rc.4 另覆盖共享 `useWorkspaceFile` 的 board/index/note 状态、notes 路径/schema、
+  chips/count/latest、全栏 reader 各空载错态、外部修改、坏 index/note 局部降级、valuePath 防旧响应、
+  Markdown 常用子集/XSS 惰性文本与紧凑 2/3/1 列/a11y。
 - 全仓 `pnpm typecheck && pnpm test && pnpm build` 是 `pnpm verify`；`pnpm check:packages`
   校验包不变式；`pnpm e2e` 是本机真实 DSH 的端到端冒烟（见 §10）。
 
@@ -2838,7 +2864,7 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   scratch workspace 被初始化成真实 git 仓库（一次 seed commit），因此是真实 Git happy path。
   阶段 3 停实例 → 链接同一个 probe 包并叠加 probe patch 重启（关闭工具不需要实验 bundle，
   因此 `--no-worktree` 也会运行）→ probe 的 `devlead-e2e-inspect` 用真实
-  `ctx.tools.resolve` 报告该 Agent 一步可见的工具集（模式开启时恰好 16 个主 `devlead_*`，已关注子会话恰好 1 个 `devlead_report`，
+  `ctx.tools.resolve` 报告该 Agent 一步可见的工具集（模式开启时恰好 18 个主 `devlead_*`，已关注子会话恰好 1 个 `devlead_report`，
   模式关闭时为 0），用 `ctx.systemPrompt.assemble` 取 `devlead:policy` section（判断式自主
   关闭、安全边界、有限可行性判断/开放问题/深挖交接；关闭时为空文本）；`devlead-e2e-close`
   通过 `ctx.devLead` 归档一个已 prompt 的子会话（durable archive 集合 + archived 视图/列表行、
@@ -2860,9 +2886,10 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   暴露）。
   patch 与 installed 两条加载流都跑完整多阶段；`--no-worktree` 跳过阶段 2（阶段 1、1b、3 仍
   运行，调试用）。每阶段 check 总数已 pin（`EXPECTED_CHECKS`，删/增 check 未更新 pin 会失败），
-  PASS 与 SKIP 分开输出；当前 pin 以脚本为准（本轮为 phase 1=30、1b=18、2=24、3=135、1e=31，
-  完整流 238/238、no-worktree 214/214，见 [CONTRIBUTING](CONTRIBUTING.md) 与
-  [COMPATIBILITY](COMPATIBILITY.md)）。以下为 Phase 1e 时点的历史实测：基线 DSH 0.2.2-rc.5
+  PASS 与 SKIP 分开输出；当前 rc.4 pin 以脚本为准（phase 1=30、1b=18、2=24、**3=140**、1e=31，
+  完整流 **243/243**、no-worktree **219/219**，见 [CONTRIBUTING](CONTRIBUTING.md) 与
+  [COMPATIBILITY](COMPATIBILITY.md)）。rc.4 三条流均按此 pin 实测通过，证据见
+  [v0.4.2-rc.4 release prep](e2e-evidence/v0.4.2-rc.4-release-prep.md)。以下为 Phase 1e 时点的历史实测：基线 DSH 0.2.2-rc.5
   的两条加载流完整组合计数为 **221/221**
   （阶段 1 27 + 阶段 1b 12 + 阶段 2 23 + 阶段 3 128 + 阶段 1e 31，阶段 3 含 agent preset roster、
   watched-Session 问题路由、排队 inbox、question conclude/durable/memory-only、两条 scripted

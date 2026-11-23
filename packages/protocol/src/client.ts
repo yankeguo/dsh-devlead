@@ -8,3 +8,4 @@
 export * from './types.ts'
 export * from './format.ts'
 export * from './board.ts'
+export * from './notes.ts'

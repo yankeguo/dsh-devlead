@@ -131,6 +131,8 @@ const TOOL_NAMES = [
   'devlead_list_agent_presets',
   'devlead_board_read',
   'devlead_board_update',
+  'devlead_board_note_read',
+  'devlead_board_note_write',
   'devlead_use_workspace',
   'devlead_list_sessions',
   'devlead_create_session',
@@ -152,6 +154,8 @@ const MINIMAL_ARGS: Record<(typeof TOOL_NAMES)[number], Record<string, unknown>>
   devlead_list_agent_presets: {},
   devlead_board_read: {},
   devlead_board_update: { project: 'webapp' },
+  devlead_board_note_read: { project: 'webapp' },
+  devlead_board_note_write: { project: 'webapp', operation: 'create', title: 'Plan' },
   devlead_use_workspace: { path: '/tmp/webapp' },
   devlead_list_sessions: {},
   devlead_create_session: {},
@@ -217,10 +221,10 @@ function expectValidOutput(harness: Harness, toolName: string, value: unknown): 
 }
 
 describe('registration', () => {
-  it('registers exactly the seventeen documented tools', () => {
+  it('registers exactly the nineteen documented tools', () => {
     const harness = boot()
     expect([...harness.tools.keys()].sort()).toEqual([...TOOL_NAMES].sort())
-    expect(TOOL_NAMES).toHaveLength(17)
+    expect(TOOL_NAMES).toHaveLength(19)
     for (const name of TOOL_NAMES) {
       expect(harness.tool(name).definition.description.length).toBeGreaterThan(0)
     }
@@ -865,6 +869,7 @@ describe('schema semantics', () => {
       'devlead_list_models',
       'devlead_list_agent_presets',
       'devlead_board_read',
+      'devlead_board_note_read',
       'devlead_list_sessions',
       'devlead_get_session',
       'devlead_notifications',

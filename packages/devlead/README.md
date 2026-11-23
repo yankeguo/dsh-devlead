@@ -13,8 +13,25 @@ start/pre-create failure is logged and surfaced as `boardStartError` but never r
 activation: the board reports `BOARD_IO_ERROR` while the rest of DevLead keeps working. `updateBoard`
 stamps the calling lead identity and requires the caller to be the current active lead. The file is
 lead-AI-writable and human/browser-read-only.
-See [docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md) for schema v1,
-CAS, corruption handling, read caps, and the dynamic summary contract.
+The same Host-owned board service also owns `ctx.devLead.notes`, a `DevLeadBoardNotesStore` rooted at
+`dirname(boardPath)/notes/` and swapped/closed with the board lifecycle. Tool-facing service methods are
+`readBoardNote(agent, { project, note? })` and
+`writeBoardNote(agent, { project, operation, note?, title?, summary?, content?, expectedRevision?,
+expectedBytes? }, signal?)`; both recheck the active lead and accept no filesystem path. The store exposes
+`path` / `indexPath` / `enabled`, `start()` / `close()`, cache-only `summaryIndex()`, and logical `read()` /
+`write()`. Its strict schema-v1 `index.json` is the committed source of truth and
+contains only project/note metadata; Markdown bodies live at the index-declared
+`<sanitized project>/<note-id>.md`, and orphan files are ignored. Every mutation resolves the board
+project by id/title/absolute workspace path, fresh-reads under the cross-process file lock, checks
+index `expected_revision` plus note-body `expected_bytes` CAS where applicable, validates the complete
+next index, and atomically replaces files. The index is capped at 128 KiB, each note at 256 KiB, and
+each project at 100 notes. A bad index is never overwritten from a stale cache and does not block the
+board or DevLead; notes operations still require a valid board project. The synchronous board summary
+reads the valid board + notes caches and adds
+active-project note counts/latest titles within its existing 1536-byte cap. Humans and browsers stay
+read-only.
+See [docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md) for both schema
+v1 contracts, store/service APIs, CAS, corruption handling, read caps, and the dynamic summary contract.
 
 DevLead mode is **globally single-active**: at most one Session (across every Workspace) may be
 enabled. `setEnabled(agent, true)` throws `DEVLEAD_ALREADY_ACTIVE` naming the occupant when another
@@ -105,8 +122,19 @@ validated at both the Loader and direct-construction boundaries.
 `<cwd>/.dsh/devlead/board.json`，`boardPath` 只作可选绝对路径 override（override 也允许 lead
 没有 workspace 根时仍有看板）；没有 lead 时禁用，
 lead off/切换会释放旧 store/watcher，start/预创建失败只记 warning + degraded、不阻塞服务加载
-（board 工具报 `BOARD_IO_ERROR`，其余功能照常）。看板写入使用 `@deepseek-ai/dsh-atomic-write`
-（安装运行时提供）。
+（board 工具报 `BOARD_IO_ERROR`，其余功能照常）。看板与 notes 写入都使用
+`@deepseek-ai/dsh-atomic-write`（安装运行时提供）。同一 Host board service 拥有随 board
+切换/关闭的 `ctx.devLead.notes`（`DevLeadBoardNotesStore`，root 固定
+`dirname(boardPath)/notes/`）。工具侧 service 方法是 `readBoardNote(agent,{project,note?})` 与
+`writeBoardNote(agent,patch,signal?)`，patch 含 operation、可选 note/title/summary/content 与
+expectedRevision/expectedBytes，均不接受文件路径；store 暴露 path/indexPath/enabled、start/close、
+summaryIndex 与逻辑 read/write。严格 schema-v1 `index.json` 是提交事实、只存 metadata，正文位于
+`<sanitized project>/<note-id>.md`，orphan 忽略。每次修改在跨进程文件锁内 fresh read，校验 index
+`expected_revision` 与适用的 note `expected_bytes` CAS，验证完整 next index 后原子替换；index
+≤128 KiB、单 note ≤256 KiB、每项目 ≤100 条。坏 index 不会用旧缓存覆盖，也不阻塞 board/DevLead；
+notes 操作仍要求能解析合法 board project。同步 board summary 从合法缓存为 active 项目附加 note 数/
+最近标题，整体仍 ≤1536 bytes。人类与浏览器
+只读。
 `agents`、`sessions`、`sessionProjections` 为必需 peer；Workspace registry、Session controller、
 标题/查询服务、projection cache、`sessionPersistence`（冷重建就绪屏障）与实验性 worktree 能力
 均为可选探测。完整中文文档见[根 README.zh.md](https://github.com/yankeguo/dsh-devlead/blob/main/README.zh.md)与

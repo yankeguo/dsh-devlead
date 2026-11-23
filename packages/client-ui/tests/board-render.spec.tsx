@@ -16,7 +16,9 @@ import {
   DevLeadBoardPanelView,
   type DevLeadBoardPanelProps,
   type DevLeadBoardPanelViewProps,
+  type DevLeadBoardNotesView,
 } from '../src/client/DevLeadBoardPanel.tsx'
+import { deriveDevLeadNotesPaths, type DevLeadNotesIndex } from '../src/client/notes.ts'
 import type { DevLeadBoard, DevLeadBoardProject } from '../src/client/board.ts'
 import { en, zh } from '../src/client/locales.ts'
 import type {
@@ -51,6 +53,10 @@ vi.mock('@deepseek-ai/dsh-client-ui-primitives', () => {
     IconRefreshOutlineRegular: Icon,
     IconWarningOutlineRegular: Icon,
     IconFlatListOutlineRegular: Icon,
+    IconClockOutlineRegular: Icon,
+    IconListPenOutlineRegular: Icon,
+    IconPlanOutlineRegular: Icon,
+    IconChevronLeftOutlineRegular: Icon,
   }
 })
 
@@ -98,6 +104,33 @@ const BOARD: DevLeadBoard = {
 }
 
 const READY: DevLeadBoardFileState = { status: 'ready', board: BOARD, lastSuccessAt: ISO, refreshing: false }
+const NOTES_PATHS = deriveDevLeadNotesPaths({ boardPath: '/work/project/.dsh/devlead/board.json', schemaVersion: 1, pathPlatform: 'posix' })
+const NOTES_INDEX: DevLeadNotesIndex = {
+  schemaVersion: 1,
+  revision: 1,
+  updatedAt: ISO,
+  projects: [{
+    id: 'active',
+    directory: 'active-dir',
+    notes: [
+      { id: 'n1', title: 'Older note', summary: 'Summary one', updatedAt: '2026-11-23T06:00:00.000Z', bytes: 20, path: 'active-dir/n1.md' },
+      { id: 'n2', title: 'Latest note', summary: 'Summary two', updatedAt: ISO, bytes: 40, path: 'active-dir/n2.md' },
+    ],
+  }],
+}
+
+function notesView(overrides: Partial<DevLeadBoardNotesView> = {}): DevLeadBoardNotesView {
+  return {
+    paths: NOTES_PATHS,
+    index: { status: 'ready', value: NOTES_INDEX, valuePath: NOTES_PATHS.indexPath, refreshing: false, watch: 'live', autoRefresh: 'active', refresh: () => {} },
+    note: { status: 'ready', value: { markdown: '# Safe title\n\nBody **bold**.' }, valuePath: `${NOTES_PATHS.root}/active-dir/n2.md`, refreshing: false, watch: 'live', autoRefresh: 'active', refresh: () => {} },
+    onOpen: () => {},
+    onSelect: () => {},
+    onClose: () => {},
+    ...overrides,
+  }
+}
+
 const mounted: ReactTestRenderer[] = []
 
 async function mount(element: ReactElement): Promise<ReactTestRenderer> {
@@ -112,6 +145,11 @@ function textOf(instance: ReactTestInstance): string {
   return instance.children.map(child => typeof child === 'string' ? child : textOf(child)).join('')
 }
 
+function visibleTextOf(instance: ReactTestInstance): string {
+  if (typeof instance.props.className === 'string' && instance.props.className.split(' ').includes('devlead-sr-only')) return ''
+  return instance.children.map(child => typeof child === 'string' ? child : visibleTextOf(child)).join('')
+}
+
 function view(state: DevLeadBoardFileState, overrides: Partial<DevLeadBoardPanelViewProps> = {}): ReactElement {
   return <DevLeadBoardPanelView state={state} onRefresh={() => {}} now={NOW} t={t} {...overrides} />
 }
@@ -121,6 +159,7 @@ afterEach(async () => {
     for (const renderer of mounted.splice(0)) renderer.unmount()
   })
   vi.restoreAllMocks()
+  vi.useRealTimers()
 })
 
 /** One Session-list row carrying the board gate facts. */
@@ -200,7 +239,7 @@ describe('DevLeadBoardPanelView', () => {
     expect(textOf(renderer.root)).toContain(zh['board.watch.ended'])
     expect(textOf(renderer.root)).toContain('自动轮询仍开启')
     expect(textOf(renderer.root)).not.toContain(zh['board.watch.ended.disabled'])
-    expect(renderer.root.findByProps({ 'data-mock-state-dot': 'warning' })).toBeDefined()
+    expect(renderer.root.findByProps({ 'data-auto-refresh': 'active' }).findByProps({ 'data-mock-state-dot': 'warning' })).toBeDefined()
   })
 
   it('renders active, paused, and disabled auto-refresh states distinctly', async () => {
@@ -256,11 +295,29 @@ describe('DevLeadBoardPanelView', () => {
     expect(textOf(card)).toContain('高优先级')
     const tasks = renderer.root.findByProps({ 'data-devlead-board-tasks': 'blocked' })
     expect(tasks.type).toBe('details')
-    expect(textOf(tasks)).toContain(zh['board.tasks.summary'].replace('{done}', '1').replace('{total}', '2'))
+    expect(tasks.findByType('summary').props['aria-label']).toBe(zh['board.tasks.summary'].replace('{done}', '1').replace('{total}', '2'))
     expect(textOf(tasks)).toContain('Verify panel')
     expect(textOf(tasks)).toContain('session-12…bcdef')
     // The only buttons in a healthy board are refresh controls, never writes.
     expect(renderer.root.findAllByType('button')).toHaveLength(1)
+  })
+
+  it('removes redundant visible field labels while retaining their accessible semantics', async () => {
+    const renderer = await mount(view(READY))
+    const card = renderer.root.findByProps({ 'data-devlead-board-project': 'blocked' })
+    const visible = visibleTextOf(card)
+    for (const key of ['board.field.focus', 'board.field.goal', 'board.field.next', 'board.tasks.label', 'board.project.updated'] as const) {
+      expect(visible).not.toContain(zh[key])
+      expect(textOf(card)).toContain(key === 'board.tasks.label' ? '1/2' : key === 'board.project.updated' ? '2 分钟前' : ({
+        'board.field.focus': 'Focus blocked',
+        'board.field.goal': 'Goal blocked',
+        'board.field.next': 'Next blocked',
+      } as Record<string, string>)[key])
+    }
+    expect(card.findAllByProps({ className: 'devlead-board-field-label' })).toHaveLength(0)
+    expect(renderer.root.findByProps({ 'data-devlead-board-progress': 'blocked' }).props['aria-label']).toContain(zh['board.tasks.label'])
+    const updated = card.findByProps({ className: 'devlead-board-card-footer' }).findByType('time')
+    expect(updated.props['aria-label']).toContain(zh['board.project.updated'])
   })
 
   it('renders labelled KPI counts for every project status', async () => {
@@ -283,8 +340,10 @@ describe('DevLeadBoardPanelView', () => {
     expect(progress.props['aria-label']).toBe('任务进度：2 项中已完成 1 项')
     expect(progress.props['aria-valuetext']).toBe(progress.props['aria-label'])
     const card = renderer.root.findByProps({ 'data-devlead-board-project': 'blocked' })
-    expect(card.props.tabIndex).toBe(0)
-    expect(textOf(card.findByProps({ className: 'devlead-board-progress-heading' }))).toContain('1/2')
+    const tasks = card.findByProps({ 'data-devlead-board-tasks': 'blocked' })
+    expect(tasks.type).toBe('details')
+    expect(textOf(tasks.findByType('summary'))).toContain('1/2')
+    expect(card.findAllByProps({ className: 'devlead-board-progress-heading' })).toHaveLength(0)
   })
 
   it('collapses paused, done, and unlisted into native secondary disclosures', async () => {
@@ -349,7 +408,8 @@ describe('DevLeadBoardPanelView', () => {
     const english = await mount(view(READY, { t: translate(en) as DevLeadBoardPanelViewProps['t'] }))
     expect(textOf(english.root)).toContain('Project board')
     expect(textOf(english.root)).toContain('Read-only')
-    expect(textOf(english.root)).toContain('View task details (1/2 done)')
+    expect(english.root.findByProps({ 'data-devlead-board-tasks': 'blocked' }).findByType('summary').props['aria-label'])
+      .toBe('View task details (1/2 done)')
     expect(textOf(english.root)).toContain('Auto refresh on')
   })
 
@@ -458,6 +518,59 @@ describe('DevLeadBoardPanelView', () => {
       }
     }
   })
+
+  it('shows a compact notes count/latest chip and opens the immersive reader', async () => {
+    const onOpen = vi.fn()
+    const onClose = vi.fn()
+    const onSelect = vi.fn()
+    const notes = notesView({ onOpen, onClose, onSelect })
+    const board = await mount(view(READY, { notes }))
+    const chip = board.root.findByProps({ 'data-devlead-notes-chip': 'active' })
+    expect(textOf(chip)).toContain('2')
+    expect(textOf(chip)).toContain('Latest note')
+    expect(chip.props['aria-label']).toContain('Latest note')
+    chip.props.onClick({ stopPropagation: () => {} })
+    expect(onOpen).toHaveBeenCalledWith('active')
+
+    const reader = await mount(view(READY, { notes: notesView({ ...notes, selection: { projectId: 'active', noteId: 'n2' } }) }))
+    expect(reader.root.findByProps({ 'data-devlead-notes-reader': 'active' })).toBeDefined()
+    expect(reader.root.findAllByProps({ 'data-board-group': 'active' })).toHaveLength(0)
+    expect(textOf(reader.root.findByProps({ 'data-devlead-note-document': 'n2' }))).toContain('Safe title')
+    expect(reader.root.findAllByType('h1')).toHaveLength(1)
+    reader.root.findByProps({ 'data-devlead-note': 'n1' }).props.onClick()
+    expect(onSelect).toHaveBeenCalledWith('n1')
+    reader.root.findByProps({ className: 'devlead-notes-back' }).props.onClick()
+    expect(onClose).toHaveBeenCalledTimes(1)
+  })
+
+  it('degrades empty, bad-index, missing-note, and bad-note states without harming the board', async () => {
+    const emptyIndex = { ...NOTES_INDEX, projects: [] }
+    const empty = await mount(view(READY, { notes: notesView({
+      index: { ...notesView().index, value: emptyIndex },
+      selection: { projectId: 'active', noteId: 'n2' },
+    }) }))
+    expect(empty.root.findByProps({ 'data-devlead-notes-state': 'empty' })).toBeDefined()
+    expect(empty.root.findAllByProps({ 'data-devlead-notes-chip': 'active' })).toHaveLength(0)
+
+    const badIndex = await mount(view(READY, { notes: notesView({
+      index: { ...notesView().index, status: 'error', error: { kind: 'parse', message: 'bad index' } },
+    }) }))
+    expect(badIndex.root.findByProps({ 'data-devlead-board-project': 'active' })).toBeDefined()
+    expect(textOf(badIndex.root)).toContain(zh['board.notes.unavailable'])
+
+    const missing = await mount(view(READY, { notes: notesView({
+      selection: { projectId: 'active', noteId: 'n2' },
+      note: { ...notesView().note, status: 'empty' },
+    }) }))
+    expect(missing.root.findByProps({ 'data-devlead-notes-state': 'note-empty' })).toBeDefined()
+
+    const badNote = await mount(view(READY, { notes: notesView({
+      selection: { projectId: 'active', noteId: 'n2' },
+      note: { ...notesView().note, status: 'error', error: { kind: 'parse', message: 'bad UTF-8' } },
+    }) }))
+    expect(badNote.root.findByProps({ 'data-devlead-notes-state': 'error' }).props.role).toBe('alert')
+    expect(badNote.root.findByProps({ 'data-devlead-notes-reader': 'active' })).toBeDefined()
+  })
 })
 
 /**
@@ -473,6 +586,11 @@ class PanelStream implements DevLeadBoardChangeStream {
   dispose = (): void => {
     this.disposed = true
     this.ended = true
+    this.wake?.()
+  }
+
+  push(frame: WorkspaceFileWatchFrame): void {
+    this.frames.push(frame)
     this.wake?.()
   }
 
@@ -582,7 +700,7 @@ describe('DevLeadBoardPanel wiring', () => {
     const first = panelProps({ 'session-1': { ...LEAD_ROW, cwd: '/work/a' } }, harness.files)
     const renderer = await mount(<DevLeadBoardPanel {...first} />)
     await flush()
-    expect(harness.stat).toHaveBeenLastCalledWith(
+    expect(harness.stat).toHaveBeenCalledWith(
       'session-1', '/work/a/.dsh/devlead/board.json', expect.any(AbortSignal),
     )
     expect(harness.streams.length).toBeGreaterThan(0)
@@ -591,7 +709,7 @@ describe('DevLeadBoardPanel wiring', () => {
       renderer.update(<DevLeadBoardPanel {...panelProps({ 'session-1': { ...LEAD_ROW, cwd: '/work/b' } }, harness.files)} />)
     })
     await flush()
-    expect(harness.stat.mock.calls.map((call: unknown[]) => call[1])).toEqual([
+    expect(harness.stat.mock.calls.map((call: unknown[]) => call[1]).filter(path => String(path).endsWith('/board.json'))).toEqual([
       '/work/a/.dsh/devlead/board.json',
       '/work/b/.dsh/devlead/board.json',
     ])
@@ -616,5 +734,76 @@ describe('DevLeadBoardPanel wiring', () => {
     expect(harness.stat.mock.calls.length).toBe(callsWhileEnabled)
     expect(staleStream?.disposed).toBe(true)
     expect(renderer.toJSON()).toBeNull()
+  })
+
+  it('derives notes paths and automatically refreshes both index metadata and the open note', async () => {
+    vi.useFakeTimers()
+    const boardPath = '/work/project/.dsh/devlead/board.json'
+    const indexPath = '/work/project/.dsh/devlead/notes/index.json'
+    const notePath = '/work/project/.dsh/devlead/notes/active-dir/n2.md'
+    let index = NOTES_INDEX
+    let markdown = '# First body'
+    const encode = (value: unknown): Uint8Array<ArrayBuffer> => new TextEncoder().encode(typeof value === 'string' ? value : JSON.stringify(value)) as Uint8Array<ArrayBuffer>
+    const valueFor = (path: string): unknown => path === boardPath ? BOARD : path === indexPath ? index : markdown
+    const stat = vi.fn(async (_sessionId: string, path: string) => ({
+      ok: true as const,
+      value: { absolutePath: path, version: 'v1', bytes: encode(valueFor(path)).byteLength },
+    }))
+    const readBytes = vi.fn(async (_sessionId: string, path: string) => {
+      const data = encode(valueFor(path))
+      return { ok: true as const, value: { absolutePath: path, version: 'v1', bytes: data.byteLength, offset: 0, data, eof: true } }
+    })
+    const streams = new Map<string, PanelStream>()
+    const changes = vi.fn((_sessionId: string, path: string, signal?: AbortSignal) => {
+      const stream = new PanelStream()
+      signal?.addEventListener('abort', () => { stream.dispose() }, { once: true })
+      streams.set(path, stream)
+      return stream
+    })
+    const files = { stat, readBytes, changes } as unknown as DevLeadBoardFiles
+    const renderer = await mount(<DevLeadBoardPanel {...panelProps({ 'session-1': LEAD_ROW }, files)} />)
+    await flush()
+    expect(stat).toHaveBeenCalledWith('session-1', indexPath, expect.any(AbortSignal))
+    expect(renderer.root.findByProps({ 'data-devlead-notes-chip': 'active' })).toBeDefined()
+    await act(async () => {
+      renderer.root.findByProps({ 'data-devlead-notes-chip': 'active' }).props.onClick({ stopPropagation: () => {} })
+    })
+    await flush()
+    expect(readBytes).toHaveBeenCalledWith('session-1', notePath, {}, expect.any(AbortSignal))
+    expect(textOf(renderer.root)).toContain('First body')
+
+    index = {
+      ...index,
+      revision: 2,
+      projects: [{ ...index.projects[0]!, notes: [{ ...index.projects[0]!.notes[1]!, title: 'Fresh title' }, index.projects[0]!.notes[0]!] }],
+    }
+    await act(async () => {
+      streams.get(indexPath)?.push({ kind: 'change', change: { absolutePath: indexPath, version: 'v2' } })
+      await Promise.resolve()
+      await vi.advanceTimersByTimeAsync(120)
+    })
+    await flush()
+    expect(textOf(renderer.root)).toContain('Fresh title')
+
+    markdown = '# Second body'
+    await act(async () => {
+      streams.get(notePath)?.push({ kind: 'change', change: { absolutePath: notePath, version: 'v2' } })
+      await Promise.resolve()
+      await vi.advanceTimersByTimeAsync(120)
+    })
+    await flush()
+    expect(textOf(renderer.root.findByProps({ 'data-devlead-note-document': 'n2' }))).toContain('Second body')
+    expect(textOf(renderer.root.findByProps({ 'data-devlead-note-document': 'n2' }))).not.toContain('First body')
+
+    markdown = '# Polled body'
+    index = {
+      ...index,
+      revision: 3,
+      projects: [{ ...index.projects[0]!, notes: [{ ...index.projects[0]!.notes[0]!, title: 'Polled title' }, index.projects[0]!.notes[1]!] }],
+    }
+    await act(async () => { await vi.advanceTimersByTimeAsync(5_000) })
+    await flush()
+    expect(textOf(renderer.root)).toContain('Polled title')
+    expect(textOf(renderer.root.findByProps({ 'data-devlead-note-document': 'n2' }))).toContain('Polled body')
   })
 })

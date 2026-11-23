@@ -277,7 +277,7 @@ const UNARCHIVE_SESSION_DESCRIPTION =
   + 'wrapping up, or when the human asks to restore a Session; report the restored Session.'
 
 /**
- * Register the sixteen lead tools, the watched-Session report tool, and
+ * Register the eighteen lead tools, the watched-Session report tool, and
  * their shared policy sections.
  *
  * The tools and the policy text follow the same condition: DevLead mode is

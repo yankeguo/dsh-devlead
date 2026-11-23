@@ -4,6 +4,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { GenericResultView, ToolResult } from '@deepseek-ai/dsh-tools'
 import type {
+  DevLeadBoardNoteWrite,
   DevLeadBoardSetPatch,
   DevLeadBoardUpdate,
 } from '@yankeguo/dsh-devlead'
@@ -11,12 +12,13 @@ import {
   TOOL_ARGUMENT_KEYS,
   assertKnownArguments,
   optionalNonNegativeInteger,
+  optionalNoteRef,
   optionalPositiveInteger,
   optionalProjectRef,
   requireAgent,
   requireProjectRef,
 } from './arguments.ts'
-import type { BoardReadArgs, BoardUpdateArgs } from './arguments.ts'
+import type { BoardNoteReadArgs, BoardNoteWriteArgs, BoardReadArgs, BoardUpdateArgs } from './arguments.ts'
 import { runTool } from './errors.ts'
 import { TOOL_PARAMETERS } from './parameters.ts'
 import { present } from './presentation.ts'
@@ -38,6 +40,21 @@ const BOARD_UPDATE_DESCRIPTION =
   + 'devlead_board_read for compare-and-swap when a lost update would matter. Returns only the changed project without '
   + 'task rows and the changed lanes, never the whole board. The file belongs to the active lead Session workspace and '
   + 'no argument can redirect it.'
+
+const BOARD_NOTE_READ_DESCRIPTION =
+  'Read Markdown notes attached to one existing DevLead board project. project is required and resolves exactly as '
+  + 'in the other board tools. Omit note for the project\'s bounded metadata listing (id, title, summary, updatedAt, '
+  + 'bytes, and root-relative path); provide its id for the full Markdown content plus metadata. A missing notes '
+  + 'index reads as an empty revision-0 project listing. Only the active lead can use this tool, and no argument '
+  + 'accepts or redirects a Host filesystem path.'
+
+const BOARD_NOTE_WRITE_DESCRIPTION =
+  'Create, update, append to, or delete one Markdown note on an existing project of the active lead\'s DevLead '
+  + 'board. create requires title and may omit note to generate a UUID; update changes only supplied title/summary/'
+  + 'content; append requires note and content and appends it exactly; delete requires note. Use expected_revision '
+  + 'for notes-index CAS and expected_bytes for existing-note CAS when a lost update would matter. Returns the '
+  + 'resulting metadata (or deleted metadata), revision, and changed state without returning the body. Note content '
+  + 'stays out of the index. The Host owns all locations; write arguments contain no file path.'
 
 const BLOCKER_SCHEMA = {
   type: 'object',
@@ -118,6 +135,65 @@ export const BOARD_UPDATE_OUTPUT = jsonOutput({
   },
 } as const)
 
+const NOTE_PROJECT_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    id: { type: 'string', required: true },
+    directory: { type: 'string', required: true },
+  },
+} as const
+
+const NOTE_METADATA_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    id: { type: 'string', required: true },
+    title: { type: 'string', required: true },
+    summary: { type: 'string', required: true },
+    updatedAt: { type: 'string', required: true },
+    bytes: { type: 'integer', required: true },
+    path: { type: 'string', required: true },
+  },
+} as const
+
+const NOTE_DOCUMENT_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    ...NOTE_METADATA_SCHEMA.properties,
+    content: { type: 'string', required: true },
+  },
+} as const
+
+/** Canonical metadata-listing or full-body output of `devlead_board_note_read`. */
+export const BOARD_NOTE_READ_OUTPUT = jsonOutput({
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    revision: { type: 'integer', required: true },
+    updatedAt: { type: 'string', required: true },
+    project: { ...NOTE_PROJECT_SCHEMA, required: true },
+    notes: { type: 'array', items: NOTE_METADATA_SCHEMA },
+    note: NOTE_DOCUMENT_SCHEMA,
+  },
+} as const)
+
+/** Canonical output of `devlead_board_note_write`. */
+export const BOARD_NOTE_WRITE_OUTPUT = jsonOutput({
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    revision: { type: 'integer', required: true },
+    updatedAt: { type: 'string', required: true },
+    project: { ...NOTE_PROJECT_SCHEMA, required: true },
+    note: { ...NOTE_METADATA_SCHEMA, required: true },
+    operation: { type: 'string', required: true, enum: ['create', 'update', 'append', 'delete'] },
+    changed: { type: 'boolean', required: true },
+    deleted: { type: 'boolean' },
+  },
+} as const)
+
 function setPatch(input: BoardUpdateArgs['set']): DevLeadBoardSetPatch | undefined {
   if (input === undefined) return undefined
   return {
@@ -171,6 +247,23 @@ export function boardUpdateRequest(args: BoardUpdateArgs): Omit<DevLeadBoardUpda
   }
 }
 
+/** Translate one snake_case note write into the core's logical, path-free patch. */
+export function boardNoteWriteRequest(args: BoardNoteWriteArgs): DevLeadBoardNoteWrite {
+  const note = optionalNoteRef(args.note)
+  const expectedRevision = optionalNonNegativeInteger(args.expected_revision, 'expected_revision')
+  const expectedBytes = optionalNonNegativeInteger(args.expected_bytes, 'expected_bytes')
+  return {
+    project: requireProjectRef(args.project),
+    operation: args.operation,
+    ...note === undefined ? {} : { note },
+    ...args.title === undefined ? {} : { title: args.title },
+    ...args.summary === undefined ? {} : { summary: args.summary },
+    ...args.content === undefined ? {} : { content: args.content },
+    ...expectedRevision === undefined ? {} : { expectedRevision },
+    ...expectedBytes === undefined ? {} : { expectedBytes },
+  }
+}
+
 function resultRecord(result: ToolResult): Record<string, unknown> | undefined {
   if (result.isError) return undefined
   const text = result.content.find(block => block.type === 'text')?.text
@@ -207,7 +300,36 @@ export function presentBoardResult(_args: unknown, result: ToolResult): GenericR
   return { card: 'generic', content: [{ type: 'text', text: text.slice(0, 500) }] }
 }
 
-/** Register the two board tools on the same lead-only condition as other lead tools. */
+/** Keep note cards summary-sized and never duplicate Markdown content into presentation. */
+export function presentBoardNoteResult(_args: unknown, result: ToolResult): GenericResultView {
+  const value = resultRecord(result)
+  if (value === undefined) return { card: 'generic' }
+  const revision = typeof value.revision === 'number' ? `r${value.revision}` : 'revision unknown'
+  const project = typeof value.project === 'object' && value.project !== null
+    ? value.project as Record<string, unknown>
+    : undefined
+  const projectId = typeof project?.id === 'string' ? project.id : 'project'
+  let detail: string
+  if (Array.isArray(value.notes)) detail = `${value.notes.length} note(s)`
+  else if (typeof value.operation === 'string') {
+    const note = typeof value.note === 'object' && value.note !== null
+      ? value.note as Record<string, unknown>
+      : undefined
+    const noteId = typeof note?.id === 'string' ? note.id : 'note'
+    detail = `${value.operation} ${noteId}${value.changed === false ? '; no changes' : ''}`
+  } else {
+    const note = typeof value.note === 'object' && value.note !== null
+      ? value.note as Record<string, unknown>
+      : undefined
+    detail = typeof note?.title === 'string' ? note.title : 'note content'
+  }
+  return {
+    card: 'generic',
+    content: [{ type: 'text', text: `DevLead notes ${revision}: ${projectId}; ${detail}`.slice(0, 500) }],
+  }
+}
+
+/** Register the board and note tools on the same lead-only condition as other lead tools. */
 export function registerDevLeadBoardTools(ctx: Context): void {
   ctx.tools.register(defineTool({
     name: 'devlead_board_read',
@@ -251,6 +373,47 @@ export function registerDevLeadBoardTools(ctx: Context): void {
         const result = await ctx.devLead.updateBoard(agent, boardUpdateRequest(args), expectedRevision, exec.signal)
         const { tasks: _tasks, ...project } = result.project
         return { ...result, project }
+      })
+    },
+  }), { when: ({ agent }) => ctx.devLead.isEnabled(agent) })
+
+  ctx.tools.register(defineTool({
+    name: 'devlead_board_note_read',
+    description: BOARD_NOTE_READ_DESCRIPTION,
+    parameters: TOOL_PARAMETERS.devlead_board_note_read,
+    output: BOARD_NOTE_READ_OUTPUT,
+    presentCall: (args: BoardNoteReadArgs) => present('Read DevLead project notes', 'read', args.project.trim()),
+    presentResult: presentBoardNoteResult,
+    isConcurrencySafe: () => true,
+    execute(args, exec) {
+      return runTool(async () => {
+        assertKnownArguments(args, TOOL_ARGUMENT_KEYS.devlead_board_note_read)
+        const agent = requireAgent(exec.agent, 'devlead_board_note_read')
+        const note = optionalNoteRef(args.note)
+        return ctx.devLead.readBoardNote(agent, {
+          project: requireProjectRef(args.project),
+          ...note === undefined ? {} : { note },
+        })
+      })
+    },
+  }), { when: ({ agent }) => ctx.devLead.isEnabled(agent) })
+
+  ctx.tools.register(defineTool({
+    name: 'devlead_board_note_write',
+    description: BOARD_NOTE_WRITE_DESCRIPTION,
+    parameters: TOOL_PARAMETERS.devlead_board_note_write,
+    output: BOARD_NOTE_WRITE_OUTPUT,
+    presentCall: (args: BoardNoteWriteArgs) => present(
+      `${args.operation[0]?.toUpperCase() ?? ''}${args.operation.slice(1)} DevLead project note`,
+      'other',
+      args.project.trim(),
+    ),
+    presentResult: presentBoardNoteResult,
+    execute(args, exec) {
+      return runTool(async () => {
+        assertKnownArguments(args, TOOL_ARGUMENT_KEYS.devlead_board_note_write)
+        const agent = requireAgent(exec.agent, 'devlead_board_note_write')
+        return ctx.devLead.writeBoardNote(agent, boardNoteWriteRequest(args), exec.signal)
       })
     },
   }), { when: ({ agent }) => ctx.devLead.isEnabled(agent) })

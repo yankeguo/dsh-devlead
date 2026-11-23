@@ -38,6 +38,7 @@ import {
   type DevLeadBoardTask,
   type DevLeadBoardTaskStatus,
   type DevLeadBoardUpdatedBy,
+  type DevLeadNotesIndex,
 } from '@yankeguo/dsh-devlead-protocol'
 import type { ZodIssue } from 'zod'
 
@@ -85,6 +86,8 @@ export type DevLeadBoardErrorCode =
   | 'BOARD_PROJECT_NOT_FOUND'
   | 'BOARD_PROJECT_AMBIGUOUS'
   | 'BOARD_REVISION_CONFLICT'
+  | 'BOARD_NOTE_NOT_FOUND'
+  | 'BOARD_BYTES_CONFLICT'
   | 'BOARD_LIMIT_EXCEEDED'
   | 'BOARD_IO_ERROR'
 
@@ -407,7 +410,8 @@ function singleLine(value: string): string {
   return value.replaceAll(/[\p{Cc}\p{Cf}]+/gu, ' ').replaceAll(/\s+/gu, ' ').trim()
 }
 
-function resolveProject(board: DevLeadBoard, reference: string): DevLeadBoardProject {
+/** Resolve a board project by exact id, exact workspace path, or unique title. */
+export function resolveDevLeadBoardProject(board: DevLeadBoard, reference: string): DevLeadBoardProject {
   const trimmed = reference.trim()
   if (trimmed.length === 0) {
     throw new DevLeadBoardError('project must not be empty', 'BOARD_INVALID', [
@@ -445,7 +449,7 @@ function validateUpdateInput(patch: DevLeadBoardUpdate): DevLeadBoardUpdate {
   const candidate = emptyBoard(normalized.updatedBy, timestamp)
   if (patch.create !== true) {
     const reference = patch.project.trim()
-    if (reference.length === 0) resolveProject(candidate, reference)
+    if (reference.length === 0) resolveDevLeadBoardProject(candidate, reference)
     // Only the locked disk snapshot knows whether an upsert id is new, so seed
     // each id as an existing synthetic row: a status-only upsert of an existing
     // task passes preflight, while the real apply still enforces new-task titles.
@@ -518,8 +522,11 @@ function appendUtf8(target: { text: string; bytes: number }, addition: string, m
   return true
 }
 
-/** Render a valid cached board into the bounded dynamic-context summary. */
-export function renderDevLeadBoardSummary(board: DevLeadBoard | undefined): string {
+/** Render a valid cached board and notes cache into the bounded dynamic-context summary. */
+export function renderDevLeadBoardSummary(
+  board: DevLeadBoard | undefined,
+  notes?: DevLeadNotesIndex,
+): string {
   if (board === undefined || board.projects.length === 0) return ''
   const counts: Record<DevLeadBoardProjectStatus, number> = { active: 0, blocked: 0, paused: 0, done: 0 }
   for (const project of board.projects) counts[project.status] += 1
@@ -529,10 +536,22 @@ export function renderDevLeadBoardSummary(board: DevLeadBoard | undefined): stri
   ]
   for (const project of board.projects) {
     const focus = Array.from(singleLine(project.focus)).slice(0, 120).join('')
+    const projectNotes = project.status === 'active'
+      ? notes?.projects.find(candidate => candidate.id === project.id)?.notes
+      : undefined
+    const latest = projectNotes?.reduce<DevLeadNotesIndex['projects'][number]['notes'][number] | undefined>(
+      (current, note) => current === undefined || note.updatedAt > current.updatedAt ? note : current,
+      undefined,
+    )
+    const latestTitle = latest === undefined
+      ? ''
+      : Array.from(singleLine(latest.title)).slice(0, 80).join('')
     lines.push(
       `- ${singleLine(project.id)}/${singleLine(project.workspace.title)} [${project.status}/${project.priority}]`
       + `${focus.length === 0 ? '' : ` focus: ${focus}`}`
-      + `${project.blockers.length === 0 ? '' : ` !blockers:${project.blockers.length}`}`,
+      + `${project.blockers.length === 0 ? '' : ` !blockers:${project.blockers.length}`}`
+      + `${projectNotes === undefined || projectNotes.length === 0 ? '' : ` notes:${projectNotes.length}`}`
+      + `${latestTitle.length === 0 ? '' : ` latest:"${latestTitle}"`}`,
     )
   }
   const output = { text: '', bytes: 0 }
@@ -768,7 +787,7 @@ export class DevLeadBoardStore {
     let projects: readonly DevLeadBoardProject[]
     let truncated = false
     if (filter.project !== undefined) {
-      projects = [resolveProject(board, filter.project)]
+      projects = [resolveDevLeadBoardProject(board, filter.project)]
     } else {
       const limit = Math.min(filter.limit ?? DEVLEAD_BOARD_MAX_PROJECTS, DEVLEAD_BOARD_MAX_PROJECTS)
       projects = board.projects.slice(0, limit)
@@ -783,6 +802,11 @@ export class DevLeadBoardStore {
       }),
       ...truncated ? { truncated: true } : {},
     })
+  }
+
+  /** Resolve one id/title/path against the latest valid board snapshot. */
+  async resolveProject(reference: string): Promise<DevLeadBoardProject> {
+    return structuredClone(resolveDevLeadBoardProject(await this.current(), reference))
   }
 
   /**
@@ -835,7 +859,7 @@ export class DevLeadBoardStore {
         }
         const next = structuredClone(current)
         const changed = applyProjectPatch(next, patch, timestamp)
-        const project = resolveProject(next, patch.project)
+        const project = resolveDevLeadBoardProject(next, patch.project)
         if (changed.length === 0) {
           return {
             revision: current.revision,
@@ -867,7 +891,7 @@ export class DevLeadBoardStore {
         return {
           revision: validated.revision,
           updatedAt: validated.updatedAt,
-          project: projectView(resolveProject(validated, project.id), false),
+          project: projectView(resolveDevLeadBoardProject(validated, project.id), false),
           changed,
         }
       }, signal === undefined ? {} : { signal })
@@ -879,9 +903,9 @@ export class DevLeadBoardStore {
   }
 
   /** Synchronous cache-only text for `systemPrompt.context()`. */
-  summary(): string {
+  summary(notes?: DevLeadNotesIndex): string {
     if (this.filePath === undefined) return ''
-    return renderDevLeadBoardSummary(this.cache)
+    return renderDevLeadBoardSummary(this.cache, notes)
   }
 }
 
@@ -890,7 +914,7 @@ function applyProjectPatch(board: DevLeadBoard, patch: DevLeadBoardUpdate, times
   const changed: string[] = []
   let project: DevLeadBoardProject
   try {
-    project = resolveProject(board, patch.project)
+    project = resolveDevLeadBoardProject(board, patch.project)
   } catch (error) {
     if (!(error instanceof DevLeadBoardError) || error.code !== 'BOARD_PROJECT_NOT_FOUND' || patch.create !== true) throw error
     const workspacePatch = patch.set?.workspace

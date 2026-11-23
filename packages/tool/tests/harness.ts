@@ -20,6 +20,9 @@ import type {
 } from '@deepseek-ai/dsh-tools'
 import { DevLeadError, isHumanDirectedTurn } from '@yankeguo/dsh-devlead'
 import type {
+  DevLeadBoardNoteReadResult,
+  DevLeadBoardNoteWrite,
+  DevLeadBoardNoteWriteResult,
   DevLeadBoardReadResult,
   DevLeadBoardUpdate,
   DevLeadBoardUpdateResult,
@@ -288,6 +291,30 @@ export class FakeDevLead {
     changed: ['set.focus'],
   }
 
+  /** Note read result returned by the board-notes facade. */
+  boardNoteRead: DevLeadBoardNoteReadResult = {
+    revision: 3,
+    updatedAt: '2026-01-02T00:00:00.000Z',
+    project: { id: 'webapp', directory: 'webapp-0123456789ab' },
+    notes: [{
+      id: 'note-1', title: 'Release plan', summary: 'checklist', updatedAt: '2026-01-02T00:00:00.000Z',
+      bytes: 7, path: 'webapp-0123456789ab/note-1.md',
+    }],
+  }
+
+  /** Note mutation result returned by the board-notes facade. */
+  boardNoteWritten: DevLeadBoardNoteWriteResult = {
+    revision: 4,
+    updatedAt: '2026-01-02T00:00:00.000Z',
+    project: { id: 'webapp', directory: 'webapp-0123456789ab' },
+    note: {
+      id: 'note-1', title: 'Release plan', summary: 'checklist', updatedAt: '2026-01-02T00:00:00.000Z',
+      bytes: 7, path: 'webapp-0123456789ab/note-1.md',
+    },
+    operation: 'update',
+    changed: true,
+  }
+
   /** Dynamic summary returned by the cache-only board facade. */
   boardSummary = 'DevLead board r7 2026-01-02T00:00:00.000Z; projects 1: active 1, blocked 0, paused 0, done 0'
 
@@ -319,6 +346,25 @@ export class FakeDevLead {
   ): Promise<DevLeadBoardUpdateResult> {
     this.enter('updateBoard', agent, request, expectedRevision, signal)
     return this.boardUpdated
+  }
+
+  /** Record one active-lead note metadata/body read. */
+  async readBoardNote(
+    agent: Agent,
+    filter: { project: string; note?: string },
+  ): Promise<DevLeadBoardNoteReadResult> {
+    this.enter('readBoardNote', agent, filter)
+    return this.boardNoteRead
+  }
+
+  /** Record one active-lead logical note mutation. */
+  async writeBoardNote(
+    agent: Agent,
+    patch: DevLeadBoardNoteWrite,
+    signal?: AbortSignal,
+  ): Promise<DevLeadBoardNoteWriteResult> {
+    this.enter('writeBoardNote', agent, patch, signal)
+    return this.boardNoteWritten
   }
 
   /** Record one call and throw the injected failure, when any. */

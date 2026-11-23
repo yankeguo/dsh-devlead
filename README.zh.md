@@ -7,7 +7,7 @@
 **Session**（会话），创建并续写其他会话、读取它们的状态、在状态变化时被唤醒——于是一个
 agent 就能在人可见、可参与的标准界面里统管多个仓库。
 
-当前候选版 **0.4.2-rc.3**（prerelease，npm dist-tag `next`；稳定版 `latest` 仍为 **0.4.1**） ·
+当前候选版 **0.4.2-rc.4**（prerelease，npm dist-tag `next`；稳定版 `latest` 仍为 **0.4.1**） ·
 DSH **0.2.2-rc.1 – 0.2.2-rc.5** · 一条 `dsh plugin` 命令即可装好全部组件。
 
 ## 核心能力
@@ -18,10 +18,10 @@ DSH **0.2.2-rc.1 – 0.2.2-rc.5** · 一条 `dsh plugin` 命令即可装好全�
 | **调度者，而非实现者** | DevLead 依据已注册的元数据判定请求归哪个 Workspace，向那里的 Session 发送一份自包含简报，关注它、审阅交付并汇报。更深的调查与实现留在子会话里。 |
 | **真实的 DSH 实体** | Workspace 走 `ctx.workspaceRegistry`；子会话是侧边栏里可见的普通 Session，你可以打开、继续、归档——不是隐藏的 subagent。 |
 | **通知回路** | 被关注 Session 的 turn 结束时，一条持久通知会唤醒 DevLead，让它跟进、派发新工作或汇报。重启后关注索引会从持久记录重建。 |
-| **16 个主工具 + 1 个汇报工具** | 注册/列出/移除 Workspace，列出 Host 模型与 Agent preset，创建/读取/续写/归档/恢复/关注 Session，查看并撤回排队的 inbox 输入，读取通知与汇报摘要，并维护对 active lead 默认启用的用户可见项目看板。被关注的子会话另有单向的 `devlead_report`。 |
+| **18 个主工具 + 1 个汇报工具** | 注册/列出/移除 Workspace，列出 Host 模型与 Agent preset，创建/读取/续写/归档/恢复/关注 Session，查看并撤回排队的 inbox 输入，读取通知与汇报摘要，并维护对 active lead 默认启用的用户可见项目看板与项目 Markdown notes。被关注的子会话另有单向的 `devlead_report`。 |
 | **人类命令** | `/devlead`、`/devlead on\|off`、`/devlead reset`、`/devlead watch\|unwatch <session>`——会话可用完整 id 或唯一前缀寻址。 |
 | **可选的 worktree 隔离** | 当 Host 组合了 DSH 的实验性 Git worktree 服务时，被派发的 Session 可以拥有自己的分支和检出，而不必共享 Workspace checkout。缺少该能力时退化为共享 checkout，并在结果里如实上报状态。 |
-| **Web 界面** | composer 工具条里的带文本 DevLead 开关（两态都在）、开启后的只读 DevLeadBar、侧边栏 active/watched 标记，以及仅 lead 可见的右侧栏只读项目看板；看板支持随页面可见性/焦点自动刷新、状态 KPI、响应式卡片与次级折叠。 |
+| **Web 界面** | composer 工具条里的带文本 DevLead 开关（两态都在）、开启后的只读 DevLeadBar、侧边栏 active/watched 标记，以及仅 lead 可见的右侧栏只读项目看板；看板支持随页面可见性/焦点自动刷新、单行 KPI pill strip、紧凑的 2/3/1 列响应式卡片、项目 notes chip 与安全的全栏 Markdown notes reader。 |
 
 ## 与 subagent / agent-team 的对比
 
@@ -67,18 +67,20 @@ Web 页面。
 固定到精确版本：
 
 ```sh
-dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.3
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.4
 ```
 
-0.4.2-rc.3 是计划中 0.4.2 补丁版的当前 prerelease 候选，取代 0.4.2-rc.2。相对 rc.2，client
-看板新增覆盖所有文件状态的自动刷新并重做整体视觉；Host 看板 schema/API 不变。0.4.2 系列让项目
-看板对 active lead **默认启用**（由该 Session 的原始 workspace 根派生），右侧栏提供 **仅 lead
-可见的只读看板 UI**；模型侧看板读取有 64 KiB 上限，修复长 workspace path/title 作为 project
-引用的误判；看板 start 失败时只降级、不阻塞插件加载。没有公网 API 破坏性变更，DSH 兼容面不变。
-本候选以 npm dist-tag `next` stage，在稳定版 0.4.2 被 approve 前请按上面的精确版本安装；`latest`
-仍为 **0.4.1**。历史 rc.1/rc.2 release notes 保持原样；从未 approve 的 0.4.2-rc.1 staged 记录
-不得 approve。详见
-[0.4.2-rc.3 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.2-rc.3.md)；
+0.4.2-rc.4 是计划中 0.4.2 补丁版的当前 prerelease 候选，取代 rc.3 候选。本轮新增位于
+`board.json` 旁、仅 active lead 可写的项目 Markdown notes，并把看板收紧为单行 KPI pill strip、
+紧凑卡片与 2/3/1 列响应式布局；全栏只读 notes reader 提供安全 Markdown 子集，index 与当前 note
+分别自动刷新。0.4.2 系列让项目看板对 active lead **默认启用**（由该 Session 的原始 workspace 根
+派生），右侧栏提供 **仅 lead 可见的只读看板 UI**；模型侧看板读取有 64 KiB 上限，修复长 workspace
+path/title 作为 project 引用的误判；看板 start 失败时只降级、不阻塞插件加载。没有公网 API 破坏性
+变更，DSH 兼容面不变。本候选按发布流程以 npm dist-tag `next` stage，在稳定版 0.4.2 被 approve 前请按上面的
+精确版本安装；`latest` 仍为 **0.4.1**。历史上，rc.3 候选为看板加入覆盖所有文件状态的自动刷新
+并重做视觉；rc.1/rc.2/rc.3 release notes 保持为历史记录。本候选不会把任何旧候选追认为已 approve，
+从未 approve 的 0.4.2-rc.1 staged 记录不得 approve。详见
+[0.4.2-rc.4 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.2-rc.4.md)；
 上一个稳定补丁的说明见
 [0.4.1 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.1.md)。
 
@@ -92,7 +94,7 @@ dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.3
 dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 
 # 或固定到某个版本（prerelease 必须写精确版本）
-dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.3
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.4
 ```
 
 > **从旧版本（低于 0.4.0）升级：** 0.4.0 会直接丢弃旧的 DevLead 会话状态（模式、关注集合、
@@ -294,9 +296,10 @@ worktree** 能力时，`devlead_create_session` 接受 `isolation: "worktree"`�
 
 ## 工具参考
 
-16 个主工具只在 DevLead 会话中可见；`devlead_report` 只在被关注的非 lead Session 中可见。
+18 个主工具只在 DevLead 会话中可见；`devlead_report` 只在被关注的非 lead Session 中可见。
 所有 `workspace` 参数都接受 id、注册路径或精确标题；所有 `session` 参数都接受完整 id、
-唯一前缀或 uuid 第一段。
+唯一前缀或 uuid 第一段。notes 工具的 `project` 接受看板项目 id、workspace title 或绝对 workspace
+path；两个 notes 工具都不接受文件路径参数。
 
 | 工具 | 用途 | 关键参数 |
 | --- | --- | --- |
@@ -305,6 +308,8 @@ worktree** 能力时，`devlead_create_session` 接受 `isolation: "worktree"`�
 | `devlead_list_agent_presets` | Host 的 Agent preset roster 及实际生效的默认值 | — |
 | `devlead_board_read` | 读取用户可见项目看板（结果有界） | `project?`、`include_tasks?`、`limit?` |
 | `devlead_board_update` | 仅 lead AI 可写的项目状态/阻塞/任务更新 | `project`、`expected_revision?`、`create?`、`set?`、`blockers?`、`tasks?` |
+| `devlead_board_note_read` | 读取项目 note metadata 列表或单条 Markdown 正文 | `project`、`note?` |
+| `devlead_board_note_write` | 以 CAS 创建/更新/追加/删除项目 note | `project`、`operation`、`note?`、`title?`、`summary?`、`content?`、`expected_revision?`、`expected_bytes?` |
 | `devlead_use_workspace` | 注册 Workspace（幂等） | `path`（绝对路径）、`title?`、`create?`（默认 false） |
 | `devlead_list_sessions` | 列出 Session | `workspace?`、`watched_only?`、`limit?` |
 | `devlead_create_session` | 创建（并可选 prompt）子会话 | `workspace?`、`prompt?`、`title?`、`watch?`、`preset?`、`isolation?`、`provider?`+`model?`、`agent_teams?` |
@@ -388,6 +393,14 @@ lead 同步/切换会重新解析。start 失败（例如目录不可写）只�
 坏文件处理与持久性边界见 [docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md)。
 看板 wire schema 与 limits 由 `@yankeguo/dsh-devlead-protocol` 单点维护，Host 校验器与浏览器解码器共用。
 
+项目 notes 位于 `dirname(boardPath)/notes/`：严格 schema v1 的 `index.json` 只存 metadata，Markdown
+正文分别在 `<sanitized project>/<note-id>.md`。index 上限 128 KiB、单 note 上限 256 KiB、每项目最多
+100 条，`board.json` 本身不变。只有 active lead AI 能写 notes；写入使用文件锁、原子替换、
+`expected_revision` index CAS，以及 update/append/delete 的 `expected_bytes` 正文 CAS。人类与浏览器
+只读。浏览器从已解析的 board path 派生 notes 根目录，只通过既有 Workspace Files Remote 读取，既不接受
+任意路径，也不暴露写 API。完整 index schema、错误码、orphan 处理与持久性边界见
+[docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md)。
+
 `tool` / `command` / `client-ui` 没有部署配置；领域限制（watch 上限、通知保留条数等）由核心
 服务与 protocol 常量决定。可选 worktree 隔离**没有配置键**：只有当 profile 组合了实验性
 worktree 服务时才存在，并且每次派发通过 `isolation` 参数使用。
@@ -414,9 +427,10 @@ worktree 服务时才存在，并且每次派发通过 `isolation` 参数使用�
   只在 lead 持有看板时发布到浏览器。如果页面在 lead 启用之前就已加载，客户端会从该 lead Session
   summary 的 `cwd` 自行派生默认路径；**用配置固定 `boardPath` 的部署在这种 late-enable 场景需要
   刷新页面**，因为只有刷新后的页面才携带 override 路径。关闭模式或切换 lead 会立即重渲染，绝不
-  继续读旧文件。顶部显示 active/blocked/paused/done KPI、revision/updated 与 Live 自动状态；blocked
-  强警示置顶，active 主区响应式 2 列（窄栏 1 列），同组按优先级与更新时间排序，卡片展示 focus/next/
-  blockers、任务进度和可展开详情；paused/done/unlisted 使用次级折叠。文件 change 保留 120ms debounce，
+  继续读旧文件。顶部以单行 pill strip 显示 active/blocked/paused/done KPI，并紧凑呈现 revision/updated
+  与 Live 自动状态；blocked 强警示置顶，active 主区响应式 2/3 列（窄栏 1 列），同组按优先级与更新时间
+  排序。卡片不重复显示可见 field label，但保留 focus/next/blockers、任务进度和可展开详情，图标带可访问
+  tooltip；paused/done/unlisted 使用次级折叠。文件 change 保留 120ms debounce，
   所有状态都有轮询：ready/loading 默认固定 5s，empty/error 从 5s 起指数退避到 30s 上限。仅 document
   visible 且 focused 时轮询；恢复立即 coalesced read，blur/hidden/unmount/path change 清理 timer，
   watch/poll/恢复共享 in-flight 读取去重。watch ended 不静默重连，但轮询继续；手动刷新仍可强制重读并
@@ -424,6 +438,12 @@ worktree 服务时才存在，并且每次派发通过 `isolation` 参数使用�
   （清单读取失败时错误优先于「读取中」）。用户只能刷新与展开，不能编辑看板。若 lead 记录的原始
   workspace 根已不存在，Host 保持看板 disabled 且不重建目录；client 侧自愈派生的入口仍可能显示空态/
   读取错误，但不会写盘。
+
+  notes index 提供数据时，项目卡片显示 note 数与最近标题 chip。打开 note 后 reader 使用右侧栏全宽，
+  不挤在卡片列里；安全 Markdown 子集只生成 React 文本/元素，不使用 raw-HTML sink，只有显式 HTTP(S)
+  目标会变成链接，界面始终只读。index 与当前打开的 note 分别复用看板的 Workspace Files watch +
+  visibility/focus-gated polling，外部修改会自动刷新；坏 index 或坏 note 只降级对应 notes 区域，不会
+  隐藏或损坏 board。
 
 关闭（工具条开关是唯一控件）：
 

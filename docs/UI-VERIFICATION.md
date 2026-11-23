@@ -126,6 +126,55 @@
 不能证明真实 document focus/visibility、实际 5s/退避节奏、watch 断开后的持续轮询、响应式布局或
 light/dark 对比度，因此不能替代本节的隔离 profile 人工验收。未逐项留存证据前不得标记为已通过。
 
+### 0.4.2-rc.4 必查：紧凑看板与项目 notes
+
+本轮仍使用上面的全新隔离 profile，不以组件测试、DOM 断言或旧候选截图代替真实浏览器走查。准备至少
+active / blocked / paused / done 各一个项目；active 项目要有长短标题、长 workspace path、focus/next、
+blocker、任务进度与多条 notes，另准备一个完全没有 notes 的项目。逐项确认：
+
+1. **无冗余标签与紧凑信息层级**：卡片正文不重复显示肉眼可见的 `Workspace` / `Focus` / `Next` /
+   `Blockers` / `Tasks` 等 field label；字段含义由位置、图标、内容排版和无障碍名称表达。不得为了去标签
+   而删掉 workspace、focus/next、blocker since、任务 done/total、priority/status、updatedAt 等信息。
+   图标按钮和不自明图标都有 tooltip 与可访问名称，全文仍可通过原生 `title`、disclosure 或 reader 阅读。
+   展开原生任务 disclosure 时必须同时解除 focus/next/goal/blocker/task 的 line-clamp，触控和键盘用户不能
+   只能依赖 hover 才能读全；卡片不应另有一个语义重复的伪按钮展开入口。
+2. **KPI 与卡片密度**：active/blocked/paused/done KPI 是**单行 pill strip**，不是四张独立大卡片；
+   数量与状态可辨且不挤成多行；极窄栏允许 pill strip 自身横向滚动，但页面/卡片不得横向溢出。
+   revision、updated、Live/refresh 状态保持可读但不抢占主内容。卡片间距、
+   标题、元信息、正文与任务 disclosure 有清楚的焦点层级；键盘焦点、当前展开区和 blocked 警示不能只靠
+   颜色区分。长内容不造成意外换行、遮挡或横向滚动。
+3. **blocked 与响应式列**：blocked 项目继续以强警示置顶，其 blocker 内容完整可达，不能在紧凑化后弱化
+   成普通 active 卡片。调整**右栏 container 宽度**（同时补测 viewport）确认宽栏 2 列、更宽栏 3 列、
+   窄栏 1 列；列数变化不丢卡片、不改变项目顺序语义，也不把 KPI 撑成多列大卡片。极窄栏下所有操作仍可达。
+4. **主题、键盘与 a11y**：light/dark 各完整走查一遍，检查 pill、图标、次级文字、blocked/warning/error、
+   empty/loading、notes chip 与 reader 的对比度。只用键盘操作刷新、项目/任务/paused/done/unlisted
+   disclosure、notes 列表、打开/关闭 reader 与链接；焦点始终可见，打开 reader 后焦点落点合理，关闭后回到
+   触发控件。核对标题关联、按钮名称、状态 live region、任务进度 aria 值与 disclosure 展开状态。
+5. **notes chip / count / latest**：有 notes 的项目显示 notes chip、准确 note 数和最近一条标题；最近标题按
+   `updatedAt` 选择，长标题截断但全文可达。无 notes 项目、空 index、index 不存在都不伪造 chip/count/latest。
+   notes 元信息来自 `dirname(boardPath)/notes/index.json`，正文只在打开对应 note 时读取，index 不包含正文。
+6. **全栏只读 reader 与安全 Markdown**：打开 note 后 reader 使用右栏全宽，不被项目卡片网格压成半栏；
+   显示标题、摘要/更新时间与正文，返回/关闭后项目上下文仍在。用一份真实 note 覆盖 headings、段落、
+   有序/无序列表、blockquote、 fenced code、inline code、bold/italic/strikethrough 与 HTTP(S) link。
+   再混入 `<img src=x onerror=alert(1)>`、`<script>…</script>`、`javascript:alert(1)`、`data:text/html,…`
+   等载荷：HTML/危险链接必须以**文本**呈现或保持不可点击，不执行脚本、不发起危险导航、不产生 HTML sink；
+   reader 不提供编辑控件。
+7. **空、加载与错误状态**：分别检查 index 不存在、单 note 不存在、首次加载、Remote read error、坏 UTF-8、
+   超限 index/note。加载中不谎称空；空态不报错；单 note 失败只影响该 reader，保留可操作的关闭/重试路径。
+   坏 index/坏 note 显示解析错误与可操作的恢复路径，不能把旧正文冒充当前内容。
+8. **外部修改自动更新**：不点手动刷新，分别原子改写 index 与**当前打开的** note，记录写入时间、
+   revision/metadata 或正文变化和浏览器画面；watch change 后应更新，watch ended 时也由现有可见且聚焦
+   页面的 poll 自动恢复。未打开的其它 note 不应被无谓读取。再验证 hidden/blur 暂停、恢复立即 coalesced
+   read，以及 lead/path 切换后不再读取旧 index/note。
+9. **故障隔离**：坏 index 只让 notes 区降级，坏 note 只让当前 reader 降级；board 的 KPI、项目卡片、
+   任务与原有 watch/poll/刷新仍正常。反过来坏 board 不应被 notes 的合法缓存伪装成正常 board。修复坏文件后
+   不刷新整页也能通过 change/poll/重试恢复。
+10. **真实截图证据**：至少保存 light + dark 各一张 3 列和 2 列全景、一张 1 列窄栏、一张 blocked、
+    一张带 notes chip/count/latest 的项目、一张全栏 Markdown reader、一张危险载荷以文本显示的 reader，
+    以及空态、index 错误、note 错误各一张。截图须来自本轮隔离 profile 的真实页面，包含足够上下文辨认
+    主题、栏宽和状态；自动刷新另附带时间戳的文件写入记录 + Remote 调用/录屏。文件名、日期、对应检查项和
+    实际结果由发布证据记录；缺图、仅有旧截图或仅有自动化断言时不得把本轮人工验收标为通过。
+
 ### 清理
 
 ```sh

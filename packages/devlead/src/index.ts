@@ -173,6 +173,13 @@ import type {
   DevLeadBoardUpdate,
   DevLeadBoardUpdateResult,
 } from './board.ts'
+import { DevLeadBoardNotesStore } from './notes.ts'
+import type {
+  DevLeadBoardNoteReadFilter,
+  DevLeadBoardNoteReadResult,
+  DevLeadBoardNoteWrite,
+  DevLeadBoardNoteWriteResult,
+} from './notes.ts'
 import { DevLeadNotificationHub } from './notification.ts'
 import type { DevLeadPersistedLead, DevLeadReportDeliveryState } from './notification.ts'
 import { persistedSessionsOf } from './persistence.ts'
@@ -229,6 +236,7 @@ export { childReportLane } from './message-policy.ts'
 export { DevLeadMetrics } from './metrics.ts'
 export type { DevLeadCounterSample, DevLeadDeliveryOutcome } from './metrics.ts'
 export * from './board.ts'
+export * from './notes.ts'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -997,6 +1005,9 @@ export class DevLeadService extends Service {
    */
   private boardStore: DevLeadBoardStore
 
+  /** Markdown notes store paired with {@link boardStore}'s exact path and lifecycle. */
+  private notesStore: DevLeadBoardNotesStore
+
   /** Active lead Session whose workspace owns {@link boardStore}, when enabled. */
   private boardLeadSessionIdValue: string | undefined
   /** Whether the current board path comes from the deployment Config override. */
@@ -1374,6 +1385,7 @@ export class DevLeadService extends Service {
     // No lead yet: existing tools/summary/injection see a disabled board until
     // the single active lead is known and its workspace root is resolved.
     this.boardStore = new DevLeadBoardStore(undefined, this.ctx.logger)
+    this.notesStore = new DevLeadBoardNotesStore(undefined, this.boardStore, this.ctx.logger)
   }
 
   protected async [Service.init](): Promise<void> {
@@ -1438,6 +1450,7 @@ export class DevLeadService extends Service {
           await this.boardSyncTail.catch(() => undefined)
           await Promise.all([
             this.boardStore.close(),
+            this.notesStore.close(),
             this.outbox?.close(),
             this.idempotencyStore?.close(),
           ])
@@ -2731,6 +2744,11 @@ export class DevLeadService extends Service {
     return this.boardStore
   }
 
+  /** Current notes store, rooted at `dirname(board.path)/notes` when enabled. */
+  get notes(): DevLeadBoardNotesStore {
+    return this.notesStore
+  }
+
   /** Active lead Session id whose workspace owns the current board, when enabled. */
   get boardLeadSessionId(): string | undefined {
     return this.boardLeadSessionIdValue
@@ -2796,7 +2814,32 @@ export class DevLeadService extends Service {
   boardSummaryFor(agent: Agent): string {
     if (!this.isEnabled(agent)) return ''
     if (this.boardLeadSessionIdValue !== String(agent.id)) return ''
-    return this.boardStore.summary()
+    return this.boardStore.summary(this.notesStore.summaryIndex())
+  }
+
+  /** Read one active-lead project's note metadata or one complete Markdown note. */
+  async readBoardNote(
+    agent: Agent,
+    filter: DevLeadBoardNoteReadFilter,
+  ): Promise<DevLeadBoardNoteReadResult> {
+    if (!this.isEnabled(agent)) {
+      throw new DevLeadError('DevLead mode is not enabled for the calling Agent', 'DEVLEAD_NOT_ENABLED')
+    }
+    this.requireActiveBoardLead(agent)
+    return this.notesStore.read(filter)
+  }
+
+  /** Apply one logical note mutation for the active lead; no caller path is accepted. */
+  async writeBoardNote(
+    agent: Agent,
+    patch: DevLeadBoardNoteWrite,
+    signal?: AbortSignal,
+  ): Promise<DevLeadBoardNoteWriteResult> {
+    if (!this.isEnabled(agent)) {
+      throw new DevLeadError('DevLead mode is not enabled for the calling Agent', 'DEVLEAD_NOT_ENABLED')
+    }
+    this.requireActiveBoardLead(agent)
+    return this.notesStore.write(patch, signal)
   }
 
   /** Reject a board operation whose caller does not own the current store. */
@@ -2898,6 +2941,7 @@ export class DevLeadService extends Service {
       return
     }
     const previous = this.boardStore
+    const previousNotes = this.notesStore
     if (previous.path === nextPath) {
       this.boardLeadSessionIdValue = sessionId
       this.boardPathOverrideValue = nextOverride
@@ -2911,6 +2955,7 @@ export class DevLeadService extends Service {
       return
     }
     const next = new DevLeadBoardStore(nextPath, this.ctx.logger)
+    const nextNotes = new DevLeadBoardNotesStore(nextPath, next, this.ctx.logger)
     let startError: DevLeadBoardStartError | undefined
     try {
       await next.start()
@@ -2918,12 +2963,20 @@ export class DevLeadService extends Service {
       startError = devLeadBoardStartErrorOf(error)
       this.logBoardStartFailure(nextPath, startError)
     }
+    try {
+      await nextNotes.start()
+    } catch (error: unknown) {
+      const notesError = devLeadBoardStartErrorOf(error)
+      startError ??= notesError
+      this.logBoardStartFailure(nextNotes.indexPath ?? nextPath, notesError)
+    }
     this.boardStore = next
+    this.notesStore = nextNotes
     this.boardLeadSessionIdValue = sessionId
     this.boardPathOverrideValue = nextOverride
     this.boardDisabledReasonValue = undefined
     this.boardStartErrorValue = startError
-    await this.closeBoardStore(previous)
+    await Promise.all([this.closeBoardStore(previous), this.closeNotesStore(previousNotes)])
   }
 
   /**
@@ -2953,6 +3006,13 @@ export class DevLeadService extends Service {
       startError = devLeadBoardStartErrorOf(error)
       this.logBoardStartFailure(path, startError)
     }
+    try {
+      await this.notesStore.start()
+    } catch (error: unknown) {
+      const notesError = devLeadBoardStartErrorOf(error)
+      startError ??= notesError
+      this.logBoardStartFailure(this.notesStore.indexPath ?? path, notesError)
+    }
     this.boardStartErrorValue = startError
   }
 
@@ -2967,13 +3027,15 @@ export class DevLeadService extends Service {
   /** Release any current board store and expose why the board is disabled. */
   private async disableBoardStore(reason: DevLeadBoardDisabledReason): Promise<void> {
     const previous = this.boardStore
+    const previousNotes = this.notesStore
     this.boardLeadSessionIdValue = undefined
     this.boardPathOverrideValue = false
     this.boardStartErrorValue = undefined
     this.boardDisabledReasonValue = reason
     if (previous.path !== undefined) {
       this.boardStore = new DevLeadBoardStore(undefined, this.ctx.logger)
-      await this.closeBoardStore(previous)
+      this.notesStore = new DevLeadBoardNotesStore(undefined, this.boardStore, this.ctx.logger)
+      await Promise.all([this.closeBoardStore(previous), this.closeNotesStore(previousNotes)])
     }
   }
 
@@ -2984,6 +3046,16 @@ export class DevLeadService extends Service {
       await store.close()
     } catch (error: unknown) {
       this.ctx.logger.warn(`devlead: could not close the previous project board store: ${thrownMessage(error)}`)
+    }
+  }
+
+  /** Close one replaced notes store without failing the surrounding board swap. */
+  private async closeNotesStore(store: DevLeadBoardNotesStore): Promise<void> {
+    if (store.path === undefined) return
+    try {
+      await store.close()
+    } catch (error: unknown) {
+      this.ctx.logger.warn(`devlead: could not close the previous board notes store: ${thrownMessage(error)}`)
     }
   }
 
