@@ -12,6 +12,12 @@
  *        initial prompt (`ctx.devLead.createSession(agent, request, signal?)`);
  *     3. read the created Session back from the Host store.
  *
+ *   `devlead-e2e-board-state` (phase 3)
+ *     Read the current lead's board activation facts (`ctx.devLead.board.path`,
+ *     `boardLeadSessionId`, `boardPathOverride`) and one real `readBoard` call,
+ *     returning the structured failure when the board is disabled. Used for the
+ *     no-workspace BOARD_DISABLED and mode-off lifecycle assertions.
+ *
  *   `devlead-e2e-inspect` (phase 3)
  *     Resolve the tools a real model step would see for the calling Agent
  *     (`ctx.tools.resolve` + the admitted `ResolvedToolSet`) and assemble the
@@ -269,6 +275,8 @@ export const INSPECT_COMMAND_NAME = 'devlead-e2e-inspect'
 export const CLOSE_COMMAND_NAME = 'devlead-e2e-close'
 /** Real board writes and CAS through the enabled lead's Host service. */
 export const BOARD_COMMAND_NAME = 'devlead-e2e-board'
+/** Board activation facts plus a real read, including the disabled failure. */
+export const BOARD_STATE_COMMAND_NAME = 'devlead-e2e-board-state'
 /** Dispatch-settings command: creation-time model selection + Agent Teams. */
 export const DISPATCH_COMMAND_NAME = 'devlead-e2e-dispatch'
 /** Create one idle watched child for the report-surface checks. */
@@ -473,6 +481,10 @@ async function executeInspect(ctx, invocation) {
       storage: ctx.get('storage') !== undefined,
       reportOutboxAvailable: ctx.devLead.reportOutboxAvailable === true,
       reportOutboxLastError: ctx.devLead.reportOutboxLastError ?? null,
+      boardPath: ctx.devLead.board.path ?? null,
+      boardLeadSessionId: ctx.devLead.boardLeadSessionId ?? null,
+      boardOverride: ctx.devLead.boardPathOverride,
+      boardStartError: ctx.devLead.boardStartError ?? null,
       workspaceRegistry: ctx.get('workspaceRegistry') !== undefined,
       toolError,
       policyError,
@@ -480,7 +492,7 @@ async function executeInspect(ctx, invocation) {
   }
 }
 
-/** Write two real board revisions, the second guarded by CAS, and read them back. */
+/** Write four real board revisions (CAS + long path/title refs) and read them back. */
 async function executeBoard(ctx, invocation) {
   const agent = invocation.agent
   const workspacePath = agent.session.header.cwd
@@ -500,10 +512,53 @@ async function executeBoard(ctx, invocation) {
     project: 'e2e-board',
     set: { focus: 'CAS committed through the real Host' },
   }, created.revision)
-  const detail = await ctx.devLead.board.read({ project: 'e2e-board' })
+  // Path/title references are resolved against the locked board; the values are
+  // longer than the id limit in real deployments, so this also proves the
+  // preflight no longer confuses a reference with a synthetic project id.
+  const byPath = await ctx.devLead.updateBoard(agent, {
+    project: workspacePath,
+    set: { next: 'updated through the workspace path' },
+  })
+  const byTitle = await ctx.devLead.updateBoard(agent, {
+    project: 'E2E Board',
+    set: { next: 'updated through the workspace title' },
+  })
+  const detail = await ctx.devLead.readBoard(agent, { project: 'e2e-board' })
   return {
     kind: 'success',
-    text: JSON.stringify({ boardPath: ctx.devLead.board.path, created, updated, detail }),
+    text: JSON.stringify({
+      boardPath: ctx.devLead.board.path ?? null,
+      boardLeadSessionId: ctx.devLead.boardLeadSessionId ?? null,
+      boardOverride: ctx.devLead.boardPathOverride,
+      created,
+      updated,
+      byPath,
+      byTitle,
+      detail,
+    }),
+  }
+}
+
+/** Report the lead's board activation facts plus one real read (for disabled cases). */
+async function executeBoardState(ctx, invocation) {
+  const agent = invocation.agent
+  let read
+  let error
+  try {
+    read = await ctx.devLead.readBoard(agent)
+  } catch (thrown) {
+    error = { code: thrown?.code ?? 'UNKNOWN', message: String(thrown?.message ?? thrown) }
+  }
+  return {
+    kind: 'success',
+    text: JSON.stringify({
+      enabled: ctx.devLead.isEnabled(agent),
+      boardPath: ctx.devLead.board.path ?? null,
+      boardLeadSessionId: ctx.devLead.boardLeadSessionId ?? null,
+      boardOverride: ctx.devLead.boardPathOverride,
+      read: read === undefined ? null : { revision: read.revision, projects: read.projects.length },
+      error: error ?? null,
+    }),
   }
 }
 
@@ -2270,8 +2325,14 @@ export function apply(ctx) {
   ctx.commands.register({
     definitionId: CommandDefinitionId(`${DEFINITION_ID}#board`),
     name: BOARD_COMMAND_NAME,
-    description: 'E2E probe: write two board revisions through the real Host, with CAS on the second write.',
+    description: 'E2E probe: write four board revisions through the real Host (CAS + path/title refs).',
     handler: guarded(BOARD_COMMAND_NAME, invocation => executeBoard(ctx, invocation)),
+  })
+  ctx.commands.register({
+    definitionId: CommandDefinitionId(`${DEFINITION_ID}#board-state`),
+    name: BOARD_STATE_COMMAND_NAME,
+    description: 'E2E probe: report the current board activation facts and the result of one real board read.',
+    handler: guarded(BOARD_STATE_COMMAND_NAME, invocation => executeBoardState(ctx, invocation)),
   })
   ctx.commands.register({
     definitionId: CommandDefinitionId(`${DEFINITION_ID}#dispatch`),

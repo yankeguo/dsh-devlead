@@ -31,10 +31,13 @@
  *               - a watched child `turn/end` writes a durable notification into
  *                 the lead Session and the projection exposes it;
  *               - `/devlead status` reports `Worktree isolation: unavailable`;
- *               - the board is disabled in this default composition: the client
- *                 plugin still statically declares its board client services,
- *                 but no `__DSH_DEVLEAD_BOARD__` global is injected.
- *             28 checks. The final `/devlead status` + `/devlead off` checks
+ *               - the default composition configures no board path: before any
+ *                 lead the client plugin still statically declares its board
+ *                 services but no `__DSH_DEVLEAD_BOARD__` global is injected;
+ *                 after `/devlead on` the Host derives
+ *                 `<scratch workspace>/.dsh/devlead/board.json`, publishes it
+ *                 (lead id + override:false) and precreates the parent.
+ *             30 checks. The final `/devlead status` + `/devlead off` checks
  *             move to phase 1b, so this instance is stopped with the enabled
  *             mode, watch set, and notification digest still durable for the
  *             restart assertions.
@@ -51,9 +54,14 @@
  *                 its watch index from persisted records (D2 rehydrate) and
  *                 resumed the cold lead to persist and deliver the wake
  *                 (`wakeColdSession` defaults to `true`);
+ *               - the cold lead's derived board global is published before any
+ *                 resume (its persisted header cwd is enough);
  *               - the resumed, now-live lead answers `/devlead status` (watched
- *                 child + recent notification) and the final `/devlead off`.
- *             12 checks.
+ *                 child + recent notification) and the final `/devlead off`,
+ *                 which removes the derived board global;
+ *               - a lead enabled in a second scratch workspace switches the
+ *                 derived board path immediately (no configuration/restart).
+ *             18 checks.
  *
  *   phase 2 — experimental worktree composition. The same profile's
  *             `dsh.profile.bundles` gains the official
@@ -74,9 +82,12 @@
  *             header cwd stays the Workspace path, and the Session belongs to
  *             the registered Workspace; the phase then releases its DevLead
  *             slot so the single-active phase 3 can enable its own lead. The
- *             scratch workspace is a real Git repository (one seed commit)
- *             because the worktree service branches from its `HEAD`.
- *             23 checks.
+ *             configured boardPath override is active here, so this phase also
+ *             proves the override wins over the workspace derivation and is
+ *             published as `override:true`. The scratch workspace is a real Git
+ *             repository (one seed commit) because the worktree service
+ *             branches from its `HEAD`.
+ *             24 checks.
  *
  *   phase 3 — close tools, dispatch routing, and triage policy. The same profile restarts (the
  *             probe package is linked and its overlay applied; the worktree
@@ -165,9 +176,11 @@
  *                 Agent Teams is version-adaptive: rc.2+ (default composition)
  *                 must apply it, while an rc.1 Host must reject the explicit
  *                 request with DEVLEAD_TEAM_UNAVAILABLE and create nothing.
- *             132 checks (including four real board checks: two Host writes
- *             with CAS, the injected browser global, and independent disk
- *             read-back; the pre-board total was 128).
+ *             135 checks (including the derived board path, four real Host
+ *             writes — CAS plus workspace-path/title references — the injected
+ *             browser global, independent disk read-back, lead-off store
+ *             release and the mode-off board state; the pre-board
+ *             total was 128).
  *
  *   phase 1e — message-lane delivery (DESIGN §4.4.4/§4.4.7/§4.4.11/§4.4.12).
  *             The same profile restarts with the probe overlay and a fresh
@@ -198,10 +211,10 @@
  * still run.
  *
  * Check counts are PINNED per phase (EXPECTED_CHECKS, baseline DSH
- * 0.2.2-rc.5): phase 1 = 28, phase 1b = 12, phase 2 = 23, phase 3 = 132,
- * phase 1e = 31, so every flow reports 226/226 checks (223 PASS + 3
+ * 0.2.2-rc.5): phase 1 = 30, phase 1b = 18, phase 2 = 24, phase 3 = 135,
+ * phase 1e = 31, so every flow reports 238/238 checks (235 PASS + 3
  * credential-less SKIP) when all five phases pass (`--no-worktree` skips
- * phase 2: 203/203). A deleted or added check fails the phase through the count
+ * phase 2: 214/214). A deleted or added check fails the phase through the count
  * pin. Run both flows before a release:
  *
  *   node scripts/e2e-smoke.mjs --flow patch
@@ -277,8 +290,10 @@ const PROBE_COMMAND = 'devlead-e2e-worktree'
 const PROBE_INSPECT_COMMAND = 'devlead-e2e-inspect'
 /** Close command: archive/unarchive/remove through the real Host. */
 const PROBE_CLOSE_COMMAND = 'devlead-e2e-close'
-/** Board command: two real writes with CAS plus a Host read-back. */
+/** Board command: real writes (CAS + path/title refs) plus a Host read-back. */
 const PROBE_BOARD_COMMAND = 'devlead-e2e-board'
+/** Board activation facts plus one real read, including the disabled failure. */
+const PROBE_BOARD_STATE_COMMAND = 'devlead-e2e-board-state'
 /** Dispatch-settings command: creation-time model selection + Agent Teams. */
 const PROBE_DISPATCH_COMMAND = 'devlead-e2e-dispatch'
 /** Create one idle watched child for report-surface checks. */
@@ -309,12 +324,17 @@ const PROBE_LANES_MERGE_COMMAND = 'devlead-e2e-lanes-merge'
 const PROBE_LANES_RATE_COMMAND = 'devlead-e2e-lanes-rate'
 /** Phase 1e: low-cardinality delivery/suppression/guard metrics snapshot. */
 const PROBE_LANES_METRICS_COMMAND = 'devlead-e2e-lanes-metrics'
+/** Default board file path the Host derives from one Session workspace root. */
+function derivedBoardPath(workspaceRoot) {
+  return join(workspaceRoot, '.dsh', 'devlead', 'board.json')
+}
+
 /**
  * Pinned per-phase check totals of the current harness (baseline: DSH
  * 0.2.2-rc.5). `Checks.summarize` fails when a phase reports a different
  * count, so deleting or silently skipping a check cannot pass unnoticed.
  */
-const EXPECTED_CHECKS = { phase1: 28, phase1b: 12, phase2: 23, phase3: 132, phase1e: 31 }
+const EXPECTED_CHECKS = { phase1: 30, phase1b: 18, phase2: 24, phase3: 135, phase1e: 31 }
 /** DSH version the pinned totals and scripted-turn contracts are verified against. */
 const BASELINE_DSH_VERSION = '0.2.2-rc.5'
 /** Probe command: queued-inbox visibility / ownership / idempotent retraction. */
@@ -955,9 +975,14 @@ class WebClient {
     }
   }
 
-  /** Create one ordinary Session in the scratch workspace. */
-  async createSession(paths) {
-    return await this.rpc('session/create', { request: { cwd: paths.workspace } })
+  /**
+   * Create one ordinary Session in the scratch workspace, another directory, or
+   * with no recorded workspace root (`cwd === null`).
+   * @param paths - scratch paths.
+   * @param cwd - Session workspace root; defaults to the scratch workspace.
+   */
+  async createSession(paths, cwd = paths.workspace) {
+    return await this.rpc('session/create', { request: cwd === null ? {} : { cwd } })
   }
 
   /**
@@ -1060,9 +1085,9 @@ async function runChecks(client, paths) {
     inject.includes('@deepseek-ai/dsh-api-remotes') && inject.includes('@deepseek-ai/dsh-client-ui-primitives'),
     `${String(inject.length)} injects`,
   )
-  // The board tab/button/global are gated by the deployment-published config,
-  // not by the static inject table (the DSH client loader needs the table at
-  // boot). With no boardPath this default composition must publish no global.
+  // The board tab/button/global are gated by lead activation, not by the static
+  // inject table (the DSH client loader needs the table at boot). With no active
+  // lead this default composition must publish no global.
   const globalNames = await client.injectedGlobalNames()
   checks.expect(
     'disabled board publishes no global while its client injects stay declared',
@@ -1118,6 +1143,26 @@ async function runChecks(client, paths) {
     'Session-list summary row follows /devlead on',
     row1?.projections?.values?.devLeadMode?.enabled === true,
     JSON.stringify(row1?.projections?.values?.devLeadMode),
+  )
+
+  // The board needs no configuration: the active lead's original workspace
+  // root owns `.dsh/devlead/board.json`, and the Host publishes that derived
+  // path (plus the lead identity) in the index global.
+  const defaultBoardPath = derivedBoardPath(paths.workspace)
+  const boardGlobal = await client.injectedGlobal('__DSH_DEVLEAD_BOARD__')
+  checks.expect(
+    'default board global follows the lead workspace without configuration',
+    boardGlobal?.boardPath === defaultBoardPath
+      && boardGlobal?.leadSessionId === leadId
+      && boardGlobal?.override === false
+      && boardGlobal?.schemaVersion === 1
+      && boardGlobal?.pathPlatform === (process.platform === 'win32' ? 'win32' : 'posix'),
+    JSON.stringify(boardGlobal),
+  )
+  checks.expect(
+    'enabling the lead precreates the derived board parent directory',
+    existsSync(join(paths.workspace, '.dsh', 'devlead')),
+    join(paths.workspace, '.dsh', 'devlead'),
   )
 
   const status = await client.command(leadId, '/devlead status')
@@ -1234,6 +1279,25 @@ async function runRehydrationChecks(client, paths, state) {
     JSON.stringify((coldProjection?.notifications ?? []).map(notification => notification.id)),
   )
 
+  // The board follows the cold lead too: its persisted header cwd is enough,
+  // no resume and no page-load lead activity is required.
+  // Rehydration may finish shortly after boot; poll the index injection rather
+  // than asserting on a single early request.
+  const coldBoardGlobal = await waitFor(async () => {
+    try {
+      return await client.injectedGlobal('__DSH_DEVLEAD_BOARD__')
+    } catch {
+      return undefined
+    }
+  }, 10_000)
+  checks.expect(
+    'restarted Host derives the cold lead board path from its persisted header',
+    coldBoardGlobal?.boardPath === derivedBoardPath(paths.workspace)
+      && coldBoardGlobal?.leadSessionId === leadId
+      && coldBoardGlobal?.override === false,
+    JSON.stringify(coldBoardGlobal),
+  )
+
   const prompt = await client.rpc('session/prompt', {
     request: {
       requestId: client.nextId('rehydrate-prompt'),
@@ -1280,6 +1344,42 @@ async function runRehydrationChecks(client, paths, state) {
   checks.expect('projection reports disabled after /devlead off', projection3?.enabled === false)
   const mode3 = (await client.projections(leadId))?.values?.devLeadMode
   checks.expect('devLeadMode projection reports disabled after /devlead off', mode3?.enabled === false)
+  const globalsAfterOff = await client.injectedGlobalNames()
+  checks.expect(
+    'disabling the lead removes the board global',
+    !globalsAfterOff.includes('__DSH_DEVLEAD_BOARD__'),
+    JSON.stringify(globalsAfterOff),
+  )
+
+  // A lead in another workspace owns another board file: switching the lead
+  // switches the derived path with no configuration and no restart.
+  const workspaceB = join(paths.base, 'workspace-b')
+  mkdirSync(workspaceB, { recursive: true })
+  const leadB = await client.createSession(paths, workspaceB)
+  const leadBId = leadB.sessionId
+  const onB = await client.command(leadBId, '/devlead on')
+  checks.expect(
+    'workspace-B lead enables DevLead mode',
+    onB?.result?.kind === 'success' && /DevLead mode enabled\./u.test(onB?.result?.text ?? ''),
+    onB?.result?.text?.split('\n')[0],
+  )
+  const boardGlobalB = await client.injectedGlobal('__DSH_DEVLEAD_BOARD__')
+  checks.expect(
+    'switching the lead workspace switches the derived board path',
+    boardGlobalB?.boardPath === derivedBoardPath(workspaceB) && boardGlobalB?.leadSessionId === leadBId,
+    JSON.stringify(boardGlobalB),
+  )
+  checks.expect(
+    'workspace-B lead precreates its own board parent directory',
+    existsSync(join(workspaceB, '.dsh', 'devlead')),
+    join(workspaceB, '.dsh', 'devlead'),
+  )
+  const offB = await client.command(leadBId, '/devlead off')
+  checks.expect(
+    'workspace-B lead releases the global slot',
+    offB?.result?.kind === 'success' && /DevLead mode disabled\./u.test(offB?.result?.text ?? ''),
+    offB?.result?.text?.split('\n')[0],
+  )
 
   checks.summarize(EXPECTED_CHECKS.phase1b)
   return checks.results.length
@@ -1322,6 +1422,17 @@ async function runWorktreeChecks(client, paths) {
 
   const on = await client.command(leadId, '/devlead on')
   checks.expect('phase 2 /devlead on settles success', on?.result?.kind === 'success', on?.result?.text?.split('\n')[0])
+
+  // This composition carries the scratch boardPath overlay: the configured
+  // path must win over the workspace derivation and be published as such.
+  const overrideGlobal = await client.injectedGlobal('__DSH_DEVLEAD_BOARD__')
+  checks.expect(
+    'configured boardPath override wins over the lead workspace derivation',
+    overrideGlobal?.boardPath === paths.board
+      && overrideGlobal?.override === true
+      && overrideGlobal?.leadSessionId === leadId,
+    JSON.stringify(overrideGlobal),
+  )
 
   const status = await client.command(leadId, '/devlead status')
   checks.expect(
@@ -1517,33 +1628,51 @@ async function runCloseChecks(client, paths, dshVersion) {
   const on = await client.command(leadId, '/devlead on')
   checks.expect('phase 3 /devlead on settles success', on?.result?.kind === 'success', on?.result?.text?.split('\n')[0])
 
+  const derivedBoard = derivedBoardPath(paths.workspace)
   const board = await runProbeCommand(client, leadId, PROBE_BOARD_COMMAND)
   checks.expect(
-    'phase 3 real board create + CAS update + Host read-back succeed',
+    'phase 3 real board create + CAS + path/title refs + Host read-back succeed',
     board.execution?.result?.kind === 'success'
       && board.report?.created?.revision === 1
       && board.report?.updated?.revision === 2
-      && board.report?.detail?.revision === 2
+      && board.report?.byPath?.revision === 3
+      && board.report?.byTitle?.revision === 4
+      && board.report?.detail?.revision === 4
       && board.report?.created?.project?.tasks === undefined
       && board.report?.updated?.project?.tasks === undefined
+      && board.report?.byTitle?.project?.next === 'updated through the workspace title'
       && board.report?.detail?.projects?.[0]?.tasks?.length === 1,
     board.text.slice(0, 500),
   )
+  checks.expect(
+    'phase 3 board reports the derived workspace path and the lead identity',
+    board.report?.boardPath === derivedBoard
+      && board.report?.boardLeadSessionId === leadId
+      && board.report?.boardOverride === false,
+    JSON.stringify({
+      boardPath: board.report?.boardPath,
+      boardLeadSessionId: board.report?.boardLeadSessionId,
+      boardOverride: board.report?.boardOverride,
+    }),
+  )
   const boardGlobal = await client.injectedGlobal('__DSH_DEVLEAD_BOARD__')
   checks.expect(
-    'phase 3 webserver/index-inject publishes the configured board global',
-    boardGlobal?.boardPath === paths.board
+    'phase 3 webserver/index-inject publishes the derived board global',
+    boardGlobal?.boardPath === derivedBoard
+      && boardGlobal?.leadSessionId === leadId
+      && boardGlobal?.override === false
       && boardGlobal?.schemaVersion === 1
       && boardGlobal?.pathPlatform === (process.platform === 'win32' ? 'win32' : 'posix'),
     JSON.stringify(boardGlobal),
   )
-  const persistedBoard = existsSync(paths.board)
-    ? JSON.parse(readFileSync(paths.board, 'utf8'))
+  const persistedBoard = existsSync(derivedBoard)
+    ? JSON.parse(readFileSync(derivedBoard, 'utf8'))
     : undefined
   checks.expect(
-    'phase 3 board disk bytes carry revision 2, the CAS focus, and the task',
-    persistedBoard?.revision === 2
+    'phase 3 board disk bytes carry revision 4, the CAS focus, the ref updates, and the task',
+    persistedBoard?.revision === 4
       && persistedBoard?.projects?.[0]?.focus === 'CAS committed through the real Host'
+      && persistedBoard?.projects?.[0]?.next === 'updated through the workspace title'
       && persistedBoard?.projects?.[0]?.tasks?.[0]?.id === 'task-1',
     JSON.stringify({ revision: persistedBoard?.revision, project: persistedBoard?.projects?.[0] }).slice(0, 500),
   )
@@ -2565,6 +2694,24 @@ async function runCloseChecks(client, paths, dshVersion) {
     JSON.stringify(inspectOffAgain.report?.policy),
   )
 
+  // Lead off releases the board store; the Host publishes no board global.
+  const boardStateOff = await runProbeCommand(client, leadId, PROBE_BOARD_STATE_COMMAND)
+  checks.expect(
+    'phase 3 disabling the mode releases the board store',
+    boardStateOff.execution?.result?.kind === 'success'
+      && boardStateOff.report?.enabled === false
+      && boardStateOff.report?.boardPath === null
+      && boardStateOff.report?.boardLeadSessionId === null
+      && boardStateOff.report?.error?.code === 'DEVLEAD_NOT_ENABLED',
+    boardStateOff.text.slice(0, 500),
+  )
+  const globalsAfterOff = await client.injectedGlobalNames()
+  checks.expect(
+    'phase 3 disabling the mode removes the board global',
+    !globalsAfterOff.includes('__DSH_DEVLEAD_BOARD__'),
+    JSON.stringify(globalsAfterOff),
+  )
+
   checks.summarize(EXPECTED_CHECKS.phase3)
   return checks.results.length
 }
@@ -2946,9 +3093,12 @@ async function runFlow(options) {
     // Phase 3: close tools and triage policy, same scratch root/profile.
     // ------------------------------------------------------------------------
     console.log('\n=== phase 3: close tools, dispatch routing, and triage policy ===')
+    // Phase 3 deliberately runs WITHOUT the board overlay: the default
+    // derivation must put the board under the lead Session workspace, while
+    // phase 2 covers the configured override.
     const closePatches = devleadOverlay === undefined
-      ? [probePatch, boardOverlay]
-      : [devleadOverlay, probePatch, boardOverlay]
+      ? [probePatch]
+      : [devleadOverlay, probePatch]
     let phaseThree
     try {
       phaseThree = await startWeb(paths, dshBinary, options, { label: 'close', patches: closePatches })
