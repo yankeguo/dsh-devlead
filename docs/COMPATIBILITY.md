@@ -21,6 +21,10 @@ staged publish + 人工 approve 公开；`0.4.0-rc.1` 已于同日以 `next` dis
     覆盖 phase 2。
   - 与 DevLead 相关的 rc.4 差异是 DeepSeek 流式拒答的 LLM 错误码；DevLead 不分类该错误码。
   - rc.5 只改 web search provider 选择（见下）；DevLead 不读取或调用该 API。
+  - 可选项目看板使用 rc.1 typings 与 rc.5 安装版源码均存在的
+    `@deepseek-ai/dsh-atomic-write`（`writeFileAtomic` / `withFileLock`）、
+    `systemPrompt.context()` 和 `webserver/index-inject`；不依赖 0.2.3-only API，engines/peer
+    DSH range 不变。boardPath 默认为空，未配置时行为与既有版本一致。
 - `plugin records`（`appendPluginRecord` / `PluginRecordMap`）：rc.1–rc.5 均存在；这是
   **experimental、调用方受限**的扩展点，不是公开契约，Session format migration 为
   best-effort（详见下节）。DevLead 的全部 durable 状态都依赖它。
@@ -149,7 +153,7 @@ rc.5 的 `dsh-web` 在未配置 `web.searchProvider` 时按模型路由选择：
 
 | 能力 | rc.1 | rc.2 | rc.3 | rc.4 | rc.5 |
 | --- | --- | --- | --- | --- | --- |
-| 插件加载、14 个主工具 + `devlead_report`、`/devlead`、Web UI | 支持 | 支持 | 支持 | 支持 | 支持 |
+| 插件加载、16 个主工具 + `devlead_report`、`/devlead`、Web UI | 支持 | 支持 | 支持 | 支持 | 支持 |
 | `devlead_list_agent_presets` / 真实 roster | 支持 | 支持 | 支持 | 支持 | 支持 |
 | 派发模型选择 + `reasoning_effort` | 支持 | 支持 | 支持 | 支持 | 支持 |
 | `devlead_list_models` | 支持 | 支持 | 支持 | 支持 | 支持 |

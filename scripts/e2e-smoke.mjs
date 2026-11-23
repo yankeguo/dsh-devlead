@@ -80,7 +80,7 @@
  *             bundle is not required) and drives the close lifecycle through
  *             `ctx.devLead`:
  *               - a real step-time tool activation (`ctx.tools.resolve`) admits
- *                 exactly the fourteen lead `devlead_*` tools while the mode is on
+ *                 exactly the sixteen lead `devlead_*` tools while the mode is on
  *                 and none while it is off, both before and after a toggle;
  *               - a real watched non-lead child step admits exactly
  *                 `devlead_report`, receives the one-way report policy, and a
@@ -318,6 +318,8 @@ const PROBE_INBOX_COMMAND = 'devlead-e2e-inbox'
 /** Exact DevLead tool surface an enabled lead step admits. */
 const DEVLEAD_TOOL_NAMES = [
   'devlead_archive_session',
+  'devlead_board_read',
+  'devlead_board_update',
   'devlead_create_session',
   'devlead_get_session',
   'devlead_list_agent_presets',
@@ -1485,7 +1487,7 @@ async function runCloseChecks(client, paths, dshVersion) {
   )
   const devleadTools = inspectOn.report?.devleadTools ?? []
   checks.expect(
-    'phase 3 enabled exposes exactly the fourteen devlead tools',
+    'phase 3 enabled exposes exactly the sixteen devlead tools',
     JSON.stringify(devleadTools) === JSON.stringify(DEVLEAD_TOOL_NAMES),
     JSON.stringify(devleadTools),
   )

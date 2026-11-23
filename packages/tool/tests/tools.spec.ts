@@ -1,5 +1,5 @@
 /**
- * Behavior of the fifteen `devlead_*` tools: registration and gating, per-tool
+ * Behavior of the seventeen `devlead_*` tools: registration and gating, per-tool
  * forwarding into `ctx.devLead`, input validation, canonical value projection,
  * error translation, and pure presentation.
  */
@@ -129,6 +129,8 @@ const TOOL_NAMES = [
   'devlead_list_workspaces',
   'devlead_list_models',
   'devlead_list_agent_presets',
+  'devlead_board_read',
+  'devlead_board_update',
   'devlead_use_workspace',
   'devlead_list_sessions',
   'devlead_create_session',
@@ -148,6 +150,8 @@ const MINIMAL_ARGS: Record<(typeof TOOL_NAMES)[number], Record<string, unknown>>
   devlead_list_workspaces: {},
   devlead_list_models: {},
   devlead_list_agent_presets: {},
+  devlead_board_read: {},
+  devlead_board_update: { project: 'webapp' },
   devlead_use_workspace: { path: '/tmp/webapp' },
   devlead_list_sessions: {},
   devlead_create_session: {},
@@ -167,6 +171,7 @@ const CALLER_TOOLS = [
   'devlead_use_workspace',
   'devlead_list_models',
   'devlead_list_agent_presets',
+  'devlead_board_update',
   'devlead_list_sessions',
   'devlead_create_session',
   'devlead_get_session',
@@ -212,9 +217,10 @@ function expectValidOutput(harness: Harness, toolName: string, value: unknown): 
 }
 
 describe('registration', () => {
-  it('registers exactly the fifteen documented tools', () => {
+  it('registers exactly the seventeen documented tools', () => {
     const harness = boot()
     expect([...harness.tools.keys()].sort()).toEqual([...TOOL_NAMES].sort())
+    expect(TOOL_NAMES).toHaveLength(17)
     for (const name of TOOL_NAMES) {
       expect(harness.tool(name).definition.description.length).toBeGreaterThan(0)
     }
@@ -858,6 +864,7 @@ describe('schema semantics', () => {
       'devlead_list_workspaces',
       'devlead_list_models',
       'devlead_list_agent_presets',
+      'devlead_board_read',
       'devlead_list_sessions',
       'devlead_get_session',
       'devlead_notifications',

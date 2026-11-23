@@ -10,6 +10,7 @@
  */
 
 import { mkdir } from 'node:fs/promises'
+import { resolve as resolvePath } from 'node:path'
 import { Service } from '@deepseek-ai/cordis'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
@@ -164,6 +165,8 @@ import {
   type DevLeadActiveSession,
 } from './active.ts'
 import { worktreeCapabilityOf, worktreeCheckoutOf } from './isolation.ts'
+import { DevLeadBoardStore } from './board.ts'
+import type { DevLeadBoardUpdate, DevLeadBoardUpdateResult } from './board.ts'
 import { DevLeadNotificationHub } from './notification.ts'
 import type { DevLeadPersistedLead, DevLeadReportDeliveryState } from './notification.ts'
 import { persistedSessionsOf } from './persistence.ts'
@@ -219,6 +222,7 @@ export type { DevLeadNotificationConfig, DevLeadPersistedLead, DevLeadReportDeli
 export { childReportLane } from './message-policy.ts'
 export { DevLeadMetrics } from './metrics.ts'
 export type { DevLeadCounterSample, DevLeadDeliveryOutcome } from './metrics.ts'
+export * from './board.ts'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -252,6 +256,8 @@ export interface Config {
   defaultAgentPreset?: string
   /** Open-question lifetime in milliseconds; default 24h, 0 disables expiry. */
   questionTtlMs?: number
+  /** Absolute project-board JSON path; blank or omitted disables the board. */
+  boardPath?: string
 }
 
 /**
@@ -620,6 +626,7 @@ export const Config: z<Config> = z.object({
   wakeColdSession: z.boolean().default(true),
   defaultAgentPreset: z.string().default(''),
   questionTtlMs: z.number().step(1).min(0).max(Number.MAX_SAFE_INTEGER).default(DEFAULT_QUESTION_TTL_MS),
+  boardPath: z.string().default(''),
 })
 
 /** Fully materialized deployment configuration, with Loader defaults applied. */
@@ -641,6 +648,8 @@ export interface DevLeadSettings {
   readonly defaultAgentPreset: string | undefined
   /** Open-question lifetime in milliseconds; zero disables expiry. */
   readonly questionTtlMs: number
+  /** Resolved project-board path, or undefined when the feature is disabled. */
+  readonly boardPath?: string
 }
 
 /**
@@ -676,6 +685,9 @@ function resolveConfig(config: Config): DevLeadSettings {
   if (!Number.isSafeInteger(questionTtlMs) || questionTtlMs < 0) {
     throw new TypeError('questionTtlMs must be a non-negative safe integer')
   }
+  const boardPath = config.boardPath ?? ''
+  if (typeof boardPath !== 'string') throw new TypeError('boardPath must be a string')
+  const trimmedBoardPath = boardPath.trim()
   return {
     notificationBatchMs,
     actionRequiredBatchMs,
@@ -684,6 +696,7 @@ function resolveConfig(config: Config): DevLeadSettings {
     wakeColdSession,
     defaultAgentPreset: defaultAgentPreset.trim().length === 0 ? undefined : defaultAgentPreset.trim(),
     questionTtlMs,
+    ...trimmedBoardPath.length === 0 ? {} : { boardPath: resolvePath(trimmedBoardPath) },
   }
 }
 
@@ -936,6 +949,9 @@ export class DevLeadService extends Service {
 
   /** Validated deployment configuration. */
   private readonly resolved: DevLeadSettings
+
+  /** Configured project board; disabled stores expose BOARD_DISABLED on I/O. */
+  readonly board: DevLeadBoardStore
 
   /** Awaited registration of the `devLead` projection unit. */
   private projectionHandle!: ProjectionHandle<DevLeadProjectionState>
@@ -1294,9 +1310,11 @@ export class DevLeadService extends Service {
   constructor(ctx: Context, config: Config = {}) {
     super(ctx, 'devLead')
     this.resolved = resolveConfig(config)
+    this.board = new DevLeadBoardStore(this.resolved.boardPath, this.ctx.logger)
   }
 
   protected async [Service.init](): Promise<void> {
+    await this.board.start()
     initializeRecordApi(this.ctx.logger)
     initializeDevLeadFoldWarnings(this.ctx.logger)
     this.projectionHandle = await this.ctx.sessionProjections.register(devLeadProjectionDefinition)
@@ -1355,7 +1373,7 @@ export class DevLeadService extends Service {
             opening?.catch(() => undefined),
             idempotencyOpening?.catch(() => undefined),
           ])
-          await Promise.all([this.outbox?.close(), this.idempotencyStore?.close()])
+          await Promise.all([this.board.close(), this.outbox?.close(), this.idempotencyStore?.close()])
         })()
       }
     }.bind(this), 'devlead: cold rehydration')
@@ -2634,6 +2652,26 @@ export class DevLeadService extends Service {
   /** Runtime health of the experimental DSH plugin-record durability boundary. */
   get durableState(): RecordApiStatus {
     return recordApiStatus()
+  }
+
+  /**
+   * Stamp the calling lead's identity onto one board mutation. The board file
+   * path remains deployment-owned; model callers supply only a logical patch.
+   */
+  async updateBoard(
+    agent: Agent,
+    patch: Omit<DevLeadBoardUpdate, 'updatedBy'>,
+    expectedRevision?: number,
+    signal?: AbortSignal,
+  ): Promise<DevLeadBoardUpdateResult> {
+    if (!this.isEnabled(agent)) {
+      throw new DevLeadError('DevLead mode is not enabled for the calling Agent', 'DEVLEAD_NOT_ENABLED')
+    }
+    const title = this.ctx.get('sessionTitle')?.get(agent.session)?.title ?? 'DevLead'
+    return this.board.update({
+      ...patch,
+      updatedBy: { sessionId: String(agent.id), title },
+    }, expectedRevision, signal)
   }
 
   // ---------------------------------------------------------------------------

@@ -11,7 +11,7 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import type { PromptSection } from '@deepseek-ai/dsh-system-prompt'
+import type { PromptContext, PromptSection } from '@deepseek-ai/dsh-system-prompt'
 import type {
   ToolActivationContext,
   ToolDefinition,
@@ -19,7 +19,12 @@ import type {
   ToolRunContext,
 } from '@deepseek-ai/dsh-tools'
 import { DevLeadError, isHumanDirectedTurn } from '@yankeguo/dsh-devlead'
-import type { DevLeadReportDeliveryState } from '@yankeguo/dsh-devlead'
+import type {
+  DevLeadBoardReadResult,
+  DevLeadBoardUpdate,
+  DevLeadBoardUpdateResult,
+  DevLeadReportDeliveryState,
+} from '@yankeguo/dsh-devlead'
 import type {
   DevLeadAgentPresetCatalog,
   DevLeadArchivedSession,
@@ -125,6 +130,20 @@ export const MODEL_CATALOG: DevLeadModelCatalog = {
     },
   ],
   failures: [{ id: 'provider-b', name: 'Provider B', message: 'catalog lookup failed' }],
+}
+
+/** One board project fixture shared by read/update results. */
+export const BOARD_PROJECT = {
+  id: 'webapp',
+  workspace: { path: '/tmp/webapp', title: 'webapp' },
+  status: 'active' as const,
+  priority: 'high' as const,
+  goal: 'ship',
+  focus: 'tests',
+  next: 'verify',
+  blockers: [],
+  tasks: [],
+  updatedAt: '2026-01-02T00:00:00.000Z',
 }
 
 /** Create one live-looking Agent identity. */
@@ -253,6 +272,44 @@ export class FakeDevLead {
 
   /** Result returned by {@link unarchiveSession}. */
   unarchived: DevLeadUnarchivedSession = { sessionId: 'session-1', archived: false }
+
+  /** Read result returned by the board facade. */
+  boardRead: DevLeadBoardReadResult = {
+    revision: 7,
+    updatedAt: '2026-01-02T00:00:00.000Z',
+    projects: [BOARD_PROJECT],
+  }
+
+  /** Update result returned by the board facade. */
+  boardUpdated: DevLeadBoardUpdateResult = {
+    revision: 8,
+    updatedAt: '2026-01-02T00:00:00.000Z',
+    project: BOARD_PROJECT,
+    changed: ['set.focus'],
+  }
+
+  /** Dynamic summary returned by the cache-only board facade. */
+  boardSummary = 'DevLead board r7 2026-01-02T00:00:00.000Z; projects 1: active 1, blocked 0, paused 0, done 0'
+
+  /** Board service exposed on the core facade, matching ctx.devLead.board. */
+  readonly board = {
+    read: async (filter: { project?: string; includeTasks?: boolean; limit?: number }): Promise<DevLeadBoardReadResult> => {
+      this.enter('board.read', filter)
+      return this.boardRead
+    },
+    summary: (): string => this.boardSummary,
+  }
+
+  /** Record one lead-stamped board update. */
+  async updateBoard(
+    agent: Agent,
+    request: Omit<DevLeadBoardUpdate, 'updatedBy'>,
+    expectedRevision?: number,
+    signal?: AbortSignal,
+  ): Promise<DevLeadBoardUpdateResult> {
+    this.enter('updateBoard', agent, request, expectedRevision, signal)
+    return this.boardUpdated
+  }
 
   /** Record one call and throw the injected failure, when any. */
   private enter(method: string, ...args: unknown[]): void {
@@ -466,6 +523,8 @@ export interface Harness {
   readonly section: PromptSection
   /** Captured `devlead:report-policy` prompt section. */
   readonly reportSection: PromptSection
+  /** Captured cache-safe board context. */
+  readonly boardContext: PromptContext
   /** Default calling Agent. */
   readonly agent: Agent
   /** Default run context of one tool call. */
@@ -482,6 +541,8 @@ export interface Harness {
   sectionText(agent?: Agent): string
   /** Resolve the child report-policy text for one assembling Agent. */
   reportSectionText(agent?: Agent): string
+  /** Resolve the board summary for one assembling Agent. */
+  boardSummaryText(agent?: Agent): string
   /** Run the registered `tools/pre-execute` waterfall for one pending call. */
   preExecute(exec: unknown): Promise<{ decision: unknown; nextCalls: number }>
 }
@@ -514,6 +575,7 @@ export function boot(): Harness {
   const devLead = new FakeDevLead()
   const registered = new Map<string, CapturedTool>()
   const sections = new Map<string, PromptSection>()
+  const contexts = new Map<string, PromptContext>()
   const listeners = new Map<string, PreExecuteListener[]>()
   const warnings: string[] = []
   const agent = makeAgent()
@@ -533,6 +595,11 @@ export function boot(): Harness {
         return () => {}
       },
       getSectionOrder: () => 2800,
+      getContextOrder: () => 210,
+      context: (value: PromptContext) => {
+        contexts.set(value.name, value)
+        return () => {}
+      },
     },
     logger: {
       warn: (message: unknown) => { warnings.push(String(message)) },
@@ -552,7 +619,9 @@ export function boot(): Harness {
   if (policySection === undefined) throw new Error('apply() did not register the devlead:policy section')
   const reportPolicySection = sections.get('devlead:report-policy')
   if (reportPolicySection === undefined) throw new Error('apply() did not register the devlead:report-policy section')
-  const sectionTextOf = (section: PromptSection, value: Agent | undefined): string => {
+  const boardContext = contexts.get('devlead:board-summary')
+  if (boardContext === undefined) throw new Error('apply() did not register the devlead:board-summary context')
+  const sectionTextOf = (section: PromptSection | PromptContext, value: Agent | undefined): string => {
     const provider = section.text
     if (typeof provider !== 'function') throw new Error('prompt section must resolve its text per assembly')
     return provider({ agent: value } as never)
@@ -569,6 +638,7 @@ export function boot(): Harness {
     tools: registered,
     section: policySection,
     reportSection: reportPolicySection,
+    boardContext,
     agent,
     exec,
     warnings,
@@ -591,6 +661,9 @@ export function boot(): Harness {
     },
     reportSectionText(candidate = agent) {
       return sectionTextOf(reportPolicySection, candidate)
+    },
+    boardSummaryText(candidate = agent) {
+      return sectionTextOf(boardContext, candidate)
     },
     async preExecute(pending) {
       const registeredListeners = listeners.get('tools/pre-execute') ?? []

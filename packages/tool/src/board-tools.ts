@@ -1,0 +1,243 @@
+/** Lead-only AI tools for the user-visible, file-backed DevLead project board. */
+
+import type { Context } from '@deepseek-ai/cordis'
+import { defineTool } from '@deepseek-ai/dsh-tools'
+import type { GenericResultView, ToolResult } from '@deepseek-ai/dsh-tools'
+import type {
+  DevLeadBoardSetPatch,
+  DevLeadBoardUpdate,
+} from '@yankeguo/dsh-devlead'
+import {
+  TOOL_ARGUMENT_KEYS,
+  assertKnownArguments,
+  optionalNonNegativeInteger,
+  optionalPositiveInteger,
+  optionalProjectRef,
+  requireAgent,
+  requireProjectRef,
+} from './arguments.ts'
+import type { BoardReadArgs, BoardUpdateArgs } from './arguments.ts'
+import { runTool } from './errors.ts'
+import { TOOL_PARAMETERS } from './parameters.ts'
+import { present } from './presentation.ts'
+import { jsonOutput } from './value.ts'
+
+const BOARD_READ_DESCRIPTION =
+  'Read the user-visible DevLead project board: durable project status, priority, goal/focus/next, blockers, and '
+  + 'optionally tasks. Omit project for a bounded all-project summary; select one by exact id, workspace title, or '
+  + 'absolute workspace path for full detail. This board is read-only for the human and writable only by the lead AI '
+  + 'through devlead_board_update. The board file path is deployment configuration and is never a tool argument.'
+
+const BOARD_UPDATE_DESCRIPTION =
+  'Update one project on the user-visible DevLead board; the human is read-only and only the enabled lead AI may '
+  + 'write through this tool. Create requires create:true and set.workspace.path. Supports scalar status/priority/'
+  + 'goal/focus/next updates, blocker clear/remove/add, and task remove/upsert. Use expected_revision from '
+  + 'devlead_board_read for compare-and-swap when a lost update would matter. Returns only the changed project and '
+  + 'changed lanes, never the whole board. No argument can redirect the configured board file.'
+
+const BLOCKER_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    id: { type: 'string', required: true },
+    text: { type: 'string', required: true },
+    since: { type: 'string', required: true },
+    sessionId: { type: 'string' },
+  },
+} as const
+
+const TASK_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    id: { type: 'string', required: true },
+    title: { type: 'string', required: true },
+    status: { type: 'string', required: true, enum: ['todo', 'doing', 'blocked', 'done'] },
+    ownerSessionId: { type: 'string' },
+    updatedAt: { type: 'string', required: true },
+  },
+} as const
+
+const PROJECT_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    id: { type: 'string', required: true },
+    workspace: {
+      type: 'object',
+      required: true,
+      additionalProperties: false,
+      properties: {
+        path: { type: 'string', required: true },
+        title: { type: 'string', required: true },
+      },
+    },
+    status: { type: 'string', required: true, enum: ['active', 'blocked', 'paused', 'done'] },
+    priority: { type: 'string', required: true, enum: ['low', 'medium', 'high'] },
+    goal: { type: 'string', required: true },
+    focus: { type: 'string', required: true },
+    next: { type: 'string', required: true },
+    blockers: { type: 'array', required: true, items: BLOCKER_SCHEMA },
+    tasks: { type: 'array', items: TASK_SCHEMA },
+    updatedAt: { type: 'string', required: true },
+  },
+} as const
+
+/** Canonical output of `devlead_board_read`. */
+export const BOARD_READ_OUTPUT = jsonOutput({
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    revision: { type: 'integer', required: true },
+    updatedAt: { type: 'string', required: true },
+    projects: { type: 'array', required: true, items: PROJECT_SCHEMA },
+    truncated: { type: 'boolean' },
+  },
+} as const)
+
+/** Canonical output of `devlead_board_update`. */
+export const BOARD_UPDATE_OUTPUT = jsonOutput({
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    revision: { type: 'integer', required: true },
+    updatedAt: { type: 'string', required: true },
+    project: { ...PROJECT_SCHEMA, required: true },
+    changed: { type: 'array', required: true, items: { type: 'string' } },
+  },
+} as const)
+
+function setPatch(input: BoardUpdateArgs['set']): DevLeadBoardSetPatch | undefined {
+  if (input === undefined) return undefined
+  return {
+    ...input.status === undefined ? {} : { status: input.status },
+    ...input.priority === undefined ? {} : { priority: input.priority },
+    ...input.goal === undefined ? {} : { goal: input.goal },
+    ...input.focus === undefined ? {} : { focus: input.focus },
+    ...input.next === undefined ? {} : { next: input.next },
+    ...input.workspace === undefined ? {} : {
+      workspace: {
+        ...input.workspace.path === undefined ? {} : { path: input.workspace.path },
+        ...input.workspace.title === undefined ? {} : { title: input.workspace.title },
+      },
+    },
+  }
+}
+
+/** Translate the snake_case tool contract into the core's logical patch. */
+export function boardUpdateRequest(args: BoardUpdateArgs): Omit<DevLeadBoardUpdate, 'updatedBy'> {
+  const set = setPatch(args.set)
+  return {
+    project: requireProjectRef(args.project),
+    ...args.create === undefined ? {} : { create: args.create },
+    ...set === undefined ? {} : { set },
+    ...args.blockers === undefined ? {} : {
+      blockers: {
+        ...args.blockers.clear === undefined ? {} : { clear: args.blockers.clear },
+        ...args.blockers.remove === undefined ? {} : { remove: args.blockers.remove },
+        ...args.blockers.add === undefined ? {} : {
+          add: args.blockers.add.map(blocker => ({
+            id: blocker.id,
+            text: blocker.text,
+            ...blocker.session_id === undefined ? {} : { sessionId: blocker.session_id },
+          })),
+        },
+      },
+    },
+    ...args.tasks === undefined ? {} : {
+      tasks: {
+        ...args.tasks.remove === undefined ? {} : { remove: args.tasks.remove },
+        ...args.tasks.upsert === undefined ? {} : {
+          upsert: args.tasks.upsert.map(task => ({
+            id: task.id,
+            ...task.title === undefined ? {} : { title: task.title },
+            ...task.status === undefined ? {} : { status: task.status },
+            ...task.owner_session_id === undefined ? {} : { ownerSessionId: task.owner_session_id },
+          })),
+        },
+      },
+    },
+  }
+}
+
+function resultRecord(result: ToolResult): Record<string, unknown> | undefined {
+  if (result.isError) return undefined
+  const text = result.content.find(block => block.type === 'text')?.text
+  if (text === undefined) return undefined
+  try {
+    const value: unknown = JSON.parse(text)
+    return typeof value === 'object' && value !== null && !Array.isArray(value)
+      ? value as Record<string, unknown>
+      : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** Completed cards stay summary-sized even when a project carries 200 tasks. */
+export function presentBoardResult(_args: unknown, result: ToolResult): GenericResultView {
+  const value = resultRecord(result)
+  if (value === undefined) return { card: 'generic' }
+  const revision = typeof value.revision === 'number' ? `r${value.revision}` : 'revision unknown'
+  let text: string
+  if (Array.isArray(value.projects)) {
+    text = `DevLead board ${revision}: ${value.projects.length} project(s)`
+      + `${value.truncated === true ? ' (truncated)' : ''}`
+  } else {
+    const project = typeof value.project === 'object' && value.project !== null
+      ? value.project as Record<string, unknown>
+      : undefined
+    const id = typeof project?.id === 'string' ? project.id : 'project'
+    const changed = Array.isArray(value.changed)
+      ? value.changed.filter((entry): entry is string => typeof entry === 'string')
+      : []
+    text = `DevLead board ${revision}: ${id}; ${changed.length === 0 ? 'no changes' : `changed ${changed.join(', ')}`}`
+  }
+  return { card: 'generic', content: [{ type: 'text', text: text.slice(0, 500) }] }
+}
+
+/** Register the two board tools on the same lead-only condition as other lead tools. */
+export function registerDevLeadBoardTools(ctx: Context): void {
+  ctx.tools.register(defineTool({
+    name: 'devlead_board_read',
+    description: BOARD_READ_DESCRIPTION,
+    parameters: TOOL_PARAMETERS.devlead_board_read,
+    output: BOARD_READ_OUTPUT,
+    presentCall: (args: BoardReadArgs) => present('Read DevLead board', 'read', args.project?.trim()),
+    presentResult: presentBoardResult,
+    isConcurrencySafe: () => true,
+    execute(args) {
+      return runTool(async () => {
+        assertKnownArguments(args, TOOL_ARGUMENT_KEYS.devlead_board_read)
+        const project = optionalProjectRef(args.project)
+        const limit = optionalPositiveInteger(args.limit, 'limit')
+        return ctx.devLead.board.read({
+          ...project === undefined ? {} : { project },
+          ...args.include_tasks === undefined ? {} : { includeTasks: args.include_tasks },
+          ...limit === undefined ? {} : { limit },
+        })
+      })
+    },
+  }), { when: ({ agent }) => ctx.devLead.isEnabled(agent) })
+
+  ctx.tools.register(defineTool({
+    name: 'devlead_board_update',
+    description: BOARD_UPDATE_DESCRIPTION,
+    parameters: TOOL_PARAMETERS.devlead_board_update,
+    output: BOARD_UPDATE_OUTPUT,
+    presentCall: (args: BoardUpdateArgs) => present(
+      args.create === true ? 'Create/update DevLead board project' : 'Update DevLead board project',
+      'other',
+      args.project.trim(),
+    ),
+    presentResult: presentBoardResult,
+    execute(args, exec) {
+      return runTool(async () => {
+        assertKnownArguments(args, TOOL_ARGUMENT_KEYS.devlead_board_update)
+        const agent = requireAgent(exec.agent, 'devlead_board_update')
+        const expectedRevision = optionalNonNegativeInteger(args.expected_revision, 'expected_revision')
+        return ctx.devLead.updateBoard(agent, boardUpdateRequest(args), expectedRevision, exec.signal)
+      })
+    },
+  }), { when: ({ agent }) => ctx.devLead.isEnabled(agent) })
+}

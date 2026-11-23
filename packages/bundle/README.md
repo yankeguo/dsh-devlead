@@ -1,7 +1,7 @@
 # @yankeguo/dsh-devlead-bundle
 
 The npm bundle that upgrades one ordinary [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)
-(DSH) session into a **DevLead session**: it ships the core host service, fourteen lead
+(DSH) session into a **DevLead session**: it ships the core host service, sixteen lead
 `devlead_*` tools plus the watched-child `devlead_report` tool, the human `/devlead` command, and
 the browser UI (composer-toolbar switch, read-only status strip, sidebar marks).
 
@@ -35,6 +35,15 @@ Once the mode is on, that session gains the lead tools: it can register Workspac
 ordinary child sessions, prompt and watch them, and be woken when they settle. The child sessions
 are standard DSH Sessions — visible in the sidebar and openable by a human — not subagents.
 
+## Optional project board
+
+The board is disabled by default. To enable it, override loader row `devlead` in the profile's
+`cordis.patch.yml` and set `config.boardPath` to a deployment-specific absolute JSON path (retain the
+other `devlead` config keys because DSH replaces the row's whole config). Only the lead AI writes via
+`devlead_board_update`; humans and browser clients are read-only. See
+[docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md) for schema v1 and
+the Step B `window.__DSH_DEVLEAD_BOARD__` contract. No user path is hardcoded in this package.
+
 ## What's inside
 
 The bundle's patch inserts four plugin rows:
@@ -42,7 +51,7 @@ The bundle's patch inserts four plugin rows:
 | entry id | package | role |
 | --- | --- | --- |
 | `devlead` | `@yankeguo/dsh-devlead` | Host core service `ctx.devLead`: durable mode switch, Workspace/Session orchestration, notification hub, Session projections |
-| `devlead-tool` | `@yankeguo/dsh-tool-devlead` | Fourteen lead `devlead_*` tools plus `devlead_report`, and the conditional DevLead system prompt |
+| `devlead-tool` | `@yankeguo/dsh-tool-devlead` | Sixteen lead `devlead_*` tools plus `devlead_report`, and the conditional DevLead system prompt/context |
 | `devlead-command` | `@yankeguo/dsh-command-devlead` | The human `/devlead` command: status, on/off, reset, watch/unwatch |
 | `devlead-ui` | `@yankeguo/dsh-client-ui-devlead` | Browser UI: composer-toolbar switch, read-only status strip, sidebar active/watched marks — renders on the DSH **Web** platform |
 
@@ -61,7 +70,7 @@ MIT. See [LICENSE](https://github.com/yankeguo/dsh-devlead/blob/main/LICENSE).
 ## 中文
 
 `@yankeguo/dsh-devlead-bundle` 是 DevLead 套件的安装入口：把 DSH 的一个普通会话升级为 DevLead
-会话，内含核心服务 `ctx.devLead`、14 个主 `devlead_*` 工具加 1 个 `devlead_report` 汇报工具、
+会话，内含核心服务 `ctx.devLead`、16 个主 `devlead_*` 工具加 1 个 `devlead_report` 汇报工具、
 人类 `/devlead` 命令，以及浏览器端 UI（composer 工具条开关、只读状态条、侧边栏标记；UI 只在
 DSH Web 平台渲染）。
 

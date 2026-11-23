@@ -3,7 +3,11 @@
 Core Host service of the DevLead suite (`ctx.devLead`): the durable mode switch, damage-recovery
 `reset()`, Workspace and Session orchestration (including `useWorkspace(agent, request, signal?)`
 with directory creation opt-in), the watched-session notification hub with cold-lead rehydration, the mid-turn report channel for watched Sessions,
-and the `devLead` / `devLeadMode` / `devLeadWatch` Session projections.
+and the `devLead` / `devLeadMode` / `devLeadWatch` Session projections. When `boardPath` is
+configured, `ctx.devLead.board` also owns the strict, atomically written project-board JSON file;
+`updateBoard` stamps the calling lead identity. The file is lead-AI-writable and human/browser-read-only.
+See [docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md) for schema v1,
+CAS, corruption handling, and the dynamic summary contract.
 
 DevLead mode is **globally single-active**: at most one Session (across every Workspace) may be
 enabled. `setEnabled(agent, true)` throws `DEVLEAD_ALREADY_ACTIVE` naming the occupant when another
@@ -68,8 +72,9 @@ dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 ## Configuration
 
 The Loader row id `devlead` accepts `notificationBatchMs`, `maxWatchedSessions`,
-`maxListedSessions`, `wakeColdSession` (default `true` since 0.2.0), and `defaultAgentPreset`
-(used when a created Session names no preset; an invalid id fails creation). See the
+`maxListedSessions`, `wakeColdSession` (default `true` since 0.2.0), `defaultAgentPreset`
+(used when a created Session names no preset; an invalid id fails creation), and `boardPath`
+(empty by default; the only source of the board file path). See the
 [configuration section](https://github.com/yankeguo/dsh-devlead/blob/main/README.md#configuration) for defaults and ranges; all limits are
 validated at both the Loader and direct-construction boundaries.
 

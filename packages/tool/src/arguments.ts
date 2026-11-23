@@ -83,6 +83,42 @@ export function assertKnownArguments(args: object, allowedKeys: readonly string[
   )
 }
 
+/** Arguments of `devlead_board_read`. */
+export interface BoardReadArgs {
+  readonly project?: string
+  readonly include_tasks?: boolean
+  readonly limit?: number
+}
+
+/** Arguments of `devlead_board_update`. */
+export interface BoardUpdateArgs {
+  readonly project: string
+  readonly expected_revision?: number
+  readonly create?: boolean
+  readonly set?: {
+    readonly status?: 'active' | 'blocked' | 'paused' | 'done'
+    readonly priority?: 'low' | 'medium' | 'high'
+    readonly goal?: string
+    readonly focus?: string
+    readonly next?: string
+    readonly workspace?: { readonly path?: string; readonly title?: string }
+  }
+  readonly blockers?: {
+    readonly clear?: boolean
+    readonly remove?: readonly string[]
+    readonly add?: readonly { readonly id: string; readonly text: string; readonly session_id?: string }[]
+  }
+  readonly tasks?: {
+    readonly remove?: readonly string[]
+    readonly upsert?: readonly {
+      readonly id: string
+      readonly title?: string
+      readonly status?: 'todo' | 'doing' | 'blocked' | 'done'
+      readonly owner_session_id?: string
+    }[]
+  }
+}
+
 /** Arguments of `devlead_use_workspace`. */
 export interface UseWorkspaceArgs {
   readonly path: string
@@ -256,6 +292,19 @@ export function optionalText(value: string | undefined): string | undefined {
   return trimmed.length === 0 ? undefined : trimmed
 }
 
+/** Validate one required board project reference without treating it as a file path. */
+export function requireProjectRef(value: string): string {
+  const trimmed = value.trim()
+  if (trimmed.length === 0) throw new DevLeadToolInputError('project must not be empty')
+  return trimmed
+}
+
+/** Validate an optional project filter; an explicitly blank filter is rejected. */
+export function optionalProjectRef(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined
+  return requireProjectRef(value)
+}
+
 /**
  * Validate a required Workspace reference. A blank reference is a mistake the
  * model should see rather than a silent default, and it is rejected before the
@@ -360,6 +409,15 @@ export function optionalPositiveInteger(value: number | undefined, field: string
   if (value === undefined) return undefined
   if (!Number.isSafeInteger(value) || value < 1) {
     throw new DevLeadToolInputError(`${field} must be a positive integer`)
+  }
+  return value
+}
+
+/** Validate an optional non-negative safe integer (notably board CAS revisions). */
+export function optionalNonNegativeInteger(value: number | undefined, field: string): number | undefined {
+  if (value === undefined) return undefined
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new DevLeadToolInputError(`${field} must be a non-negative integer`)
   }
   return value
 }

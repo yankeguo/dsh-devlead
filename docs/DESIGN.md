@@ -115,10 +115,11 @@ pnpm workspace，`packages/*`：
 | `devlead` | `@yankeguo/dsh-devlead` | 核心 Service `ctx.devLead`：模式状态、Workspace/Session 编排、关注关系索引、通知投递、`devLead` 与两个 summary 级 projection（`devLeadMode` / `devLeadWatch`）的 fold |
 | `tool` | `@yankeguo/dsh-tool-devlead` | 模型工具 `devlead_*` + 条件系统提示 |
 | `command` | `@yankeguo/dsh-command-devlead` | 人类命令 `/devlead` |
-| `client-ui` | `@yankeguo/dsh-client-ui-devlead` | 浏览器 UI：两态都显示的图标 + 文本工具条开关 + 开启后的只读 DevLead 状态条 + 侧边栏会话行标记 |
+| `client-ui` | `@yankeguo/dsh-client-ui-devlead` | 浏览器 UI：两态都显示的图标 + 文本工具条开关 + 开启后的只读 DevLead 状态条 + 侧边栏会话行标记；Host 入口另注入只读 board global |
 | `bundle` | `@yankeguo/dsh-devlead-bundle` | bundle：`cordis.patch.yml` 插入全部插件 |
 
-依赖方向：`protocol ← devlead ← {tool, command}`；`client-ui` 只依赖 `protocol`（浏览器侧）。
+依赖方向：`protocol ← devlead ← {tool, command, client-ui}`；`client-ui` 浏览器侧仍只直接使用
+`protocol`，Host 入口读取 `ctx.devLead.board` 并注入 global。项目看板完整契约见 [BOARD](BOARD.md)。
 构建时 host 入口 external `@deepseek-ai/*`、`@yankeguo/*`、`node:*`；浏览器入口只 external
 DSH shell 的 platform singletons（单一来源 `scripts/client-externals.mjs`）。构建期守卫会
 拒绝任何不在 module table 里的 `@deepseek-ai/*` 浏览器导入（第三方纯库会按需内联，
@@ -2365,7 +2366,7 @@ DSH peer 依赖。最小可交付闭环是 1b + 1c + 1d：question 快、answer 
 > 内存 deliveryState）与 policy/UI 文案、指标。工具输入 schema 在 1e 未变化。
 > `devlead_report` 的 question `turnEndRequested`（durable 检查 + 结果/policy）已在 Phase 1c 实现。
 
-14 个主工具都带 `when: ({ agent }) => ctx.devLead.isEnabled(agent)`，只在 DevLead 会话可见；
+16 个主工具都带 `when: ({ agent }) => ctx.devLead.isEnabled(agent)`，只在 DevLead 会话可见；
 `devlead_report` 是唯一的反向面：`when` 为 `ctx.devLead.isSupervised(agent)`，只在被唯一 active lead
 关注的非 DevLead 会话可见（见下文「中途汇报工具」）。
 
@@ -2374,6 +2375,8 @@ DSH peer 依赖。最小可交付闭环是 1b + 1c + 1d：question 快、answer 
 | `devlead_list_workspaces` | `{}` | `{ workspaces: DevLeadWorkspaceView[] }` |
 | `devlead_list_models` | `{}` | `DevLeadModelCatalog`（default / routableProviders / providers / failures，精简） |
 | `devlead_list_agent_presets` | `{}` | `DevLeadAgentPresetCatalog`（available / presets[id,name?,description?,default,broken?] / reason?） |
+| `devlead_board_read` | `project?`(id / workspace title / 绝对 path), `include_tasks?`, `limit?` | `{ revision, updatedAt, projects, truncated? }` |
+| `devlead_board_update` | `project`, `expected_revision?`, `create?`, `set?`, `blockers?`, `tasks?` | `{ revision, updatedAt, project, changed[] }`；仅 lead AI 可写，详见 [BOARD](BOARD.md) |
 | `devlead_use_workspace` | `path`(必填，绝对路径), `title?`, `create?`(默认 false；显式 true 才 mkdir) | `{ workspace }` |
 | `devlead_list_sessions` | `workspace?`(id / 注册路径 / 精确 title), `watched_only?`, `limit?` | `{ sessions, watched: string[] }` |
 | `devlead_create_session` | `workspace?`(id / 注册路径 / 精确 title), `prompt?`, `title?`, `watch?`(默认 true), `preset?`(Host 定义 id；空白回退插件默认再 Host 默认), `isolation?`(默认 `none`；`worktree` = 尽力隔离), `provider?`+`model?`(成对；可选 `reasoning_effort?`), `agent_teams?` | `DevLeadCreatedSession`（含 `isolation`；请求时含已应用的 `model`/`agentTeams`） |
@@ -2389,6 +2392,10 @@ DSH peer 依赖。最小可交付闭环是 1b + 1c + 1d：question 快、answer 
 
 要点：
 
+- `devlead:board-summary` 是 `systemPrompt.context()` 动态快照（order 220），仅 enabled lead
+  且缓存非空时注入；从 `ctx.devLead.board.summary()` 同步渲染，≤1536 UTF-8 bytes。文件写入
+  使用 Host promise 链 + `withFileLock` + `writeFileAtomic`，支持 expectedRevision CAS；坏 JSON
+  保留最后合法缓存并拒绝覆盖。完整 schema / global / Step B 衔接见 [BOARD](BOARD.md)。
 - 输出 schema 用 `defineTool` 的 `ValueSchemaSpec`；`output.render` 把 canonical JSON 以文本
   返回（模型可读），`presentCall` 返回 `{ card: 'generic', title, kind }`（`kind` 取
   `read`/`search` 类似语义），只依赖已解析参数，保持 replay 纯函数。schema 与 protocol 视图
@@ -2401,7 +2408,7 @@ DSH peer 依赖。最小可交付闭环是 1b + 1c + 1d：question 快、answer 
   `DEVLEAD_INVALID_INPUT` 并列出候选（最多 8 个），不猜；零命中仍报 `DEVLEAD_SESSION_NOT_FOUND`，
   但文案提示 id 可能不完整/被截断、用 `devlead_list_sessions` 查完整 id 后重试。五个
   `devlead_*` 工具的 `session` 参数描述与 `devlead_get_session` 的工具描述同步此口径。除
-  `devlead_list_workspaces` 外的工具都要求 live 调用
+  `devlead_list_workspaces` / `devlead_board_read` 外需要调用者身份的工具都要求 live 调用
   者（缺失时 `DEVLEAD_AGENT_NOT_LIVE`）；写工具（`devlead_use_workspace` /
   `devlead_create_session` / `devlead_prompt_session` / `devlead_watch_session` 与三个关闭
   工具）都在 core 中重新校验 live + 模式。`devlead_use_workspace` 0.2.0 起转发 live lead Agent
@@ -2707,7 +2714,7 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   `activeSessionLabel` 与两种 refusal 文案。
 - `tool`：用 fake `ctx.devLead` + fake `ctx.tools`/`ctx.systemPrompt` 捕获工具定义，验证
   `when` gating、参数校验、值渲染、编译期 schema↔protocol 一致性、运行时 output schema
-  校验、错误翻译、14 个主工具 + 1 个汇报工具的 execute 转发与取消信号转发（含 `listAgentPresets` 的 roster /
+  校验、错误翻译、16 个主工具 + 1 个汇报工具的 execute 转发与取消信号转发（含 `listAgentPresets` 的 roster /
   unavailable / 失败投影）、presentCall replay 纯净性，以及
   policy 文案的角色边界契约（默认调度、写入归属、归属未明时先问或注册、无空会话）与派发后的
   等待契约（结束本轮、不 shell `sleep` / 不轮询 / 不用 `wait_agent`、唤醒以新 turn 恢复本
@@ -2774,7 +2781,7 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   scratch workspace 被初始化成真实 git 仓库（一次 seed commit），因此是真实 Git happy path。
   阶段 3 停实例 → 链接同一个 probe 包并叠加 probe patch 重启（关闭工具不需要实验 bundle，
   因此 `--no-worktree` 也会运行）→ probe 的 `devlead-e2e-inspect` 用真实
-  `ctx.tools.resolve` 报告该 Agent 一步可见的工具集（模式开启时恰好 14 个主 `devlead_*`，已关注子会话恰好 1 个 `devlead_report`，
+  `ctx.tools.resolve` 报告该 Agent 一步可见的工具集（模式开启时恰好 16 个主 `devlead_*`，已关注子会话恰好 1 个 `devlead_report`，
   模式关闭时为 0），用 `ctx.systemPrompt.assemble` 取 `devlead:policy` section（判断式自主
   关闭、安全边界、有限可行性判断/开放问题/深挖交接；关闭时为空文本）；`devlead-e2e-close`
   通过 `ctx.devLead` 归档一个已 prompt 的子会话（durable archive 集合 + archived 视图/列表行、

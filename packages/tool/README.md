@@ -1,8 +1,8 @@
 # @yankeguo/dsh-tool-devlead
 
-The fourteen model-facing lead tools, one watched-Session report tool, and the conditional DevLead system-prompt sections.
+The sixteen model-facing lead tools, one watched-Session report tool, and the conditional DevLead system-prompt sections/context.
 
-The fourteen lead tools are registered with `when: ({ agent }) => ctx.devLead.isEnabled(agent)`,
+The sixteen lead tools are registered with `when: ({ agent }) => ctx.devLead.isEnabled(agent)`,
 so an ordinary Session never sees them. They become visible only after a human enables DevLead mode
 with `/devlead on` or the composer-toolbar toggle (shown in both states). `devlead_report` is the
 inverse condition: `ctx.devLead.isSupervised(agent)` — a non-DevLead Session watched by the unique
@@ -13,6 +13,8 @@ active lead.
 - `devlead_list_workspaces`
 - `devlead_list_models` (compact Host model catalog for dispatch pinning)
 - `devlead_list_agent_presets` (Host Agent preset roster: id, name/description, default marker, broken reason)
+- `devlead_board_read` (optional project board; id/title/workspace-path selection and bounded listings)
+- `devlead_board_update` (lead-only project create/set, blockers, tasks, and expected-revision CAS)
 - `devlead_use_workspace`
 - `devlead_list_sessions`
 - `devlead_create_session` (optional `isolation: "none" | "worktree"`; creation-time
@@ -27,12 +29,20 @@ active lead.
 - `devlead_archive_session` (DSH archive; `stop_running` asks the Host to stop running work)
 - `devlead_unarchive_session` (restore to the recorded Workspace position)
 
-Every lead tool requires an enabled DevLead mode; `devlead_report` requires the inverse watched state. Every tool except `devlead_list_workspaces` also requires a live calling Agent (`exec.agent`). Since 0.2.0 `devlead_use_workspace` forwards the live Agent to the core
+Every lead tool requires an enabled DevLead mode; `devlead_report` requires the inverse watched state. Mutations and Host-identity reads require a live calling Agent (`exec.agent`); `devlead_list_workspaces` and `devlead_board_read` do not inspect its identity. Since 0.2.0 `devlead_use_workspace` forwards the live Agent to the core
 `useWorkspace(agent, { path, title?, create? }, signal)`; `create` defaults to `false` (a missing
 directory is `DEVLEAD_DIRECTORY_MISSING`), and `create: true` is only for a human-explicit request
 to create the directory. Domain failures are translated to `HarnessError` with a stable
-`DEVLEAD_*` code. Tool outputs are canonical JSON validated against their declared output
-schemas.
+`DEVLEAD_*` code (board failures use `BOARD_*`). Tool outputs are canonical JSON validated against
+their declared output schemas.
+
+The board tools are disabled by deployment default until `devlead.boardPath` is configured. They
+never accept a board file path argument. `devlead_board_read` defaults to project summaries without
+tasks; a selected project includes tasks by default. `devlead_board_update` requires explicit
+`create:true` plus `set.workspace.path` for a new project, supports blocker/task patches and CAS,
+and returns only the changed project. The human is read-only; only the enabled lead AI writes.
+`devlead:board-summary` is a cache-safe `systemPrompt.context()` snapshot capped at 1536 UTF-8
+bytes. See [docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md).
 
 `devlead_list_models` reports the compact Host model catalog (default selection, providers,
 models, reasoning efforts, and provider failures). `devlead_list_agent_presets` reports the
@@ -137,7 +147,7 @@ supported platform.
 
 ## 中文
 
-`@yankeguo/dsh-tool-devlead` 提供 14 个主工具 + 1 个 `devlead_report` 与两段条件 system prompt。主工具只在 DevLead 模式开启时可见；`devlead_report` 只在非 DevLead、被唯一 active lead 关注的会话可见。除 `devlead_list_workspaces` 外都需要 live 调用者（`exec.agent`）。0.2.0 起
+`@yankeguo/dsh-tool-devlead` 提供 16 个主工具 + 1 个 `devlead_report` 与条件 system prompt/context。主工具只在 DevLead 模式开启时可见；`devlead_report` 只在非 DevLead、被唯一 active lead 关注的会话可见。写操作与需要调用者身份的读取要求 live Agent（`exec.agent`）；`devlead_list_workspaces` / `devlead_board_read` 不读取其身份。0.2.0 起
 `devlead_use_workspace` 把 live Agent 转发给 core 的 `useWorkspace(agent, request, signal)`，
 `create` 默认 `false`（缺目录报 `DEVLEAD_DIRECTORY_MISSING`，只有人类明确要求建目录时才传
 `true`）。`devlead_create_session` 还支持创建时指定 `provider`+`model`（可选
@@ -147,7 +157,10 @@ supported platform.
 `default` 有效默认标记、`broken` 原因；Host 未组合 roster 时返回 `available: false` 与原因，
 不虚构 id）。`preset` 是 Host 定义的 id；省略/空白先回退插件 `defaultAgentPreset`，再回退
 Host 默认/selectedDefault；无效 id 在创建阶段返回结构化错误，不会被静默忽略。领域错误翻译为
-稳定的 `DEVLEAD_*` code。`devlead_report` 返回 `{ report, durable, queued, warning? }`：报告先写入
+稳定的 `DEVLEAD_*` code（看板为 `BOARD_*`）。`devlead_board_read` / `devlead_board_update` 提供
+可选项目看板；路径只来自 `devlead.boardPath`，用户只读，只有 enabled lead AI 可通过工具写入。
+动态 `devlead:board-summary` 使用 cache-safe `systemPrompt.context()`，上限 1536 UTF-8 bytes。
+详见 [docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md)。`devlead_report` 返回 `{ report, durable, queued, warning? }`：报告先写入
 durable outbox，lead 日志 flush 成功后才清理；Host 无 storage 时 `durable:false` 并带 warning。
 报告参数：`message`（≤4000 码点）、
 可选 `kind`（progress/blocked/decision/question/fyi，默认 progress）与 `summary`（≤200），无 target

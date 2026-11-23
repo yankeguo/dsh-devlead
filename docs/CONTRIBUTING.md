@@ -168,7 +168,7 @@ provider / 基础设施凭据按名称模式从环境清除，turn 稳定以 pro
   `status: 'worktree'` 且 `path`/`branch`/`baseCommit` 非空、`git worktree list` 与分支存在、
   `baseCommit` 等于 checkout `HEAD`、子会话有效 cwd 切到 worktree 而 header cwd 仍指向
   Workspace、Session 仍归属该 Workspace。
-- **阶段 3**：真实 Host 上验证工具与关闭生命周期——模式开启时恰好 14 个主 `devlead_*`、关闭时
+- **阶段 3**：真实 Host 上验证工具与关闭生命周期——模式开启时恰好 16 个主 `devlead_*`、关闭时
   为 0，`devlead:policy` 文案契约，archive/unarchive/`stop_running`，注销 Workspace 的 durable
   行为，模型目录与创建时的模型 / Agent Teams 设置，以及 watched child 的 `devlead_report` 与
   `ask_user_question` 转发。

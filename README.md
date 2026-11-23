@@ -19,7 +19,7 @@ everything.
 | **A dispatcher, not an implementer** | The DevLead decides which Workspace owns a request from registered metadata, sends a self-contained brief to a Session there, watches it, reviews the delivery, and reports. Deeper investigation and implementation stay in the child Session. |
 | **Real DSH entities** | Workspaces go through `ctx.workspaceRegistry`; children are ordinary Sessions visible in the sidebar that you can open, continue, archive — not hidden subagents. |
 | **Notification loop** | When a watched Session's turn settles, a durable notification wakes the DevLead so it can follow up, dispatch new work, or report. The watch index is rebuilt from durable records after a restart. |
-| **14 lead tools + 1 report tool** | Register/list/remove Workspaces, list Host models and Agent presets, create/read/continue/archive/restore/watch Sessions, inspect and retract queued inbox inputs, read the notification and report digest. Watched children get a one-way `devlead_report`. |
+| **16 lead tools + 1 report tool** | Register/list/remove Workspaces, list Host models and Agent presets, create/read/continue/archive/restore/watch Sessions, inspect and retract queued inbox inputs, read the notification and report digest, and maintain an optional user-visible project board. Watched children get a one-way `devlead_report`. |
 | **Human commands** | `/devlead`, `/devlead on\|off`, `/devlead reset`, `/devlead watch\|unwatch <session>` — Sessions are addressable by full id or unique prefix. |
 | **Optional worktree isolation** | When the Host composes DSH's experimental Git worktree service, a dispatched Session can get its own branch and checkout instead of sharing the Workspace checkout. Missing capability degrades to the shared checkout with a reported status. |
 | **Web UI** | A labelled DevLead toggle in the composer toolbar (present in both states), a status-only DevLeadBar above the composer while the mode is on, and active/watched marks in the sidebar. |
@@ -314,7 +314,7 @@ whether the Host could isolate at all.
 
 ## Tool reference
 
-The fourteen lead tools are visible only in a DevLead session; `devlead_report` is visible only in
+The sixteen lead tools are visible only in a DevLead session; `devlead_report` is visible only in
 a watched non-lead Session. All `workspace` arguments accept an id, a registered path, or an exact
 title. All `session` arguments accept a full id, a unique prefix, or the uuid first segment.
 
@@ -323,6 +323,8 @@ title. All `session` arguments accept a full id, a unique prefix, or the uuid fi
 | `devlead_list_workspaces` | list registered Workspaces | — |
 | `devlead_list_models` | compact Host model catalog (default, providers, failures) | — |
 | `devlead_list_agent_presets` | Host Agent preset roster with the effective default | — |
+| `devlead_board_read` | read the optional user-visible project board | `project?`, `include_tasks?`, `limit?` |
+| `devlead_board_update` | lead-only project status/blocker/task update | `project`, `expected_revision?`, `create?`, `set?`, `blockers?`, `tasks?` |
 | `devlead_use_workspace` | register a Workspace (idempotent) | `path` (absolute), `title?`, `create?` (default false) |
 | `devlead_list_sessions` | list Sessions | `workspace?`, `watched_only?`, `limit?` |
 | `devlead_create_session` | create + optionally prompt a child Session | `workspace?`, `prompt?`, `title?`, `watch?`, `preset?`, `isolation?`, `provider?`+`model?`, `agent_teams?` |
@@ -379,6 +381,7 @@ profile's `cordis.patch.yml` — DSH replaces a row's whole config):
     wakeColdSession: true        # resume a cold DevLead Session to deliver queued notifications
     defaultAgentPreset: ''       # default Agent preset for created sessions (empty = Host default)
     questionTtlMs: 86400000      # open-question TTL (24h; 0 disables lazy expiry)
+    boardPath: ''                # optional project-board JSON path (empty = disabled)
 ```
 
 | Key | Default | Range / notes |
@@ -390,6 +393,7 @@ profile's `cordis.patch.yml` — DSH replaces a row's whole config):
 | `wakeColdSession` | `true` | when `true`, a cold lead Session with queued notifications is resumed to deliver them; set `false` to keep the queues in memory until a human opens the lead Session |
 | `defaultAgentPreset` | `''` | default value used when a created session names no `preset`; empty means the Host's effective default. An invalid id fails creation with a structured error |
 | `questionTtlMs` | `86400000` | non-negative safe integer; lazy open-question TTL (24h), `0` disables expiry. Answered questions do not retroactively expire |
+| `boardPath` | `''` | absolute project-board JSON path after startup resolution; empty disables the board. Only the lead AI writes through tools; humans/browser clients are read-only. See [docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md) |
 
 `tool` / `command` / `client-ui` have no deployment configuration; domain limits (watch cap,
 notification retention, etc.) are owned by the core service and protocol constants. Optional

@@ -1,9 +1,28 @@
 /**
- * DevLead surface plugin, node half. Pure UI plugin: the empty apply exists so
- * the plugin appears in the host cordis.yml / Loader; the browser half ships via
- * `exports["./client"]`, discovered through the package.json `dsh.client`
- * declaration.
+ * DevLead surface plugin, node half. The browser bundle keeps its existing UI;
+ * this Host entry additionally publishes the configured board location for the
+ * read-only board client introduced by Step B.
  */
 
-/** Host plugin body — no host-side behavior for this surface plugin. */
-export function apply(): void {}
+import type { Context } from '@deepseek-ai/cordis'
+import type {} from '@deepseek-ai/dsh-host-webserver'
+import { DEVLEAD_BOARD_SCHEMA_VERSION } from '@yankeguo/dsh-devlead'
+
+/** The Host core owns the one configured board path. */
+export const inject = ['devLead']
+
+/**
+ * Inject the current board contract on every index/worker payload render.
+ * Disabled boards deliberately publish no global.
+ */
+export function apply(ctx: Context): void {
+  ctx.on('webserver/index-inject', (table) => {
+    const boardPath = ctx.devLead.board.path
+    if (boardPath === undefined) return
+    table.push({
+      kind: 'global',
+      name: '__DSH_DEVLEAD_BOARD__',
+      value: { boardPath, schemaVersion: DEVLEAD_BOARD_SCHEMA_VERSION },
+    })
+  })
+}

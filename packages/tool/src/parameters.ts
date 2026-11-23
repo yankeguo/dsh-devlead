@@ -46,6 +46,102 @@ export const TOOL_PARAMETERS = {
   devlead_list_workspaces: {},
   devlead_list_models: {},
   devlead_list_agent_presets: {},
+  devlead_board_read: {
+    project: {
+      type: 'string',
+      description: 'Optional project reference: exact id, exact workspace title, or exact absolute workspace path. '
+        + 'Omit it for a bounded listing of project summaries.',
+    },
+    include_tasks: {
+      type: 'boolean',
+      description: 'Include task rows. Defaults to true for a single selected project and false for the all-project listing.',
+    },
+    limit: {
+      type: 'integer',
+      description: 'Maximum project rows in an unfiltered listing, capped at 50. The result marks truncation.',
+    },
+  },
+  devlead_board_update: {
+    project: {
+      type: 'string',
+      required: true,
+      description: 'Existing project id/title/workspace path. With create:true this is the new project id. '
+        + 'This never addresses the board file itself.',
+    },
+    expected_revision: {
+      type: 'integer',
+      description: 'Optional non-negative compare-and-swap revision. The update fails with BOARD_REVISION_CONFLICT '
+        + 'when the file advanced since devlead_board_read.',
+    },
+    create: {
+      type: 'boolean',
+      default: false,
+      description: 'Set true to create a missing project; creation requires set.workspace.path. Defaults to false.',
+    },
+    set: {
+      type: 'object',
+      additionalProperties: false,
+      description: 'Scalar project fields to change; empty goal/focus/next strings clear them.',
+      properties: {
+        status: { type: 'string', enum: ['active', 'blocked', 'paused', 'done'] },
+        priority: { type: 'string', enum: ['low', 'medium', 'high'] },
+        goal: { type: 'string' },
+        focus: { type: 'string' },
+        next: { type: 'string' },
+        workspace: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            path: { type: 'string', description: 'Absolute workspace directory; required when creating a project.' },
+            title: { type: 'string', description: 'Display title; creation defaults to the workspace directory basename.' },
+          },
+        },
+      },
+    },
+    blockers: {
+      type: 'object',
+      additionalProperties: false,
+      description: 'Blocker changes, applied in clear, remove, add order.',
+      properties: {
+        clear: { type: 'boolean', default: false },
+        remove: { type: 'array', items: { type: 'string' }, description: 'Blocker ids to remove.' },
+        add: {
+          type: 'array',
+          description: 'Blockers to add or replace by id; since is preserved on replacement.',
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              id: { type: 'string', required: true },
+              text: { type: 'string', required: true },
+              session_id: { type: 'string', description: 'Optional Session associated with the blocker.' },
+            },
+          },
+        },
+      },
+    },
+    tasks: {
+      type: 'object',
+      additionalProperties: false,
+      description: 'Task changes, applied in remove then upsert order.',
+      properties: {
+        remove: { type: 'array', items: { type: 'string' }, description: 'Task ids to remove.' },
+        upsert: {
+          type: 'array',
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              id: { type: 'string', required: true },
+              title: { type: 'string', description: 'Required when the upsert creates a new task.' },
+              status: { type: 'string', enum: ['todo', 'doing', 'blocked', 'done'], description: 'Defaults to todo for a new task.' },
+              owner_session_id: { type: 'string', description: 'Optional owning Session id.' },
+            },
+          },
+        },
+      },
+    },
+  },
   devlead_use_workspace: {
     path: {
       type: 'string',

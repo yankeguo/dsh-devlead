@@ -11,7 +11,7 @@
  */
 
 import { HarnessError } from '@deepseek-ai/dsh-llm'
-import { isDevLeadError } from '@yankeguo/dsh-devlead'
+import { isDevLeadBoardError, isDevLeadError } from '@yankeguo/dsh-devlead'
 import { DevLeadToolInputError } from './arguments.ts'
 
 /**
@@ -26,7 +26,9 @@ import { DevLeadToolInputError } from './arguments.ts'
 export function translateToolError(error: unknown): unknown {
   if (error instanceof HarnessError) return error
   if (error instanceof DevLeadToolInputError) return new HarnessError(error.message, error.code, { cause: error })
-  if (isDevLeadError(error)) return new HarnessError(error.message, error.code, { cause: error })
+  if (isDevLeadError(error) || isDevLeadBoardError(error)) {
+    return new HarnessError(error.message, error.code, { cause: error })
+  }
   return error
 }
 

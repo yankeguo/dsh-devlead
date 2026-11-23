@@ -34,6 +34,7 @@ import {
   requireWorkspaceRef,
 } from './arguments.ts'
 import { runTool } from './errors.ts'
+import { registerDevLeadBoardTools } from './board-tools.ts'
 import { DEFAULT_NOTIFICATIONS_LIMIT, TOOL_PARAMETERS } from './parameters.ts'
 import { DEVLEAD_REPORT_POLICY, devLeadPolicy } from './policy.ts'
 import { registerQuestionRouting } from './question-routing.ts'
@@ -276,7 +277,7 @@ const UNARCHIVE_SESSION_DESCRIPTION =
   + 'wrapping up, or when the human asks to restore a Session; report the restored Session.'
 
 /**
- * Register the fourteen lead tools, the watched-Session report tool, and
+ * Register the sixteen lead tools, the watched-Session report tool, and
  * their shared policy sections.
  *
  * The tools and the policy text follow the same condition: DevLead mode is
@@ -309,6 +310,17 @@ export function apply(ctx: Context): void {
   // own ask_user_question UI can run. The listener checks supervision per call,
   // so unwatched Sessions and human-directed child turns are untouched.
   registerQuestionRouting(ctx, ctx.devLead)
+
+  // Cache-safe user-role snapshot: unchanged board text is not persisted again,
+  // while a committed revision appears in the next context reconstruction.
+  ctx.systemPrompt.context({
+    name: 'devlead:board-summary',
+    order: ctx.systemPrompt.getContextOrder('WEB_SURFACE') + 10,
+    text: ({ agent }) => agent !== undefined && ctx.devLead.isEnabled(agent)
+      ? ctx.devLead.board.summary()
+      : '',
+  })
+  registerDevLeadBoardTools(ctx)
 
   ctx.tools.register(defineTool({
     name: 'devlead_list_workspaces',

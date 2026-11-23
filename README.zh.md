@@ -17,7 +17,7 @@ agent 就能在人可见、可参与的标准界面里统管多个仓库。
 | **调度者，而非实现者** | DevLead 依据已注册的元数据判定请求归哪个 Workspace，向那里的 Session 发送一份自包含简报，关注它、审阅交付并汇报。更深的调查与实现留在子会话里。 |
 | **真实的 DSH 实体** | Workspace 走 `ctx.workspaceRegistry`；子会话是侧边栏里可见的普通 Session，你可以打开、继续、归档——不是隐藏的 subagent。 |
 | **通知回路** | 被关注 Session 的 turn 结束时，一条持久通知会唤醒 DevLead，让它跟进、派发新工作或汇报。重启后关注索引会从持久记录重建。 |
-| **14 个主工具 + 1 个汇报工具** | 注册/列出/移除 Workspace，列出 Host 模型与 Agent preset，创建/读取/续写/归档/恢复/关注 Session，查看并撤回排队的 inbox 输入，读取通知与汇报摘要。被关注的子会话另有单向的 `devlead_report`。 |
+| **16 个主工具 + 1 个汇报工具** | 注册/列出/移除 Workspace，列出 Host 模型与 Agent preset，创建/读取/续写/归档/恢复/关注 Session，查看并撤回排队的 inbox 输入，读取通知与汇报摘要，并维护可选的用户可见项目看板。被关注的子会话另有单向的 `devlead_report`。 |
 | **人类命令** | `/devlead`、`/devlead on\|off`、`/devlead reset`、`/devlead watch\|unwatch <session>`——会话可用完整 id 或唯一前缀寻址。 |
 | **可选的 worktree 隔离** | 当 Host 组合了 DSH 的实验性 Git worktree 服务时，被派发的 Session 可以拥有自己的分支和检出，而不必共享 Workspace checkout。缺少该能力时退化为共享 checkout，并在结果里如实上报状态。 |
 | **Web 界面** | composer 工具条里的带文本 DevLead 开关（两态都在）、开启后 composer 上方的只读 DevLeadBar，以及侧边栏的 active/watched 标记。 |
@@ -286,7 +286,7 @@ worktree** 能力时，`devlead_create_session` 接受 `isolation: "worktree"`�
 
 ## 工具参考
 
-14 个主工具只在 DevLead 会话中可见；`devlead_report` 只在被关注的非 lead Session 中可见。
+16 个主工具只在 DevLead 会话中可见；`devlead_report` 只在被关注的非 lead Session 中可见。
 所有 `workspace` 参数都接受 id、注册路径或精确标题；所有 `session` 参数都接受完整 id、
 唯一前缀或 uuid 第一段。
 
@@ -295,6 +295,8 @@ worktree** 能力时，`devlead_create_session` 接受 `isolation: "worktree"`�
 | `devlead_list_workspaces` | 列出已注册的 Workspace | — |
 | `devlead_list_models` | 精简的 Host 模型目录（default、providers、failures） | — |
 | `devlead_list_agent_presets` | Host 的 Agent preset roster 及实际生效的默认值 | — |
+| `devlead_board_read` | 读取可选的用户可见项目看板 | `project?`、`include_tasks?`、`limit?` |
+| `devlead_board_update` | 仅 lead AI 可写的项目状态/阻塞/任务更新 | `project`、`expected_revision?`、`create?`、`set?`、`blockers?`、`tasks?` |
 | `devlead_use_workspace` | 注册 Workspace（幂等） | `path`（绝对路径）、`title?`、`create?`（默认 false） |
 | `devlead_list_sessions` | 列出 Session | `workspace?`、`watched_only?`、`limit?` |
 | `devlead_create_session` | 创建（并可选 prompt）子会话 | `workspace?`、`prompt?`、`title?`、`watch?`、`preset?`、`isolation?`、`provider?`+`model?`、`agent_teams?` |
@@ -308,7 +310,7 @@ worktree** 能力时，`devlead_create_session` 接受 `isolation: "worktree"`�
 | `devlead_archive_session` | 归档 Session（可逆） | `session`、`stop_running?` |
 | `devlead_unarchive_session` | 恢复已归档的 Session | `session` |
 
-领域错误使用稳定的 `DEVLEAD_*` 错误码，并渲染成友好文本。读取状态请以 `lastTurn` /
+领域错误使用稳定的 `DEVLEAD_*` / `BOARD_*` 错误码，并渲染成友好文本。读取状态请以 `lastTurn` /
 `lastTransition` / `lastError` / `lastAssistant` 为准，不要靠猜。
 
 ## 等待、唤醒与汇报
@@ -347,6 +349,7 @@ config）：
     wakeColdSession: true        # 恢复冷 DevLead 会话以投递其排队通知
     defaultAgentPreset: ''       # 创建会话时的默认 Agent preset（空 = Host 默认）
     questionTtlMs: 86400000      # open question 的 TTL（24 小时；0 = 禁用 lazy 过期）
+    boardPath: ''                # 可选项目看板 JSON 路径（空 = 禁用）
 ```
 
 | 键 | 默认值 | 范围 / 说明 |
@@ -358,6 +361,7 @@ config）：
 | `wakeColdSession` | `true` | 为 `true` 时，带排队通知的冷 lead Session 会被恢复以完成投递；设为 `false` 可让队列留在内存里，直到人类打开该 lead Session |
 | `defaultAgentPreset` | `''` | 创建会话未指定 `preset` 时使用的默认值；空表示 Host 的实际默认值。无效 id 会让创建失败并返回结构化错误 |
 | `questionTtlMs` | `86400000` | 非负安全整数；open question 的 lazy TTL（24 小时），`0` 禁用过期。已回答的问题不会追溯过期 |
+| `boardPath` | `''` | 项目看板 JSON 路径，启动时解析为绝对路径；空字符串禁用。只有 lead AI 通过工具写入，人类/浏览器只读。详见 [docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md) |
 
 `tool` / `command` / `client-ui` 没有部署配置；领域限制（watch 上限、通知保留条数等）由核心
 服务与 protocol 常量决定。可选 worktree 隔离**没有配置键**：只有当 profile 组合了实验性
