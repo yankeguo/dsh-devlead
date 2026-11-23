@@ -3,11 +3,18 @@
 Core Host service of the DevLead suite (`ctx.devLead`): the durable mode switch, damage-recovery
 `reset()`, Workspace and Session orchestration (including `useWorkspace(agent, request, signal?)`
 with directory creation opt-in), the watched-session notification hub with cold-lead rehydration, the mid-turn report channel for watched Sessions,
-and the `devLead` / `devLeadMode` / `devLeadWatch` Session projections. When `boardPath` is
-configured, `ctx.devLead.board` also owns the strict, atomically written project-board JSON file;
-`updateBoard` stamps the calling lead identity. The file is lead-AI-writable and human/browser-read-only.
+and the `devLead` / `devLeadMode` / `devLeadWatch` Session projections. `ctx.devLead.board` also
+owns the strict, atomically written project-board JSON file. The board is **on by default**: the
+unique active lead Session's original workspace root owns `<header.cwd>/.dsh/devlead/board.json`;
+`boardPath` is only an optional absolute override. With no active lead (or no absolute workspace
+root) the board is disabled (`BOARD_DISABLED`, empty summary, no browser global), and turning the
+lead off or switching leads releases the old store/watcher before the new file is read. A board
+start/pre-create failure is logged and surfaced as `boardStartError` but never rejects service
+activation: the board reports `BOARD_IO_ERROR` while the rest of DevLead keeps working. `updateBoard`
+stamps the calling lead identity and requires the caller to be the current active lead. The file is
+lead-AI-writable and human/browser-read-only.
 See [docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md) for schema v1,
-CAS, corruption handling, and the dynamic summary contract.
+CAS, corruption handling, read caps, and the dynamic summary contract.
 
 DevLead mode is **globally single-active**: at most one Session (across every Workspace) may be
 enabled. `setEnabled(agent, true)` throws `DEVLEAD_ALREADY_ACTIVE` naming the occupant when another
@@ -54,7 +61,8 @@ dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 
 - DSH `0.2.2-rc.1`–`0.2.2-rc.5` (the package declares `engines.dsh: >=0.2.2-rc.1 <0.3.0`; this checkout's devDependencies pin rc.1 for the oldest-API typecheck).
 - Peer services `agents`, `sessions`, `sessionProjections` (provided by the default `dsh-base`
-  composition).
+  composition). The board file uses the peer library `@deepseek-ai/dsh-atomic-write`
+  (`writeFileAtomic` / `withFileLock`), which the installed DSH runtime provides.
 - Optional, probed at call time: `workspaceRegistry`, `sessionController`, `sessionTitle`,
   `agentPresets` (read-only preset roster discovery), `sessionQuery`, `sessionProjectionCache`
   (cold-lead rehydration pre-filter), `sessionPersistence` (durable-corpus readiness barrier),
@@ -73,8 +81,11 @@ dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 
 The Loader row id `devlead` accepts `notificationBatchMs`, `maxWatchedSessions`,
 `maxListedSessions`, `wakeColdSession` (default `true` since 0.2.0), `defaultAgentPreset`
-(used when a created Session names no preset; an invalid id fails creation), and `boardPath`
-(trimmed blank disables the board; a non-blank value must be absolute and relative paths are rejected).
+(used when a created Session names no preset; an invalid id fails creation), and the optional
+`boardPath` override. The board is enabled by default: a trimmed-blank / omitted `boardPath` derives
+`<active lead Session header cwd>/.dsh/devlead/board.json`; a non-blank value must be absolute and
+wins over the derived path (relative paths are rejected). Existing explicit `boardPath` deployments
+keep their path and behaviour unchanged, and no tool argument can redirect the board file.
 See the
 [configuration section](https://github.com/yankeguo/dsh-devlead/blob/main/README.md#configuration) for defaults and ranges; all limits are
 validated at both the Loader and direct-construction boundaries.
@@ -90,6 +101,12 @@ validated at both the Loader and direct-construction boundaries.
 `@yankeguo/dsh-devlead` 是套件的 Host 核心服务 `ctx.devLead`：模式开关、损坏状态恢复
 `reset()`、Workspace/Session 编排（`useWorkspace(agent, request, signal?)`，目录创建 opt-in）、
 带冷 lead 索引重建的关注关系索引与通知投递，以及 `devLead` / `devLeadMode` / `devLeadWatch` projection。
+项目看板默认启用：由唯一 active lead 的 `SessionHeader.cwd` 派生
+`<cwd>/.dsh/devlead/board.json`，`boardPath` 只作可选绝对路径 override（override 也允许 lead
+没有 workspace 根时仍有看板）；没有 lead 时禁用，
+lead off/切换会释放旧 store/watcher，start/预创建失败只记 warning + degraded、不阻塞服务加载
+（board 工具报 `BOARD_IO_ERROR`，其余功能照常）。看板写入使用 `@deepseek-ai/dsh-atomic-write`
+（安装运行时提供）。
 `agents`、`sessions`、`sessionProjections` 为必需 peer；Workspace registry、Session controller、
 标题/查询服务、projection cache、`sessionPersistence`（冷重建就绪屏障）与实验性 worktree 能力
 均为可选探测。完整中文文档见[根 README.zh.md](https://github.com/yankeguo/dsh-devlead/blob/main/README.zh.md)与

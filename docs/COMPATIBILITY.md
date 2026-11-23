@@ -22,13 +22,16 @@ staged publish + 人工 approve 公开；`0.4.0-rc.1` 已于同日以 `next` dis
     覆盖 phase 2。
   - 与 DevLead 相关的 rc.4 差异是 DeepSeek 流式拒答的 LLM 错误码；DevLead 不分类该错误码。
   - rc.5 只改 web search provider 选择（见下）；DevLead 不读取或调用该 API。
-  - 可选项目看板使用 rc.1 typings 与 rc.5 安装版源码均存在的
+  - 项目看板默认启用（无需配置）并使用 rc.1 typings 与 rc.5 安装版源码均存在的
     `@deepseek-ai/dsh-atomic-write`（`writeFileAtomic` / `withFileLock`）、
     `systemPrompt.context()` 和 `webserver/index-inject`；只读右栏使用同版本范围的
     `sidebarRightTabs` / `sidebarRight.openTab`、`sidebar.right.pane.tab`、
     `remote.workspaceFiles.stat/readBytes/changes` 与 `useWorkspaces` / `useSessions`。
-    不依赖 0.2.3-only API，engines/peer DSH range 不变。boardPath 默认为空，未配置时不注册
-    看板 tab 或按钮，既有 UI 行为不变。
+    不依赖 0.2.3-only API，engines/peer DSH range 不变。默认路径派生自 active lead 的
+    `SessionHeader.cwd`（`<cwd>/.dsh/devlead/board.json`），`boardPath` 仍是可选的绝对路径
+    override（既有配置升级后行为不变）；没有 lead 时看板禁用（无 global、无面板），看板
+    start/预创建失败只降级该功能（P2-2），不影响插件加载。浏览器入口为 lead-only：tab/guide/
+    header 只在屏幕上的 active lead Session 出现，global 形状含 `leadSessionId` / `override`。
 - `plugin records`（`appendPluginRecord` / `PluginRecordMap`）：rc.1–rc.5 均存在；这是
   **experimental、调用方受限**的扩展点，不是公开契约，Session format migration 为
   best-effort（详见下节）。DevLead 的全部 durable 状态都依赖它。
@@ -436,8 +439,8 @@ git -C "$REPO" add -f \
 ```
 
 当前 harness 的 pin 来自 `scripts/e2e-smoke.mjs` 的 `EXPECTED_CHECKS`
-（phase 1=28、1b=12、2=23、3=132、1e=31）：patch / installed 完整流必须各为 **226/226**，
-no-worktree 必须为 **203/203**（仅跳过 phase 2）；完整流目标计数为 **223 PASS + 3** 条有真实
+（phase 1=30、1b=18、2=24、3=135、1e=31）：patch / installed 完整流必须各为 **238/238**，
+no-worktree 必须为 **214/214**（仅跳过 phase 2）；完整流目标计数为 **235 PASS + 3** 条有真实
 原因的正向模型选择 SKIP，其他检查不得通过删除或放宽断言来凑数。未来 pin 变化只能先更新
 `EXPECTED_CHECKS` 并在证据中解释。
 
@@ -506,12 +509,18 @@ E2E 重跑（含真实 `*_EXIT=0` 与总计行）记录在
 [`docs/e2e-evidence/v0.4.0-release-prep.md`](e2e-evidence/v0.4.0-release-prep.md)。发布前仍需按
 [PUBLISHING](PUBLISHING.md) 在冻结树重跑完整组合。
 
-当前 board 加固轮保留上述全部旧检查，并在 phase 3 新增 4 项：真实 `ctx.devLead.updateBoard`
-两次写入（第二次 CAS）、`webserver/index-inject` board global、独立磁盘 revision/内容 read-back。
-Step B 复核修复轮把 phase 1 与 1b 改回**未配置 boardPath** 的默认组合，并新增 1 项负向断言：
-static inject 仍声明看板客户端服务，但 index HTML 不注入 `__DSH_DEVLEAD_BOARD__`。因此当前目标
-pin 是 phase 1=28、phase 3=132、完整流=226（223 PASS + 3 credential-less SKIP）、no-worktree=203；
-上表 Phase 1e 行（221/198、218 PASS）是 Phase 1e 历史实测，不改写为新一轮证据。
+当前 board 加固轮保留上述全部旧检查，并在 phase 3 新增真实 `ctx.devLead.updateBoard` 写入/CAS、
+`webserver/index-inject` board global 与独立磁盘 revision/内容 read-back；Step B 复核修复轮又把
+phase 1 与 1b 改回未配置 `boardPath` 的默认组合并固定当轮目标 pin（phase 1=28、phase 3=132、
+完整流=226、no-worktree=203）。**本轮的权威 pin 是 `scripts/e2e-smoke.mjs` 的
+`EXPECTED_CHECKS`：phase 1=30、phase 1b=18、phase 2=24、phase 3=135、phase 1e=31，完整流
+238/238（235 PASS + 3 credential-less SKIP），`--no-worktree` 214/214。** 本轮新增/改写的断言
+包括：没有 lead 时不注入 board global、lead 开启后从 `SessionHeader.cwd` 派生默认路径并发布
+`{leadSessionId, override:false}`、预创建父目录、冷 lead 从持久 header 派生、`/devlead off`
+移除 global、换 workspace 后立即换源、phase 2 的 Config override 以 `override:true` 发布、
+phase 3 的 lead-off store 释放（没有 workspace 根的 `BOARD_DISABLED` 由 host 单测覆盖，e2e 的 HTTP session/create 总会落一个 cwd）。真实 PASS 日志与证据由 Lead
+记录在 `docs/e2e-evidence/`；上表 Phase 1e 行（221/198、218 PASS）与上一轮 226/203 均为历史
+实测，不改写为新一轮证据。
 
 每条 flow 有 3 条正向模型选择检查因无 provider 凭据 SKIP（打印真实原因）；负向
 `DEVLEAD_MODEL_UNAVAILABLE`、`devlead_list_models`、preset roster 与 watched-child
@@ -529,16 +538,21 @@ pin 是 phase 1=28、phase 3=132、完整流=226（223 PASS + 3 credential-less 
   含 enabled / sessions / notifications / reports；组件级渲染断言由 `pnpm test` 覆盖。
 - 项目看板右栏的 definition id/kind 分工、keyed body、header utilities、Workspace Files unary/stream
   类型与 Workspace/Session hooks 已逐行核对 rc.5 tag；这些 API 在 rc.1 npm typings 同样存在并通过
-  全仓 typecheck。`dsh.client.inject` 是**静态**包声明：`remote.workspaceFiles` /
-  `sidebarRight` / `sidebarRightTabs` / `workspaces` 始终在表中（默认 web-app 组合均提供），
-  不由 boardPath 增删；未配置 boardPath 时 `apply()` 不注册任何看板 tab/按钮，Host 入口也不
-  注入 browser global，因此默认部署的既有 UI 行为不变。该区分由 `apply.spec.ts` 的零注册锚点
-  与 rc.5 e2e 的负向 global 断言固定。
+  全仓 typecheck。`dsh.client.inject` 是**静态**包声明，共 11 项（含 `dsh-api-workspace-files`、
+  `dsh-api-workspace-controller`、`dsh-client-ui-sidebar-right`），不由看板开关或 lead 状态增删；
+  浏览器侧静态组合 `remote.workspaceFiles` / `sidebarRight` / `sidebarRightTabs` / `workspaces`。
+  看板入口是 **lead-only** 的：tab/guide/header 按钮只在屏幕上的 active lead Session 注册/渲染，
+  非 lead 与 subagent Session 没有入口；Host 只在当前 active lead 拥有看板路径时注入
+  `__DSH_DEVLEAD_BOARD__`，没有 lead 时该 global 缺失。页面在 lead 启用之前加载时，client 从
+  该 lead Session summary 的 `cwd` 派生默认路径；使用 Config `boardPath` override 的部署在
+  late-enable 场景需要刷新页面（只有新 HTML 携带 override 路径与 `override:true`）。模式 off、
+  Session 切换、路径切换会立即 dispose 旧面板并重读新文件。
 - rc.5 Web UI 的视觉行为本轮没有截图工具证据；自动化侧的判定依据是 slot/DOM 源码未变、boot
   graph 加载成功、projection 数据与渲染测试通过。视觉部分（composer 开关、DevLeadBar、lane
-  着色、question 状态、`provisional` 标记、侧栏 active ring / watched 准星）按
-  [UI-VERIFICATION](UI-VERIFICATION.md) 在隔离 profile 里做**人工验收**，以该 checklist 的记录
-  为准。此项是发布前的人工验收项，不由 e2e 或渲染断言替代，也不以本轮的无截图状态视为已通过。
+  着色、question 状态、`provisional` 标记、侧栏 active ring / watched 准星，以及看板 lead-only
+  入口、默认派生路径与面板状态）按 [UI-VERIFICATION](UI-VERIFICATION.md) 在隔离 profile 里做
+  **人工验收**，以该 checklist 的记录为准。此项是发布前的人工验收项，不由 e2e 或渲染断言替代，
+  也不以本轮的无截图状态视为已通过。
 
 ## 维护注意
 

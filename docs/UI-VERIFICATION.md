@@ -71,21 +71,34 @@
 
 ### Step B 项目看板验收项
 
-在隔离 profile 的 devlead config 中设置一个临时 `boardPath`，刷新页面后检查：
+看板默认启用、无需配置：active lead Session 原始 workspace 根下的
+`<cwd>/.dsh/devlead/board.json` 就是看板文件（`SessionHeader.cwd`，不是 worktree 检出）。
+在隔离 profile 里新建 lead 会话、执行 `/devlead on`，按以下顺序检查：
 
-1. **开关与入口**：未配置 global 时没有看板按钮/tab；配置后会话头出现图标按钮，guide 也有入口，
-   点击打开 `devlead-board`，同一 pane 重复点击复用页面。
-2. **项目卡片**：准备含四种状态、不同 priority/updatedAt 的 schema v1 文件；blocked 组与顶部提示优先，
+1. **lead-only 开关与入口**：任何 Session 在关闭态都没有看板按钮/tab/guide 入口；在 lead 执行
+   `/devlead on` 后，会话头出现图标按钮、guide 出现入口，右侧栏 tab `devlead-board` 可打开，
+   同一 pane 重复点击复用页面。切换到普通（非 lead）Session 时没有这些入口；切回 lead 后重新
+   出现。`/devlead off` 后入口消失、已打开的面板被 dispose，且不再读取旧文件。
+2. **默认路径派生**：确认文件落在 lead 的原始 workspace 根下（例如 scratch workspace 的
+   `<workspace>/.dsh/devlead/board.json`），而不是 worktree/effective cwd；在 lead 刚开启后让 AI 调一次
+   `devlead_board_update` 写入，面板应出现项目卡片。**先加载页面、后开启 lead** 的场景：默认路径
+   部署不刷新页面也应出现入口（client 从 lead Session summary 的 `cwd` 自行派生路径）。
+3. **Config override + late enable 需要刷新**：如测试 `boardPath` override，先改 profile 配置再
+   启动；若页面在 lead 启用前已加载，late-enable 场景必须刷新页面才能读到 override 路径与
+   `override:true` 的 global（这是预期行为，不是 bug；默认路径不需要刷新）。
+4. **项目卡片**：准备含四种状态、不同 priority/updatedAt 的 schema v1 文件；blocked 组与顶部提示优先，
    同组排序正确；focus/next/blocker since、任务 done/total、展开任务与截断 owner id 均可读，没有编辑控件。
-3. **文件状态**：文件不存在显示「还没有看板数据」而非错误，并保持页面打开——Host 首次写入创建
+   读取结果超过 64 KiB 时 Host 会按 tasks → blockers → project 行从尾部裁剪并标 `truncated:true`；
+   面板仍只读展示，不出现“内容缺失”误导。
+5. **文件状态**：文件不存在显示「还没有看板数据」而非错误，并保持页面打开——Host 首次写入创建
    文件后应由 change 或空态有界轮询（4s 起、退避到 30s）自动出现，无需手动刷新；坏 JSON/schema
    显示「看板文件解析失败」、最后成功时间和重试；改回合法文件后 change 触发自动恢复，手动刷新也
    可恢复。watch 断开时显示「自动更新已断开，请手动刷新」警告而非“正常”，手动刷新会同时重连
    （不会静默自动重连）。
-4. **其余项目**：折叠区只列未出现在 board 的已注册 workspace，名称/path、会话数与最近 Session 活动正确；
+6. **其余项目**：折叠区只列未出现在 board 的已注册 workspace，名称/path、会话数与最近 Session 活动正确；
    无活动、全部已列出、清单 pending/error 不编造内容；清单同时处于 pending 与 error 时显示错误而不是
    「正在读取」。多个面板实例（例如快速开关 tab 后残留的旧实例）的组标题 DOM id 不得冲突。
-5. **布局与主题**：右栏拉窄及桌面窄屏时长路径、自由文本和任务标题均换行，不出现横向溢出；light/dark
+7. **布局与主题**：右栏拉窄及桌面窄屏时长路径、自由文本和任务标题均换行，不出现横向溢出；light/dark
    下 pill/tag、warning/error、refresh/empty 状态可辨，刷新与重试按钮保持可用。
 
 ### 清理

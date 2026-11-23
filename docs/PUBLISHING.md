@@ -4,15 +4,17 @@
 
 | 发布顺序 | 包 | 说明 |
 | --- | --- | --- |
-| 1 | `@yankeguo/dsh-devlead-protocol` | 纯类型 + 常量 + 格式化（host 与浏览器共用），声明 `devLead` projection 类型 |
-| 2 | `@yankeguo/dsh-client-ui-devlead` | 浏览器两态 UI：工具条开关、DevLeadBar、侧边栏会话行标记 |
+| 1 | `@yankeguo/dsh-devlead-protocol` | 纯类型 + 常量 + 格式化（host 与浏览器共用），声明 `devLead` projection 类型与项目看板 wire schema / 默认路径常量 |
+| 2 | `@yankeguo/dsh-client-ui-devlead` | 浏览器 UI：工具条开关、DevLeadBar、侧边栏会话行标记、仅 active lead 可见的右侧栏只读项目看板；只依赖 `protocol` |
 | 3 | `@yankeguo/dsh-devlead` | 核心 Service `ctx.devLead`：模式、Workspace/Session 编排、关注关系索引、通知投递、projection fold |
 | 4 | `@yankeguo/dsh-command-devlead` | `/devlead` 人类命令 |
 | 5 | `@yankeguo/dsh-tool-devlead` | 模型工具 `devlead_*` + 条件系统提示 |
 | 6 | `@yankeguo/dsh-devlead-bundle` | 安装入口 bundle（`cordis.patch.yml` 装齐整套） |
 
-所有包使用同一个版本号。发布时先把 6 个包按 workspace 依赖拓扑排序（上表即脚本的确定性顺序：
-依赖先打包、bundle 最后；同层按包名排序），**依赖先 stage/approve、bundle 最后**；
+所有包使用同一个版本号。workspace 依赖图是 `protocol → {client-ui, devlead}`、
+`devlead → {command, tool}`、四者都进 `bundle`；发布时先把 6 个包按该图拓扑排序（上表即
+`scripts/stage-release.mjs` 的确定性顺序：protocol → client-ui → devlead → command → tool →
+bundle；依赖先打包、bundle 最后；同层按包名排序），**依赖先 stage/approve、bundle 最后**；
 `pnpm pack` 会把 `workspace:*` 改写为当前精确版本（例如 `0.2.0`）。`npm pack` / 从包目录直接
 `npm publish` **不会**改写 `workspace:`，因此发布链路固定使用 pnpm 打包，详见下文脚本说明。
 
@@ -162,7 +164,7 @@ export VERSION=0.4.1
 node -e '
   const fs = require("node:fs")
   const files = ["package.json"]
-  for (const dir of ["protocol","devlead","tool","command","client-ui","bundle"]) {
+  for (const dir of ["protocol","client-ui","devlead","command","tool","bundle"]) {
     files.push(`packages/${dir}/package.json`)
   }
   for (const file of files) {
@@ -222,17 +224,18 @@ client-ui 的 `index`/`client`；`bundle` 只有 patch 文件与 icon，不产�
 可选（本机，需要已安装的 DSH 桌面端）：真实 DSH 端到端冒烟：
 
 ```sh
-pnpm e2e --no-build                       # patch 完整流（阶段 1 + 1b + 2 + 3 + 1e，报 226/226）
-pnpm e2e --flow installed --no-build      # installed 完整流（同 pin，报 226/226）
-pnpm e2e --no-worktree --no-build         # 跳过实验 forge bundle 组合（报 203/203，阶段 1 + 1b + 3 + 1e）
+pnpm e2e --no-build                       # patch 完整流（阶段 1 + 1b + 2 + 3 + 1e，报 238/238）
+pnpm e2e --flow installed --no-build      # installed 完整流（同 pin，报 238/238）
+pnpm e2e --no-worktree --no-build         # 跳过实验 forge bundle 组合（报 214/214，阶段 1 + 1b + 3 + 1e）
 ```
 
-阶段 pin 以 `scripts/e2e-smoke.mjs` 的 `EXPECTED_CHECKS` 为准（28 / 12 / 23 / 132 / 31；删增 check
-都会使对应阶段失败），不要在本页复制旧数字作为验收依据。完整流必须 **226/226**、`--no-worktree`
-必须 **203/203**，数字以当次真实输出为准；完整流的 226/226 是 **223 PASS + 3** 条无 provider
-凭据的正向模型选择 SKIP（SKIP 未执行、不能算通过）。阶段 3 在全部旧检查之上另含 4 项 board
-检查：真实 `updateBoard` 写入/CAS、webserver/index-inject global 与独立磁盘 revision/内容
-read-back。上一稳定版 `0.4.0` 冻结树的历史真实输出（含真实
+阶段 pin 以 `scripts/e2e-smoke.mjs` 的 `EXPECTED_CHECKS` 为准（30 / 18 / 24 / 140 / 31；删增 check
+都会使对应阶段失败），不要在本页复制旧数字作为验收依据。完整流必须 **238/238**、`--no-worktree`
+必须 **214/214**，数字以当次真实输出为准；完整流的 238/238 是 **235 PASS + 3** 条无 provider
+凭据的正向模型选择 SKIP（SKIP 未执行、不能算通过）。阶段 3 在全部旧检查之上另含 board
+检查：真实 `updateBoard` 写入/CAS、webserver/index-inject global、lead-off store 释放、
+lead-off store 释放与独立磁盘 revision/内容 read-back；动态看板默认路径/global
+相关断言在阶段 1、1b、2。上一稳定版 `0.4.0` 冻结树的历史真实输出（含真实
 `PATCH_EXIT` / `INSTALLED_EXIT` / `NOWORKTREE_EXIT` 与总计行）见
 [`docs/e2e-evidence/v0.4.0-release-prep.md`](e2e-evidence/v0.4.0-release-prep.md)；历史候选
 `0.4.0-rc.1` 的输出见

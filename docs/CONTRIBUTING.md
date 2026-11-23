@@ -19,16 +19,18 @@ pnpm workspace（`packages/*`，根 `package.json` 为私有、不发布），�
 
 | 发布顺序 | 目录 | 包名 | 角色 |
 | --- | --- | --- | --- |
-| 1 | `protocol` | `@yankeguo/dsh-devlead-protocol` | 纯类型 + 常量 + 格式化（host 与浏览器共用），声明 `devLead`/`devLeadMode`/`devLeadWatch` projection 类型 |
-| 2 | `client-ui` | `@yankeguo/dsh-client-ui-devlead` | 浏览器 UI：composer 工具条开关、只读 DevLeadBar、侧边栏标记、右侧栏只读项目看板 |
+| 1 | `protocol` | `@yankeguo/dsh-devlead-protocol` | 纯类型 + 常量 + 格式化（host 与浏览器共用），声明 `devLead`/`devLeadMode`/`devLeadWatch` projection 类型与项目看板 wire schema / 默认路径常量 |
+| 2 | `client-ui` | `@yankeguo/dsh-client-ui-devlead` | 浏览器 UI：composer 工具条开关、只读 DevLeadBar、侧边栏标记、仅 active lead 可见的右侧栏只读项目看板 |
 | 3 | `devlead` | `@yankeguo/dsh-devlead` | 核心 Service `ctx.devLead`：模式、Workspace/Session 编排、watch 索引、通知投递、projection fold |
 | 4 | `command` | `@yankeguo/dsh-command-devlead` | `/devlead` 人类命令 |
 | 5 | `tool` | `@yankeguo/dsh-tool-devlead` | 模型工具 `devlead_*` + 条件系统提示 |
 | 6 | `bundle` | `@yankeguo/dsh-devlead-bundle` | 安装入口：`cordis.patch.yml` 装齐全部插件 |
 
-依赖方向：`protocol ← devlead ← {tool, command}`；`client-ui` 只依赖 `protocol`（浏览器侧）；
-`bundle` 依赖全部运行时包、最后发布。完整领域模型与 projection 契约见 [DESIGN.md](DESIGN.md)
-§2（包结构）与 §3（持久状态）。
+依赖方向：`protocol → {client-ui, devlead}`，`devlead → {command, tool}`，四者都进 `bundle`。
+`client-ui` 不再依赖 `devlead`：它的 node 入口从 `protocol` 导入
+`DEVLEAD_BOARD_SCHEMA_VERSION`（浏览器侧同样只依赖 `protocol`）。上表也是
+`scripts/stage-release.mjs` 的确定性拓扑发布顺序（依赖先发布、bundle 最后；同层按包名排序）。
+完整领域模型与 projection 契约见 [DESIGN.md](DESIGN.md) §2（包结构）与 §3（持久状态）。
 
 `pnpm build` 用 esbuild 产出 7 个 `lib/*.js`：protocol 的 `index`/`client`、devlead、tool、
 command、client-ui 的 `index`/`client`；`bundle` 只有 `cordis.patch.yml` 与 icon，不产出 JS。
@@ -91,7 +93,7 @@ pnpm install
 | --- | --- |
 | 任意改动 | `pnpm verify` |
 | 包边界、`exports`、`dsh.client.inject`、包元数据 | `pnpm check:packages` |
-| Session、命令、projection、通知、浏览器加载路径、board 写路径/global | `pnpm e2e`（完整流 226/226；调试可用 `--no-worktree`，须说明跳过阶段 2 的理由） |
+| Session、命令、projection、通知、浏览器加载路径、board 路径派生/写路径/global | `pnpm e2e`（两条完整流 238/238；调试可用 `--no-worktree` 214/214，须说明跳过阶段 2 的理由） |
 | 浏览器端视觉行为 | 自动化断言之外，按 [UI-VERIFICATION.md](UI-VERIFICATION.md) 在隔离 profile 人工验收 |
 
 CI 的 [`verify.yml`](../.github/workflows/verify.yml) 在 PR 与 main push 上跑
@@ -160,20 +162,25 @@ provider / 基础设施凭据按名称模式从环境清除，turn 稳定以 pro
 - **阶段 1**：默认组合（`dsh-base` + `dsh-web-app`，无实验 bundle）验证 `/devlead` 命令注册、
   `devLead` projection 默认值、summary 级 `devLeadMode`/`devLeadWatch`、`/devlead on` 翻转投影、
   真实子会话关注、已关注会话 `turn/end` → 持久通知 → 投影可见，以及 `Worktree isolation: unavailable`
-  证明可选能力缺席时插件照常工作。
+  证明可选能力缺席时插件照常工作。board 部分验证**默认启用**：没有任何 lead 时不注入
+  `__DSH_DEVLEAD_BOARD__`（static inject 仍声明看板服务）、`/devlead on` 后 Host 从 scratch
+  workspace 派生 `<workspace>/.dsh/devlead/board.json` 并发布 `{leadSessionId, override:false,
+  schemaVersion:1, pathPlatform}`、预创建父目录。
 - **阶段 1b**：同一 scratch home 重启，验证**冷 lead 索引重建**——冷 lead 投影仍从持久日志折叠、
   冷子会话被 resume、重启后的下一次 `turn/end` 产生新通知、`/devlead status` 与 `/devlead off`
-  在 resume 后正常。
+  在 resume 后正常。board 部分验证冷 lead 的持久 header cwd 也足以派生 board global（resume 前
+  即可发布）、`/devlead off` 移除 global，以及在第二个 workspace 开启 lead 会立即切换派生路径。
 - **阶段 2**：向一次性 profile 追加官方实验 forge bundle，验证 worktree happy path：结果
   `status: 'worktree'` 且 `path`/`branch`/`baseCommit` 非空、`git worktree list` 与分支存在、
   `baseCommit` 等于 checkout `HEAD`、子会话有效 cwd 切到 worktree 而 header cwd 仍指向
-  Workspace、Session 仍归属该 Workspace。
+  Workspace、Session 仍归属该 Workspace。该阶段启用 scratch `boardPath` override，同时证明
+  override 优先于 workspace 派生并以 `override:true` 发布。
 - **阶段 3**：真实 Host 上验证工具与关闭生命周期——模式开启时恰好 16 个主 `devlead_*`、关闭时
   为 0，`devlead:policy` 文案契约，archive/unarchive/`stop_running`，注销 Workspace 的 durable
   行为，模型目录与创建时的模型 / Agent Teams 设置，以及 watched child 的 `devlead_report` 与
-  `ask_user_question` 转发。保留全部旧检查，另含 4 项 board 检查：真实
-  `ctx.devLead.updateBoard` 两次写入且第二次使用 CAS、`webserver/index-inject` 发布的 board
-  global，以及独立磁盘 read-back 的 revision/内容。
+  `ask_user_question` 转发。board 检查：真实 `ctx.devLead.updateBoard` 写入（CAS 与
+  workspace-path/title 引用）与 Host read-back、lead-off 释放 store、以及没有 workspace 的
+  Session 返回 `BOARD_DISABLED`。
 - **阶段 1e**：消息通道——progress/fyi background 不唤醒、blocked/decision 的 action steer、
   真实 completed/review steer、question+turn-end 合并抑制、16-pending action 上限与低基数指标。
 
@@ -182,12 +189,15 @@ PASS 与 SKIP 分开输出：
 
 | 流 | pin | 阶段 |
 | --- | --- | --- |
-| `pnpm e2e`（patch，默认） | **226/226** | 1 + 1b + 2 + 3 + 1e |
-| `pnpm e2e --flow installed` | **226/226** | 同上 |
-| `pnpm e2e --no-worktree` | **203/203** | 1 + 1b + 3 + 1e（跳过阶段 2） |
+| `pnpm e2e`（patch，默认） | **238/238** | 1 + 1b + 2 + 3 + 1e |
+| `pnpm e2e --flow installed` | **238/238** | 同上 |
+| `pnpm e2e --no-worktree` | **214/214** | 1 + 1b + 3 + 1e（跳过阶段 2） |
 
-阶段 pin 为 28 / 12 / 23 / **132** / 31。基线 DSH `0.2.2-rc.5` 的完整流目标计数是
-**223 PASS + 3** 条无 provider 凭据的正向模型检查 SKIP；SKIP 未执行、不能算通过。原始日志与
+阶段 pin 为 30 / 18 / 24 / **140** / 31（`scripts/e2e-smoke.mjs` 的 `EXPECTED_CHECKS`，删/增
+check 未更新 pin 会失败），完整流目标计数是 **235 PASS + 3** 条无 provider 凭据的正向模型检查
+SKIP；SKIP 未执行、不能算通过。这些是**当前 harness 的 pin**，真实 PASS 日志与证据由 Lead
+记录在 `docs/e2e-evidence/`，不以本页数字代替实跑证据。上一轮 Step B 复核修复轮的历史基线
+（28 / 12 / 23 / 132 / 31，完整流 226/226、no-worktree 203/203）保留为历史记录。原始日志与
 证据在 [e2e-evidence/](e2e-evidence/)；逐 rc 升级门禁与可执行 recipe 见
 [COMPATIBILITY.md](COMPATIBILITY.md)。probe 是 `scripts/e2e-probe/` 下的私有测试包，不发布；
 profile 变更只发生在系统临时目录的一次性 profile 里。
@@ -254,8 +264,9 @@ gh release create v<version> --repo yankeguo/dsh-devlead --title v<version> \
 
 - [ ] `pnpm verify` 通过（typecheck + test + build）。
 - [ ] 触及包边界、导出、`dsh.client.inject` 或包元数据：`pnpm check:packages` 通过。
-- [ ] 触及 Session、命令、projection、通知、浏览器加载路径或 board 写路径/global：`pnpm e2e`
-  两条流通过（完整流 226/226；只跑 `--no-worktree` 时说明 203/203 与跳过阶段 2 的理由）。
+- [ ] 触及 Session、命令、projection、通知、浏览器加载路径或 board 路径派生/写路径/global：
+  `pnpm e2e` 两条流通过（完整流 238/238；只跑 `--no-worktree` 时说明 214/214 与跳过阶段 2
+  的理由）。
 - [ ] 浏览器端视觉行为：按 [UI-VERIFICATION.md](UI-VERIFICATION.md) 在隔离 profile 人工验收并
   记录结论（`pnpm e2e` 的自动化断言不能替代）。
 - [ ] 文档同步：README 中英面向使用者的段落、对应 docs、版本变化时的 `docs/releases/` 与证据。

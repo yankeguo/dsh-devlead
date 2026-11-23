@@ -26,20 +26,47 @@ plugin-market 等）。审计对象是本仓库的 6 个包（`protocol`、`devl
 > 12 工具 / 130 / 108 计数均为 0.2.0–0.2.3 审计时点快照。
 > 下表 §4.3 的 `Switch` 是审计时点的引入形态，当前实现见 `docs/DESIGN.md` §7。
 >
-> **Step B 增量（项目看板）**：当前 `dsh.client.inject` 另含默认 Web 组合提供的
-> `dsh-api-workspace-files`、`dsh-api-workspace-controller` 与 `dsh-client-ui-sidebar-right`，
-> 因而下文的 8 项计数是历史快照。三者的 type-only API 在 rc.1–rc.5 均存在，peer 使用同一
-> `>=0.2.2-rc.1 <0.3.0` 范围；static inject 另含默认 Web 组合提供的 `remote.workspaceFiles` /
-> `workspaces` / `sidebarRight` / `sidebarRightTabs`，没有新增默认关闭或实验性插件硬依赖。
-> global 只控制看板 UI 注册；右栏读取只有 stat/readBytes/changes，没有写 Remote。本机运行验证
-> DSH 为 rc.5，依赖/编译基线仍为 rc.1；board 不使用 0.2.3-only API，兼容范围不变。E2E 阶段 3
-> 保留旧检查并新增 4 项真实 board 检查（Host 写入/CAS、webserver/index-inject global、磁盘
-> revision/内容 read-back），Step B 复核修复轮再在 phase 1 增加 1 条「未配置 boardPath 时不注入
-> browser global、static inject 仍声明看板服务」的负向断言，目标 pin 为阶段 1=28、阶段 3=132、
-> no-worktree=203、完整=226（223 PASS + 3 credential-less SKIP）；这些是本轮验收 pin，不把旧的
-> 143/143 等历史实测改写为新证据。Step B 复核修复轮还把 board wire schema 收敛到 protocol：
-> `zod` 成为 protocol 的 peer range（`^4.4.3`，与 devlead 相同）并被打包进 protocol 的两个入口，
-> 因此 profile 不需要额外解析 zod；这不是对可选插件的硬依赖。
+> **Step B 增量（项目看板）**：`dsh.client.inject` 现为 **11 项**，比本审计的 8 项历史快照多出
+> 默认 Web 组合提供的 `dsh-api-workspace-files`、`dsh-api-workspace-controller` 与
+> `dsh-client-ui-sidebar-right`；这三项的 API 在 rc.1–rc.5 均存在，peer 使用同一
+> `>=0.2.2-rc.1 <0.3.0` 范围。static inject 另含默认 Web 组合提供的
+> `remote.workspaceFiles` / `workspaces` / `sidebarRight` / `sidebarRightTabs`，没有新增默认关闭
+> 或实验性插件硬依赖。右栏读取只有 stat/readBytes/changes，没有写 Remote。本机运行验证 DSH 为
+> rc.5，依赖/编译基线仍为 rc.1；board 不使用 0.2.3-only API，兼容范围不变。Step B 复核修复轮
+> 还把 board wire schema 收敛到 protocol：`zod` 成为 protocol 的 peer range（`^4.4.3`，与
+> devlead 相同）并被打包进 protocol 的两个入口，因此 profile 不需要额外解析 zod；这不是对可选
+> 插件的硬依赖。
+>
+> **动态看板 / 包拓扑收口轮**：看板从「配置了 `boardPath` 才启用」改为**默认启用**——由唯一
+> active lead Session 的原始 workspace 根（`SessionHeader.cwd`）派生
+> `<cwd>/.dsh/devlead/board.json`，`boardPath` 只保留为可选的绝对路径 override；没有 lead 时
+> 看板禁用（工具 `BOARD_DISABLED`、无 global、无面板），lead 切换会释放旧 store/watcher。看板
+> start/pre-create 失败（P2-2）只记 warning + degraded，不阻塞 DevLead 服务/插件加载；此时
+> board 工具报 `BOARD_IO_ERROR`、摘要为空，其余功能正常。`devlead_board_read` 结果另有 64 KiB
+> 上限（`DEVLEAD_BOARD_READ_MAX_BYTES`，依次裁 tasks → blockers → project 行，`truncated:true`）；
+> project 引用改为在锁内快照上解析（P2-1：长 workspace path/title 不再误报
+> `BOARD_LIMIT_EXCEEDED`）。浏览器侧 board 入口改为 **lead-only**：tab/guide/header 按钮只在
+> 屏幕上的 active lead Session 出现，global 形状增加 `leadSessionId` / `override`，global 缺失
+> 时 client 从该 Session summary 的 `cwd` 派生默认路径（Config override + late enable 需刷新
+> 页面）。
+>
+> 同一轮修正了 workspace 依赖拓扑：`packages/client-ui` **不再依赖** `@yankeguo/dsh-devlead`，
+> 其 node 入口从 `@yankeguo/dsh-devlead-protocol` 导入 `DEVLEAD_BOARD_SCHEMA_VERSION`。真实依赖
+> 图是 `protocol → {client-ui, devlead}`、`devlead → {command, tool}`、四者都进 bundle；发布
+> 顺序仍是 `scripts/stage-release.mjs` 的确定性拓扑序（protocol → client-ui → devlead →
+> command → tool → bundle，同层按包名排序）。这减少了 workspace 内部边，不增加任何可选插件
+> 依赖：`client-ui` 新增的 `dsh-api-workspace-files` / `dsh-client-ui-sidebar-right` 都来自默认
+> Web 组合（见 §4.3/§5.1）。
+>
+> E2E 方面，阶段 3 保留 Host 写入/CAS、`webserver/index-inject` board global 与磁盘 read-back
+> 检查；本轮动态看板的权威 pin 同样来自 `scripts/e2e-smoke.mjs` 的 `EXPECTED_CHECKS`：
+> phase 1=30、phase 1b=18、phase 2=24、phase 3=135、phase 1e=31，完整流 238/238
+> （235 PASS + 3 credential-less SKIP）、`--no-worktree` 214/214。它覆盖没有 lead 时的
+> 负向 global、从 `SessionHeader.cwd` 派生默认路径与 `override:false`、冷 lead 持久 header
+> 派生、lead-off 移除 global、workspace 切换换源、phase 2 的 Config override，以及 phase 3 的
+> lead-off store 释放（无 workspace 根的 `BOARD_DISABLED` 由 host 单测覆盖）。真实 PASS 证据由 Lead 记录在
+> `docs/e2e-evidence/`；上一轮 Step B 复核修复轮的目标 pin（阶段 1=28、阶段 3=132、
+> no-worktree=203、完整=226）保留为历史基线，不把旧的 143/143 等历史实测改写为新证据。
 
 ## 1. 结论摘要
 
@@ -50,8 +77,8 @@ plugin-market 等）。审计对象是本仓库的 6 个包（`protocol`、`devl
 | --- | --- | --- |
 | 主机侧必需 `inject`：`agents` / `sessions` / `sessionProjections` / `tools` / `systemPrompt` / `commands` | 全部由**默认组合** `dsh-base` 的行提供 | `DSH:packages/bundle/base/cordis.patch.yml:82,40,172,498,510,321` |
 | 主机侧运行期值导入：`cordis` / `schemastery` / `zod` / `dsh-session` / `dsh-llm` / `dsh-tools` / `dsh-commands` | 全部由**默认组合**提供（base 行或安装运行时库） | E1 安装运行时含 `cordis 4.1.0`、`schemastery 3.19.0`、`zod 4.4.3`；base 行见 §4.2 |
-| 浏览器侧 `dsh.client.inject`（8 项） | 7 项是 `dsh-web-app` 默认客户端行，1 项（primitives）是 Web 壳的**平台单例**；全部默认提供 | `DSH:packages/bundle/web-app/cordis.patch.yml:117,244,253,265,268,322,366`；`DSH:packages/client/web/src/platform.ts:8-17` |
-| 浏览器侧必需 cordis 服务：`slots` / `sessions` / `remote` / `remote.commands` / `locale` | 全部由默认组合的客户端插件提供 | §5.2 |
+| 浏览器侧 `dsh.client.inject`（11 项） | 10 项是 `dsh-web-app` 默认行（含 `dsh-api-workspace-files` / `workspace-controller` 与 `dsh-client-ui-sidebar-right`），1 项（primitives）是 Web 壳的**平台单例**；全部默认提供 | `DSH:packages/bundle/web-app/cordis.patch.yml:117,129,151,244,253,265,268,279-280,322,366`；`DSH:packages/client/web/src/platform.ts:8-17` |
+| 浏览器侧必需 cordis 服务：`slots` / `sessions` / `remote` / `remote.commands` / `remote.workspaceFiles` / `locale` / `sidebarRight` / `sidebarRightTabs` / `workspaces` | 全部由默认组合的客户端插件提供 | §5.3 |
 | 实验性 Git worktree 服务（`ctx.worktrees`） | **零依赖**：不 import、不进 `inject`、不进 `package.json`；仅 `ctx.get('worktrees')` 可选探测 | `packages/devlead/src/isolation.ts`（`worktreeCapabilityOf`）；`packages/devlead/tests/isolation.spec.ts`（`experimental dependency surface`） |
 | agent-team / forge / session-titles / inspector / plugin-market | 代码、清单、脚本中**零引用**（仅测试里三条"必须不包含"的反向断言：源码扫描 / manifest / bundle patch） | §7.5；`DSH:packages/util/official-bundles/src/bundles.ts:55-70` |
 | 第三方插件 | **零个** | 全仓依赖清单（§4.2/§4.3） |
@@ -226,6 +253,8 @@ module table 里。E1 佐证：安装运行时 `dsh/node_modules/@deepseek-ai/` 
 | `@deepseek-ai/cordis` | 默认组合（DSH 运行时核心库 + 浏览器平台单例） | 各包 peer；host 值导入 `Service`；浏览器 type-only | 是（平台核心，非插件） | host 模块加载失败 | `packages/devlead/package.json:16`、`tool`:16、`command`:16、`client-ui`:34、`bundle`:30；根 `package.json:27`；E1 `cordis 4.1.0` | 保持 |
 | `@deepseek-ai/schemastery` | 默认组合（安装运行时库；DSH 设置组件依赖它） | devlead/tool peer；devlead 值导入（Loader `Config` schema） | 是（库，非插件） | 模块加载失败 | `devlead/package.json:25`、`tool`:22；E1 `3.19.0`；`DSH:packages/settings/settings/package.json:40` | 保持 |
 | `zod` | 第三方库，但**由安装运行时 + 浏览器平台提供** | devlead peer + 根 devDep；devlead 值导入（严格记录 schema） | 是（库，非插件） | 模块加载失败 | `devlead/package.json:26`；根 `package.json:54`；E1 `4.4.3`；`DSH:packages/session/session-projection/package.json:37`（base 依赖链内）；`DSH:platform.ts:10` | 保持 |
+| `@deepseek-ai/dsh-atomic-write` | 默认组合（安装运行时库；`app-boot` / `config-editor` / `plugin-manager` 等基础包依赖它） | devlead peer；值导入 `writeFileAtomic` / `withFileLock`（项目看板原子写与跨进程锁） | 是（库，非插件；由安装运行时提供） | 模块加载失败（看板功能不可用） | `devlead/package.json` peer；`DSH:packages/boot/app-boot/package.json` 依赖该包；rc.1 typings 与 rc.5 安装版 API 见 [COMPATIBILITY](COMPATIBILITY.md) | 保持 |
+| `@deepseek-ai/dsh-host-webserver` | 默认组合仅 Web（web-app:176） | client-ui node 入口 peer；type-only 导入；监听 `webserver/index-inject` 事件注入 board global | 是（默认 Web 组合的平台契约，非可选插件） | 非 Web 组合没有该行与事件：不注入 board global，看板 UI 不出现；DevLead 其余功能照常 | `client-ui/package.json` peer；`packages/client-ui/src/index.ts`；`DSH:web-app:176` | 保持；Web 平台契约 |
 | `@deepseek-ai/dsh-session` | 默认组合（base:40） | peer；值导入 `appendPluginRecord`/`SessionId`；必需 inject `sessions` | 是（默认服务） | 条目 pending；Host 启动仅告警（见 §6.2） | `devlead/package.json:20`、`:230`；`DSH:base:40` | 保持 |
 | `@deepseek-ai/dsh-llm` | 默认组合（base:34） | peer；值导入 `createUserMessage`/`HarnessError` | 是 | 同上 | `devlead/package.json:19`、`tool`:18；`DSH:base:34` | 保持 |
 | `@deepseek-ai/dsh-session-projection` | 默认组合（base:172） | peer；type-only；必需 inject `sessionProjections` | 是 | 同上 | `devlead/package.json:21`、`:230`；`protocol/package.json:21`（type-only，optional）；`DSH:base:172` | 保持 |
@@ -245,30 +274,38 @@ module table 里。E1 佐证：安装运行时 `dsh/node_modules/@deepseek-ai/` 
 | `react`（含 `react/jsx-runtime`） | 第三方库，**浏览器平台单例**（壳内打包，profile 无关） | 根 devDep；client 值导入 hooks/JSX；构建 external | 是（平台单例） | 浏览器 bundle 无法 require（壳不可能缺） | 根 `package.json:51`；`scripts/client-externals.mjs:13-24`；`DSH:platform.ts:9`；`DSH:seed.ts:9,31` | 保持（devDep 足够） |
 | `@deepseek-ai/dsh-client-ui-slots` | 平台单例（**不是** profile 行） | 根 devDep；浏览器 type-only（SlotMap 类型） | 否 | 无（仅类型/槽位契约） | 根 `package.json:36`；`DSH:platform.ts:12`；`DSH:seed.ts:39`；E1 无该 host 包 | 保持 |
 | `@deepseek-ai/dsh-client-ui-primitives` | 平台单例（**不是** profile 行） | 根 devDep；client 值导入（Button/Tooltip/图标；审计时点另含 Switch） | 是（平台单例，壳保证） | 浏览器 bundle 无法 require（壳不可能缺） | 根 `package.json:33`；`DSH:platform.ts:13`；`DSH:seed.ts:40`；E1 前端产物内联 | 保持（历史审计；Switch 已于 0.2.4 移除，见 DESIGN §7） |
-| `@deepseek-ai/dsh-api-remotes` | 默认组合（web-app:244） | client `dsh.client.inject` id；浏览器 type-only | 否（informational 边）；其 client 半边提供 `remote.commands` | 若连行都缺失：client 条目 pending（§5） | `client-ui/package.json:21`；根 `package.json:29`；`DSH:web-app:244`；`DSH:packages/api/remotes/src/client/index.ts:192` | 保持 |
-| `@deepseek-ai/dsh-api-session-controller` | 默认组合 Web（web-app:117） | client `dsh.client.inject` id；浏览器 type-only | 否；其 client 半边提供 `sessions` | 同上 | `client-ui/package.json:22`；`DSH:web-app:117` | 保持 |
-| `@deepseek-ai/dsh-client-locale` | 默认组合（web-app:253） | client `dsh.client.inject` id；浏览器 type-only | 否；提供 `locale` | 同上 | `client-ui/package.json:23`；`DSH:web-app:253`；`DSH:packages/client/locale/src/client/index.ts:588` | 保持 |
-| `@deepseek-ai/dsh-client-ui-conversation` | 默认组合（web-app:322） | client `dsh.client.inject` id；浏览器 type-only | 否（slot 声明者） | 该插槽不渲染；页面**不会**因此失败（无服务注入要求） | `client-ui/package.json:24`；`DSH:web-app:322` | 保持 |
-| `@deepseek-ai/dsh-client-ui-renderer` | 默认组合（web-app:265） | client `dsh.client.inject` id；浏览器 type-only | 否；提供 `slots` | 条目 pending（§5） | `client-ui/package.json:26`；`DSH:web-app:265`；`DSH:packages/client/ui-renderer/src/client/registry.ts:160` | 保持 |
-| `@deepseek-ai/dsh-client-ui-session` | 默认组合（web-app:268） | client `dsh.client.inject` id；浏览器 type-only | 否 | 同上 | `client-ui/package.json:27`；`DSH:web-app:268` | 保持 |
-| `@deepseek-ai/dsh-client-ui-workspace` | 默认组合（web-app:366） | client `dsh.client.inject` id；浏览器 type-only（Session 行槽位） | 否 | sidebar 行 seat 不渲染 | `client-ui/package.json:28`；`DSH:web-app:366`；`docs/DESIGN.md:412-416` | 保持 |
+| `@deepseek-ai/dsh-api-remotes` | 默认组合（web-app:244） | client `dsh.client.inject` id；浏览器 type-only | 否（informational 边）；其 client 半边提供 `remote.commands` | 若连行都缺失：client 条目 pending（§5） | `client-ui/package.json`（`dsh.client.inject`）；根 `package.json:29`；`DSH:web-app:244`；`DSH:packages/api/remotes/src/client/index.ts:192` | 保持 |
+| `@deepseek-ai/dsh-api-session-controller` | 默认组合 Web（web-app:117） | client `dsh.client.inject` id；浏览器 type-only | 否；其 client 半边提供 `sessions` | 同上 | `client-ui/package.json`（`dsh.client.inject`）；`DSH:web-app:117` | 保持 |
+| `@deepseek-ai/dsh-client-locale` | 默认组合（web-app:253） | client `dsh.client.inject` id；浏览器 type-only | 否；提供 `locale` | 同上 | `client-ui/package.json`（`dsh.client.inject`）；`DSH:web-app:253`；`DSH:packages/client/locale/src/client/index.ts:588` | 保持 |
+| `@deepseek-ai/dsh-client-ui-conversation` | 默认组合（web-app:322） | client `dsh.client.inject` id；浏览器 type-only | 否（slot 声明者） | 该插槽不渲染；页面**不会**因此失败（无服务注入要求） | `client-ui/package.json`（`dsh.client.inject`）；`DSH:web-app:322` | 保持 |
+| `@deepseek-ai/dsh-client-ui-renderer` | 默认组合（web-app:265） | client `dsh.client.inject` id；浏览器 type-only | 否；提供 `slots` | 条目 pending（§5） | `client-ui/package.json`（`dsh.client.inject`）；`DSH:web-app:265`；`DSH:packages/client/ui-renderer/src/client/registry.ts:160` | 保持 |
+| `@deepseek-ai/dsh-client-ui-session` | 默认组合（web-app:268） | client `dsh.client.inject` id；浏览器 type-only | 否 | 同上 | `client-ui/package.json`（`dsh.client.inject`）；`DSH:web-app:268` | 保持 |
+| `@deepseek-ai/dsh-client-ui-workspace` | 默认组合（web-app:366） | client `dsh.client.inject` id；浏览器 type-only（Session 行槽位） | 否 | sidebar 行 seat 不渲染 | `client-ui/package.json`（`dsh.client.inject`）；`DSH:web-app:366`；`docs/DESIGN.md:412-416` | 保持 |
+| `@deepseek-ai/dsh-api-workspace-files` | 默认组合 Web（web-app:129；包自带 `dsh.client` 半边） | client `dsh.client.inject` id + client-ui peer；浏览器 type-only（`remote.workspaceFiles`） | 否（默认 Web 提供）；其 client 半边提供 `remote.workspaceFiles` | 右栏读文件/目录不可用，看板面板读不到文件（§5） | `client-ui/package.json`（`dsh.client.inject`、peer）；`DSH:web-app:129` | 保持 |
+| `@deepseek-ai/dsh-api-workspace-controller` | 默认组合 Web（web-app:151） | client `dsh.client.inject` id + client-ui peer；浏览器 type-only（Workspace/Session 投影 hooks） | 否（默认 Web 提供） | 未在看板中的 Workspace 折叠区降级（§5） | `client-ui/package.json`（`dsh.client.inject`、peer） | 保持 |
+| `@deepseek-ai/dsh-client-ui-sidebar-right` | 默认组合 Web 客户端行（web-app:279-280） | client `dsh.client.inject` id + client-ui peer；浏览器 type-only（`sidebarRight` / `sidebarRightTabs`） | 否；提供右侧栏 tab registry 与 body slot | 没有右栏容器，看板 tab/按钮无法渲染（§5） | `client-ui/package.json`（`dsh.client.inject`、peer）；`DSH:web-app:279-280` | 保持 |
 | `@deepseek-ai/dsh-api-gateway` | 默认组合（base 行 `typert-gateway`:52；其 client 半边提供 `ctx.remote`） | **未直接声明**；由 client-ui 的必需服务 `remote` 间接依赖 | 否（无直接 import/peer） | — | `DSH:base:52`；`DSH:packages/api/gateway/src/client/index.ts:155`；E1 该包 `dsh.client.platform: web` | 不新增声明（非直接依赖） |
 
 ### 4.4 内部包与仅开发依赖（排除项）
 
 | 项 | 说明 | 证据 |
 | --- | --- | --- |
-| `@yankeguo/dsh-devlead-protocol` / `dsh-devlead` / `dsh-tool-devlead` / `dsh-command-devlead` / `dsh-client-ui-devlead` / bundle | 本套件自身的分层依赖（`workspace:*`），不是可选插件 | `packages/bundle/package.json:23-28`；`docs/DESIGN.md:46` |
+| `@yankeguo/dsh-devlead-protocol` / `dsh-devlead` / `dsh-tool-devlead` / `dsh-command-devlead` / `dsh-client-ui-devlead` / bundle | 本套件自身的分层依赖（`workspace:*`），不是可选插件。依赖图：`protocol → {client-ui, devlead}`，`devlead → {command, tool}`，四者都进 bundle；`client-ui` 不再依赖 `devlead`（node 入口从 protocol 取 schema 版本常量） | 各包 `package.json` 的 `dependencies`；`packages/bundle/package.json`；`docs/DESIGN.md` §2 |
 | `esbuild` / `typescript` / `vitest` / `@types/node` / `@types/react` | 仅构建/类型检查/测试工具链，不进入运行时 | 根 `package.json:48-54`；`scripts/check-packages.mjs`（`DEV_INFRA`） |
 
 ### 4.5 判定表小结
 
-- 本仓库引用到的 `@deepseek-ai/*` 共 **21 个**（host 侧 13 个；浏览器/类型侧新增 9 个，
-  其中 `dsh-api-session-controller` 与 host 侧重合、`dsh-client-ui-slots` 仅 type-only），
-  **全部属于默认组合或平台单例**；
-- 其中以 **H 形态**（必需 inject / 运行期值导入 / 必需 peer）依赖的 `@deepseek-ai/*` 有 9 个
-  （cordis、schemastery、dsh-agent、dsh-session、dsh-session-projection、dsh-llm、dsh-tools、
-  dsh-system-prompt、dsh-commands），外加第三方库 zod，全部由 `dsh-base` 或安装运行时提供；
+- 本仓库引用到的 `@deepseek-ai/*` 共 **26 个**（host 侧 15 个；浏览器/类型侧 12 个，
+  其中 `dsh-api-session-controller` 与 host 侧重合、`dsh-client-ui-slots` 仅 type-only，
+  所以去重后 26 个），**全部属于默认组合或平台单例**。Step B 及动态看板轮新增的引用是
+  `dsh-atomic-write`、`dsh-host-webserver`、`dsh-api-workspace-controller`、
+  `dsh-api-workspace-files`、`dsh-client-ui-sidebar-right`；
+- 其中以 **H 形态**（必需 inject / 运行期值导入 / 必需 peer）依赖的 `@deepseek-ai/*` 有 14 个：
+  原审计的 9 个（cordis、schemastery、dsh-agent、dsh-session、dsh-session-projection、dsh-llm、
+  dsh-tools、dsh-system-prompt、dsh-commands）加上 Step B/动态看板轮必需 peer 的
+  `dsh-atomic-write`、`dsh-host-webserver`、`dsh-api-workspace-controller`、
+  `dsh-api-workspace-files`、`dsh-client-ui-sidebar-right`，外加第三方库 zod，全部由
+  `dsh-base`、`dsh-web-app` 或安装运行时提供；
 - 以 **S 形态**（可选 `ctx.get` / optional peer）探测的能力共 7 个：package 级 optional peer 4 个
   （workspace、session-controller、session-title、session-query；前两个仅 Web 默认提供，后两个
   base 默认提供），零声明仅探测的服务 3 个（worktrees 属实验性默认关闭；0.2.0 新增
@@ -280,21 +317,24 @@ module table 里。E1 佐证：安装运行时 `dsh/node_modules/@deepseek-ai/` 
 
 ### 5.1 逐项核验
 
-`packages/client-ui/package.json:17-31` 声明 `dsh.client.platform: "web"` 与 8 个
-`dsh.client.inject` id。逐项对照默认 Web 组合：
+`packages/client-ui/package.json` 声明 `dsh.client.platform: "web"` 与 **11 个**
+`dsh.client.inject` id（静态包声明，不由看板开关或 lead 状态增删）。逐项对照默认 Web 组合：
 
 | id | 类别 | 默认组合证据 | E1 中作为 host 包存在？ | 本仓库 import 形态 |
 | --- | --- | --- | --- | --- |
 | `@deepseek-ai/dsh-api-remotes` | web-app 客户端行 | `DSH:web-app:244` | 是 | type-only |
-| `@deepseek-ai/dsh-api-session-controller` | web-app 客户端行 | `DSH:web-app:117` | 是 | type-only |
+| `@deepseek-ai/dsh-api-session-controller` | web-app 行（含客户端半边） | `DSH:web-app:117` | 是 | type-only |
+| `@deepseek-ai/dsh-api-workspace-controller` | web-app 行（含客户端半边） | `DSH:web-app:151` | 是 | type-only |
+| `@deepseek-ai/dsh-api-workspace-files` | web-app 行（含客户端半边） | `DSH:web-app:129` | 是 | type-only |
 | `@deepseek-ai/dsh-client-locale` | web-app 客户端行 | `DSH:web-app:253` | 是 | type-only |
 | `@deepseek-ai/dsh-client-ui-conversation` | web-app 客户端行 | `DSH:web-app:322` | 是 | type-only |
 | `@deepseek-ai/dsh-client-ui-primitives` | **平台单例**（非行） | `DSH:platform.ts:13`、`seed.ts:18,40` | **否**（编进 Web 前端产物） | 值导入（module table） |
 | `@deepseek-ai/dsh-client-ui-renderer` | web-app 客户端行 | `DSH:web-app:265` | 是 | type-only |
 | `@deepseek-ai/dsh-client-ui-session` | web-app 客户端行 | `DSH:web-app:268` | 是 | type-only |
+| `@deepseek-ai/dsh-client-ui-sidebar-right` | web-app 客户端行 | `DSH:web-app:279-280` | 是 | type-only |
 | `@deepseek-ai/dsh-client-ui-workspace` | web-app 客户端行 | `DSH:web-app:366` | 是 | type-only |
 
-结论：**默认 Web 组合覆盖 7/8 的 profile 行，第 8 项是壳内平台单例，亦可保证。**
+结论：**默认 Web 组合覆盖 10/11 的 profile 行，第 11 项（primitives）是壳内平台单例，亦可保证。**
 
 ### 5.2 这些 id 在 rc.1 的 loader 语义
 
@@ -312,8 +352,11 @@ module table 里。E1 佐证：安装运行时 `dsh/node_modules/@deepseek-ai/` 
    因此 `dsh.client.inject` 指向 `dsh-client-ui-primitives` 这类**平台单例名**不会报错、
    也不会等待（`docs/AUDIT.md` 遗留限制已有同样结论）。
 3. **真正的激活要求是 client 模块导出的 Cordis `inject` 数组**：
-   `packages/client-ui/src/client/index.tsx:56`
-   `export const inject = ['slots', 'sessions', 'remote', 'remote.commands', 'locale']`。
+   `packages/client-ui/src/client/index.tsx`
+   `export const inject = ['slots', 'sessions', 'remote', 'remote.commands',
+   'remote.workspaceFiles', 'locale', 'sidebarRight', 'sidebarRightTabs', 'workspaces']`
+   （9 个服务；node 半边的 `inject` 是 `['devLead']`，只用于 `webserver/index-inject` 注入
+   board global）。
    服务缺失 → 该 Loader 条目 pending。**rc.1 的客户端启动审计是严格的**：任何非 active
    条目都会抛 `web boot: N entries did not activate`
    （`DSH:packages/client/web/src/boot-client.ts:66-87`）。该版本**没有** required 白名单
@@ -321,7 +364,7 @@ module table 里。E1 佐证：安装运行时 `dsh/node_modules/@deepseek-ai/` 
    `requiredClientEntryNames` / `(required)` 标记。也就是说：在 rc.1 上，client-ui 缺任一
    必需服务不是"控件不渲染"，而是**整个 Web 页面启动失败**。
 
-### 5.3 5 个必需客户端服务的提供者
+### 5.3 9 个必需客户端服务的提供者
 
 | 服务 | 提供者（默认组合） | 默认组合证据 |
 | --- | --- | --- |
@@ -329,17 +372,23 @@ module table 里。E1 佐证：安装运行时 `dsh/node_modules/@deepseek-ai/` 
 | `sessions` | `@deepseek-ai/dsh-api-session-controller` 的 client 半边 | `DSH:web-app:117`；`DSH:packages/api/session-controller/src/client/index.ts:93,98` |
 | `remote` | `@deepseek-ai/dsh-api-gateway` 的 client 半边 | `DSH:base:52`（`typert-gateway` 行）；`DSH:packages/api/gateway/src/client/index.ts:155` |
 | `remote.commands` | `@deepseek-ai/dsh-api-remotes` 的 client 半边挂载 `commandsRemote` | `DSH:web-app:244`；`DSH:packages/api/remotes/src/client/index.ts:192` |
+| `remote.workspaceFiles` | `@deepseek-ai/dsh-api-workspace-files` 的 client 半边（右栏只读文件读取/变更流） | `DSH:web-app:129` |
 | `locale` | `@deepseek-ai/dsh-client-locale` 的 client 半边 | `DSH:web-app:253`；`DSH:packages/client/locale/src/client/index.ts:588` |
+| `sidebarRight` / `sidebarRightTabs` | `@deepseek-ai/dsh-client-ui-sidebar-right` 的 client 半边 | `DSH:web-app:279-280` |
+| `workspaces` | `@deepseek-ai/dsh-api-workspace-controller` 的 client 半边 | `DSH:web-app:151` |
 
-5 个提供者全部来自默认 Web 组合，因此 **client 半边不构成对可选插件的硬依赖**。它构成的是
-「对默认 Web 组合的硬依赖」——这正是本套件声明的目标平台（见 §9 R1 的残余风险）。
+9 个提供者全部来自默认 Web 组合，因此 **client 半边不构成对可选插件的硬依赖**。它构成的是
+「对默认 Web 组合的硬依赖」——这正是本套件声明的目标平台（见 §9 R1 的残余风险）。看板入口
+另有 lead-only 的运行时门控：只有屏幕上当前 active lead Session 才注册 tab/guide/header，
+非 lead 与 subagent Session 不渲染（见 §4.3/§5.1 的静态声明与 [BOARD](../docs/BOARD.md) 的
+浏览器契约）。
 
 另外：`dsh.client.platform: "web"` 使该浏览器半边只在 Web/Desktop 这类带 Web 壳的组合中
 被加载；headless/acp/sdk 不会加载它，因此不存在"在无 UI profile 里等待客户端服务"的问题。
 
 ## 6. 运行时退化路径（可选服务）
 
-### 6.1 可选服务的使用与缺席行为
+### 6.1 可选服务与内部降级路径的使用与缺席行为
 
 | 服务 | 使用点（本仓库） | 缺席时的行为 | 测试证据 |
 | --- | --- | --- | --- |
@@ -351,6 +400,12 @@ module table 里。E1 佐证：安装运行时 `dsh/node_modules/@deepseek-ai/` 
 | `sessionPersistence`（0.2.0 新增探测，仅就绪判定） | `src/persistence.ts`（`persistedSessionsOf` 结构化探针）；`src/index.ts`（`awaitCorpusReady` / `armRehydrationRetry` / `persistedLeadRecords`） | 缺失时先 live-attach 回退并通过 `ctx.inject` 观察 arrival/replacement/unload；屏障返回它用 persistence 真值校验过的 listing，扫描直接消费该 listing（不会再 list 一份未校验语料），超时/不一致时保持 prompt fail-closed；有界窗口分段独立：扫描阶段 5s、finalize 复核独立 5s、每次 append 批次经 attempt.extend() 重新 arm 5s（单次 attempt 最坏约 30s），挂起的后端 promise 在各自窗口被放弃并计失败；随后按可续扫的多批游标推进（每次尝试最多 64 条无法分类读取，仅当新校验 listing 的 persisted id 集合不变时复用游标），finalize 前复核语料 id 集合；不可验证（listing/真值暂时读不出，含就绪屏障）保留快照/游标/高水位并计入失败预算，只有可读不一致（changed）才丢弃重扫，间歇故障因此进入 12 次 cap + 30s 探针；读取失败按 250ms→5s 有界指数退避重试（最多 12 次），超限后只保留一条 sticky 的 30s 慢速降级探针；not-found 触发一次同样校验的 re-list，同一 id 连续 not-found 计读取失败（按行记录重试机会）；prompt gate 的 proof token 在 resume/interrupt 前与写入 child inbox 前复核，admission 窗口内的原地替换/移除 fail closed；从未组合则冷扫描不执行（不 per-event 扫描） | `service.spec.ts` 冷重建用例（`waits for the optional persistence binding before adopting cold leads`、`waits out a stale corpus listing before the authoritative scan`、`loads and serves live leads when the corpus never becomes consistent`）；`phase2.spec.ts`（`re-lists after corpus readiness instead of trusting a pre-ready partial snapshot`、`does not consume the failure cap while paginating a large corpus`、`refuses delivery when the listing authorized by the barrier changes before finalize`、`does not trust a scan re-list that omits a stored foreign supervisor`、`counts a repeated not-found as a read failure instead of forgiving the budget every round`、`abandons a scan attempt whose backend never settles and recovers on a later attempt`、`keeps the retry-cap probe sticky instead of restarting the fast backoff`） |
 | `worktrees`（实验） | `src/isolation.ts`（`worktreeCapabilityOf`；`ctx.get('worktrees')`）；`src/index.ts`（`worktreeIsolationAvailable` / `isolateSession`） | `isolation: {requested:'worktree', status:'unavailable'/'failed', reason?}`；创建与 prompt 照常（唯一例外是防御性的"子 Agent 非 live"：隔离报 `unavailable`，若同时要求 prompt 则仍走既有 `DEVLEAD_SESSION_UNAVAILABLE`；发行版 controller 不会触发） | `packages/devlead/tests/isolation.spec.ts`（缺失/非 live/失败/畸形服务/动态提供/取消） |
 | `storageDomain`（当前工作树新增探测） | `src/outbox.ts`（结构化 `open` / table 探测）；`src/idempotency.ts`（非 answer 幂等 receipt）；`src/index.ts`（`openOutbox` / `openIdempotencyStore` / `replayOutbox`） | 报告仍可投递但回执明确 `durable:false` + warning（进程内存队列，Host 退出可能丢）；outbox 行不落盘、cold/未 attached lead 无法跨重启 replay；archived tombstone 只在进程内生效；非 answer 幂等只在进程内窗口兜底并显式 warning | `packages/devlead/tests/outbox.spec.ts`、`idempotency.spec.ts`（缺失/写失败/TTL）、`service.spec.ts`（non-durable 回退、durable outbox、restart replay、reset drop）、`phase2.spec.ts`（重启幂等）；默认 Host 的 e2e 断言 storageDomain 存在且 receipt `durable:true` |
+| board store（项目看板） | `src/index.ts` 的 `syncBoardToActiveLead` / `swapBoardStore` / `readBoard` / `updateBoard`；由 active lead 生命周期驱动 | 没有 active lead 或其 header 没有绝对 workspace 根 → disabled store：工具 `BOARD_DISABLED`、摘要为空、browser global 不注入、无面板；路径 start/父目录预创建失败 → warning + degraded，**DevLead 服务/工具/命令/UI 照常加载**，board 工具与摘要按真实故障返回 `BOARD_IO_ERROR` 或空（P2-2）；lead off/切换释放旧 store 与 watcher | `packages/devlead/tests/board-lifecycle.spec.ts`（lead 切换/release、degraded start 不阻塞激活）、`board-io.spec.ts`、`board-watcher.spec.ts`、`board-race.spec.ts` |
+
+**看板是默认启用、但可降级的内部路径**：它不依赖任何可选服务，只依赖 Host 自身的
+Session/Workspace 投影与 `dsh-atomic-write` 库；没有 active lead 时按禁用处理，start 失败时按
+degraded 处理，两者都不会让插件加载失败。浏览器 global 也只由 `dsh-host-webserver` 的
+`webserver/index-inject` 事件发布：非 Web 组合没有该事件，看板 UI 自然不出现。
 
 **当前工作树新增的可选服务**：`storageDomain` 用于 durable report outbox 与 archived-holder
 tombstone；默认 base 组合含该服务。未组合时退回显式 `durable:false` 回执，不静默声称已持久化。
@@ -376,8 +431,8 @@ warning 一次，**不是**只恢复 live lead。
 | `@yankeguo/dsh-devlead` | `['agents','sessions','sessionProjections']`（`src/index.ts:230`） | `dsh-agent` / `dsh-session` / `dsh-session-projection` | `DSH:base:82,40,172` | 条目 pending；Host 启动仅告警（这些行不在全局 required 列表，`DSH:packages/boot/app-boot/README.md:43`） |
 | `@yankeguo/dsh-tool-devlead` | `['devLead','tools','systemPrompt']`（`src/index.ts:62`） | 自身 / `dsh-tools` / `dsh-system-prompt` | `DSH:base:498,510` | 同上 |
 | `@yankeguo/dsh-command-devlead` | `['commands','devLead']`（`src/index.ts:34`） | `dsh-commands` / 自身 | `DSH:base:321` | 同上 |
-| `@yankeguo/dsh-client-ui-devlead`（node 半边） | 无（空 `apply`，`src/index.ts:11-12`） | — | — | — |
-| `@yankeguo/dsh-client-ui-devlead`（浏览器半边） | `['slots','sessions','remote','remote.commands','locale']`（`src/client/index.tsx:56`） | §5.3 的 5 个客户端插件 | §5.3 | 条目 pending；rc.1 下**Web 页面启动失败**（§5.2） |
+| `@yankeguo/dsh-client-ui-devlead`（node 半边） | `['devLead']`（`src/index.ts`） | 自身 | — | 无 active lead 时仍加载，只是 `webserver/index-inject` 不注入 board global；它从 `@yankeguo/dsh-devlead-protocol` 导入 schema 版本常量，不依赖 `@yankeguo/dsh-devlead` |
+| `@yankeguo/dsh-client-ui-devlead`（浏览器半边） | `['slots','sessions','remote','remote.commands','remote.workspaceFiles','locale','sidebarRight','sidebarRightTabs','workspaces']`（`src/client/index.tsx`） | §5.3 的 9 个客户端服务 | §5.3 | 条目 pending；rc.1 下**Web 页面启动失败**（§5.2） |
 
 **没有任何必需 `inject` 指向实验性/默认关闭服务。** 新的 optional worktree 隔离也没有破坏
 这条基线：`packages/devlead/tests/isolation.spec.ts`（`experimental dependency surface`） 直接断言 `static inject` 仍是
@@ -587,7 +642,7 @@ remove 的 durable 行为、`DEVLEAD_SESSION_ACTIVE`/`stop_running`/自我归档
 **诚实边界**：E2E 只 `fetch /` 取 `__DSH_BOOT__` 并走 HTTP RPC，**不执行浏览器 JS**，因此它
 证明的是"Host 侧全部功能 + client 条目进入 boot graph 且携带声明的 injects"，**不直接证明
 client 条目激活成功**（rc.1 的严格审计发生在浏览器里）。client 激活的证据来自：
-(a) §5.3 的静态提供者映射（5/5 默认组合覆盖）；(b) 历史审计中在真实 Chrome 对隔离 DSH
+(a) §5.3 的静态提供者映射（当前 9/9 默认组合覆盖）；(b) 历史审计中在真实 Chrome 对隔离 DSH
 实例做过两个 UI 状态的人工渲染验证，并据此刷新截图（`docs/AUDIT.md`「遗留限制」的人工 Chrome 验证条目）；
 (c) 历史 E2E 两条加载流 25/25 通过（`docs/AUDIT.md` §8 验证矩阵）。浏览器在默认组合下能否
 无 pending 激活，仍建议在 RC 回归清单里保留一次"真 Chrome 打开默认 profile"的人工检查。
@@ -653,7 +708,7 @@ DSH 包不得作为直接/optional 依赖、不得声明 `dsh-experimental`；�
 
 | # | 风险 | 评估 | 建议/决策 |
 | --- | --- | --- | --- |
-| R1 | **client 半边对默认 Web 组合是硬依赖**：rc.1 客户端启动审计严格，devlead-ui 的 5 个必需服务若在自定义（非默认）Web 组合中缺失，`web boot` 整页失败，而不是仅隐藏控件 | 默认 Web/Desktop 组合 5/5 覆盖（§5.3）；自定义组合才触发 | 方案 A（推荐）：把"仅默认 Web 组合受支持"写成硬契约（README/DESIGN 已声明），不改代码。方案 B：改成 Optional inject + `ctx.get` 守卫，可让自定义组合不崩，但 UI 会半残且改动面大；方案 C：在插件市场元数据里声明限制。需用户拍板 |
+| R1 | **client 半边对默认 Web 组合是硬依赖**：rc.1 客户端启动审计严格，devlead-ui 的 9 个必需服务若在自定义（非默认）Web 组合中缺失，`web boot` 整页失败，而不是仅隐藏控件 | 默认 Web/Desktop 组合 9/9 覆盖（§5.3）；自定义组合才触发 | 方案 A（推荐）：把"仅默认 Web 组合受支持"写成硬契约（README/DESIGN 已声明），不改代码。方案 B：改成 Optional inject + `ctx.get` 守卫，可让自定义组合不崩，但 UI 会半残且改动面大；方案 C：在插件市场元数据里声明限制。需用户拍板 |
 | R2 | `peerDependencies` 精确锁 `0.2.2-rc.1`，而运行时准入只看 `engines.dsh`（`>=0.2.2-rc.1 <0.3.0`）；同一 0.2.2 线上的 API 漂移不会在准入时被拦 | 中 | 每升一个 rc 都要同步 peers（CI/check-packages 已在 root devDeps 侧强制一致），并在 release checklist 里保留真实 E2E 回归；是否放宽为 `~0.2.2-rc.1` 需决策 |
 | R3 | **registry 安装路径未在本机验证**：本机只验证了「符号链接/linked-root 安装」；`dsh plugin add @yankeguo/dsh-devlead-bundle`（发布后）走 pnpm profile 安装，依赖 DSH runtime resolution 提供 peers（profile `pnpm-workspace.yaml` 固定 `autoInstallPeers: false`，`DSH:packages/boot/app-boot/src/profile.ts:184-189` tag） | 中（发布前必经） | 首次发布后在干净 profile 上跑一次 registry 安装 + E2E；本地 e2e 的 `installed` 流用符号链接，不等价 |
 | R4 | 实验性 worktree 服务是**结构 duck-type**：未来 rc 若移除 `create`，DevLead 报 `unavailable`；若 `create` 抛错或返回畸形结果，报 `failed`（都不会崩），但不会主动报"版本不匹配" | 低 | 接受；`isolation.spec.ts` 已覆盖"畸形服务→unavailable"与"畸形结果→failed" |

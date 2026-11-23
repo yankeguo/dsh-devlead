@@ -17,10 +17,10 @@ agent 就能在人可见、可参与的标准界面里统管多个仓库。
 | **调度者，而非实现者** | DevLead 依据已注册的元数据判定请求归哪个 Workspace，向那里的 Session 发送一份自包含简报，关注它、审阅交付并汇报。更深的调查与实现留在子会话里。 |
 | **真实的 DSH 实体** | Workspace 走 `ctx.workspaceRegistry`；子会话是侧边栏里可见的普通 Session，你可以打开、继续、归档——不是隐藏的 subagent。 |
 | **通知回路** | 被关注 Session 的 turn 结束时，一条持久通知会唤醒 DevLead，让它跟进、派发新工作或汇报。重启后关注索引会从持久记录重建。 |
-| **16 个主工具 + 1 个汇报工具** | 注册/列出/移除 Workspace，列出 Host 模型与 Agent preset，创建/读取/续写/归档/恢复/关注 Session，查看并撤回排队的 inbox 输入，读取通知与汇报摘要，并维护可选的用户可见项目看板。被关注的子会话另有单向的 `devlead_report`。 |
+| **16 个主工具 + 1 个汇报工具** | 注册/列出/移除 Workspace，列出 Host 模型与 Agent preset，创建/读取/续写/归档/恢复/关注 Session，查看并撤回排队的 inbox 输入，读取通知与汇报摘要，并维护对 active lead 默认启用的用户可见项目看板。被关注的子会话另有单向的 `devlead_report`。 |
 | **人类命令** | `/devlead`、`/devlead on\|off`、`/devlead reset`、`/devlead watch\|unwatch <session>`——会话可用完整 id 或唯一前缀寻址。 |
 | **可选的 worktree 隔离** | 当 Host 组合了 DSH 的实验性 Git worktree 服务时，被派发的 Session 可以拥有自己的分支和检出，而不必共享 Workspace checkout。缺少该能力时退化为共享 checkout，并在结果里如实上报状态。 |
-| **Web 界面** | composer 工具条里的带文本 DevLead 开关（两态都在）、开启后的只读 DevLeadBar、侧边栏 active/watched 标记，以及可选的右侧栏只读项目看板。 |
+| **Web 界面** | composer 工具条里的带文本 DevLead 开关（两态都在）、开启后的只读 DevLeadBar、侧边栏 active/watched 标记，以及仅 lead 可见的右侧栏只读项目看板。 |
 
 ## 与 subagent / agent-team 的对比
 
@@ -295,7 +295,7 @@ worktree** 能力时，`devlead_create_session` 接受 `isolation: "worktree"`�
 | `devlead_list_workspaces` | 列出已注册的 Workspace | — |
 | `devlead_list_models` | 精简的 Host 模型目录（default、providers、failures） | — |
 | `devlead_list_agent_presets` | Host 的 Agent preset roster 及实际生效的默认值 | — |
-| `devlead_board_read` | 读取可选的用户可见项目看板 | `project?`、`include_tasks?`、`limit?` |
+| `devlead_board_read` | 读取用户可见项目看板（结果有界） | `project?`、`include_tasks?`、`limit?` |
 | `devlead_board_update` | 仅 lead AI 可写的项目状态/阻塞/任务更新 | `project`、`expected_revision?`、`create?`、`set?`、`blockers?`、`tasks?` |
 | `devlead_use_workspace` | 注册 Workspace（幂等） | `path`（绝对路径）、`title?`、`create?`（默认 false） |
 | `devlead_list_sessions` | 列出 Session | `workspace?`、`watched_only?`、`limit?` |
@@ -349,7 +349,7 @@ config）：
     wakeColdSession: true        # 恢复冷 DevLead 会话以投递其排队通知
     defaultAgentPreset: ''       # 创建会话时的默认 Agent preset（空 = Host 默认）
     questionTtlMs: 86400000      # open question 的 TTL（24 小时；0 = 禁用 lazy 过期）
-    boardPath: ''                # 空白 = 禁用；非空必须是绝对 JSON 路径
+    boardPath: ''                # 可选：空白 = 由 active lead 的 workspace 派生 <cwd>/.dsh/devlead/board.json
 ```
 
 | 键 | 默认值 | 范围 / 说明 |
@@ -361,10 +361,18 @@ config）：
 | `wakeColdSession` | `true` | 为 `true` 时，带排队通知的冷 lead Session 会被恢复以完成投递；设为 `false` 可让队列留在内存里，直到人类打开该 lead Session |
 | `defaultAgentPreset` | `''` | 创建会话未指定 `preset` 时使用的默认值；空表示 Host 的实际默认值。无效 id 会让创建失败并返回结构化错误 |
 | `questionTtlMs` | `86400000` | 非负安全整数；open question 的 lazy TTL（24 小时），`0` 禁用过期。已回答的问题不会追溯过期 |
-| `boardPath` | `''` | trim 后为空白则禁用；非空必须是项目看板 JSON 的绝对路径。相对路径直接拒绝，不按 cwd resolve。路径**最终组件不能是 symlink**（原子替换会换掉链接本身而不是目标文件）；父目录链中的 symlink 可以。只有 lead AI 通过工具写入，人类/浏览器只读。详见 [docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md) |
+| `boardPath` | `''`（自动派生） | 可选的绝对路径 override。trim 后为空白时由 active lead Session 的原始 workspace 根自动派生 `<cwd>/.dsh/devlead/board.json`，看板默认启用；非空必须是项目看板 JSON 的绝对路径并优先于派生路径。相对路径直接拒绝，不按 cwd resolve。既有显式配置 `boardPath` 的部署升级后路径与行为不变。路径**最终组件不能是 symlink**（原子替换会换掉链接本身而不是目标文件）；父目录链中的 symlink 可以。只有 lead AI 通过工具写入，人类/浏览器只读。详见 [docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md) |
 
-可选看板在锁内 fresh read，并支持 `expected_revision` CAS。update 返回的 project 省略 tasks；
-单项目 read 最多返回 50 条 tasks，超出时标记 `truncated:true`。I/O 故障使用 `BOARD_IO_ERROR`；
+看板默认启用并跟随唯一的 active lead：该 Session 的原始 workspace 根（`SessionHeader.cwd`，
+不是 worktree 检出）拥有看板文件；关闭 lead、切换 lead 或工作区时立即释放旧 store 并改读新
+文件。没有 active lead（或既未配置 override、又没有绝对 workspace 根）时看板禁用：工具返回 `BOARD_DISABLED`、摘要
+为空、界面上没有看板入口。start 失败（例如目录不可写）只降级看板——DevLead 照常加载，看板
+工具返回 `BOARD_IO_ERROR`。
+
+看板在锁内 fresh read，并支持 `expected_revision` CAS。update 返回的 project 省略 tasks；
+单项目 read 最多返回 50 条 tasks，超出时标记 `truncated:true`。读取结果另有 64 KiB 上限
+（`DEVLEAD_BOARD_READ_MAX_BYTES`）：超限时依次从尾部裁剪 tasks、blockers、整个 project 行，
+并标记 `truncated:true`。I/O 故障使用 `BOARD_IO_ERROR`；
 重试前先重新读取，因为原子替换后的 `stat` 失败可能发生在 revision 已提交之后。严格 schema、
 坏文件处理与持久性边界见 [docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md)。
 看板 wire schema 与 limits 由 `@yankeguo/dsh-devlead-protocol` 单点维护，Host 校验器与浏览器解码器共用。
@@ -389,7 +397,13 @@ worktree 服务时才存在，并且每次派发通过 `isolation` 参数使用�
   准星图标。两者都来自 summary projection，因此冷行和重启后也能渲染，无需逐行读取 Host。
   DSH 0.2.2-rc.1 不对空白（尚未开始 turn）的 Session 行渲染 trailing seat，所以全新 Session
   要等第一轮结束后才显示标记；搜索结果使用独立行表面，不显示标记。
-- **项目看板（配置 `boardPath` 时）：** 会话头部的「项目看板」按钮打开右侧栏只读 tab。项目按状态分组
+- **项目看板（仅 lead 可见，默认启用）：** 看板 tab、guide entry 与会话头部按钮只在**当前屏幕上
+  的 active lead Session** 出现；非 lead Session（以及已关闭的旧 lead）没有入口，打开看板也要求
+  调用方是 lead。未配置 `boardPath` 时文件是 `<lead Session header cwd>/.dsh/devlead/board.json`，
+  只在 lead 持有看板时发布到浏览器。如果页面在 lead 启用之前就已加载，客户端会从该 lead Session
+  summary 的 `cwd` 自行派生默认路径；**用配置固定 `boardPath` 的部署在这种 late-enable 场景需要
+  刷新页面**，因为只有刷新后的页面才携带 override 路径。关闭模式或切换 lead 会立即重渲染，绝不
+  继续读旧文件。项目按状态分组
   （blocked 置顶），同组按优先级与更新时间排序，展示 focus/next/blockers 和可展开任务摘要。面板优先
   跟随文件 watch，看板文件尚不存在时用有界轮询兜底（4s 起、退避到 30s）；watch 断开时明确显示
   「自动更新已断开，请手动刷新」而不是假装正常。它区分文件不存在与读取/解析失败；折叠区还列出

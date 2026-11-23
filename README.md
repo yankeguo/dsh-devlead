@@ -19,10 +19,10 @@ everything.
 | **A dispatcher, not an implementer** | The DevLead decides which Workspace owns a request from registered metadata, sends a self-contained brief to a Session there, watches it, reviews the delivery, and reports. Deeper investigation and implementation stay in the child Session. |
 | **Real DSH entities** | Workspaces go through `ctx.workspaceRegistry`; children are ordinary Sessions visible in the sidebar that you can open, continue, archive — not hidden subagents. |
 | **Notification loop** | When a watched Session's turn settles, a durable notification wakes the DevLead so it can follow up, dispatch new work, or report. The watch index is rebuilt from durable records after a restart. |
-| **16 lead tools + 1 report tool** | Register/list/remove Workspaces, list Host models and Agent presets, create/read/continue/archive/restore/watch Sessions, inspect and retract queued inbox inputs, read the notification and report digest, and maintain an optional user-visible project board. Watched children get a one-way `devlead_report`. |
+| **16 lead tools + 1 report tool** | Register/list/remove Workspaces, list Host models and Agent presets, create/read/continue/archive/restore/watch Sessions, inspect and retract queued inbox inputs, read the notification and report digest, and maintain the user-visible project board that is on by default for the active lead. Watched children get a one-way `devlead_report`. |
 | **Human commands** | `/devlead`, `/devlead on\|off`, `/devlead reset`, `/devlead watch\|unwatch <session>` — Sessions are addressable by full id or unique prefix. |
 | **Optional worktree isolation** | When the Host composes DSH's experimental Git worktree service, a dispatched Session can get its own branch and checkout instead of sharing the Workspace checkout. Missing capability degrades to the shared checkout with a reported status. |
-| **Web UI** | A labelled DevLead toggle, a status-only DevLeadBar, active/watched sidebar marks, and an optional read-only project-board tab in the right Sidebar. |
+| **Web UI** | A labelled DevLead toggle, a status-only DevLeadBar, active/watched sidebar marks, and a lead-only read-only project-board tab in the right Sidebar. |
 
 ## How it compares with subagent / agent-team
 
@@ -323,7 +323,7 @@ title. All `session` arguments accept a full id, a unique prefix, or the uuid fi
 | `devlead_list_workspaces` | list registered Workspaces | — |
 | `devlead_list_models` | compact Host model catalog (default, providers, failures) | — |
 | `devlead_list_agent_presets` | Host Agent preset roster with the effective default | — |
-| `devlead_board_read` | read the optional user-visible project board | `project?`, `include_tasks?`, `limit?` |
+| `devlead_board_read` | read the user-visible project board (bounded result) | `project?`, `include_tasks?`, `limit?` |
 | `devlead_board_update` | lead-only project status/blocker/task update | `project`, `expected_revision?`, `create?`, `set?`, `blockers?`, `tasks?` |
 | `devlead_use_workspace` | register a Workspace (idempotent) | `path` (absolute), `title?`, `create?` (default false) |
 | `devlead_list_sessions` | list Sessions | `workspace?`, `watched_only?`, `limit?` |
@@ -381,7 +381,7 @@ profile's `cordis.patch.yml` — DSH replaces a row's whole config):
     wakeColdSession: true        # resume a cold DevLead Session to deliver queued notifications
     defaultAgentPreset: ''       # default Agent preset for created sessions (empty = Host default)
     questionTtlMs: 86400000      # open-question TTL (24h; 0 disables lazy expiry)
-    boardPath: ''                # blank = disabled; non-blank must be an absolute JSON path
+    boardPath: ''                # optional: blank derives <active lead workspace>/.dsh/devlead/board.json
 ```
 
 | Key | Default | Range / notes |
@@ -393,10 +393,19 @@ profile's `cordis.patch.yml` — DSH replaces a row's whole config):
 | `wakeColdSession` | `true` | when `true`, a cold lead Session with queued notifications is resumed to deliver them; set `false` to keep the queues in memory until a human opens the lead Session |
 | `defaultAgentPreset` | `''` | default value used when a created session names no `preset`; empty means the Host's effective default. An invalid id fails creation with a structured error |
 | `questionTtlMs` | `86400000` | non-negative safe integer; lazy open-question TTL (24h), `0` disables expiry. Answered questions do not retroactively expire |
-| `boardPath` | `''` | trimmed blank disables the board; a non-blank value must be an absolute project-board JSON path. Relative paths are rejected, never resolved against cwd. The final path component must not be a symlink (the atomic replace would swap the link itself, not its target); symlinks in the parent directory chain are fine. Only the lead AI writes through tools; humans/browser clients are read-only. See [docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md) |
+| `boardPath` | `''` (derived) | optional absolute override. Trimmed blank derives `<active lead Session header cwd>/.dsh/devlead/board.json` and the board is on by default; a non-blank value must be an absolute project-board JSON path and wins over the derived path. Relative paths are rejected, never resolved against cwd. Existing explicit `boardPath` deployments keep their path and behaviour unchanged. The final path component must not be a symlink (the atomic replace would swap the link itself, not its target); symlinks in the parent directory chain are fine. Only the lead AI writes through tools; humans/browser clients are read-only. See [docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md) |
 
-The optional board uses locked fresh reads and `expected_revision` CAS. Update results omit tasks; a
-selected-project read includes at most 50 tasks and sets `truncated:true` when more exist. I/O failures use
+The board is enabled by default and follows the single active lead: that Session's original workspace
+root (its `SessionHeader.cwd`, not a worktree checkout) owns the file, and turning the lead off, switching
+leads or changing the workspace releases the old store and reads the new file immediately. With no active
+lead (or neither an override nor an absolute workspace root) the board is disabled: the tools report `BOARD_DISABLED`, the summary
+is empty and no board UI appears. A start failure (for example an unwritable directory) degrades only the
+board — DevLead keeps loading and the board tools report `BOARD_IO_ERROR`.
+
+The board uses locked fresh reads and `expected_revision` CAS. Update results omit tasks; a
+selected-project read includes at most 50 tasks and sets `truncated:true` when more exist. Read results are
+also capped at 64 KiB (`DEVLEAD_BOARD_READ_MAX_BYTES`): tasks, then blockers, then whole project rows are
+trimmed from the tail and the result sets `truncated:true` when anything was removed. I/O failures use
 `BOARD_IO_ERROR`; re-read before retrying because a post-replace `stat` failure can occur after the new
 revision has committed. See [docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md)
 for the strict schema, corruption handling, and durability boundary. The wire schema and limits are
@@ -426,9 +435,16 @@ permanent bar on every conversation:
   after a restart without per-row Host reads. DSH 0.2.2-rc.1 does not render the trailing seat on
   a blank (no-turn-yet) Session row, so a brand-new Session shows its mark after the first turn;
   search results use a separate row surface and show no mark.
-- **Project board (when `boardPath` is configured):** a Session-header button opens the read-only
-  right-Sidebar tab. It groups project cards by status (blocked first), sorts by priority and update
-  time, and shows focus/next/blockers plus expandable task summaries. The panel follows file changes
+- **Project board (lead-only, on by default):** the tab, its guide entry and the Session-header
+  button exist only in the on-screen Session that is the active DevLead; other Sessions (and off/old
+  leads) show no board entry, and opening the board requires the lead. With no `boardPath` override
+  the file is `<lead Session header cwd>/.dsh/devlead/board.json`, published to the browser while the
+  lead owns it. If the page was loaded before the lead was enabled, the client derives that default
+  path from the lead Session's summary `cwd`; a deployment that pins `boardPath` needs a page refresh
+  in that late-enable case, because only a fresh page load carries the override path. Turning the mode
+  off or switching leads re-renders immediately and never keeps reading the old file. The panel groups
+  project cards by status (blocked first), sorts by priority and update time, and shows
+  focus/next/blockers plus expandable task summaries. It follows file changes
   through a file watch and falls back to a bounded poll (4s, backing off to 30s) while the board file
   does not exist yet; if the watch ends it shows an explicit "auto-update disconnected, refresh
   manually" state instead of pretending to be live. It distinguishes missing files from read/parse

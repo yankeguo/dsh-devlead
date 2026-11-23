@@ -7,16 +7,18 @@
 
 ## 仓库与验证
 
-- 6 个可发布包的 pnpm workspace：protocol → client-ui → devlead → command → tool → bundle。
-  所有包同版本，依赖先发布、bundle 最后。
+- 6 个可发布包的 pnpm workspace：protocol → {client-ui, devlead}，devlead → {command, tool}，
+  四者都进 bundle。所有包同版本，依赖先发布、bundle 最后；发布顺序由 `scripts/stage-release.mjs`
+  的确定性拓扑排序决定（protocol → client-ui → devlead → command → tool → bundle，同层按包名）。
 - 改动后的最低门禁是 `pnpm verify`（typecheck + test + build）。改动包边界、导出或
   `dsh.client.inject` 时再跑 `pnpm check:packages`；改动 Session、命令、projection、
   通知或浏览器加载路径时再跑 `pnpm e2e`（本地真实 DSH，CI 不含）。
 - 行为变化要同步更新 `README.md` 与 `README.zh.md` 的对应段落；架构、发布、兼容性分别落在
   `docs/` 下已有的文件里，不新开平行说明。
-- 看板 schema、读写/CAS、I/O 与浏览器契约以 [docs/BOARD.md](docs/BOARD.md) 为准。改动 board
-  写路径、工具错误映射或 `webserver/index-inject` 时跑 `pnpm e2e`，保留 phase 3 的真实
-  `updateBoard` 写入/CAS、浏览器 global 与磁盘 read-back 检查。
+- 看板 schema、默认路径派生、lead 生命周期、读写/CAS、I/O 与浏览器契约以
+  [docs/BOARD.md](docs/BOARD.md) 为准。改动 board 写路径、路径派生、工具错误映射或
+  `webserver/index-inject` 时跑 `pnpm e2e`，保留 phase 3 的真实 `updateBoard` 写入/CAS、
+  浏览器 global 与磁盘 read-back 检查。
 - 浏览器端的视觉行为不能只靠单测判断，按
   [docs/UI-VERIFICATION.md](docs/UI-VERIFICATION.md) 在隔离 profile 里验收。
 

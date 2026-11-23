@@ -13,7 +13,7 @@ active lead.
 - `devlead_list_workspaces`
 - `devlead_list_models` (compact Host model catalog for dispatch pinning)
 - `devlead_list_agent_presets` (Host Agent preset roster: id, name/description, default marker, broken reason)
-- `devlead_board_read` (optional project board; id/title/workspace-path selection and bounded listings)
+- `devlead_board_read` (user-visible project board, on by default for the active lead; id/title/workspace-path selection and bounded listings)
 - `devlead_board_update` (lead-only project create/set, blockers, tasks, and expected-revision CAS)
 - `devlead_use_workspace`
 - `devlead_list_sessions`
@@ -36,11 +36,21 @@ to create the directory. Domain failures are translated to `HarnessError` with a
 `DEVLEAD_*` code (board failures use `BOARD_*`). Tool outputs are canonical JSON validated against
 their declared output schemas.
 
-The board tools are disabled by deployment default until `devlead.boardPath` is configured. They
-never accept a board file path argument. `devlead_board_read` defaults to project summaries without
-tasks; a selected project includes at most 50 tasks by default and reports `truncated:true` beyond that.
+The board tools follow the board's default-on lifecycle: the active lead Session's original
+workspace root owns `<header.cwd>/.dsh/devlead/board.json` (the optional deployment `boardPath` wins
+when configured), and with no active lead / workspace root they report `BOARD_DISABLED`. They never
+accept a board file path argument — the path is derived by the Host or set by deployment config only.
+`devlead_board_read` defaults to project summaries without tasks; a selected project includes at most
+50 tasks by default and reports `truncated:true` beyond that. The whole serialized result is also
+capped at 64 KiB (`DEVLEAD_BOARD_READ_MAX_BYTES`): tasks, then blockers, then whole project rows are
+trimmed from the tail and `truncated:true` is set when anything was removed.
 `devlead_board_update` requires explicit `create:true` plus `set.workspace.path` for a new project,
-supports blocker/task patches and CAS, and returns only the changed project without tasks. The human is
+supports blocker/task patches and CAS, and returns only the changed project without tasks. Project
+references (id, workspace title, absolute workspace path) are resolved against the locked disk
+snapshot and the write preflight validates against a fixed synthetic project id, so a long
+workspace path/title used as the reference no longer false-fails with `BOARD_LIMIT_EXCEEDED`; unknown
+references still report `BOARD_PROJECT_NOT_FOUND`/`BOARD_PROJECT_AMBIGUOUS`. A board start failure
+degrades the board only: the tools report `BOARD_IO_ERROR` while DevLead keeps working. The human is
 read-only; only the enabled lead AI writes.
 `devlead:board-summary` is a cache-safe `systemPrompt.context()` snapshot capped at 1536 UTF-8
 bytes. See [docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md).
@@ -159,7 +169,13 @@ supported platform.
 不虚构 id）。`preset` 是 Host 定义的 id；省略/空白先回退插件 `defaultAgentPreset`，再回退
 Host 默认/selectedDefault；无效 id 在创建阶段返回结构化错误，不会被静默忽略。领域错误翻译为
 稳定的 `DEVLEAD_*` code（看板为 `BOARD_*`）。`devlead_board_read` / `devlead_board_update` 提供
-可选项目看板；路径只来自 `devlead.boardPath`，用户只读，只有 enabled lead AI 可通过工具写入。
+用户可见项目看板：默认启用，由唯一 active lead 的 `SessionHeader.cwd` 派生
+`<cwd>/.dsh/devlead/board.json`，`boardPath` 仅作可选绝对路径 override；没有 lead 时返回
+`BOARD_DISABLED`。工具从不接受看板文件路径参数。读取结果按 64 KiB 上限（tasks → blockers →
+project 行从尾部裁剪，`truncated:true`）；update 的 project 引用在锁内快照上解析，长
+workspace path/title 不再误报 `BOARD_LIMIT_EXCEEDED`，未知引用仍是
+`BOARD_PROJECT_NOT_FOUND`/`BOARD_PROJECT_AMBIGUOUS`。start 失败只降级看板（`BOARD_IO_ERROR`），
+不阻塞 DevLead。用户只读，只有 enabled lead AI 可通过工具写入。
 动态 `devlead:board-summary` 使用 cache-safe `systemPrompt.context()`，上限 1536 UTF-8 bytes。
 详见 [docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md)。`devlead_report` 返回 `{ report, durable, queued, warning? }`：报告先写入
 durable outbox，lead 日志 flush 成功后才清理；Host 无 storage 时 `durable:false` 并带 warning。
