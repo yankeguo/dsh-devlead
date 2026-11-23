@@ -293,11 +293,21 @@ export class FakeDevLead {
 
   /** Board service exposed on the core facade, matching ctx.devLead.board. */
   readonly board = {
-    read: async (filter: { project?: string; includeTasks?: boolean; limit?: number }): Promise<DevLeadBoardReadResult> => {
-      this.enter('board.read', filter)
-      return this.boardRead
-    },
     summary: (): string => this.boardSummary,
+  }
+
+  /** Cache-only board summary for the assembling Agent (disabled leads get ''). */
+  boardSummaryFor(agent: Agent): string {
+    return this.enabled.has(String(agent.id)) ? this.boardSummary : ''
+  }
+
+  /** Record one lead-scoped board read. */
+  async readBoard(
+    agent: Agent,
+    filter: { project?: string; includeTasks?: boolean; limit?: number },
+  ): Promise<DevLeadBoardReadResult> {
+    this.enter('readBoard', agent, filter)
+    return this.boardRead
   }
 
   /** Record one lead-stamped board update. */

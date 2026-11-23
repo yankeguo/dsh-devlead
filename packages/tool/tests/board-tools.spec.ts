@@ -21,9 +21,9 @@ describe('devlead board tools', () => {
     const harness = boot()
     const result = await harness.call('devlead_board_read', { project: ' webapp ', include_tasks: false, limit: 5 })
     expect(result).toEqual(harness.devLead.boardRead)
-    expect(harness.devLead.callsOf('board.read')[0]?.[0]).toEqual({
-      project: 'webapp', includeTasks: false, limit: 5,
-    })
+    const readCall = harness.devLead.callsOf('readBoard')[0]
+    expect(readCall?.[0]).toBe(harness.agent)
+    expect(readCall?.[1]).toEqual({ project: 'webapp', includeTasks: false, limit: 5 })
     expect(validateJsonSchemaValue(harness.tool('devlead_board_read').definition.output.schema, result)).toEqual([])
   })
 
@@ -53,13 +53,13 @@ describe('devlead board tools', () => {
     expect((await failureOf(harness.call('devlead_board_read', { limit: 0 }))).code).toBe('DEVLEAD_INVALID_INPUT')
     expect((await failureOf(harness.call('devlead_board_read', { boardPath: '/tmp/other.json' }))).code)
       .toBe('DEVLEAD_INVALID_INPUT')
-    expect(harness.devLead.callsOf('board.read')).toHaveLength(0)
+    expect(harness.devLead.callsOf('readBoard')).toHaveLength(0)
   })
 
   it('maps read service failures into stable tool errors', async () => {
     const harness = boot()
     for (const code of ['BOARD_DISABLED', 'BOARD_NOT_FOUND', 'BOARD_PROJECT_AMBIGUOUS', 'BOARD_IO_ERROR'] as const) {
-      harness.devLead.failures.set('board.read', new DevLeadBoardError(code, code))
+      harness.devLead.failures.set('readBoard', new DevLeadBoardError(code, code))
       expect((await failureOf(harness.call('devlead_board_read'))).code).toBe(code)
     }
   })
@@ -163,6 +163,25 @@ describe('devlead board tools', () => {
       harness.devLead.failures.set('updateBoard', new DevLeadBoardError(code, code))
       expect((await failureOf(harness.call('devlead_board_update', { project: 'webapp' }))).code).toBe(code)
     }
+  })
+
+  it('forwards long workspace path/title refs and preserves project-reference errors', async () => {
+    const harness = boot()
+    const longPath = `/tmp/${'p'.repeat(300)}`
+    const longTitle = 'T'.repeat(160)
+    // A workspace reference longer than the id limit is a legitimate project
+    // reference, not a limit violation: the tool forwards it unchanged and the
+    // core resolves it against the locked board.
+    await harness.call('devlead_board_update', { project: longPath, set: { focus: 'by path' } })
+    expect(harness.devLead.callsOf('updateBoard')[0]?.[1]).toMatchObject({
+      project: longPath,
+      set: { focus: 'by path' },
+    })
+    await harness.call('devlead_board_update', { project: longTitle, set: { focus: 'by title' } })
+    expect(harness.devLead.callsOf('updateBoard')[1]?.[1]).toMatchObject({ project: longTitle })
+    harness.devLead.failures.set('updateBoard', new DevLeadBoardError('missing reference', 'BOARD_PROJECT_NOT_FOUND'))
+    expect((await failureOf(harness.call('devlead_board_update', { project: longPath }))).code)
+      .toBe('BOARD_PROJECT_NOT_FOUND')
   })
 
   it('presents only result summaries rather than complete projects', async () => {

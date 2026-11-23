@@ -316,9 +316,7 @@ export function apply(ctx: Context): void {
   ctx.systemPrompt.context({
     name: 'devlead:board-summary',
     order: ctx.systemPrompt.getContextOrder('WEB_SURFACE') + 10,
-    text: ({ agent }) => agent !== undefined && ctx.devLead.isEnabled(agent)
-      ? ctx.devLead.board.summary()
-      : '',
+    text: ({ agent }) => agent === undefined ? '' : ctx.devLead.boardSummaryFor(agent),
   })
   registerDevLeadBoardTools(ctx)
 

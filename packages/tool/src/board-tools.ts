@@ -26,14 +26,17 @@ const BOARD_READ_DESCRIPTION =
   'Read the user-visible DevLead project board: durable project status, priority, goal/focus/next, blockers, and '
   + 'optionally tasks. Omit project for a bounded all-project summary; select one by exact id, workspace title, or '
   + 'absolute workspace path for full detail. This board is read-only for the human and writable only by the lead AI '
-  + 'through devlead_board_update. The board file path is deployment configuration and is never a tool argument.'
+  + 'through devlead_board_update. The board belongs to the active lead Session; its file location is derived from '
+  + 'that Session workspace (or a deployment override) and is never a tool argument. Results are bounded and may be '
+  + 'truncated:true; no lead workspace means BOARD_DISABLED.'
 
 const BOARD_UPDATE_DESCRIPTION =
   'Update one project on the user-visible DevLead board; the human is read-only and only the enabled lead AI may '
   + 'write through this tool. Create requires create:true and set.workspace.path. Supports scalar status/priority/'
   + 'goal/focus/next updates, blocker clear/remove/add, and task remove/upsert. Use expected_revision from '
   + 'devlead_board_read for compare-and-swap when a lost update would matter. Returns only the changed project without '
-  + 'task rows and the changed lanes, never the whole board. No argument can redirect the configured board file.'
+  + 'task rows and the changed lanes, never the whole board. The file belongs to the active lead Session workspace and '
+  + 'no argument can redirect it.'
 
 const BLOCKER_SCHEMA = {
   type: 'object',
@@ -213,12 +216,13 @@ export function registerDevLeadBoardTools(ctx: Context): void {
     presentCall: (args: BoardReadArgs) => present('Read DevLead board', 'read', args.project?.trim()),
     presentResult: presentBoardResult,
     isConcurrencySafe: () => true,
-    execute(args) {
+    execute(args, exec) {
       return runTool(async () => {
         assertKnownArguments(args, TOOL_ARGUMENT_KEYS.devlead_board_read)
+        const agent = requireAgent(exec.agent, 'devlead_board_read')
         const project = optionalProjectRef(args.project)
         const limit = optionalPositiveInteger(args.limit, 'limit')
-        return ctx.devLead.board.read({
+        return ctx.devLead.readBoard(agent, {
           ...project === undefined ? {} : { project },
           ...args.include_tasks === undefined ? {} : { includeTasks: args.include_tasks },
           ...limit === undefined ? {} : { limit },
