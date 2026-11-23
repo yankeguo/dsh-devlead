@@ -1,6 +1,6 @@
 /** Filesystem, validation, concurrency, and cache behavior of the project board. */
 
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -20,6 +20,36 @@ import type {
   DevLeadBoardUpdate,
 } from '../src/board.ts'
 import { bootService } from './harness.ts'
+
+/**
+ * Deterministic writer-lock failure injection. The board acquires its
+ * cross-process writer lock through `withFileLock`, so while `code` is set the
+ * mock fails lock acquisition with that errno exactly as a read-only or
+ * foreign-owned parent directory would; every other call passes through to the
+ * real implementation. This replaces the old real-chmod test: no permission
+ * bits, non-root uid, or platform-specific access semantics are involved.
+ */
+const lockIoInjection = vi.hoisted(() => ({ code: undefined as string | undefined }))
+
+vi.mock('@deepseek-ai/dsh-atomic-write', async () => {
+  const actual = await vi.importActual<typeof import('@deepseek-ai/dsh-atomic-write')>(
+    '@deepseek-ai/dsh-atomic-write',
+  )
+  return {
+    ...actual,
+    withFileLock: async <T>(
+      filename: string,
+      operation: () => Promise<T>,
+      options?: Parameters<typeof actual.withFileLock>[2],
+    ): Promise<T> => {
+      const code = lockIoInjection.code
+      if (code !== undefined) {
+        throw Object.assign(new Error(`injected ${code} while acquiring the writer lock`), { code })
+      }
+      return actual.withFileLock(filename, operation, options)
+    },
+  }
+})
 
 const roots: string[] = []
 const stores: DevLeadBoardStore[] = []
@@ -76,6 +106,7 @@ async function failureOf(promise: Promise<unknown>): Promise<DevLeadBoardError> 
 }
 
 afterEach(async () => {
+  lockIoInjection.code = undefined
   for (const store of stores.splice(0).reverse()) await store.close()
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true })
 })
@@ -473,18 +504,22 @@ describe('DevLeadBoardStore', () => {
     expect(summary).not.toMatch(/[\r\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u)
   })
 
-  it.skipIf(process.geteuid?.() === 0)('maps a read-only parent to BOARD_IO_ERROR without changing bytes', async () => {
+  it('maps a writer-lock acquisition permission failure to BOARD_IO_ERROR without changing bytes', async () => {
     const { store, file } = await boot()
     await store.update({ ...patch(), updatedBy: actor })
     const before = await readFile(file, 'utf8')
-    const parent = dirname(file)
-    await chmod(parent, 0o500)
+    // A real EACCES/EPERM on `<board>.lock` acquisition stands in for a
+    // read-only parent directory (or one owned by another user), without
+    // depending on the runner's uid or real permission semantics.
+    lockIoInjection.code = 'EACCES'
     try {
-      expect((await failureOf(store.update({ project: 'alpha', updatedBy: actor, set: { focus: 'no' } }))).code)
-        .toBe('BOARD_IO_ERROR')
+      const failure = await failureOf(store.update({ project: 'alpha', updatedBy: actor, set: { focus: 'no' } }))
+      expect(failure.code).toBe('BOARD_IO_ERROR')
+      // The mapping preserved the injected errno instead of masking its cause.
+      expect(failure.message).toContain('injected EACCES')
       expect(await readFile(file, 'utf8')).toBe(before)
     } finally {
-      await chmod(parent, 0o700)
+      lockIoInjection.code = undefined
     }
   })
 

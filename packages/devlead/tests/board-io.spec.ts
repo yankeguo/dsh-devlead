@@ -1,6 +1,6 @@
 /** Structured read/write failures at the board's filesystem dependency seams. */
 
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -8,6 +8,7 @@ import { DevLeadBoardStore } from '../src/board.ts'
 import type { DevLeadBoard } from '../src/board.ts'
 
 let readErrorCode: string | undefined
+let readFileErrorCode: string | undefined
 let writeErrorCode: string | undefined
 let mkdirErrorCode: string | undefined
 
@@ -26,6 +27,13 @@ vi.mock('node:fs/promises', async () => {
     stat: async (path: Parameters<typeof actual.stat>[0], options?: Parameters<typeof actual.stat>[1]) => {
       if (readErrorCode !== undefined) throw injectedFsError(readErrorCode)
       return actual.stat(path, options as never)
+    },
+    readFile: async (
+      path: Parameters<typeof actual.readFile>[0],
+      options?: Parameters<typeof actual.readFile>[1],
+    ) => {
+      if (readFileErrorCode !== undefined) throw injectedFsError(readFileErrorCode)
+      return actual.readFile(path, options as never)
     },
   }
 })
@@ -66,6 +74,7 @@ async function boot(): Promise<{ store: DevLeadBoardStore; file: string }> {
 
 afterEach(async () => {
   readErrorCode = undefined
+  readFileErrorCode = undefined
   writeErrorCode = undefined
   mkdirErrorCode = undefined
   for (const store of stores.splice(0).reverse()) await store.close()
@@ -82,9 +91,31 @@ describe('DevLeadBoardStore I/O error surface', () => {
     await expect(store.start()).rejects.toMatchObject({ code: 'BOARD_IO_ERROR' })
   })
 
-  it('maps read failures to BOARD_IO_ERROR', async () => {
-    const { store } = await boot()
+  // A started store concurrently reloads from its watcher, and a read that
+  // waits for that in-flight reload can legitimately answer from the cache
+  // without calling `stat` again. That timing is not part of the error-surface
+  // contract, so these two tests use a fresh, never-started store: no snapshot,
+  // no watcher, and no pending reload, which forces the first read to consult
+  // the filesystem seam deterministically.
+  it('maps an uncached first-read stat failure to BOARD_IO_ERROR', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-devlead-board-read-stat-io-'))
+    roots.push(root)
+    const store = new DevLeadBoardStore(join(root, 'board.json'))
+    stores.push(store)
+    expect(store.summary()).toBe('')
     readErrorCode = 'EACCES'
+    await expect(store.read()).rejects.toMatchObject({ code: 'BOARD_IO_ERROR' })
+  })
+
+  it('maps an uncached first-read file failure to BOARD_IO_ERROR', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-devlead-board-read-file-io-'))
+    roots.push(root)
+    const file = join(root, 'board.json')
+    await writeFile(file, '{"schemaVersion":1}\n', 'utf8')
+    const store = new DevLeadBoardStore(file)
+    stores.push(store)
+    expect(store.summary()).toBe('')
+    readFileErrorCode = 'EACCES'
     await expect(store.read()).rejects.toMatchObject({ code: 'BOARD_IO_ERROR' })
   })
 
