@@ -165,8 +165,13 @@ import {
   type DevLeadActiveSession,
 } from './active.ts'
 import { worktreeCapabilityOf, worktreeCheckoutOf } from './isolation.ts'
-import { DevLeadBoardStore } from './board.ts'
-import type { DevLeadBoardUpdate, DevLeadBoardUpdateResult } from './board.ts'
+import { DevLeadBoardError, DevLeadBoardStore, isDevLeadBoardError, resolveDevLeadBoardPath } from './board.ts'
+import type {
+  DevLeadBoardReadFilter,
+  DevLeadBoardReadResult,
+  DevLeadBoardUpdate,
+  DevLeadBoardUpdateResult,
+} from './board.ts'
 import { DevLeadNotificationHub } from './notification.ts'
 import type { DevLeadPersistedLead, DevLeadReportDeliveryState } from './notification.ts'
 import { persistedSessionsOf } from './persistence.ts'
@@ -256,7 +261,14 @@ export interface Config {
   defaultAgentPreset?: string
   /** Open-question lifetime in milliseconds; default 24h, 0 disables expiry. */
   questionTtlMs?: number
-  /** Absolute project-board JSON path; blank or omitted disables the board. */
+  /**
+   * Optional absolute project-board JSON path override.
+   *
+   * Blank or omitted (the default) derives the board file from the active lead
+   * Session's original workspace root: `<lead header.cwd>/.dsh/devlead/board.json`.
+   * A non-blank value wins over that derivation, must be absolute, and remains
+   * a deployment-only setting: no tool argument can redirect the board file.
+   */
   boardPath?: string
 }
 
@@ -648,7 +660,10 @@ export interface DevLeadSettings {
   readonly defaultAgentPreset: string | undefined
   /** Open-question lifetime in milliseconds; zero disables expiry. */
   readonly questionTtlMs: number
-  /** Resolved project-board path, or undefined when the feature is disabled. */
+  /**
+   * Resolved project-board path override, or undefined when the default
+   * lead-workspace derivation applies.
+   */
   readonly boardPath?: string
 }
 
@@ -940,6 +955,27 @@ export interface DevLeadReportReceipt {
 }
 
 /**
+ * Structured record of a project-board start failure.
+ *
+ * The board is an optional feature: a start or parent-precreate failure is
+ * logged and exposed here while the DevLead service, tools, command, and client
+ * surfaces keep loading. Board operations then surface their own structured
+ * `BOARD_IO_ERROR` (or an empty summary) instead of failing plugin activation.
+ */
+export interface DevLeadBoardStartError {
+  /** Stable board error code (`BOARD_IO_ERROR`/`BOARD_INVALID`/…). */
+  readonly code: string
+  /** Human-readable failure detail. */
+  readonly message: string
+}
+
+/** Normalize any board start failure into the structured degradation record. */
+function devLeadBoardStartErrorOf(error: unknown): DevLeadBoardStartError {
+  if (isDevLeadBoardError(error)) return { code: error.code, message: error.message }
+  return { code: 'BOARD_IO_ERROR', message: thrownMessage(error) }
+}
+
+/**
  * DevLead service (`ctx.devLead`): durable mode selection, Workspace and
  * Session orchestration, and watched-session notifications for one Session
  * acting as the development lead.
@@ -953,8 +989,27 @@ export class DevLeadService extends Service {
   /** Validated deployment configuration. */
   private readonly resolved: DevLeadSettings
 
-  /** Configured project board; disabled stores expose BOARD_DISABLED on I/O. */
-  readonly board: DevLeadBoardStore
+  /**
+   * Current project board store. It belongs to the one active lead Session (or
+   * its configured override); with no active lead this is a disabled store
+   * whose reads/writes report BOARD_DISABLED and whose summary is empty.
+   */
+  private boardStore: DevLeadBoardStore
+
+  /** Active lead Session whose workspace owns {@link boardStore}, when enabled. */
+  private boardLeadSessionIdValue: string | undefined
+  /** Whether the current board path comes from the deployment Config override. */
+  private boardPathOverrideValue = false
+  /** Latest board start failure; the rest of the service keeps serving without a board. */
+  private boardStartErrorValue: DevLeadBoardStartError | undefined
+  /** Serializes store swaps so two lead changes can never interleave one store. */
+  private boardSyncTail: Promise<void> = Promise.resolve()
+  /**
+   * Original workspace root of each known lead Session, including cold ones
+   * recovered from the persisted corpus (their header is not live in the
+   * Session store, so the board path needs this cache).
+   */
+  private readonly leadWorkspaceRoots = new Map<string, string>()
 
   /** Awaited registration of the `devLead` projection unit. */
   private projectionHandle!: ProjectionHandle<DevLeadProjectionState>
@@ -1313,11 +1368,12 @@ export class DevLeadService extends Service {
   constructor(ctx: Context, config: Config = {}) {
     super(ctx, 'devLead')
     this.resolved = resolveConfig(config)
-    this.board = new DevLeadBoardStore(this.resolved.boardPath, this.ctx.logger)
+    // No lead yet: existing tools/summary/injection see a disabled board until
+    // the single active lead is known and its workspace root is resolved.
+    this.boardStore = new DevLeadBoardStore(undefined, this.ctx.logger)
   }
 
   protected async [Service.init](): Promise<void> {
-    await this.board.start()
     initializeRecordApi(this.ctx.logger)
     initializeDevLeadFoldWarnings(this.ctx.logger)
     this.projectionHandle = await this.ctx.sessionProjections.register(devLeadProjectionDefinition)
@@ -1376,7 +1432,12 @@ export class DevLeadService extends Service {
             opening?.catch(() => undefined),
             idempotencyOpening?.catch(() => undefined),
           ])
-          await Promise.all([this.board.close(), this.outbox?.close(), this.idempotencyStore?.close()])
+          await this.boardSyncTail.catch(() => undefined)
+          await Promise.all([
+            this.boardStore.close(),
+            this.outbox?.close(),
+            this.idempotencyStore?.close(),
+          ])
         })()
       }
     }.bind(this), 'devlead: cold rehydration')
@@ -1483,6 +1544,7 @@ export class DevLeadService extends Service {
       knownActive: this.recoveredActive,
     })
     this.recoveredActive = []
+    await this.syncBoardToActiveLead()
     await this.replayOutbox()
     this.initialized = true
   }
@@ -2657,9 +2719,195 @@ export class DevLeadService extends Service {
     return recordApiStatus()
   }
 
+  // ---------------------------------------------------------------------------
+  // Project board
+  // ---------------------------------------------------------------------------
+
+  /** Current project board store; disabled when no lead/workspace owns one. */
+  get board(): DevLeadBoardStore {
+    return this.boardStore
+  }
+
+  /** Active lead Session id whose workspace owns the current board, when enabled. */
+  get boardLeadSessionId(): string | undefined {
+    return this.boardLeadSessionIdValue
+  }
+
+  /** Whether the current board path comes from the deployment Config override. */
+  get boardPathOverride(): boolean {
+    return this.boardPathOverrideValue
+  }
+
+  /**
+   * Latest project-board start failure, if any.
+   *
+   * A degraded board keeps DevLead itself loaded: tools then report the real
+   * filesystem failure as a structured board error instead of the plugin
+   * refusing to activate.
+   */
+  get boardStartError(): DevLeadBoardStartError | undefined {
+    return this.boardStartErrorValue
+  }
+
+  /**
+   * Resolve the calling lead's board file and hand it a tool read. Only the
+   * unique active lead may reach the store; with no active lead/workspace the
+   * call reports BOARD_DISABLED.
+   * @param agent - calling live Agent.
+   * @param filter - bounded project/task filtering.
+   * @returns the bounded read result.
+   * @throws {@link DevLeadError} `DEVLEAD_NOT_ENABLED` for a non-mode Agent.
+   * @throws {@link DevLeadBoardError} `BOARD_DISABLED` when the caller is not
+   *   the active lead or its workspace records no board location.
+   */
+  async readBoard(agent: Agent, filter: DevLeadBoardReadFilter = {}): Promise<DevLeadBoardReadResult> {
+    if (!this.isEnabled(agent)) {
+      throw new DevLeadError('DevLead mode is not enabled for the calling Agent', 'DEVLEAD_NOT_ENABLED')
+    }
+    this.requireActiveBoardLead(agent)
+    return this.boardStore.read(filter)
+  }
+
+  /**
+   * Dynamic board summary for one prompt-assembly Agent.
+   *
+   * Returns the cache-only text only when the caller is both an enabled lead
+   * and the owner of the current store; a duplicate or non-owner enabled Agent
+   * gets an empty summary instead of another workspace's board.
+   * @param agent - Agent whose turn is being assembled.
+   * @returns the bounded board summary, or an empty string.
+   */
+  boardSummaryFor(agent: Agent): string {
+    if (!this.isEnabled(agent)) return ''
+    if (this.boardLeadSessionIdValue !== String(agent.id)) return ''
+    return this.boardStore.summary()
+  }
+
+  /** Reject a board operation whose caller does not own the current store. */
+  private requireActiveBoardLead(agent: Agent): void {
+    if (this.boardLeadSessionIdValue === String(agent.id) && this.boardStore.path !== undefined) return
+    throw new DevLeadBoardError(
+      'the DevLead project board is not active for the calling lead: '
+      + 'no active lead workspace currently owns a board file',
+      'BOARD_DISABLED',
+    )
+  }
+
+  /** Serialize one active-lead → board synchronization. */
+  private syncBoardToActiveLead(): Promise<void> {
+    const run = this.boardSyncTail.then(() => this.applyActiveLeadBoard())
+    this.boardSyncTail = run.catch(() => undefined)
+    return run
+  }
+
+  /** Apply the current lead identity to the board store (serialized). */
+  private async applyActiveLeadBoard(): Promise<void> {
+    if (this.disposed) return
+    const sessionId = this.activeSessionId
+    if (sessionId === undefined) {
+      await this.swapBoardStore(undefined, undefined)
+      return
+    }
+    await this.swapBoardStore(sessionId, this.leadWorkspaceRootOf(sessionId))
+  }
+
+  /** Original workspace root for one lead: live header first, cached cold header second. */
+  private leadWorkspaceRootOf(sessionId: string): string | undefined {
+    const live = this.ctx.sessions.get(toSessionId(sessionId))
+    const fromLive = live?.header.cwd
+    if (fromLive !== undefined && fromLive.trim().length > 0) {
+      this.leadWorkspaceRoots.set(sessionId, fromLive)
+      return fromLive
+    }
+    return this.leadWorkspaceRoots.get(sessionId)
+  }
+
+  /** Cache one lead's original workspace root (cold leads are not in the live store). */
+  private rememberLeadWorkspaceRoot(sessionId: string, cwd: string | undefined): void {
+    if (cwd === undefined || cwd.trim().length === 0) this.leadWorkspaceRoots.delete(sessionId)
+    else this.leadWorkspaceRoots.set(sessionId, cwd)
+  }
+
+  /**
+   * Point the service at the board file of one lead, releasing any previous
+   * store/watcher.
+   *
+   * The path is the Config override when configured, otherwise the lead's
+   * original workspace root plus `.dsh/devlead/board.json`. The same resolved
+   * file keeps its store (so a lead switch inside one workspace does not churn
+   * the watcher); a changed path starts the new store before the old one is
+   * closed, so an in-flight read never sees a half-swapped service. A start
+   * failure is recorded and logged but never rejects: the store is kept so its
+   * later operations report the real `BOARD_IO_ERROR`.
+   * @param sessionId - active lead identity, or undefined when disabled.
+   * @param workspaceRoot - that lead's original workspace root, when known.
+   */
+  private async swapBoardStore(sessionId: string | undefined, workspaceRoot: string | undefined): Promise<void> {
+    // No lead means no board at all: a configured override alone must not
+    // pre-create its directory or run a watcher for a host with no active
+    // DevLead (the file is only meaningful while one Session owns it).
+    const resolution = sessionId === undefined
+      ? { kind: 'disabled' as const, reason: 'no-workspace' as const }
+      : resolveDevLeadBoardPath({
+        ...this.resolved.boardPath === undefined ? {} : { override: this.resolved.boardPath },
+        ...workspaceRoot === undefined ? {} : { cwd: workspaceRoot },
+      })
+    const nextPath = resolution.kind === 'resolved' ? resolution.path : undefined
+    const nextOverride = resolution.kind === 'resolved' && resolution.source === 'override'
+    const previous = this.boardStore
+    if (nextPath === undefined) {
+      if (resolution.kind === 'disabled' && resolution.reason === 'relative-workspace') {
+        this.ctx.logger.warn(
+          `devlead: Session "${sessionId ?? ''}" records a relative workspace root (${workspaceRoot ?? ''}); `
+          + 'the project board stays disabled until it has an absolute workspace root',
+        )
+      }
+      this.boardLeadSessionIdValue = undefined
+      this.boardPathOverrideValue = false
+      this.boardStartErrorValue = undefined
+      if (previous.path !== undefined) {
+        this.boardStore = new DevLeadBoardStore(undefined, this.ctx.logger)
+        await this.closeBoardStore(previous)
+      }
+      return
+    }
+    if (previous.path === nextPath) {
+      this.boardLeadSessionIdValue = sessionId
+      this.boardPathOverrideValue = nextOverride
+      return
+    }
+    const next = new DevLeadBoardStore(nextPath, this.ctx.logger)
+    let startError: DevLeadBoardStartError | undefined
+    try {
+      await next.start()
+    } catch (error: unknown) {
+      startError = devLeadBoardStartErrorOf(error)
+      this.ctx.logger.warn(
+        `devlead: project board at ${nextPath} is degraded and DevLead stays loaded: `
+        + `${startError.code}: ${startError.message}`,
+      )
+    }
+    this.boardStore = next
+    this.boardLeadSessionIdValue = sessionId
+    this.boardPathOverrideValue = nextOverride
+    this.boardStartErrorValue = startError
+    await this.closeBoardStore(previous)
+  }
+
+  /** Close one replaced store without letting cleanup failure break the swap. */
+  private async closeBoardStore(store: DevLeadBoardStore): Promise<void> {
+    if (store.path === undefined) return
+    try {
+      await store.close()
+    } catch (error: unknown) {
+      this.ctx.logger.warn(`devlead: could not close the previous project board store: ${thrownMessage(error)}`)
+    }
+  }
+
   /**
    * Stamp the calling lead's identity onto one board mutation. The board file
-   * path remains deployment-owned; model callers supply only a logical patch.
+   * path is derived from the active lead's workspace (or the Config override);
+   * model callers supply only a logical patch.
    */
   async updateBoard(
     agent: Agent,
@@ -2670,8 +2918,9 @@ export class DevLeadService extends Service {
     if (!this.isEnabled(agent)) {
       throw new DevLeadError('DevLead mode is not enabled for the calling Agent', 'DEVLEAD_NOT_ENABLED')
     }
+    this.requireActiveBoardLead(agent)
     const title = this.ctx.get('sessionTitle')?.get(agent.session)?.title ?? 'DevLead'
-    return this.board.update({
+    return this.boardStore.update({
       ...patch,
       updatedBy: { sessionId: String(agent.id), title },
     }, expectedRevision, signal)
@@ -2769,11 +3018,18 @@ export class DevLeadService extends Service {
         await this.flushDurably(agent.session, `DevLead reset for Session "${agent.id}"`)
         await this.checkpointProjectionCache(agent.session, `DevLead reset for Session "${agent.id}"`)
         await this.discardLeadReportState(String(agent.id))
-        if (this.activeSessionId === String(agent.id)) this.activeSessionId = undefined
+        if (this.activeSessionId === String(agent.id)) {
+          this.activeSessionId = undefined
+          await this.syncBoardToActiveLead()
+        }
         return
       }
       if (current.enabled === enabled) {
-        if (enabled) this.activeSessionId = String(agent.id)
+        if (enabled) {
+          this.activeSessionId = String(agent.id)
+          this.rememberLeadWorkspaceRoot(String(agent.id), agent.session.header.cwd)
+          await this.syncBoardToActiveLead()
+        }
         return
       }
       if (enabled) {
@@ -2788,8 +3044,13 @@ export class DevLeadService extends Service {
       appendRecordOrThrow(agent.session, DEVLEAD_MODE_RECORD_TYPE, modeRecord(enabled, Date.now()))
       await this.flushDurably(agent.session, `DevLead mode for Session "${agent.id}"`)
       await this.checkpointProjectionCache(agent.session, `DevLead mode for Session "${agent.id}"`)
-      if (enabled) this.activeSessionId = String(agent.id)
-      else if (this.activeSessionId === String(agent.id)) this.activeSessionId = undefined
+      if (enabled) {
+        this.activeSessionId = String(agent.id)
+        this.rememberLeadWorkspaceRoot(String(agent.id), agent.session.header.cwd)
+      } else if (this.activeSessionId === String(agent.id)) {
+        this.activeSessionId = undefined
+      }
+      await this.syncBoardToActiveLead()
       if (enabled) void this.replayOutbox()
     })
   }
@@ -2818,7 +3079,10 @@ export class DevLeadService extends Service {
       // undelivered reports addressed to it must not survive to be replayed
       // into the fresh projection.
       await this.discardLeadReportState(String(agent.id))
-      if (this.activeSessionId === String(agent.id)) this.activeSessionId = undefined
+      if (this.activeSessionId === String(agent.id)) {
+        this.activeSessionId = undefined
+        await this.syncBoardToActiveLead()
+      }
     })
   }
 
@@ -4668,6 +4932,7 @@ export class DevLeadService extends Service {
         archived: archived.has(sessionId),
         running: agent?.status === 'running',
         createdAt: session.header.createdAt,
+        ...session.header.cwd === undefined ? {} : { cwd: session.header.cwd },
         enabledAt: 0,
       })
     }
@@ -4765,6 +5030,7 @@ export class DevLeadService extends Service {
         archived: archived.has(sessionId),
         running: false,
         createdAt: record.header.createdAt,
+        ...record.header.cwd === undefined ? {} : { cwd: record.header.cwd },
         enabledAt: lastEnabledAt(events) ?? 0,
       })
     }
@@ -4836,7 +5102,10 @@ export class DevLeadService extends Service {
       )
       return false
     }
-    if (this.activeSessionId === occupant.sessionId) this.activeSessionId = undefined
+    if (this.activeSessionId === occupant.sessionId) {
+      this.activeSessionId = undefined
+      await this.syncBoardToActiveLead()
+    }
     this.ctx.logger.warn(
       `devlead: disabled DevLead mode for Session "${occupant.sessionId}" (${reason}); `
       + 'only one Session may hold DevLead mode at a time',
@@ -4898,6 +5167,7 @@ export class DevLeadService extends Service {
           if (!scanned.some(occupant => occupant.sessionId === sessionId)) merged.delete(sessionId)
         }
         const active = [...merged.values()]
+        for (const occupant of active) this.rememberLeadWorkspaceRoot(occupant.sessionId, occupant.cwd)
         if (active.length === 0) {
           this.activeSessionId = undefined
           return
@@ -4948,6 +5218,7 @@ export class DevLeadService extends Service {
         this.ctx.logger.warn(`devlead: global DevLead admission reconciliation failed: ${thrownMessage(error)}`)
       }
     }
+    await this.syncBoardToActiveLead()
   }
 
   /** Reject any use of a tool surface while DevLead mode is off. */
@@ -5386,6 +5657,7 @@ export class DevLeadService extends Service {
             archived: archived.has(sessionId),
             running: false,
             createdAt: record.header.createdAt,
+            ...record.header.cwd === undefined ? {} : { cwd: record.header.cwd },
             enabledAt: lastEnabledAt(events) ?? 0,
           })
         }

@@ -12,17 +12,20 @@
 import { watch } from 'node:fs'
 import type { FSWatcher } from 'node:fs'
 import { mkdir, readFile, stat } from 'node:fs/promises'
-import { basename, dirname, isAbsolute } from 'node:path'
+import { basename, dirname, isAbsolute, join, normalize } from 'node:path'
 import { withFileLock, writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
 import {
   createDevLeadBoardSchema,
   devLeadBoardIssueViews,
+  DEVLEAD_BOARD_DIR_SEGMENTS,
+  DEVLEAD_BOARD_FILE_NAME,
   DEVLEAD_BOARD_ID_MAX,
   DEVLEAD_BOARD_MAX_BLOCKERS,
   DEVLEAD_BOARD_MAX_BYTES,
   DEVLEAD_BOARD_MAX_PROJECTS,
   DEVLEAD_BOARD_MAX_TASKS,
   DEVLEAD_BOARD_PATH_MAX,
+  DEVLEAD_BOARD_READ_MAX_BYTES,
   DEVLEAD_BOARD_SCHEMA_VERSION,
   DEVLEAD_BOARD_TEXT_MAX,
   DEVLEAD_BOARD_TITLE_MAX,
@@ -42,12 +45,15 @@ import type { ZodIssue } from 'zod'
 // shared with the browser decoder through the protocol package. Re-export them
 // so this package's existing surface (and its tests) stay in one place.
 export {
+  DEVLEAD_BOARD_DIR_SEGMENTS,
+  DEVLEAD_BOARD_FILE_NAME,
   DEVLEAD_BOARD_ID_MAX,
   DEVLEAD_BOARD_MAX_BLOCKERS,
   DEVLEAD_BOARD_MAX_BYTES,
   DEVLEAD_BOARD_MAX_PROJECTS,
   DEVLEAD_BOARD_MAX_TASKS,
   DEVLEAD_BOARD_PATH_MAX,
+  DEVLEAD_BOARD_READ_MAX_BYTES,
   DEVLEAD_BOARD_SCHEMA_VERSION,
   DEVLEAD_BOARD_TEXT_MAX,
   DEVLEAD_BOARD_TITLE_MAX,
@@ -267,6 +273,120 @@ function normalizeUpdatedBy(updatedBy: DevLeadBoardUpdatedBy): DevLeadBoardUpdat
   return { sessionId: updatedBy.sessionId, title: title.length === 0 ? 'DevLead' : title }
 }
 
+/** Where one resolved default board path came from. */
+export type DevLeadBoardPathSource = 'override' | 'workspace'
+
+/** Why automatic board-path resolution disabled the board. */
+export type DevLeadBoardPathDisabledReason = 'no-workspace' | 'relative-workspace' | 'invalid-override'
+
+/** One automatic board-path resolution outcome. */
+export type DevLeadBoardPathResolution =
+  | { readonly kind: 'resolved'; readonly path: string; readonly source: DevLeadBoardPathSource }
+  | { readonly kind: 'disabled'; readonly reason: DevLeadBoardPathDisabledReason }
+
+/**
+ * Resolve the board file path for one active lead.
+ *
+ * The deployment `boardPath` override wins when present (it is validated at
+ * configuration time, but a direct caller still gets a structured refusal for
+ * a relative path). Otherwise the lead Session's **original** workspace root
+ * (`SessionHeader.cwd`) owns the default file
+ * `<cwd>/.dsh/devlead/board.json`. The effective/worktree cwd is deliberately
+ * ignored: the board belongs to the project root the Session was created in,
+ * not to a checkout a turn moved into. The result is absolute and normalized;
+ * a caller with no absolute workspace root gets the disabled outcome instead
+ * of a fabricated relative path.
+ * @param input - optional deployment override and the lead's original workspace root.
+ * @returns a normalized absolute path, or the disabled reason.
+ */
+export function resolveDevLeadBoardPath(
+  input: { readonly override?: string; readonly cwd?: string } = {},
+): DevLeadBoardPathResolution {
+  const override = input.override?.trim() ?? ''
+  if (override.length > 0) {
+    if (!isAbsolute(override)) return { kind: 'disabled', reason: 'invalid-override' }
+    return { kind: 'resolved', path: normalize(override), source: 'override' }
+  }
+  const cwd = input.cwd?.trim() ?? ''
+  if (cwd.length === 0) return { kind: 'disabled', reason: 'no-workspace' }
+  if (!isAbsolute(cwd)) return { kind: 'disabled', reason: 'relative-workspace' }
+  return {
+    kind: 'resolved',
+    path: join(normalize(cwd), ...DEVLEAD_BOARD_DIR_SEGMENTS, DEVLEAD_BOARD_FILE_NAME),
+    source: 'workspace',
+  }
+}
+
+/**
+ * Keep one bounded read result under {@link DEVLEAD_BOARD_READ_MAX_BYTES}.
+ *
+ * The durable file is already capped, but one project can carry dozens of long
+ * tasks/blockers. Trimming happens from the tail in a fixed order — task rows,
+ * then blocker rows, then whole project rows — so a caller always keeps the
+ * leading (most relevant) content and the revision metadata. Any trim reports
+ * `truncated: true`; only whole rows are removed, so the result stays schema
+ * valid. A single project's scalar fields are far below the cap once rows are
+ * gone, which guarantees termination.
+ */
+function boundReadResult(result: DevLeadBoardReadResult): DevLeadBoardReadResult {
+  const serializedBytes = (projects: readonly DevLeadBoardProjectView[], truncated: boolean): number =>
+    Buffer.byteLength(JSON.stringify({
+      revision: result.revision,
+      updatedAt: result.updatedAt,
+      projects,
+      ...truncated ? { truncated: true } : {},
+    }), 'utf8')
+  if (serializedBytes(result.projects, result.truncated === true) <= DEVLEAD_BOARD_READ_MAX_BYTES) return result
+
+  const projects = result.projects.map(project => structuredClone(project))
+  let truncated = true
+  for (;;) {
+    if (serializedBytes(projects, truncated) <= DEVLEAD_BOARD_READ_MAX_BYTES) break
+    let trimmed = false
+    for (let index = projects.length - 1; index >= 0 && !trimmed; index -= 1) {
+      const tasks = projects[index]?.tasks
+      if (tasks !== undefined && tasks.length > 0) {
+        projects[index] = { ...projects[index]!, tasks: tasks.slice(0, -1) }
+        trimmed = true
+      }
+    }
+    if (trimmed) continue
+    for (let index = projects.length - 1; index >= 0 && !trimmed; index -= 1) {
+      const project = projects[index]!
+      if (project.blockers.length > 0) {
+        projects[index] = { ...project, blockers: project.blockers.slice(0, -1) }
+        trimmed = true
+      }
+    }
+    if (trimmed) continue
+    if (projects.length > 1) {
+      projects.pop()
+      continue
+    }
+    // One project with no task/blocker rows left is far below the cap; this is
+    // unreachable unless the limits shrink below their current values.
+    break
+  }
+  return {
+    revision: result.revision,
+    updatedAt: result.updatedAt,
+    projects,
+    ...truncated ? { truncated: true } : {},
+  }
+}
+
+/**
+ * Synthetic project id used by write preflight.
+ *
+ * A caller's project reference may be an id, a workspace title, or an absolute
+ * workspace path — the latter two are far longer than the 128-unit id limit.
+ * Preflight therefore validates the patch's field shapes against this fixed
+ * synthetic project instead of feeding the caller's reference to the id schema;
+ * existence and ambiguity are decided by the locked apply against the real
+ * board.
+ */
+const DEVLEAD_BOARD_PREFLIGHT_PROJECT_ID = 'devlead-validation'
+
 function singleLine(value: string): string {
   return value.replaceAll(/[\p{Cc}\p{Cf}]+/gu, ' ').replaceAll(/\s+/gu, ' ').trim()
 }
@@ -308,8 +428,8 @@ function validateUpdateInput(patch: DevLeadBoardUpdate): DevLeadBoardUpdate {
   const timestamp = new Date(0).toISOString()
   const candidate = emptyBoard(normalized.updatedBy, timestamp)
   if (patch.create !== true) {
-    const id = patch.project.trim()
-    if (id.length === 0) resolveProject(candidate, id)
+    const reference = patch.project.trim()
+    if (reference.length === 0) resolveProject(candidate, reference)
     // Only the locked disk snapshot knows whether an upsert id is new, so seed
     // each id as an existing synthetic row: a status-only upsert of an existing
     // task passes preflight, while the real apply still enforces new-task titles.
@@ -324,8 +444,11 @@ function validateUpdateInput(patch: DevLeadBoardUpdate): DevLeadBoardUpdate {
         })
       }
     }
+    // The reference (id/title/path) is validated against the real board by the
+    // locked apply, never here: using it as the synthetic project id would
+    // reject a valid long workspace path/title with BOARD_LIMIT_EXCEEDED.
     candidate.projects.push({
-      id,
+      id: DEVLEAD_BOARD_PREFLIGHT_PROJECT_ID,
       workspace: { path: '/devlead-validation', title: 'DevLead validation' },
       status: 'active',
       priority: 'medium',
@@ -337,7 +460,11 @@ function validateUpdateInput(patch: DevLeadBoardUpdate): DevLeadBoardUpdate {
       updatedAt: timestamp,
     })
   }
-  applyProjectPatch(candidate, normalized, timestamp)
+  applyProjectPatch(
+    candidate,
+    patch.create === true ? normalized : { ...normalized, project: DEVLEAD_BOARD_PREFLIGHT_PROJECT_ID },
+    timestamp,
+  )
   parseBoard(candidate)
   return normalized
 }
@@ -624,7 +751,7 @@ export class DevLeadBoardStore {
       projects = board.projects.slice(0, limit)
       truncated = board.projects.length > projects.length
     }
-    return {
+    return boundReadResult({
       revision: board.revision,
       updatedAt: board.updatedAt,
       projects: projects.map(project => {
@@ -632,7 +759,7 @@ export class DevLeadBoardStore {
         return projectView(project, includeTasks)
       }),
       ...truncated ? { truncated: true } : {},
-    }
+    })
   }
 
   /**

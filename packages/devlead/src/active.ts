@@ -35,6 +35,14 @@ export interface DevLeadActiveSession {
   /** Session creation timestamp, used only for deterministic recovery ranking. */
   readonly createdAt: number
   /**
+   * Original workspace root recorded in the Session header, when known.
+   *
+   * The project board follows this path (not any effective/worktree cwd); live
+   * entries read it from the attached Session, cold entries from the persisted
+   * header during rehydration.
+   */
+  readonly cwd?: string
+  /**
    * Epoch milliseconds of the last durable enable record, when the caller read
    * the log (cold scan). Live projections do not expose record timestamps, so
    * this is 0 for live occupants.

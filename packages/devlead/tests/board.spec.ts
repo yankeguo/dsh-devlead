@@ -7,6 +7,7 @@ import { dirname, join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   DEVLEAD_BOARD_MAX_BYTES,
+  DEVLEAD_BOARD_READ_MAX_BYTES,
   DEVLEAD_BOARD_SUMMARY_MAX_BYTES,
   DevLeadBoardError,
   DevLeadBoardStore,
@@ -501,6 +502,99 @@ describe('DevLeadBoardStore', () => {
       await rm(`${file}.lock`, { force: true })
     }
   }, 5_000)
+
+  it('resolves long workspace paths and titles as project references without a false limit error', async () => {
+    const { store } = await boot()
+    const longTitle = 'T'.repeat(160)
+    const longPath = `/tmp/${'p'.repeat(300)}`
+    await store.update({
+      project: 'long-project',
+      create: true,
+      updatedBy: actor,
+      set: { workspace: { path: longPath, title: longTitle } },
+    })
+    // The workspace path is far longer than the id limit but is still a valid
+    // reference: preflight must not treat it as a synthetic id.
+    const byPath = await store.update({ project: longPath, updatedBy: actor, set: { focus: 'by path' } })
+    expect(byPath.revision).toBe(2)
+    expect(byPath.project.workspace.path).toBe(longPath)
+    const byTitle = await store.update({ project: longTitle, updatedBy: actor, set: { focus: 'by title' } })
+    expect(byTitle.revision).toBe(3)
+    expect(byTitle.project.focus).toBe('by title')
+    // An unknown long reference is decided after the locked apply, with the
+    // project-reference code rather than the id-length limit.
+    expect((await failureOf(store.update({
+      project: `/tmp/${'x'.repeat(300)}`, updatedBy: actor, set: { focus: 'missing' },
+    }))).code).toBe('BOARD_PROJECT_NOT_FOUND')
+    expect((await failureOf(store.update({ project: '   ', updatedBy: actor }))).code).toBe('BOARD_INVALID')
+  })
+
+  it('caps a selected-project read at 64 KiB by trimming task and blocker rows', async () => {
+    const { store, file } = await boot()
+    const long = 'x'.repeat(4_000)
+    const value = board([{
+      ...project(),
+      tasks: Array.from({ length: 40 }, (_, index) => ({
+        id: `t${index}`, title: long, status: 'todo' as const, updatedAt: '2026-01-01T00:00:00.000Z',
+      })),
+    }])
+    await mkdir(dirname(file), { recursive: true })
+    await writeFile(file, JSON.stringify(value), 'utf8')
+    const tasksRead = await store.read({ project: 'alpha' })
+    expect(Buffer.byteLength(JSON.stringify(tasksRead), 'utf8')).toBeLessThanOrEqual(DEVLEAD_BOARD_READ_MAX_BYTES)
+    expect(tasksRead.truncated).toBe(true)
+    expect(tasksRead.revision).toBe(1)
+    expect(tasksRead.projects[0]?.tasks?.length ?? 0).toBeLessThan(40)
+
+    const blocked = board([{
+      ...project('blocked-project'),
+      blockers: Array.from({ length: 50 }, (_, index) => ({
+        id: `b${index}`, text: long, since: '2026-01-01T00:00:00.000Z',
+      })),
+    }])
+    await writeFile(file, JSON.stringify(blocked), 'utf8')
+    const blockersRead = await store.read({ project: 'blocked-project' })
+    expect(Buffer.byteLength(JSON.stringify(blockersRead), 'utf8')).toBeLessThanOrEqual(DEVLEAD_BOARD_READ_MAX_BYTES)
+    expect(blockersRead.truncated).toBe(true)
+    expect(blockersRead.projects[0]?.blockers.length ?? 0).toBeLessThan(50)
+  })
+
+  it('caps an unfiltered read by trimming project rows from the tail', async () => {
+    const { store, file } = await boot()
+    const value = board(Array.from({ length: 40 }, (_, index) => ({
+      ...project(`p${index}`, `/tmp/p${index}`),
+      focus: 'f'.repeat(4_000),
+    })))
+    await mkdir(dirname(file), { recursive: true })
+    await writeFile(file, JSON.stringify(value), 'utf8')
+    const result = await store.read({ limit: 50 })
+    expect(Buffer.byteLength(JSON.stringify(result), 'utf8')).toBeLessThanOrEqual(DEVLEAD_BOARD_READ_MAX_BYTES)
+    expect(result.truncated).toBe(true)
+    expect(result.projects.length).toBeLessThan(40)
+    expect(result.projects[0]?.id).toBe('p0')
+    expect(result.projects.at(-1)?.id).toBe(`p${String(result.projects.length - 1)}`)
+  })
+
+  it('keeps the last valid cache and never overwrites a schema-invalid external edit', async () => {
+    const { store, file } = await boot()
+    await store.update({
+      ...patch(),
+      updatedBy: actor,
+      set: { workspace: { path: '/tmp/alpha', title: 'alpha' }, focus: 'valid' },
+    })
+    expect(store.summary()).toContain('alpha')
+    // Valid JSON that violates the strict schema (unknown field).
+    const invalid = JSON.stringify({ ...board([project()]), unexpected: true })
+    await writeFile(file, invalid, 'utf8')
+    const failure = await failureOf(store.read({ project: 'alpha' }))
+    expect(failure.code).toBe('BOARD_INVALID')
+    // The last valid snapshot still feeds the dynamic summary, but no mutation
+    // may replace the malformed file.
+    expect(store.summary()).toContain('alpha')
+    expect((await failureOf(store.update({ project: 'alpha', updatedBy: actor, set: { focus: 'overwrite' } }))).code)
+      .toBe('BOARD_INVALID')
+    expect(await readFile(file, 'utf8')).toBe(invalid)
+  })
 
   it('renders stable, status-counted summaries capped at 1.5 KiB', () => {
     const projects = Array.from({ length: 50 }, (_, index) => ({
