@@ -21,8 +21,29 @@ import type { ZodIssue, ZodType } from 'zod'
 
 /** Current on-disk schema version. */
 export const DEVLEAD_BOARD_SCHEMA_VERSION = 1
+/**
+ * Directory segments, relative to the lead Session's original workspace root
+ * (`SessionHeader.cwd`), that hold the default project board.
+ *
+ * The Host derives the default path from its own lead identity; the browser
+ * derives the same path from the Session summary's `cwd` when the Host global
+ * is absent. Both sides build it from these shared segments so they cannot
+ * drift, while each side keeps its own path implementation (POSIX/Windows).
+ */
+export const DEVLEAD_BOARD_DIR_SEGMENTS = ['.dsh', 'devlead'] as const
+/** Default board file name inside {@link DEVLEAD_BOARD_DIR_SEGMENTS}. */
+export const DEVLEAD_BOARD_FILE_NAME = 'board.json'
 /** Maximum serialized board size (256 KiB); larger files are never decoded. */
 export const DEVLEAD_BOARD_MAX_BYTES = 256 * 1024
+/**
+ * Maximum serialized size of one `devlead_board_read` result (64 KiB).
+ *
+ * The durable file is bounded by {@link DEVLEAD_BOARD_MAX_BYTES}, but a single
+ * project may still carry dozens of 4000-unit tasks and blockers. Tool reads
+ * therefore trim task rows, then blockers, then project rows from the tail
+ * until the JSON result fits; a trimmed result reports `truncated: true`.
+ */
+export const DEVLEAD_BOARD_READ_MAX_BYTES = 64 * 1024
 /** Maximum number of projects in one board. */
 export const DEVLEAD_BOARD_MAX_PROJECTS = 50
 /** Maximum tasks in one project. */

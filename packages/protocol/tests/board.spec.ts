@@ -18,12 +18,15 @@ import {
   createDevLeadBoardSchema,
   devLeadBoardIssuePointer,
   devLeadBoardIssueViews,
+  DEVLEAD_BOARD_DIR_SEGMENTS,
+  DEVLEAD_BOARD_FILE_NAME,
   DEVLEAD_BOARD_ID_MAX,
   DEVLEAD_BOARD_MAX_BLOCKERS,
   DEVLEAD_BOARD_MAX_BYTES,
   DEVLEAD_BOARD_MAX_PROJECTS,
   DEVLEAD_BOARD_MAX_TASKS,
   DEVLEAD_BOARD_PATH_MAX,
+  DEVLEAD_BOARD_READ_MAX_BYTES,
   DEVLEAD_BOARD_SCHEMA_VERSION,
   DEVLEAD_BOARD_TEXT_MAX,
   DEVLEAD_BOARD_TIMESTAMP_MAX,
@@ -270,5 +273,13 @@ describe('shared board issue rendering', () => {
     if (parsed.success) return
     const issues = devLeadBoardIssueViews(parsed.error.issues)
     expect(issues).toContainEqual({ pointer: '/projects/1/id', message: 'duplicate project id "same"' })
+  })
+
+  it('publishes the shared default board location and read cap', () => {
+    expect(DEVLEAD_BOARD_DIR_SEGMENTS).toEqual(['.dsh', 'devlead'])
+    expect(DEVLEAD_BOARD_FILE_NAME).toBe('board.json')
+    expect(DEVLEAD_BOARD_READ_MAX_BYTES).toBe(64 * 1024)
+    // The durable file byte cap still exceeds the bounded read result cap.
+    expect(DEVLEAD_BOARD_READ_MAX_BYTES).toBeLessThan(DEVLEAD_BOARD_MAX_BYTES)
   })
 })
