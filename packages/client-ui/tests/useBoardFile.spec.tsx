@@ -571,6 +571,27 @@ describe('useBoardFile', () => {
     expect(consoleError).not.toHaveBeenCalled()
   })
 
+  it('re-reads the new path and drops the old watch when the config changes', async () => {
+    const fake = fakeFiles()
+    const renderer = await mount(<Probe config={CONFIG} files={fake.files} />)
+    await flush()
+    expect(fake.stat.mock.calls.map(call => call[1])).toEqual([CONFIG.boardPath])
+    const staleStream = fake.streams[0]!
+    const next: DevLeadBoardConfig = { ...CONFIG, boardPath: '/work/next/.dsh/devlead/board.json' }
+    await act(async () => {
+      renderer.update(<Probe config={next} files={fake.files} />)
+    })
+    await flush()
+    // The first file stops being read: its signal aborts, its stream disposes,
+    // and the next stat/read pair targets only the new path.
+    expect(fake.signals[0]?.aborted).toBe(true)
+    expect(staleStream.dispose).toHaveBeenCalled()
+    expect(fake.stat.mock.calls.map(call => call[1])).toEqual([CONFIG.boardPath, next.boardPath])
+    expect(fake.readBytes.mock.calls.map(call => call[1])).toEqual([CONFIG.boardPath, next.boardPath])
+    expect(fake.changes.mock.calls.map(call => call[1])).toEqual([CONFIG.boardPath, next.boardPath])
+    expect(stateOf(renderer)).toMatchObject({ 'data-status': 'ready', 'data-revision': 1 })
+  })
+
   it('aborts the watch and disposes its direct handle on unmount', async () => {
     const fake = fakeFiles()
     const renderer = await mount(<Probe config={CONFIG} files={fake.files} />)

@@ -1,7 +1,10 @@
-/** Read-only board header button and right-Sidebar view rendering. */
+/** Read-only board header button, live body wiring, and right-Sidebar view rendering. */
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ReactElement, ReactNode } from 'react'
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer'
+import type { SessionListState } from '@deepseek-ai/dsh-api-session-controller/client'
+import type { WorkspaceSnapshot } from '@deepseek-ai/dsh-api-workspace-controller/client'
+import type { WorkspaceFileWatchFrame } from '@deepseek-ai/dsh-api-workspace-files/types'
 import {
   DevLeadBoardButton,
   DevLeadBoardTitle,
@@ -9,12 +12,18 @@ import {
   type DevLeadBoardTitleProps,
 } from '../src/client/DevLeadBoardButton.tsx'
 import {
+  DevLeadBoardPanel,
   DevLeadBoardPanelView,
+  type DevLeadBoardPanelProps,
   type DevLeadBoardPanelViewProps,
 } from '../src/client/DevLeadBoardPanel.tsx'
 import type { DevLeadBoard, DevLeadBoardProject } from '../src/client/board.ts'
 import { en, zh } from '../src/client/locales.ts'
-import type { DevLeadBoardFileState } from '../src/client/useBoardFile.ts'
+import type {
+  DevLeadBoardChangeStream,
+  DevLeadBoardFileState,
+  DevLeadBoardFiles,
+} from '../src/client/useBoardFile.ts'
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
@@ -114,10 +123,43 @@ afterEach(async () => {
   vi.restoreAllMocks()
 })
 
+/** One Session-list row carrying the board gate facts. */
+type GateRows = Record<string, {
+  readonly cwd?: string
+  readonly origin?: 'subagent'
+  readonly projectionValues?: { readonly devLeadMode?: { readonly enabled?: boolean } }
+}>
+
+/** Slot props for the gated header action. */
+function buttonProps(rows: GateRows, onOpen: () => void): DevLeadBoardButtonProps {
+  return {
+    sessionId: 'session-1',
+    useSessions: (selector: (state: SessionListState) => unknown) =>
+      selector({ byId: rows } as unknown as SessionListState),
+    onOpen,
+    t,
+  } as unknown as DevLeadBoardButtonProps
+}
+
+const LEAD_ROW = { cwd: '/work/project', projectionValues: { devLeadMode: { enabled: true } } }
+
 describe('DevLeadBoardButton', () => {
+  it('renders nothing for a Session that is not an eligible lead', async () => {
+    for (const rows of [
+      {},
+      { 'session-1': { cwd: '/work/project' } },
+      { 'session-1': { cwd: '/work/project', projectionValues: { devLeadMode: { enabled: false } } } },
+      { 'session-1': { cwd: '/work/project', origin: 'subagent' as const, projectionValues: { devLeadMode: { enabled: true } } } },
+      { 'session-1': { projectionValues: { devLeadMode: { enabled: true } } } },
+    ]) {
+      const renderer = await mount(<DevLeadBoardButton {...buttonProps(rows, () => {})} />)
+      expect(renderer.toJSON()).toBeNull()
+    }
+  })
+
   it('opens the board from an icon-only, localized header action', async () => {
     const onOpen = vi.fn()
-    const renderer = await mount(<DevLeadBoardButton {...{ onOpen, t } as unknown as DevLeadBoardButtonProps} />)
+    const renderer = await mount(<DevLeadBoardButton {...buttonProps({ 'session-1': LEAD_ROW }, onOpen)} />)
     const button = renderer.root.findByType('button')
     expect(button.props['aria-label']).toBe(zh['board.open'])
     expect(button.props['data-devlead-board-open']).toBe('true')
@@ -352,5 +394,163 @@ describe('DevLeadBoardPanelView', () => {
         expect(renderer.root.findByProps({ id }).type).toBe('h4')
       }
     }
+  })
+})
+
+/**
+ * Minimal change-stream stand-in for the live panel body: frames are optional,
+ * disposal is observable, and aborting the request ends iteration.
+ */
+class PanelStream implements DevLeadBoardChangeStream {
+  disposed = false
+  private ended = false
+  private wake: (() => void) | undefined
+  private readonly frames: WorkspaceFileWatchFrame[] = []
+
+  dispose = (): void => {
+    this.disposed = true
+    this.ended = true
+    this.wake?.()
+  }
+
+  async *[Symbol.asyncIterator](): AsyncIterator<WorkspaceFileWatchFrame> {
+    while (!this.ended) {
+      const frame = this.frames.shift()
+      if (frame !== undefined) {
+        yield frame
+        continue
+      }
+      await new Promise<void>((resolve) => { this.wake = resolve })
+      this.wake = undefined
+    }
+  }
+}
+
+/** Fake Workspace Files seat plus the calls it observed. */
+interface PanelFilesHarness {
+  readonly files: DevLeadBoardFiles
+  readonly stat: ReturnType<typeof vi.fn>
+  readonly readBytes: ReturnType<typeof vi.fn>
+  readonly changes: ReturnType<typeof vi.fn>
+  readonly streams: PanelStream[]
+}
+
+function panelFiles(): PanelFilesHarness {
+  const streams: PanelStream[] = []
+  const encoded = new TextEncoder().encode(JSON.stringify(BOARD))
+  const stat = vi.fn(async (_sessionId: string, path: string) => ({
+    ok: true as const,
+    value: { absolutePath: path, version: 'v1', bytes: encoded.byteLength },
+  }))
+  const readBytes = vi.fn(async (_sessionId: string, path: string) => ({
+    ok: true as const,
+    value: { absolutePath: path, version: 'v1', bytes: encoded.byteLength, offset: 0, data: encoded, eof: true },
+  }))
+  const changes = vi.fn((_sessionId: string, _path: string, signal?: AbortSignal) => {
+    const stream = new PanelStream()
+    signal?.addEventListener('abort', () => { stream.dispose() }, { once: true })
+    streams.push(stream)
+    return stream
+  })
+  return {
+    files: { stat, readBytes, changes } as unknown as DevLeadBoardFiles,
+    stat,
+    readBytes,
+    changes,
+    streams,
+  }
+}
+
+/** Fake Workspace catalog snapshot; the panel only reads its three top fields. */
+const WORKSPACES = { items: [], phase: 'ready', state: 'ready' } as unknown as WorkspaceSnapshot
+
+/** Props of the live board body for one Session-list snapshot. */
+function panelProps(rows: GateRows, files: DevLeadBoardFiles): DevLeadBoardPanelProps {
+  return {
+    sessionId: 'session-1',
+    files,
+    t,
+    useSessions: (selector: (state: SessionListState) => unknown) =>
+      selector({ byId: rows } as unknown as SessionListState),
+    useWorkspaces: (selector: (snapshot: WorkspaceSnapshot) => unknown) => selector(WORKSPACES),
+  } as unknown as DevLeadBoardPanelProps
+}
+
+/** Flush the hook's sequenced Remote reads and React state updates. */
+async function flush(): Promise<void> {
+  await act(async () => {
+    for (let index = 0; index < 10; index += 1) await Promise.resolve()
+  })
+}
+
+describe('DevLeadBoardPanel wiring', () => {
+  it('reads the default board path derived from the tab Session root', async () => {
+    const harness = panelFiles()
+    const renderer = await mount(<DevLeadBoardPanel {...panelProps({ 'session-1': LEAD_ROW }, harness.files)} />)
+    await flush()
+    expect(harness.stat).toHaveBeenCalledWith(
+      'session-1', '/work/project/.dsh/devlead/board.json', expect.any(AbortSignal),
+    )
+    expect(harness.readBytes).toHaveBeenCalledWith(
+      'session-1', '/work/project/.dsh/devlead/board.json', {}, expect.any(AbortSignal),
+    )
+    expect(renderer.root.findByProps({ 'data-devlead-board': 'true' })).toBeDefined()
+  })
+
+  it('never reads a board for a tab Session that is not an eligible lead', async () => {
+    for (const rows of [
+      { 'session-1': { cwd: '/work/project', projectionValues: { devLeadMode: { enabled: false } } } },
+      { 'session-1': { cwd: '/work/project', origin: 'subagent' as const, projectionValues: { devLeadMode: { enabled: true } } } },
+      { 'session-1': { cwd: '/work/project' } },
+      {},
+    ] as GateRows[]) {
+      const harness = panelFiles()
+      const renderer = await mount(<DevLeadBoardPanel {...panelProps(rows, harness.files)} />)
+      await flush()
+      expect(harness.stat).not.toHaveBeenCalled()
+      expect(harness.changes).not.toHaveBeenCalled()
+      expect(renderer.toJSON()).toBeNull()
+    }
+  })
+
+  it('re-reads the new file when the tab Session root changes', async () => {
+    const harness = panelFiles()
+    const first = panelProps({ 'session-1': { ...LEAD_ROW, cwd: '/work/a' } }, harness.files)
+    const renderer = await mount(<DevLeadBoardPanel {...first} />)
+    await flush()
+    expect(harness.stat).toHaveBeenLastCalledWith(
+      'session-1', '/work/a/.dsh/devlead/board.json', expect.any(AbortSignal),
+    )
+    expect(harness.streams.length).toBeGreaterThan(0)
+    const staleStream = harness.streams[0]
+    await act(async () => {
+      renderer.update(<DevLeadBoardPanel {...panelProps({ 'session-1': { ...LEAD_ROW, cwd: '/work/b' } }, harness.files)} />)
+    })
+    await flush()
+    expect(harness.stat.mock.calls.map((call: unknown[]) => call[1])).toEqual([
+      '/work/a/.dsh/devlead/board.json',
+      '/work/b/.dsh/devlead/board.json',
+    ])
+    // The previous watch is torn down, so the new root is the only file read.
+    expect(staleStream?.disposed).toBe(true)
+    expect(harness.streams.length).toBeGreaterThan(1)
+  })
+
+  it('stops reading and renders nothing when the tab Session leaves DevLead mode', async () => {
+    const harness = panelFiles()
+    const renderer = await mount(<DevLeadBoardPanel {...panelProps({ 'session-1': LEAD_ROW }, harness.files)} />)
+    await flush()
+    const callsWhileEnabled = harness.stat.mock.calls.length
+    expect(callsWhileEnabled).toBeGreaterThan(0)
+    const staleStream = harness.streams[0]
+    await act(async () => {
+      renderer.update(<DevLeadBoardPanel {...panelProps({
+        'session-1': { cwd: '/work/project', projectionValues: { devLeadMode: { enabled: false } } },
+      }, harness.files)} />)
+    })
+    await flush()
+    expect(harness.stat.mock.calls.length).toBe(callsWhileEnabled)
+    expect(staleStream?.disposed).toBe(true)
+    expect(renderer.toJSON()).toBeNull()
   })
 })

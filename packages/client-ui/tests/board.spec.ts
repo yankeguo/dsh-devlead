@@ -1,8 +1,10 @@
-/** Pure browser-side schema, grouping, sorting, and formatting tests. */
+/** Pure browser-side schema, config resolution, grouping, sorting, and formatting tests. */
 import { describe, expect, it } from 'vitest'
+import { posix as nodePosix, win32 as nodeWin32 } from 'node:path'
 import {
   boardRelativeTime,
   compareDevLeadBoardProjects,
+  detectDevLeadBoardPathPlatform,
   DEVLEAD_BOARD_ID_MAX,
   DEVLEAD_BOARD_MAX_BLOCKERS,
   DEVLEAD_BOARD_MAX_BYTES,
@@ -17,11 +19,15 @@ import {
   parseDevLeadBoardBytes,
   projectStatusTone,
   readDevLeadBoardConfig,
+  resolveDevLeadBoardConfig,
+  resolveDevLeadBoardSessionConfig,
+  joinDevLeadBoardPath,
   taskProgress,
   taskStatusTone,
   truncateSessionId,
   unlistedDevLeadWorkspaces,
   type DevLeadBoard,
+  type DevLeadBoardGlobal,
   type DevLeadBoardPriority,
   type DevLeadBoardProject,
   type DevLeadBoardProjectStatus,
@@ -130,6 +136,164 @@ describe('board config and schema', () => {
     expect(parseDevLeadBoardBytes(encoded)).toEqual(board())
     expect(() => parseDevLeadBoardBytes(new Uint8Array([0xff]))).toThrow(/UTF-8/u)
     expect(() => parseDevLeadBoardBytes(new Uint8Array(DEVLEAD_BOARD_MAX_BYTES + 1))).toThrow(/exceeds/u)
+  })
+})
+
+describe('board global contract and per-Session path resolution', () => {
+  const BASE = {
+    boardPath: '/work/.dsh/devlead/board.json',
+    schemaVersion: 1 as const,
+    pathPlatform: 'posix' as const,
+  }
+
+  it('reads the lead-attributed global and keeps the legacy shape unchanged', () => {
+    expect(readDevLeadBoardConfig({ ...BASE, leadSessionId: 'session-lead', override: false })).toEqual({
+      ...BASE, leadSessionId: 'session-lead', override: false,
+    })
+    expect(readDevLeadBoardConfig({ ...BASE, leadSessionId: 'session-lead' })).toEqual({
+      ...BASE, leadSessionId: 'session-lead',
+    })
+    expect(readDevLeadBoardConfig({ ...BASE, override: true })).toEqual({ ...BASE, override: true })
+    // A legacy Host publishes no lead attribution; it stays readable as-is.
+    expect(readDevLeadBoardConfig(BASE)).toEqual(BASE)
+  })
+
+  it('rejects a global whose optional lead fields are present but malformed', () => {
+    for (const value of [
+      { ...BASE, leadSessionId: '' },
+      { ...BASE, leadSessionId: 42 },
+      { ...BASE, leadSessionId: null },
+      { ...BASE, override: 'true' },
+      { ...BASE, override: 1 },
+      { ...BASE, leadSessionId: 'session-lead', override: 'yes' },
+    ]) expect(readDevLeadBoardConfig(value)).toBeUndefined()
+  })
+
+  it('detects the Host path platform from workspace-root syntax', () => {
+    expect(detectDevLeadBoardPathPlatform('/work/project')).toBe('posix')
+    expect(detectDevLeadBoardPathPlatform('//server/share')).toBe('posix')
+    expect(detectDevLeadBoardPathPlatform('C:\\work\\project')).toBe('win32')
+    expect(detectDevLeadBoardPathPlatform('C:/work/project')).toBe('win32')
+    expect(detectDevLeadBoardPathPlatform('\\\\server\\share')).toBe('win32')
+    expect(detectDevLeadBoardPathPlatform('C:relative')).toBe('win32')
+    expect(detectDevLeadBoardPathPlatform('relative/path')).toBeUndefined()
+    expect(detectDevLeadBoardPathPlatform('')).toBeUndefined()
+  })
+
+  it.each([
+    ['/work/project', '/work/project/.dsh/devlead/board.json'],
+    ['/work/project/', '/work/project/.dsh/devlead/board.json'],
+    ['/', '/.dsh/devlead/board.json'],
+    ['//weird//path/', '/weird/path/.dsh/devlead/board.json'],
+    ['/work/../other', '/other/.dsh/devlead/board.json'],
+  ])('joins the POSIX default path under %s like node:path.posix', (cwd, expected) => {
+    expect(joinDevLeadBoardPath(cwd, 'posix')).toBe(expected)
+    expect(joinDevLeadBoardPath(cwd, 'posix')).toBe(nodePosix.join(cwd, '.dsh', 'devlead', 'board.json'))
+  })
+
+  it.each([
+    ['C:\\work\\project', 'C:\\work\\project\\.dsh\\devlead\\board.json'],
+    ['C:/work/project', 'C:\\work\\project\\.dsh\\devlead\\board.json'],
+    ['C:\\', 'C:\\.dsh\\devlead\\board.json'],
+    ['C:/', 'C:\\.dsh\\devlead\\board.json'],
+    ['\\\\server\\share', '\\\\server\\share\\.dsh\\devlead\\board.json'],
+    ['\\\\server\\share\\', '\\\\server\\share\\.dsh\\devlead\\board.json'],
+    ['/work', '\\work\\.dsh\\devlead\\board.json'],
+    ['C:\\a\\..\\b', 'C:\\b\\.dsh\\devlead\\board.json'],
+  ])('joins the Windows default path under %s like node:path.win32', (cwd, expected) => {
+    expect(joinDevLeadBoardPath(cwd, 'win32')).toBe(expected)
+    expect(joinDevLeadBoardPath(cwd, 'win32')).toBe(nodeWin32.join(cwd, '.dsh', 'devlead', 'board.json'))
+  })
+
+  it('lets a Config override win for every lead, matching or not', () => {
+    const override: DevLeadBoardGlobal = {
+      ...BASE, boardPath: '/deploy/board.json', leadSessionId: 'session-lead', override: true,
+    }
+    const expected = { boardPath: '/deploy/board.json', schemaVersion: 1, pathPlatform: 'posix' }
+    expect(resolveDevLeadBoardConfig({ sessionId: 'session-lead', cwd: '/work/lead', global: override })).toEqual(expected)
+    expect(resolveDevLeadBoardConfig({ sessionId: 'session-other', cwd: '/work/other', global: override })).toEqual(expected)
+    // The override needs no workspace root: the deployment named the file.
+    expect(resolveDevLeadBoardConfig({ sessionId: 'session-other', global: override })).toEqual(expected)
+  })
+
+  it('uses the global for the lead it names and derives for other leads', () => {
+    const global: DevLeadBoardGlobal = { ...BASE, leadSessionId: 'session-lead' }
+    expect(resolveDevLeadBoardConfig({ sessionId: 'session-lead', cwd: '/work/lead', global })).toEqual(BASE)
+    expect(resolveDevLeadBoardConfig({ sessionId: 'session-lead', global })).toEqual(BASE)
+    expect(resolveDevLeadBoardConfig({ sessionId: 'session-other', cwd: '/work/other', global })).toEqual({
+      boardPath: '/work/other/.dsh/devlead/board.json', schemaVersion: 1, pathPlatform: 'posix',
+    })
+    // No workspace root for the other lead: nothing can be derived.
+    expect(resolveDevLeadBoardConfig({ sessionId: 'session-other', global })).toBeUndefined()
+  })
+
+  it('keeps a legacy deployment-wide global authoritative for every lead', () => {
+    expect(resolveDevLeadBoardConfig({ sessionId: 'any-session', cwd: '/work/other', global: BASE })).toEqual(BASE)
+    expect(resolveDevLeadBoardConfig({ sessionId: 'any-session', global: BASE })).toEqual(BASE)
+  })
+
+  it('derives the default path without any global', () => {
+    expect(resolveDevLeadBoardConfig({ sessionId: 'session-lead', cwd: '/work/project' })).toEqual({
+      boardPath: '/work/project/.dsh/devlead/board.json', schemaVersion: 1, pathPlatform: 'posix',
+    })
+    expect(resolveDevLeadBoardConfig({ sessionId: 'session-lead', cwd: 'C:\\work\\project' })).toEqual({
+      boardPath: 'C:\\work\\project\\.dsh\\devlead\\board.json', schemaVersion: 1, pathPlatform: 'win32',
+    })
+    // The Host trims the recorded root; the browser mirrors that so both sides
+    // resolve the same file from a padded summary value.
+    expect(resolveDevLeadBoardConfig({ sessionId: 'session-lead', cwd: ' /work/project ' })).toEqual({
+      boardPath: '/work/project/.dsh/devlead/board.json', schemaVersion: 1, pathPlatform: 'posix',
+    })
+  })
+
+  it('derives with the Host-published platform when a stale global is present', () => {
+    const stale: DevLeadBoardGlobal = {
+      ...BASE, boardPath: '/stale/board.json', pathPlatform: 'win32', leadSessionId: 'session-lead',
+    }
+    expect(resolveDevLeadBoardConfig({ sessionId: 'session-other', cwd: 'C:/work/other', global: stale })).toEqual({
+      boardPath: 'C:\\work\\other\\.dsh\\devlead\\board.json', schemaVersion: 1, pathPlatform: 'win32',
+    })
+    // A stale POSIX global on a Windows-looking root cannot validate that root:
+    // derivation follows the Host-published platform, never a guess.
+    const stalePosix: DevLeadBoardGlobal = { ...BASE, leadSessionId: 'session-lead' }
+    expect(resolveDevLeadBoardConfig({ sessionId: 'session-other', cwd: 'C:\\work\\other', global: stalePosix })).toBeUndefined()
+  })
+
+  it('refuses to derive from a missing, empty, or relative workspace root', () => {
+    for (const input of [
+      { sessionId: 'session-lead' },
+      { sessionId: 'session-lead', cwd: '' },
+      { sessionId: 'session-lead', cwd: '   ' },
+      { sessionId: 'session-lead', cwd: 'work/project' },
+      { sessionId: 'session-lead', cwd: '.' },
+    ]) expect(resolveDevLeadBoardConfig(input)).toBeUndefined()
+  })
+
+  it('resolves only top-level Sessions whose summary says DevLead mode is on', () => {
+    const global: DevLeadBoardGlobal = { ...BASE, leadSessionId: 'session-lead' }
+    const lead = {
+      cwd: '/work/lead',
+      projectionValues: { devLeadMode: { enabled: true } },
+    }
+    expect(resolveDevLeadBoardSessionConfig('session-lead', lead, global)).toEqual(BASE)
+    expect(resolveDevLeadBoardSessionConfig('session-lead', lead, undefined)).toEqual({
+      boardPath: '/work/lead/.dsh/devlead/board.json', schemaVersion: 1, pathPlatform: 'posix',
+    })
+    // No row yet, mode off, or a subagent: no board surface at all.
+    expect(resolveDevLeadBoardSessionConfig('session-lead', undefined, global)).toBeUndefined()
+    expect(resolveDevLeadBoardSessionConfig('session-lead', {
+      cwd: '/work/lead',
+      projectionValues: { devLeadMode: { enabled: false } },
+    }, global)).toBeUndefined()
+    expect(resolveDevLeadBoardSessionConfig('session-lead', {
+      cwd: '/work/lead',
+      origin: 'subagent',
+      projectionValues: { devLeadMode: { enabled: true } },
+    }, global)).toBeUndefined()
+    // A lead whose workspace root is unknown cannot derive a path either.
+    expect(resolveDevLeadBoardSessionConfig('session-lead', {
+      projectionValues: { devLeadMode: { enabled: true } },
+    }, undefined)).toBeUndefined()
   })
 })
 

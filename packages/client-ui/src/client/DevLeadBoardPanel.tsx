@@ -2,7 +2,7 @@
  * Read-only right-Sidebar project board. All mutations remain with the lead
  * AI's Host tools; this surface contains only refresh and disclosure controls.
  */
-import { useEffect, useId, useState, type ReactNode } from 'react'
+import { useEffect, useId, useMemo, useState, type ReactNode } from 'react'
 import {
   Button,
   IconRefreshOutlineRegular,
@@ -17,13 +17,14 @@ import type { SessionListState } from '@deepseek-ai/dsh-api-session-controller/c
 import type { WorkspaceSnapshot } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import {
   boardRelativeTime,
+  currentDevLeadBoardConfig,
   groupDevLeadBoardProjects,
   projectStatusTone,
+  resolveDevLeadBoardSessionConfig,
   taskProgress,
   taskStatusTone,
   truncateSessionId,
   unlistedDevLeadWorkspaces,
-  type DevLeadBoardConfig,
   type DevLeadUnlistedWorkspace,
   type DevLeadBoardProject,
   type DevLeadBoardProjectStatus,
@@ -36,9 +37,14 @@ import {
   type DevLeadBoardWatchStatus,
 } from './useBoardFile.ts'
 
-/** Dependencies supplied by the tab registration. */
+/**
+ * Dependencies supplied by the tab registration.
+ *
+ * The board path is deliberately not injected: it follows the tab Session's own
+ * workspace root (and the Host global's current lead), so the body resolves it
+ * from live Session-list data instead of freezing a deployment-time value.
+ */
 export interface DevLeadBoardPanelInjected {
-  readonly config: DevLeadBoardConfig | undefined
   readonly files: DevLeadBoardFiles
 }
 
@@ -49,10 +55,20 @@ export type DevLeadBoardPanelProps =
   & InjectFace<DevLeadBoardPanelInjected>
 
 /** Live board body; hook lifetime equals the tab body's mounted lifetime. */
-export function DevLeadBoardPanel({ sessionId, config, files, useWorkspaces, useSessions, t }: DevLeadBoardPanelProps) {
+export function DevLeadBoardPanel({ sessionId, files, useWorkspaces, useSessions, t }: DevLeadBoardPanelProps) {
+  const sessions = useSessions((snapshot: SessionListState) => snapshot)
+  const summary = sessions.byId[sessionId]
+  // Resolve on every render, but hand `useBoardFile` the previous reference
+  // while the real path/platform are unchanged: unrelated list/status updates
+  // must not restart the read/watch cycle. Eligibility is part of the
+  // resolution, so a lingering tab whose Session is no longer a lead resolves
+  // no config and stops all I/O. A lead switch or a changed default path does
+  // change the pair, and the next read follows the new file while the previous
+  // request and stream are aborted.
+  const resolved = resolveDevLeadBoardSessionConfig(sessionId, summary, currentDevLeadBoardConfig())
+  const config = useMemo(() => resolved, [resolved?.boardPath, resolved?.pathPlatform])
   const { refresh, watch, ...state } = useBoardFile({ sessionId, config, files })
   const workspaces = useWorkspaces((snapshot: WorkspaceSnapshot) => snapshot)
-  const sessions = useSessions((snapshot: SessionListState) => snapshot)
   const [now, setNow] = useState(() => Date.now())
   useEffect(() => {
     const timer = setInterval(() => { setNow(Date.now()) }, 60_000)

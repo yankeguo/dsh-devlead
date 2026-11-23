@@ -7,12 +7,16 @@
  * browser decoder and the Host validator cannot drift. This module adds only
  * the browser-owned pieces: the platform-specific absolute-path predicate
  * (chosen from the Host-published `pathPlatform`), the global-config reader,
- * the UTF-8/size pre-checks, and the pure grouping/sorting/formatting helpers.
+ * the per-Session path resolver (a board follows the on-screen lead's original
+ * workspace root), the UTF-8/size pre-checks, and the pure
+ * grouping/sorting/formatting helpers.
  */
 import type { TagTone } from '@deepseek-ai/dsh-client-ui-primitives'
 import {
   createDevLeadBoardSchema,
   devLeadBoardIssueViews,
+  DEVLEAD_BOARD_DIR_SEGMENTS,
+  DEVLEAD_BOARD_FILE_NAME,
   DEVLEAD_BOARD_ID_MAX,
   DEVLEAD_BOARD_MAX_BLOCKERS,
   DEVLEAD_BOARD_MAX_BYTES,
@@ -33,10 +37,14 @@ import {
   type DevLeadBoardUpdatedBy,
 } from '@yankeguo/dsh-devlead-protocol/client'
 import type { ZodType } from 'zod'
+import { devLeadRowEnabled, type DevLeadRowSummary } from './sessionMark.ts'
 
-// The wire contract is re-exported so existing browser modules and tests keep
-// one import site for board constants, types, and decoders.
+// The wire contract and its default-location segments are re-exported so
+// existing browser modules and tests keep one import site for board constants,
+// types, and decoders.
 export {
+  DEVLEAD_BOARD_DIR_SEGMENTS,
+  DEVLEAD_BOARD_FILE_NAME,
   DEVLEAD_BOARD_ID_MAX,
   DEVLEAD_BOARD_MAX_BLOCKERS,
   DEVLEAD_BOARD_MAX_BYTES,
@@ -59,7 +67,7 @@ export type {
   DevLeadBoardUpdatedBy,
 }
 
-/** Host global present only when boardPath is configured. */
+/** Host global present only while a lead Session owns a board path. */
 export const DEVLEAD_BOARD_GLOBAL = '__DSH_DEVLEAD_BOARD__'
 /** Right-Sidebar page discriminator passed to `sidebarRight.openTab`. */
 export const DEVLEAD_BOARD_TAB_KIND = 'devlead-board'
@@ -111,6 +119,22 @@ export interface DevLeadBoardConfig {
   readonly pathPlatform: DevLeadBoardPathPlatform
 }
 
+/**
+ * Host-published browser configuration, extended by Hosts whose board follows
+ * one lead Session.
+ *
+ * `leadSessionId` and `override` are optional because older Hosts publish the
+ * deployment-wide path only (no lead attribution). When present they let the
+ * browser tell "this global is mine" from "this global belongs to another
+ * lead", which matters after a lead switch without a page reload.
+ */
+export interface DevLeadBoardGlobal extends DevLeadBoardConfig {
+  /** Lead Session whose original workspace root owns the published board. */
+  readonly leadSessionId?: string
+  /** Whether `boardPath` came from the deployment Config override. */
+  readonly override?: boolean
+}
+
 /** A malformed JSON/schema/UTF-8/size failure safe to show as a board error. */
 export class DevLeadBoardParseError extends Error {
   constructor(message: string, options?: { cause?: unknown }) {
@@ -122,8 +146,13 @@ export class DevLeadBoardParseError extends Error {
 /**
  * Read and validate the Host global. Anything absent or not exactly the current
  * contract disables the feature; no partial config is ever used for a read.
+ *
+ * The base fields are the original Step B contract; the two optional lead
+ * fields are validated strictly when present (a non-string/empty
+ * `leadSessionId` or a non-boolean `override` rejects the whole global instead
+ * of silently falling back to the legacy meaning).
  */
-export function readDevLeadBoardConfig(value: unknown): DevLeadBoardConfig | undefined {
+export function readDevLeadBoardConfig(value: unknown): DevLeadBoardGlobal | undefined {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
   const record = value as Record<string, unknown>
   if (record.schemaVersion !== DEVLEAD_BOARD_SCHEMA_VERSION) return undefined
@@ -131,16 +160,194 @@ export function readDevLeadBoardConfig(value: unknown): DevLeadBoardConfig | und
   if (typeof record.boardPath !== 'string' || record.boardPath.trim().length === 0) return undefined
   if (record.boardPath.length > DEVLEAD_BOARD_PATH_MAX
     || !isAbsoluteWorkspacePath(record.boardPath, record.pathPlatform)) return undefined
+  if (record.leadSessionId !== undefined) {
+    if (typeof record.leadSessionId !== 'string' || record.leadSessionId.length === 0) return undefined
+  }
+  if (record.override !== undefined && typeof record.override !== 'boolean') return undefined
   return {
     boardPath: record.boardPath,
     schemaVersion: DEVLEAD_BOARD_SCHEMA_VERSION,
     pathPlatform: record.pathPlatform,
+    ...record.leadSessionId === undefined ? {} : { leadSessionId: record.leadSessionId },
+    ...record.override === undefined ? {} : { override: record.override },
   }
 }
 
 /** Read this realm's optional Host global. */
-export function currentDevLeadBoardConfig(): DevLeadBoardConfig | undefined {
+export function currentDevLeadBoardConfig(): DevLeadBoardGlobal | undefined {
   return readDevLeadBoardConfig((globalThis as Record<string, unknown>)[DEVLEAD_BOARD_GLOBAL])
+}
+
+/**
+ * Detect a Host path implementation from the syntax of one Session workspace
+ * root, for Hosts that publish no global (the board default path needs no
+ * configuration, so a page loaded before any lead existed still has to derive
+ * it).
+ *
+ * `/`-rooted values are POSIX; drive-letter and backslash-rooted values
+ * (including UNC) are Windows. The result only names the path syntax: the
+ * caller still has to check the value is absolute for that platform.
+ * @param cwd - one Session summary workspace root.
+ * @returns the syntactic platform, or undefined for a rootless/relative value.
+ */
+export function detectDevLeadBoardPathPlatform(cwd: string): DevLeadBoardPathPlatform | undefined {
+  if (cwd.startsWith('/')) return 'posix'
+  if (cwd.startsWith('\\') || /^[A-Za-z]:/u.test(cwd)) return 'win32'
+  return undefined
+}
+
+/**
+ * Join the default board location under one lead Session's original workspace
+ * root with the Host's path implementation.
+ *
+ * The relative part comes from the shared protocol segments, so the Host and
+ * the browser cannot disagree about `.dsh/devlead/board.json`. The join mirrors
+ * `node:path.join` for the two supported platforms (separator normalization,
+ * `.`/`..` folding, drive/UNC/rooted prefixes) because the browser cannot
+ * import `node:path` and the derived path must equal the Host's own default.
+ * @param cwd - absolute original workspace root of the lead Session.
+ * @param platform - the Host's path implementation.
+ * @returns the platform-joined absolute board path.
+ */
+export function joinDevLeadBoardPath(cwd: string, platform: DevLeadBoardPathPlatform): string {
+  const segments = [...DEVLEAD_BOARD_DIR_SEGMENTS, DEVLEAD_BOARD_FILE_NAME]
+  return platform === 'win32' ? joinWin32Path(cwd, segments) : joinPosixPath(cwd, segments)
+}
+
+/** POSIX join with `node:path.posix` normalization. */
+function joinPosixPath(cwd: string, segments: readonly string[]): string {
+  const parts: string[] = []
+  for (const part of `${cwd}/${segments.join('/')}`.split('/')) {
+    if (part.length === 0 || part === '.') continue
+    if (part === '..') {
+      parts.pop()
+      continue
+    }
+    parts.push(part)
+  }
+  return `/${parts.join('/')}`
+}
+
+/** Windows join with `node:path.win32` normalization (drive, UNC, or rooted). */
+function joinWin32Path(cwd: string, segments: readonly string[]): string {
+  const path = `${cwd.replaceAll('/', '\\')}\\${segments.join('\\')}`
+  let prefix: string
+  let rest: string
+  const drive = /^[A-Za-z]:\\/u.exec(path)
+  if (drive !== null) {
+    prefix = drive[0]
+    rest = path.slice(3)
+  } else if (path.startsWith('\\\\')) {
+    // UNC/device root: the server and share segments stay part of the prefix.
+    prefix = '\\\\'
+    rest = path.slice(2)
+  } else {
+    prefix = '\\'
+    rest = path.slice(1)
+  }
+  const parts: string[] = []
+  for (const part of rest.split('\\')) {
+    if (part.length === 0 || part === '.') continue
+    if (part === '..') {
+      parts.pop()
+      continue
+    }
+    parts.push(part)
+  }
+  return `${prefix}${parts.join('\\')}`
+}
+
+/** Everything {@link resolveDevLeadBoardConfig} needs to place one board. */
+export interface DevLeadBoardResolveInput {
+  /** Session the board surfaces are being evaluated for. */
+  readonly sessionId: string
+  /** That Session's original workspace root (`SessionSummary.cwd`). */
+  readonly cwd?: string | undefined
+  /** The validated Host global, when one was published. */
+  readonly global?: DevLeadBoardGlobal | undefined
+}
+
+/** One validated global's path-only configuration. */
+function boardConfigOf(global: DevLeadBoardGlobal): DevLeadBoardConfig {
+  return {
+    boardPath: global.boardPath,
+    schemaVersion: DEVLEAD_BOARD_SCHEMA_VERSION,
+    pathPlatform: global.pathPlatform,
+  }
+}
+
+/**
+ * Resolve which board file one Session should read, or undefined when no path
+ * can be attributed to it.
+ *
+ * Priority, highest first:
+ * 1. A deployment Config override published by the Host (`override: true`)
+ *    wins for every lead, because the deployment named one host-wide file.
+ * 2. A global whose `leadSessionId` is this Session wins.
+ * 3. A legacy global without either lead field keeps its old
+ *    deployment-wide meaning.
+ * 4. Otherwise the default path is derived from this Session's own workspace
+ *    root, using the Host-published `pathPlatform` when one is known and the
+ *    syntactic detection otherwise. The root must be absolute for that
+ *    platform; a relative or missing value yields no board.
+ * @param input - Session identity, workspace root, and validated global.
+ * @returns the board configuration for this Session, or undefined.
+ */
+export function resolveDevLeadBoardConfig(
+  { sessionId, cwd, global }: DevLeadBoardResolveInput,
+): DevLeadBoardConfig | undefined {
+  if (global !== undefined) {
+    if (global.override === true) return boardConfigOf(global)
+    if (global.leadSessionId !== undefined) {
+      if (global.leadSessionId === sessionId) return boardConfigOf(global)
+    } else if (global.override === undefined) {
+      return boardConfigOf(global)
+    }
+  }
+  // The Host trims the workspace root before deriving its own default, so the
+  // browser does the same; otherwise a padded summary value would resolve to a
+  // different file than the Host writes.
+  const root = cwd?.trim() ?? ''
+  if (root.length === 0) return undefined
+  const platform = global?.pathPlatform ?? detectDevLeadBoardPathPlatform(root)
+  if (platform === undefined || !isAbsoluteWorkspacePath(root, platform)) return undefined
+  return {
+    boardPath: joinDevLeadBoardPath(root, platform),
+    schemaVersion: DEVLEAD_BOARD_SCHEMA_VERSION,
+    pathPlatform: platform,
+  }
+}
+
+/**
+ * Structural view of the Session-list row the board surfaces read.
+ *
+ * A board belongs to a top-level Session whose own summary says DevLead mode is
+ * on; the route comes from the summary-sized `devLeadMode` projection, never
+ * from the digest-bearing projection. Subagent Sessions can never become a
+ * lead, so they are excluded even if a stale row claims the mode.
+ */
+export interface DevLeadBoardSessionRow extends DevLeadRowSummary {
+  /** Original workspace root of the Session, the default board owner. */
+  readonly cwd?: string
+  /** Host navigation classification; `'subagent'` never owns a board. */
+  readonly origin?: 'subagent'
+}
+
+/**
+ * Resolve the board surfaces' configuration for one listed Session.
+ * @param sessionId - Session row identity.
+ * @param row - that Session's summary, or undefined before the list lands.
+ * @param global - the validated Host global, when one was published.
+ * @returns the board configuration for an eligible lead, or undefined when the
+ *   Session must show no board surface at all.
+ */
+export function resolveDevLeadBoardSessionConfig(
+  sessionId: string,
+  row: DevLeadBoardSessionRow | undefined,
+  global: DevLeadBoardGlobal | undefined,
+): DevLeadBoardConfig | undefined {
+  if (row === undefined || row.origin === 'subagent' || !devLeadRowEnabled(row)) return undefined
+  return resolveDevLeadBoardConfig({ sessionId, cwd: row.cwd, global })
 }
 
 /** Decode a complete board file without accepting truncation or invalid UTF-8. */
