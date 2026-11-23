@@ -8,8 +8,9 @@ staged publish + 人工 approve 公开；`0.4.0-rc.1` 已于同日以 `next` dis
 `engines.dsh` 都不变。6 个可发布包的
 `engines.dsh` 均为 `>=0.2.2-rc.1 <0.3.0`（根 `package.json` 是 private 包，不声明
 `engines.dsh`，只声明 `engines.node`），所有
-`@deepseek-ai/dsh-*` peer 使用同一范围；本地 devDependencies 仍固定 rc.1，用最旧 API 做
-类型检查。
+`@deepseek-ai/dsh-*` peer 使用同一范围；本地 devDependencies 与编译基线仍固定 rc.1，用最旧 API
+做类型检查，本机运行验证使用安装版 rc.5。board 加固不使用 0.2.3-only API，兼容范围保持
+`>=0.2.2-rc.1 <0.3.0`。
 
 ## 契约
 
@@ -435,10 +436,10 @@ git -C "$REPO" add -f \
 ```
 
 当前 harness 的 pin 来自 `scripts/e2e-smoke.mjs` 的 `EXPECTED_CHECKS`
-（phase 1=27、1b=12、2=23、3=128、1e=31）：patch / installed 完整流必须各为 **221/221**，
-no-worktree 必须为 **198/198**（仅跳过 phase 2）；正向模型选择仍允许既有的 3 条有真实原因的
-SKIP，其他检查不得通过删除或放宽断言来凑数。未来 pin 变化只能先更新 `EXPECTED_CHECKS` 并在
-证据中解释。
+（phase 1=27、1b=12、2=23、3=132、1e=31）：patch / installed 完整流必须各为 **225/225**，
+no-worktree 必须为 **202/202**（仅跳过 phase 2）；完整流目标计数为 **222 PASS + 3** 条有真实
+原因的正向模型选择 SKIP，其他检查不得通过删除或放宽断言来凑数。未来 pin 变化只能先更新
+`EXPECTED_CHECKS` 并在证据中解释。
 
 每个 rc 的 typings/build/三条 E2E 日志都必须复制到 `docs/e2e-evidence/`，保留真实 `*_EXIT=`
 行、`DSH_BIN --version` 输出与总计行；`*.log` 被 ignore 时用 `git add -f` 显式纳入证据 commit。
@@ -504,6 +505,12 @@ E2E 重跑（含真实 `*_EXIT=0` 与总计行）记录在
 在最终 release 树上的三条真实 E2E 重跑记录在
 [`docs/e2e-evidence/v0.4.0-release-prep.md`](e2e-evidence/v0.4.0-release-prep.md)。发布前仍需按
 [PUBLISHING](PUBLISHING.md) 在冻结树重跑完整组合。
+
+当前 board 加固轮保留上述全部旧检查，并在 phase 3 新增 4 项：真实 `ctx.devLead.updateBoard`
+两次写入（第二次 CAS）、`webserver/index-inject` board global、独立磁盘 revision/内容 read-back。
+因此当前目标 pin 是 phase 3=132、完整流=225（222 PASS + 3 credential-less SKIP）、
+no-worktree=202；上表 Phase 1e 行（221/198、218 PASS）是 Phase 1e 历史实测，不改写为新一轮
+证据。
 
 每条 flow 有 3 条正向模型选择检查因无 provider 凭据 SKIP（打印真实原因）；负向
 `DEVLEAD_MODEL_UNAVAILABLE`、`devlead_list_models`、preset roster 与 watched-child

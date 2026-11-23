@@ -6,7 +6,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { HarnessError } from '@deepseek-ai/dsh-llm'
-import { DevLeadError } from '@yankeguo/dsh-devlead'
+import { DevLeadBoardError, DevLeadError } from '@yankeguo/dsh-devlead'
 import { DevLeadToolInputError, requireAgent } from '../src/arguments.ts'
 import { runTool, translateToolError } from '../src/errors.ts'
 
@@ -55,6 +55,21 @@ describe('translateToolError', () => {
     expect((translated as HarnessError).code).toBe('DEVLEAD_WATCH_LIMIT')
     expect((translated as HarnessError).message).toBe('watch limit reached')
     expect((translated as HarnessError).cause).toBeInstanceOf(Error)
+  })
+
+  it('maps ambiguous-project and board-I/O failures, including duplicate core classes', () => {
+    for (const [code, message] of [
+      ['BOARD_PROJECT_AMBIGUOUS', 'project title "webapp" is ambiguous; use its id or workspace path'],
+      ['BOARD_IO_ERROR', 'could not read board: EACCES'],
+    ] as const) {
+      for (const original of [new DevLeadBoardError(message, code), codeOnlyError(code, message)]) {
+        const translated = translateToolError(original)
+        expect(translated).toBeInstanceOf(HarnessError)
+        expect((translated as HarnessError).code).toBe(code)
+        expect((translated as HarnessError).message).toBe(message)
+        expect((translated as HarnessError).cause).toBe(original)
+      }
+    }
   })
 
   it('maps action-required backpressure to the stable delivery rate code', () => {

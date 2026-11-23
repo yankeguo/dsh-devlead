@@ -344,8 +344,9 @@ function errorMessage(error: unknown): string {
 }
 
 const FILESYSTEM_ERROR_CODES = new Set([
-  'EACCES', 'EBUSY', 'EEXIST', 'EIO', 'EISDIR', 'ELOOP', 'EMFILE', 'ENAMETOOLONG', 'ENFILE',
-  'ENOENT', 'ENOSPC', 'ENOTDIR', 'ENOTEMPTY', 'EPERM', 'EROFS', 'ETXTBSY',
+  'EACCES', 'EAGAIN', 'EBUSY', 'EDQUOT', 'EEXIST', 'EFBIG', 'EIO', 'EISDIR', 'ELOOP', 'EMFILE',
+  'ENAMETOOLONG', 'ENFILE', 'ENOMEM', 'ENOENT', 'ENOSPC', 'ENOTDIR', 'ENOTEMPTY', 'EPERM', 'EROFS',
+  'ETXTBSY',
 ])
 
 function errorCode(error: unknown): string | undefined {
@@ -425,6 +426,20 @@ function validateUpdateInput(patch: DevLeadBoardUpdate): DevLeadBoardUpdate {
   if (patch.create !== true) {
     const id = patch.project.trim()
     if (id.length === 0) resolveProject(candidate, id)
+    // Only the locked disk snapshot knows whether an upsert id is new, so seed
+    // each id as an existing synthetic row: a status-only upsert of an existing
+    // task passes preflight, while the real apply still enforces new-task titles.
+    const validationTasks = new Map<string, DevLeadBoardTask>()
+    for (const upsert of patch.tasks?.upsert ?? []) {
+      if (!validationTasks.has(upsert.id)) {
+        validationTasks.set(upsert.id, {
+          id: upsert.id,
+          title: upsert.title ?? 'DevLead validation',
+          status: 'todo',
+          updatedAt: timestamp,
+        })
+      }
+    }
     candidate.projects.push({
       id,
       workspace: { path: '/devlead-validation', title: 'DevLead validation' },
@@ -434,7 +449,7 @@ function validateUpdateInput(patch: DevLeadBoardUpdate): DevLeadBoardUpdate {
       focus: '',
       next: '',
       blockers: [],
-      tasks: [],
+      tasks: [...validationTasks.values()],
       updatedAt: timestamp,
     })
   }

@@ -31,7 +31,11 @@ plugin-market 等）。审计对象是本仓库的 6 个包（`protocol`、`devl
 > 因而下文的 8 项计数是历史快照。三者的 type-only API 在 rc.1–rc.5 均存在，peer 使用同一
 > `>=0.2.2-rc.1 <0.3.0` 范围；static inject 另含默认 Web 组合提供的 `remote.workspaceFiles` /
 > `workspaces` / `sidebarRight` / `sidebarRightTabs`，没有新增默认关闭或实验性插件硬依赖。
-> global 只控制看板 UI 注册；右栏读取只有 stat/readBytes/changes，没有写 Remote。
+> global 只控制看板 UI 注册；右栏读取只有 stat/readBytes/changes，没有写 Remote。本机运行验证
+> DSH 为 rc.5，依赖/编译基线仍为 rc.1；board 不使用 0.2.3-only API，兼容范围不变。E2E 阶段 3
+> 保留旧检查并新增 4 项真实 board 检查（Host 写入/CAS、webserver/index-inject global、磁盘
+> revision/内容 read-back），目标 pin 为阶段 3=132、no-worktree=202、完整=225（222 PASS + 3
+> credential-less SKIP）；这些是本轮验收 pin，不把旧的 143/143 等历史实测改写为新证据。
 
 ## 1. 结论摘要
 

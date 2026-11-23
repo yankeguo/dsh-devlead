@@ -381,7 +381,7 @@ profile's `cordis.patch.yml` — DSH replaces a row's whole config):
     wakeColdSession: true        # resume a cold DevLead Session to deliver queued notifications
     defaultAgentPreset: ''       # default Agent preset for created sessions (empty = Host default)
     questionTtlMs: 86400000      # open-question TTL (24h; 0 disables lazy expiry)
-    boardPath: ''                # optional project-board JSON path (empty = disabled)
+    boardPath: ''                # blank = disabled; non-blank must be an absolute JSON path
 ```
 
 | Key | Default | Range / notes |
@@ -393,7 +393,13 @@ profile's `cordis.patch.yml` — DSH replaces a row's whole config):
 | `wakeColdSession` | `true` | when `true`, a cold lead Session with queued notifications is resumed to deliver them; set `false` to keep the queues in memory until a human opens the lead Session |
 | `defaultAgentPreset` | `''` | default value used when a created session names no `preset`; empty means the Host's effective default. An invalid id fails creation with a structured error |
 | `questionTtlMs` | `86400000` | non-negative safe integer; lazy open-question TTL (24h), `0` disables expiry. Answered questions do not retroactively expire |
-| `boardPath` | `''` | absolute project-board JSON path after startup resolution; empty disables the board. Only the lead AI writes through tools; humans/browser clients are read-only. See [docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md) |
+| `boardPath` | `''` | trimmed blank disables the board; a non-blank value must be an absolute project-board JSON path. Relative paths are rejected, never resolved against cwd. Only the lead AI writes through tools; humans/browser clients are read-only. See [docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md) |
+
+The optional board uses locked fresh reads and `expected_revision` CAS. Update results omit tasks; a
+selected-project read includes at most 50 tasks and sets `truncated:true` when more exist. I/O failures use
+`BOARD_IO_ERROR`; re-read before retrying because a post-replace `stat` failure can occur after the new
+revision has committed. See [docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md)
+for the strict schema, corruption handling, and durability boundary.
 
 `tool` / `command` / `client-ui` have no deployment configuration; domain limits (watch cap,
 notification retention, etc.) are owned by the core service and protocol constants. Optional

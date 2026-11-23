@@ -38,9 +38,10 @@ their declared output schemas.
 
 The board tools are disabled by deployment default until `devlead.boardPath` is configured. They
 never accept a board file path argument. `devlead_board_read` defaults to project summaries without
-tasks; a selected project includes tasks by default. `devlead_board_update` requires explicit
-`create:true` plus `set.workspace.path` for a new project, supports blocker/task patches and CAS,
-and returns only the changed project. The human is read-only; only the enabled lead AI writes.
+tasks; a selected project includes at most 50 tasks by default and reports `truncated:true` beyond that.
+`devlead_board_update` requires explicit `create:true` plus `set.workspace.path` for a new project,
+supports blocker/task patches and CAS, and returns only the changed project without tasks. The human is
+read-only; only the enabled lead AI writes.
 `devlead:board-summary` is a cache-safe `systemPrompt.context()` snapshot capped at 1536 UTF-8
 bytes. See [docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md).
 

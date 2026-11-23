@@ -32,8 +32,8 @@ const BOARD_UPDATE_DESCRIPTION =
   'Update one project on the user-visible DevLead board; the human is read-only and only the enabled lead AI may '
   + 'write through this tool. Create requires create:true and set.workspace.path. Supports scalar status/priority/'
   + 'goal/focus/next updates, blocker clear/remove/add, and task remove/upsert. Use expected_revision from '
-  + 'devlead_board_read for compare-and-swap when a lost update would matter. Returns only the changed project and '
-  + 'changed lanes, never the whole board. No argument can redirect the configured board file.'
+  + 'devlead_board_read for compare-and-swap when a lost update would matter. Returns only the changed project without '
+  + 'task rows and the changed lanes, never the whole board. No argument can redirect the configured board file.'
 
 const BLOCKER_SCHEMA = {
   type: 'object',
@@ -78,8 +78,15 @@ const PROJECT_SCHEMA = {
     focus: { type: 'string', required: true },
     next: { type: 'string', required: true },
     blockers: { type: 'array', required: true, items: BLOCKER_SCHEMA },
-    tasks: { type: 'array', items: TASK_SCHEMA },
     updatedAt: { type: 'string', required: true },
+  },
+} as const
+
+const READ_PROJECT_SCHEMA = {
+  ...PROJECT_SCHEMA,
+  properties: {
+    ...PROJECT_SCHEMA.properties,
+    tasks: { type: 'array', items: TASK_SCHEMA },
   },
 } as const
 
@@ -90,7 +97,7 @@ export const BOARD_READ_OUTPUT = jsonOutput({
   properties: {
     revision: { type: 'integer', required: true },
     updatedAt: { type: 'string', required: true },
-    projects: { type: 'array', required: true, items: PROJECT_SCHEMA },
+    projects: { type: 'array', required: true, items: READ_PROJECT_SCHEMA },
     truncated: { type: 'boolean' },
   },
 } as const)
@@ -236,7 +243,9 @@ export function registerDevLeadBoardTools(ctx: Context): void {
         assertKnownArguments(args, TOOL_ARGUMENT_KEYS.devlead_board_update)
         const agent = requireAgent(exec.agent, 'devlead_board_update')
         const expectedRevision = optionalNonNegativeInteger(args.expected_revision, 'expected_revision')
-        return ctx.devLead.updateBoard(agent, boardUpdateRequest(args), expectedRevision, exec.signal)
+        const result = await ctx.devLead.updateBoard(agent, boardUpdateRequest(args), expectedRevision, exec.signal)
+        const { tasks: _tasks, ...project } = result.project
+        return { ...result, project }
       })
     },
   }), { when: ({ agent }) => ctx.devLead.isEnabled(agent) })

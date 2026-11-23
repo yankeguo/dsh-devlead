@@ -14,6 +14,9 @@
   通知或浏览器加载路径时再跑 `pnpm e2e`（本地真实 DSH，CI 不含）。
 - 行为变化要同步更新 `README.md` 与 `README.zh.md` 的对应段落；架构、发布、兼容性分别落在
   `docs/` 下已有的文件里，不新开平行说明。
+- 看板 schema、读写/CAS、I/O 与浏览器契约以 [docs/BOARD.md](docs/BOARD.md) 为准。改动 board
+  写路径、工具错误映射或 `webserver/index-inject` 时跑 `pnpm e2e`，保留 phase 3 的真实
+  `updateBoard` 写入/CAS、浏览器 global 与磁盘 read-back 检查。
 - 浏览器端的视觉行为不能只靠单测判断，按
   [docs/UI-VERIFICATION.md](docs/UI-VERIFICATION.md) 在隔离 profile 里验收。
 

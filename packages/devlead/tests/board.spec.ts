@@ -98,6 +98,7 @@ describe('DevLeadBoardStore', () => {
     const { store, file } = await boot()
     expect((await failureOf(store.read())).code).toBe('BOARD_NOT_FOUND')
     expect(existsSync(dirname(file))).toBe(true)
+    expect((await stat(dirname(file))).mode & 0o777).toBe(0o700)
     expect(existsSync(file)).toBe(false)
   })
 
@@ -119,12 +120,40 @@ describe('DevLeadBoardStore', () => {
     expect(result.revision).toBe(1)
     expect(result.changed).toEqual(['project.create'])
     expect(existsSync(dirname(file))).toBe(true)
+    expect((await stat(dirname(file))).mode & 0o777).toBe(0o700)
+    expect((await stat(file)).mode & 0o777).toBe(0o600)
     const persisted = JSON.parse(await readFile(file, 'utf8')) as DevLeadBoard
     expect(persisted.schemaVersion).toBe(1)
     expect(persisted.revision).toBe(1)
     expect(persisted.updatedBy).toEqual(actor)
     expect(persisted.projects[0]?.workspace).toEqual({ path: '/tmp/alpha', title: 'alpha' })
     expect((await store.read()).projects[0]?.tasks).toBeUndefined()
+  })
+
+  it('creates its own parent when the first update runs without start', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-devlead-board-late-start-'))
+    roots.push(root)
+    const file = join(root, 'nested', 'board.json')
+    const store = new DevLeadBoardStore(file, { warn: () => undefined }, () => clock++)
+    stores.push(store)
+    const result = await store.update({ ...patch(), updatedBy: actor })
+    expect(result.revision).toBe(1)
+    expect(existsSync(file)).toBe(true)
+    expect((await stat(dirname(file))).mode & 0o777).toBe(0o700)
+    expect((await stat(file)).mode & 0o777).toBe(0o600)
+  })
+
+  it('rejects an invalid first update without creating its parent tree', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-devlead-board-preflight-'))
+    roots.push(root)
+    const parent = join(root, 'nested')
+    const store = new DevLeadBoardStore(join(parent, 'board.json'))
+    stores.push(store)
+    expect((await failureOf(store.update({ project: 'alpha', create: true, updatedBy: actor }))).code)
+      .toBe('BOARD_INVALID')
+    expect((await failureOf(store.update({ ...patch(), updatedBy: actor }, 3))).code)
+      .toBe('BOARD_REVISION_CONFLICT')
+    expect(existsSync(parent)).toBe(false)
   })
 
   it('stamps the enabled lead identity in the core service and rejects writes after mode-off', async () => {
@@ -188,6 +217,33 @@ describe('DevLeadBoardStore', () => {
     expect(removed.project.blockers).toEqual([])
     expect(removed.project.tasks).toBeUndefined()
     expect((await store.read({ project: 'alpha' })).projects[0]?.tasks).toEqual([])
+  })
+
+  it('allows an existing task upsert to omit its title', async () => {
+    const { store } = await boot()
+    await store.update({ ...patch(), updatedBy: actor })
+    await store.update({
+      project: 'alpha', updatedBy: actor, tasks: { upsert: [{ id: 't1', title: 'write tests' }] },
+    })
+    const result = await store.update({
+      project: 'alpha', updatedBy: actor, tasks: { upsert: [{ id: 't1', status: 'done' }] },
+    })
+    expect(result.changed).toEqual(['tasks.upsert:t1'])
+    expect((await store.read({ project: 'alpha' })).projects[0]?.tasks?.[0]).toMatchObject({
+      id: 't1', title: 'write tests', status: 'done',
+    })
+  })
+
+  it('still rejects a title-less upsert for a genuinely new task', async () => {
+    const { store, file } = await boot()
+    await store.update({ ...patch(), updatedBy: actor })
+    const before = await readFile(file, 'utf8')
+    const failure = await failureOf(store.update({
+      project: 'alpha', updatedBy: actor, tasks: { upsert: [{ id: 't2', status: 'doing' }] },
+    }))
+    expect(failure.code).toBe('BOARD_INVALID')
+    expect(failure.message).toContain('new task "t2" requires a non-empty title')
+    expect(await readFile(file, 'utf8')).toBe(before)
   })
 
   it('resolves one project by id, title, and path and bounds unfiltered reads', async () => {

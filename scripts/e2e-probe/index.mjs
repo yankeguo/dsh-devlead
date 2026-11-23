@@ -267,6 +267,8 @@ const COMMAND_NAME = 'devlead-e2e-worktree'
 export const INSPECT_COMMAND_NAME = 'devlead-e2e-inspect'
 /** Close-lifecycle command: archive/unarchive/remove through the real Host. */
 export const CLOSE_COMMAND_NAME = 'devlead-e2e-close'
+/** Real board writes and CAS through the enabled lead's Host service. */
+export const BOARD_COMMAND_NAME = 'devlead-e2e-board'
 /** Dispatch-settings command: creation-time model selection + Agent Teams. */
 export const DISPATCH_COMMAND_NAME = 'devlead-e2e-dispatch'
 /** Create one idle watched child for the report-surface checks. */
@@ -475,6 +477,33 @@ async function executeInspect(ctx, invocation) {
       toolError,
       policyError,
     }),
+  }
+}
+
+/** Write two real board revisions, the second guarded by CAS, and read them back. */
+async function executeBoard(ctx, invocation) {
+  const agent = invocation.agent
+  const workspacePath = agent.session.header.cwd
+  if (typeof workspacePath !== 'string' || workspacePath.length === 0) {
+    return { kind: 'error', text: 'devlead-e2e-board: the lead Session records no absolute workspace path' }
+  }
+  const created = await ctx.devLead.updateBoard(agent, {
+    project: 'e2e-board',
+    create: true,
+    set: {
+      workspace: { path: workspacePath, title: 'E2E Board' },
+      focus: 'created through the real Host',
+    },
+    tasks: { upsert: [{ id: 'task-1', title: 'persist the board', status: 'doing' }] },
+  })
+  const updated = await ctx.devLead.updateBoard(agent, {
+    project: 'e2e-board',
+    set: { focus: 'CAS committed through the real Host' },
+  }, created.revision)
+  const detail = await ctx.devLead.board.read({ project: 'e2e-board' })
+  return {
+    kind: 'success',
+    text: JSON.stringify({ boardPath: ctx.devLead.board.path, created, updated, detail }),
   }
 }
 
@@ -2237,6 +2266,12 @@ export function apply(ctx) {
     name: CLOSE_COMMAND_NAME,
     description: 'E2E probe: drive archive/unarchive/remove through the real Host and report every fact.',
     handler: guarded(CLOSE_COMMAND_NAME, invocation => executeClose(ctx, invocation)),
+  })
+  ctx.commands.register({
+    definitionId: CommandDefinitionId(`${DEFINITION_ID}#board`),
+    name: BOARD_COMMAND_NAME,
+    description: 'E2E probe: write two board revisions through the real Host, with CAS on the second write.',
+    handler: guarded(BOARD_COMMAND_NAME, invocation => executeBoard(ctx, invocation)),
   })
   ctx.commands.register({
     definitionId: CommandDefinitionId(`${DEFINITION_ID}#dispatch`),

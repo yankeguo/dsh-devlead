@@ -88,14 +88,17 @@ describe('DevLeadBoardStore I/O error surface', () => {
     await expect(store.read()).rejects.toMatchObject({ code: 'BOARD_IO_ERROR' })
   })
 
-  it.each(['ENOSPC', 'EROFS'])('maps %s writes to BOARD_IO_ERROR and preserves bytes', async code => {
-    const { store, file } = await boot()
-    const before = await readFile(file, 'utf8')
-    writeErrorCode = code
-    await expect(store.update({ project: 'alpha', updatedBy: actor, set: { focus: 'not committed' } }))
-      .rejects.toMatchObject({ code: 'BOARD_IO_ERROR' })
-    expect(await readFile(file, 'utf8')).toBe(before)
-    const persisted = JSON.parse(before) as DevLeadBoard
-    expect(persisted.projects[0]?.focus).toBe('')
-  })
+  it.each(['ENOSPC', 'EROFS', 'EFBIG', 'EDQUOT', 'EAGAIN', 'ENOMEM'])(
+    'maps %s writes to BOARD_IO_ERROR and preserves bytes',
+    async code => {
+      const { store, file } = await boot()
+      const before = await readFile(file, 'utf8')
+      writeErrorCode = code
+      await expect(store.update({ project: 'alpha', updatedBy: actor, set: { focus: 'not committed' } }))
+        .rejects.toMatchObject({ code: 'BOARD_IO_ERROR' })
+      expect(await readFile(file, 'utf8')).toBe(before)
+      const persisted = JSON.parse(before) as DevLeadBoard
+      expect(persisted.projects[0]?.focus).toBe('')
+    },
+  )
 })

@@ -349,7 +349,7 @@ config）：
     wakeColdSession: true        # 恢复冷 DevLead 会话以投递其排队通知
     defaultAgentPreset: ''       # 创建会话时的默认 Agent preset（空 = Host 默认）
     questionTtlMs: 86400000      # open question 的 TTL（24 小时；0 = 禁用 lazy 过期）
-    boardPath: ''                # 可选项目看板 JSON 路径（空 = 禁用）
+    boardPath: ''                # 空白 = 禁用；非空必须是绝对 JSON 路径
 ```
 
 | 键 | 默认值 | 范围 / 说明 |
@@ -361,7 +361,12 @@ config）：
 | `wakeColdSession` | `true` | 为 `true` 时，带排队通知的冷 lead Session 会被恢复以完成投递；设为 `false` 可让队列留在内存里，直到人类打开该 lead Session |
 | `defaultAgentPreset` | `''` | 创建会话未指定 `preset` 时使用的默认值；空表示 Host 的实际默认值。无效 id 会让创建失败并返回结构化错误 |
 | `questionTtlMs` | `86400000` | 非负安全整数；open question 的 lazy TTL（24 小时），`0` 禁用过期。已回答的问题不会追溯过期 |
-| `boardPath` | `''` | 项目看板 JSON 路径，启动时解析为绝对路径；空字符串禁用。只有 lead AI 通过工具写入，人类/浏览器只读。详见 [docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md) |
+| `boardPath` | `''` | trim 后为空白则禁用；非空必须是项目看板 JSON 的绝对路径。相对路径直接拒绝，不按 cwd resolve。只有 lead AI 通过工具写入，人类/浏览器只读。详见 [docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md) |
+
+可选看板在锁内 fresh read，并支持 `expected_revision` CAS。update 返回的 project 省略 tasks；
+单项目 read 最多返回 50 条 tasks，超出时标记 `truncated:true`。I/O 故障使用 `BOARD_IO_ERROR`；
+重试前先重新读取，因为原子替换后的 `stat` 失败可能发生在 revision 已提交之后。严格 schema、
+坏文件处理与持久性边界见 [docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md)。
 
 `tool` / `command` / `client-ui` 没有部署配置；领域限制（watch 上限、通知保留条数等）由核心
 服务与 protocol 常量决定。可选 worktree 隔离**没有配置键**：只有当 profile 组合了实验性

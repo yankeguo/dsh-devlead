@@ -74,7 +74,8 @@ dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 The Loader row id `devlead` accepts `notificationBatchMs`, `maxWatchedSessions`,
 `maxListedSessions`, `wakeColdSession` (default `true` since 0.2.0), `defaultAgentPreset`
 (used when a created Session names no preset; an invalid id fails creation), and `boardPath`
-(empty by default; the only source of the board file path). See the
+(trimmed blank disables the board; a non-blank value must be absolute and relative paths are rejected).
+See the
 [configuration section](https://github.com/yankeguo/dsh-devlead/blob/main/README.md#configuration) for defaults and ranges; all limits are
 validated at both the Loader and direct-construction boundaries.
 
