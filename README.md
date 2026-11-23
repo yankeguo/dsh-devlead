@@ -8,8 +8,8 @@ upgrades **one ordinary session** into a **DevLead session**: it can operate DSH
 their state changes — so one agent can orchestrate multiple repositories inside a standard
 interface the human can see and interact with.
 
-Stable release **0.4.1** · DSH **0.2.2-rc.1 – 0.2.2-rc.5** · one `dsh plugin` command installs
-everything.
+Current release candidate **0.4.2-rc.1** (prerelease, npm dist-tag `next`; stable `latest` stays
+**0.4.1**) · DSH **0.2.2-rc.1 – 0.2.2-rc.5** · one `dsh plugin` command installs everything.
 
 ## What you get
 
@@ -70,12 +70,18 @@ page.
 To pin an exact version:
 
 ```sh
-dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.1
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.1
 ```
 
-0.4.1 is a patch release with no public API changes. It recovers supervisor scans from physically
-healthy current v4 logs that contain an unrelated legacy event unknown to the running Harness;
-upgrading from 0.4.0 needs no log cleanup or `/devlead reset` for this fix. See the
+0.4.2-rc.1 is the current prerelease candidate for the planned 0.4.2 patch release. It makes the
+project board **on by default** for the active lead (derived from that Session's original workspace
+root), adds a **lead-only read-only board UI** in the right Sidebar, bounds the model-facing board
+read at 64 KiB, fixes long workspace path/title project references, and degrades instead of blocking
+when the board cannot start. There is no public API break and the DSH compatibility surface is
+unchanged. It is staged with npm dist-tag `next`, so pin the exact version above until the stable
+0.4.2 is approved; `latest` remains **0.4.1**. See the
+[0.4.2-rc.1 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.2-rc.1.md);
+the previous stable patch is documented in the
 [0.4.1 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.1.md).
 
 Advanced users can install individual packages and insert the corresponding loader rows into the
@@ -87,8 +93,8 @@ profile's `cordis.patch.yml` themselves; the bundle is the recommended path.
 # upgrade the bundle to the latest release
 dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 
-# or pin a specific version
-dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.1
+# or pin a specific version (required for prereleases)
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.1
 ```
 
 > **Upgrading from an older release (below 0.4.0):** 0.4.0 intentionally discards older DevLead
@@ -399,8 +405,13 @@ The board is enabled by default and follows the single active lead: that Session
 root (its `SessionHeader.cwd`, not a worktree checkout) owns the file, and turning the lead off, switching
 leads or changing the workspace releases the old store and reads the new file immediately. With no active
 lead (or neither an override nor an absolute workspace root) the board is disabled: the tools report `BOARD_DISABLED`, the summary
-is empty and no board UI appears. A start failure (for example an unwritable directory) degrades only the
-board — DevLead keeps loading and the board tools report `BOARD_IO_ERROR`.
+is empty and no board UI appears. A derived (non-override) path additionally requires that the lead's
+recorded original workspace root still exists as a directory: if it was deleted or moved, the Host keeps
+the board disabled (`boardDisabledReason = missing-workspace`), logs one warning and **never recreates the
+workspace** just to host `.dsh/devlead`; returning the workspace (or configuring `boardPath`) lets the next
+lead sync/switch resolve it again. A start failure (for example an unwritable directory) degrades only the
+board — DevLead keeps loading and the board tools report `BOARD_IO_ERROR`; the next lead sync (even to the
+same path) or path switch retries `start()`.
 
 The board uses locked fresh reads and `expected_revision` CAS. Update results omit tasks; a
 selected-project read includes at most 50 tasks and sets `truncated:true` when more exist. Read results are
@@ -442,7 +453,10 @@ permanent bar on every conversation:
   lead owns it. If the page was loaded before the lead was enabled, the client derives that default
   path from the lead Session's summary `cwd`; a deployment that pins `boardPath` needs a page refresh
   in that late-enable case, because only a fresh page load carries the override path. Turning the mode
-  off or switching leads re-renders immediately and never keeps reading the old file. The panel groups
+  off or switching leads re-renders immediately and never keeps reading the old file and closes the
+  on-screen Session's lingering board tab (including a tab restored from a previous page load). The panel
+  reads the board file directly — the schema's 256 KiB file cap applies, not the model tool's 64 KiB
+  read cap — and groups
   project cards by status (blocked first), sorts by priority and update time, and shows
   focus/next/blockers plus expandable task summaries. It follows file changes
   through a file watch and falls back to a bounded poll (4s, backing off to 30s) while the board file
@@ -450,7 +464,9 @@ permanent bar on every conversation:
   manually" state instead of pretending to be live. It distinguishes missing files from read/parse
   failures, and lists registered Workspaces absent from the board in a collapsed section with Session
   counts and recent activity (a failed Workspace-catalog read is reported as an error, never as a
-  pending read). People can refresh and expand disclosures, but cannot edit the board.
+  pending read). People can refresh and expand disclosures, but cannot edit the board. If the lead's
+  recorded workspace root is gone, the Host keeps the board disabled without recreating it; the
+  client-side derived entry may still render an empty/read-error state, which never writes to disk.
 
 Off (the toolbar toggle is the only control):
 

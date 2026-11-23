@@ -1,10 +1,11 @@
 # DSH 兼容性矩阵
 
-本仓库的目标兼容面是 **DeepSeek Harness `0.2.2-rc.1` – `0.2.2-rc.5`**；当前发布版本是插件版本
-**`0.4.1`**（6 个可发布包共用同一版本号；稳定补丁版，CI 以 npm dist-tag `latest` stage，维护者
-approve 后公开；approve 前 `latest` 仍为 `0.4.0`）。上一稳定版 `0.4.0` 已于 2026-11-21 经
-staged publish + 人工 approve 公开；`0.4.0-rc.1` 已于同日以 `next` dist-tag 发布（历史候选，
-保持可安装）。`0.4.1` 只是**插件版本**，**不代表 DSH 0.4.1**——DSH 兼容面与
+本仓库的目标兼容面是 **DeepSeek Harness `0.2.2-rc.1` – `0.2.2-rc.5`**；当前候选发布版本是插件版本
+**`0.4.2-rc.1`**（6 个可发布包共用同一版本号；prerelease，CI 以 npm dist-tag `next` stage，维护者
+approve 后公开）。稳定版 `latest` 当前为 **`0.4.1`**（2026-11-22 北京时间经 staged publish +
+人工 approve 公开）；approve `0.4.2-rc.1` 后 `next` 指向本候选、`latest` 仍为 `0.4.1`，直到计划中
+的稳定版 `0.4.2` 发布。`0.4.0`（2026-11-21 公开）与 `0.4.0-rc.1`（同日以 `next` 发布）是历史
+版本。`0.4.2-rc.1` 只是**插件版本**，**不代表 DSH 0.4.2**——DSH 兼容面与
 `engines.dsh` 都不变。6 个可发布包的
 `engines.dsh` 均为 `>=0.2.2-rc.1 <0.3.0`（根 `package.json` 是 private 包，不声明
 `engines.dsh`，只声明 `engines.node`），所有
@@ -29,9 +30,13 @@ staged publish + 人工 approve 公开；`0.4.0-rc.1` 已于同日以 `next` dis
     `remote.workspaceFiles.stat/readBytes/changes` 与 `useWorkspaces` / `useSessions`。
     不依赖 0.2.3-only API，engines/peer DSH range 不变。默认路径派生自 active lead 的
     `SessionHeader.cwd`（`<cwd>/.dsh/devlead/board.json`），`boardPath` 仍是可选的绝对路径
-    override（既有配置升级后行为不变）；没有 lead 时看板禁用（无 global、无面板），看板
-    start/预创建失败只降级该功能（P2-2），不影响插件加载。浏览器入口为 lead-only：tab/guide/
-    header 只在屏幕上的 active lead Session 出现，global 形状含 `leadSessionId` / `override`。
+    override（既有配置升级后行为不变）；没有 lead 时看板禁用（无 global、无面板）。派生路径还要求
+    lead 记录的原始 workspace 根仍是已存在目录：缺失时 Host 以 `missing-workspace` 保持看板禁用
+    （不重建目录、不写入、工具 `BOARD_DISABLED`），显式 override 则保持既有预创建语义。看板
+    start/预创建失败只降级该功能（P2-2），不影响插件加载；同一 resolved 路径的下一次 lead 同步也会
+    按需重试 `start()`。浏览器入口为 lead-only：tab/guide/header 只在屏幕上的 active lead Session
+    出现，global 形状含 `leadSessionId` / `override`；恢复出来但已非合规 lead 的 board tab 在首次
+    sync 即关闭。
 - `plugin records`（`appendPluginRecord` / `PluginRecordMap`）：rc.1–rc.5 均存在；这是
   **experimental、调用方受限**的扩展点，不是公开契约，Session format migration 为
   best-effort（详见下节）。DevLead 的全部 durable 状态都依赖它。
@@ -501,8 +506,9 @@ lane/deliveryState、blocked/decision action steer、真实 T1 followup / T2 rev
 
 上表 Phase 1e 行即 **Batch 1 最终树**的 pin 实测：installed / patch 完整流各 **221/221**
 （218 PASS + 3 SKIP；phase 1 27 + 1b 12 + 2 23 + 3 128 + 1e 31），`--no-worktree` **198/198**
-（phase 2 skipped）。当前发布版本是插件 **`0.4.1`**（稳定补丁版，dist-tag `latest`；approve 前
-`latest` 仍为 `0.4.0`，`0.4.1` 未公开；DSH 兼容面仍为 rc.1–rc.5）。`0.4.0-rc.1` 候选的三条真实
+（phase 2 skipped）。当前候选发布版本是插件 **`0.4.2-rc.1`**（prerelease，dist-tag `next`；
+approve 前 `next` 仍为 `0.4.0-rc.1`，`latest` 为 `0.4.1`；DSH 兼容面仍为 rc.1–rc.5）。
+`0.4.0-rc.1` 候选的三条真实
 E2E 重跑（含真实 `*_EXIT=0` 与总计行）记录在
 [`docs/e2e-evidence/batch2-release-prep.md`](e2e-evidence/batch2-release-prep.md)；稳定版 `0.4.0`
 在最终 release 树上的三条真实 E2E 重跑记录在
@@ -521,6 +527,13 @@ phase 1 与 1b 改回未配置 `boardPath` 的默认组合并固定当轮目标 
 phase 3 的 lead-off store 释放（没有 workspace 根的 `BOARD_DISABLED` 由 host 单测覆盖，e2e 的 HTTP session/create 总会落一个 cwd）。真实 PASS 日志与证据由 Lead
 记录在 `docs/e2e-evidence/`；上表 Phase 1e 行（221/198、218 PASS）与上一轮 226/203 均为历史
 实测，不改写为新一轮证据。
+
+**0.4.2-rc.1 收口轮**（自 0.4.1 起的看板 follow-up）不改 DSH 兼容面：看板默认启用、路径跟随
+active lead workspace、lead-only 浏览器入口、工具 64 KiB 读取上限与长 path/title 引用修复来自
+`0.4.1..f69bd21` 的 5 个 commit；本轮再补 P2/P3 收口（冷 workspace 缺失不重建、
+`boardDisabledReason`、same-path start 重试、restored board tab 首轮关闭、64 KiB 文案与
+client-ui/package 拓扑文档修正），全部使用 0.2.2-rc.1 typings 与 rc.5 安装版共有的 API，
+engines/peer range 不变。
 
 每条 flow 有 3 条正向模型选择检查因无 provider 凭据 SKIP（打印真实原因）；负向
 `DEVLEAD_MODEL_UNAVAILABLE`、`devlead_list_models`、preset roster 与 watched-child

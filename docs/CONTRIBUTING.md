@@ -193,7 +193,7 @@ PASS 与 SKIP 分开输出：
 | `pnpm e2e --flow installed` | **238/238** | 同上 |
 | `pnpm e2e --no-worktree` | **214/214** | 1 + 1b + 3 + 1e（跳过阶段 2） |
 
-阶段 pin 为 30 / 18 / 24 / **140** / 31（`scripts/e2e-smoke.mjs` 的 `EXPECTED_CHECKS`，删/增
+阶段 pin 为 30 / 18 / 24 / **135** / 31（`scripts/e2e-smoke.mjs` 的 `EXPECTED_CHECKS`，删/增
 check 未更新 pin 会失败），完整流目标计数是 **235 PASS + 3** 条无 provider 凭据的正向模型检查
 SKIP；SKIP 未执行、不能算通过。这些是**当前 harness 的 pin**，真实 PASS 日志与证据由 Lead
 记录在 `docs/e2e-evidence/`，不以本页数字代替实跑证据。上一轮 Step B 复核修复轮的历史基线

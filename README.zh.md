@@ -7,7 +7,8 @@
 **Session**（会话），创建并续写其他会话、读取它们的状态、在状态变化时被唤醒——于是一个
 agent 就能在人可见、可参与的标准界面里统管多个仓库。
 
-稳定版 **0.4.1** · DSH **0.2.2-rc.1 – 0.2.2-rc.5** · 一条 `dsh plugin` 命令即可装好全部组件。
+当前候选版 **0.4.2-rc.1**（prerelease，npm dist-tag `next`；稳定版 `latest` 仍为 **0.4.1**） ·
+DSH **0.2.2-rc.1 – 0.2.2-rc.5** · 一条 `dsh plugin` 命令即可装好全部组件。
 
 ## 核心能力
 
@@ -66,12 +67,16 @@ Web 页面。
 固定到精确版本：
 
 ```sh
-dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.1
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.1
 ```
 
-0.4.1 是无公网 API 变更的补丁版：物理完好的当前 v4 日志仅因包含当前 Harness 不认识的无关旧事件
-而被 Host 拒绝时，DevLead 现在可以有界、只读地恢复 supervisor 扫描。从 0.4.0 升级无需为此清理
-日志或执行 `/devlead reset`。详见
+0.4.2-rc.1 是计划中 0.4.2 补丁版的当前 prerelease 候选：项目看板对 active lead **默认启用**
+（由该 Session 的原始 workspace 根派生），右侧栏提供 **仅 lead 可见的只读看板 UI**；模型侧看板
+读取有 64 KiB 上限，修复长 workspace path/title 作为 project 引用的误判；看板 start 失败时只降级、
+不阻塞插件加载。没有公网 API 破坏性变更，DSH 兼容面不变。本候选以 npm dist-tag `next` stage，
+在稳定版 0.4.2 被 approve 前请按上面的精确版本安装；`latest` 仍为 **0.4.1**。详见
+[0.4.2-rc.1 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.2-rc.1.md)；
+上一个稳定补丁的说明见
 [0.4.1 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.1.md)。
 
 进阶用户可以单独安装各个包，并自行把对应的 loader row 插入 profile 的 `cordis.patch.yml`；
@@ -83,8 +88,8 @@ dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.1
 # 把 bundle 升级到最新发布版
 dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 
-# 或固定到某个版本
-dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.1
+# 或固定到某个版本（prerelease 必须写精确版本）
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.1
 ```
 
 > **从旧版本（低于 0.4.0）升级：** 0.4.0 会直接丢弃旧的 DevLead 会话状态（模式、关注集合、
@@ -366,8 +371,11 @@ config）：
 看板默认启用并跟随唯一的 active lead：该 Session 的原始 workspace 根（`SessionHeader.cwd`，
 不是 worktree 检出）拥有看板文件；关闭 lead、切换 lead 或工作区时立即释放旧 store 并改读新
 文件。没有 active lead（或既未配置 override、又没有绝对 workspace 根）时看板禁用：工具返回 `BOARD_DISABLED`、摘要
-为空、界面上没有看板入口。start 失败（例如目录不可写）只降级看板——DevLead 照常加载，看板
-工具返回 `BOARD_IO_ERROR`。
+为空、界面上没有看板入口。派生路径（无 override）还要求 lead 记录的原始 workspace 根仍是**已存在
+目录**：目录被删除/移走时看板保持 disabled（`boardDisabledReason = missing-workspace`），只记一条
+warning，**绝不为了放 `.dsh/devlead` 重建 workspace**；workspace 恢复（或配置 `boardPath`）后，下一次
+lead 同步/切换会重新解析。start 失败（例如目录不可写）只降级看板——DevLead 照常加载，看板
+工具返回 `BOARD_IO_ERROR`；下一次 lead 同步（同一路径也会重试）或路径切换会重试 `start()`。
 
 看板在锁内 fresh read，并支持 `expected_revision` CAS。update 返回的 project 省略 tasks；
 单项目 read 最多返回 50 条 tasks，超出时标记 `truncated:true`。读取结果另有 64 KiB 上限
@@ -408,7 +416,8 @@ worktree 服务时才存在，并且每次派发通过 `isolation` 参数使用�
   跟随文件 watch，看板文件尚不存在时用有界轮询兜底（4s 起、退避到 30s）；watch 断开时明确显示
   「自动更新已断开，请手动刷新」而不是假装正常。它区分文件不存在与读取/解析失败；折叠区还列出
   未在看板中的已注册 workspace、会话数与最近活动（清单读取失败时错误优先于「读取中」）。
-  用户只能刷新与展开，不能编辑看板。
+  用户只能刷新与展开，不能编辑看板。若 lead 记录的原始 workspace 根已不存在，Host 保持看板 disabled
+  且不重建目录；client 侧自愈派生的入口仍可能显示空态/读取错误，但不会写盘。
 
 关闭（工具条开关是唯一控件）：
 
