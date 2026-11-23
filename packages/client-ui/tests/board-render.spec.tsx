@@ -248,4 +248,109 @@ describe('DevLeadBoardPanelView', () => {
     expect(textOf(english.root)).toContain('Read-only')
     expect(textOf(english.root)).toContain('Tasks 1/2 done')
   })
+
+  it('reports a workspace-list failure ahead of pending and unavailable hints', async () => {
+    const errored = await mount(view(READY, { workspacePhase: 'pending', workspaceError: true }))
+    const erroredUnlisted = errored.root.findByProps({ 'data-devlead-board-unlisted': 'true' })
+    expect(textOf(erroredUnlisted.findByProps({ role: 'alert' }))).toBe(zh['board.unlisted.error'])
+    expect(textOf(erroredUnlisted)).not.toContain(zh['board.unlisted.pending'])
+    expect(textOf(erroredUnlisted)).not.toContain(zh['board.unlisted.empty'])
+    // A missing board file still wins: no workspace list is claimable yet.
+    const unavailable = await mount(view({ status: 'loading', refreshing: true }, { workspaceError: true }))
+    const unavailableUnlisted = unavailable.root.findByProps({ 'data-devlead-board-unlisted': 'true' })
+    expect(textOf(unavailableUnlisted)).toContain(zh['board.unlisted.unavailable'])
+    expect(unavailableUnlisted.findAllByProps({ role: 'alert' })).toHaveLength(0)
+  })
+
+  it('renders hostile board text literally without mounting markup or event handlers', async () => {
+    const imageMarkup = '<img src=x onerror="alert(1)">'
+    const scriptMarkup = '<script>alert(1)</script>'
+    const loaderMarkup = '<img src=x onload="alert(2)">'
+    const hostile: DevLeadBoard = {
+      ...BOARD,
+      projects: [{
+        ...project('hostile', 'blocked'),
+        workspace: { path: '/work/hostile', title: `Title ${imageMarkup}` },
+        goal: `Goal ${scriptMarkup}`,
+        focus: `Focus ${loaderMarkup}`,
+        next: `Next ${scriptMarkup}`,
+        blockers: [{ id: 'b1', text: `Blocker ${imageMarkup}`, since: ISO }],
+        tasks: [{ id: 't1', title: `Task ${scriptMarkup}`, status: 'doing', updatedAt: ISO }],
+      }],
+    }
+    const renderer = await mount(view({ ...READY, board: hostile }))
+    const rendered = textOf(renderer.root)
+    for (const markup of [imageMarkup, scriptMarkup, loaderMarkup]) {
+      expect(rendered).toContain(markup)
+    }
+    expect(renderer.root.findAllByType('img')).toHaveLength(0)
+    expect(renderer.root.findAllByType('script')).toHaveLength(0)
+    const rawMarkupProps = renderer.root.findAll(instance =>
+      Object.hasOwn(instance.props, 'onerror')
+      || Object.hasOwn(instance.props, 'onload')
+      || Object.hasOwn(instance.props, 'dangerouslySetInnerHTML'))
+    expect(rawMarkupProps).toHaveLength(0)
+  })
+
+  it('pins refresh, live status, error, disclosure, and read-only accessibility semantics', async () => {
+    const renderer = await mount(view(READY))
+    const refresh = renderer.root.findByType('button')
+    expect(refresh.props['aria-label']).toBe(zh['board.refresh.action'])
+    expect(refresh.props['aria-busy']).toBe(false)
+    const busy = await mount(view({ status: 'loading', refreshing: true }))
+    expect(busy.root.findByType('button').props['aria-busy']).toBe(true)
+    const live = renderer.root.findByProps({ role: 'status', 'aria-live': 'polite' })
+    expect(textOf(live)).toContain(zh['board.refresh.ready'])
+    expect(renderer.root.findByProps({ className: 'devlead-board-blocked-notice' }).props.role).toBe('status')
+    const groups = renderer.root.findAllByProps({ className: 'devlead-board-group' })
+    expect(groups).toHaveLength(4)
+    for (const group of groups) {
+      const headingId = String(group.props['aria-labelledby'])
+      const heading = renderer.root.findByProps({ id: headingId })
+      expect(heading.type).toBe('h4')
+      expect(group.findAllByType('h4')).toHaveLength(1)
+      expect(group.findByType('h4').props.id).toBe(headingId)
+    }
+    // Native task and unlisted disclosures keep their details/summary pairing.
+    const disclosures = renderer.root.findAllByType('details')
+    expect(disclosures.length).toBeGreaterThanOrEqual(5)
+    expect(renderer.root.findAllByType('summary')).toHaveLength(disclosures.length)
+    expect(disclosures.some(disclosure => disclosure.props.className === 'devlead-board-tasks')).toBe(true)
+    expect(disclosures.some(disclosure => disclosure.props.className === 'devlead-board-unlisted')).toBe(true)
+    // Read-only: no editable control, and every button is a refresh action.
+    for (const control of ['input', 'textarea', 'select'] as const) {
+      expect(renderer.root.findAllByType(control)).toHaveLength(0)
+    }
+    expect(renderer.root.findAll(instance => instance.props.contentEditable !== undefined)).toHaveLength(0)
+    const buttons = renderer.root.findAllByType('button')
+    expect(buttons).toHaveLength(1)
+    expect(buttons[0]?.props['aria-label']).toBe(zh['board.refresh.action'])
+    // Both parse and read failures expose an assertive alert block.
+    const parseFailure = await mount(view({ status: 'error', error: { kind: 'parse', message: 'Unexpected token' }, refreshing: false }))
+    expect(parseFailure.root.findByProps({ 'data-devlead-board-error': 'parse' }).props.role).toBe('alert')
+    const readFailure = await mount(view({ status: 'error', error: { kind: 'read', message: 'ENOENT' }, refreshing: false }))
+    expect(readFailure.root.findByProps({ 'data-devlead-board-error': 'read' }).props.role).toBe('alert')
+  })
+
+  it('scopes generated group heading ids to each mounted panel', async () => {
+    const first = await mount(view(READY))
+    const second = await mount(view(READY))
+    const groupIds = (renderer: ReactTestRenderer): string[] =>
+      renderer.root.findAllByProps({ className: 'devlead-board-group' })
+        .map(group => String(group.props['aria-labelledby']))
+    const firstIds = groupIds(first)
+    const secondIds = groupIds(second)
+    expect(firstIds).toHaveLength(4)
+    expect(secondIds).toHaveLength(4)
+    expect(new Set(firstIds).size).toBe(firstIds.length)
+    expect(new Set(secondIds).size).toBe(secondIds.length)
+    // The same four statuses pair up across views, but no heading id overlaps.
+    expect(firstIds.filter(id => secondIds.includes(id))).toHaveLength(0)
+    expect(new Set([...firstIds, ...secondIds]).size).toBe(8)
+    for (const [renderer, ids] of [[first, firstIds], [second, secondIds]] as const) {
+      for (const id of ids) {
+        expect(renderer.root.findByProps({ id }).type).toBe('h4')
+      }
+    }
+  })
 })

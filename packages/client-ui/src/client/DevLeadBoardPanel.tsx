@@ -2,7 +2,7 @@
  * Read-only right-Sidebar project board. All mutations remain with the lead
  * AI's Host tools; this surface contains only refresh and disclosure controls.
  */
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useId, useState, type ReactNode } from 'react'
 import {
   Button,
   IconRefreshOutlineRegular,
@@ -195,6 +195,9 @@ export function DevLeadBoardPanelView({
   sessionPhase = 'ready',
   watch = 'live',
 }: DevLeadBoardPanelViewProps): ReactNode {
+  // Scope generated ids per mounted panel so two open Sidebar panes never share
+  // heading ids; the hook must run before the disabled early return below.
+  const idPrefix = useId()
   if (state.status === 'disabled') return null
   const board = state.board
   const blocked = board?.projects.filter(project => project.status === 'blocked').length ?? 0
@@ -292,10 +295,10 @@ export function DevLeadBoardPanelView({
                 className="devlead-board-group"
                 key={group.status}
                 data-board-group={group.status}
-                aria-labelledby={`devlead-board-group-${group.status}`}
+                aria-labelledby={`${idPrefix}-group-${group.status}`}
               >
                 <header className="devlead-board-group-header">
-                  <h4 id={`devlead-board-group-${group.status}`}>{t(`board.status.${group.status}`)}</h4>
+                  <h4 id={`${idPrefix}-group-${group.status}`}>{t(`board.status.${group.status}`)}</h4>
                   <Tag tone={projectStatusTone(group.status)}>{group.projects.length}</Tag>
                 </header>
                 <div className="devlead-board-cards">
@@ -309,14 +312,14 @@ export function DevLeadBoardPanelView({
           <summary>{t('board.unlisted.title')}</summary>
           <div className="devlead-board-unlisted-body">
             {state.status !== 'ready' && <p>{t('board.unlisted.unavailable')}</p>}
-            {state.status === 'ready' && workspacePhase === 'pending' && <p>{t('board.unlisted.pending')}</p>}
-            {state.status === 'ready' && workspacePhase === 'ready' && workspaceError && (
+            {state.status === 'ready' && workspaceError && (
               <p role="alert">{t('board.unlisted.error')}</p>
             )}
-            {state.status === 'ready' && workspacePhase === 'ready' && !workspaceError && unlisted.length === 0 && (
+            {state.status === 'ready' && !workspaceError && workspacePhase === 'pending' && <p>{t('board.unlisted.pending')}</p>}
+            {state.status === 'ready' && !workspaceError && workspacePhase === 'ready' && unlisted.length === 0 && (
               <p>{t('board.unlisted.empty')}</p>
             )}
-            {state.status === 'ready' && workspacePhase === 'ready' && !workspaceError && unlisted.length > 0 && (
+            {state.status === 'ready' && !workspaceError && workspacePhase === 'ready' && unlisted.length > 0 && (
               <ul className="devlead-board-unlisted-list">
                 {unlisted.map(workspace => (
                   <li key={workspace.workspaceId} data-devlead-board-unlisted-project={workspace.workspaceId}>
