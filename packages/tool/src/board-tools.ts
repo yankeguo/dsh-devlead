@@ -44,7 +44,8 @@ const BOARD_UPDATE_DESCRIPTION =
 const BOARD_NOTE_READ_DESCRIPTION =
   'Read Markdown notes attached to one existing DevLead board project. project is required and resolves exactly as '
   + 'in the other board tools. Omit note for the project\'s bounded metadata listing (id, title, summary, updatedAt, '
-  + 'bytes, and root-relative path); provide its id for the full Markdown content plus metadata. A missing notes '
+  + 'bytes, and root-relative path); provide its id for Markdown content plus metadata. A single-note JSON result '
+  + 'is capped at 64 KiB and longer content is cut at a Unicode boundary with truncated:true. A missing notes '
   + 'index reads as an empty revision-0 project listing. Only the active lead can use this tool, and no argument '
   + 'accepts or redirects a Host filesystem path.'
 
@@ -176,6 +177,7 @@ export const BOARD_NOTE_READ_OUTPUT = jsonOutput({
     project: { ...NOTE_PROJECT_SCHEMA, required: true },
     notes: { type: 'array', items: NOTE_METADATA_SCHEMA },
     note: NOTE_DOCUMENT_SCHEMA,
+    truncated: { type: 'boolean' },
   },
 } as const)
 
@@ -321,7 +323,7 @@ export function presentBoardNoteResult(_args: unknown, result: ToolResult): Gene
     const note = typeof value.note === 'object' && value.note !== null
       ? value.note as Record<string, unknown>
       : undefined
-    detail = typeof note?.title === 'string' ? note.title : 'note content'
+    detail = `${typeof note?.title === 'string' ? note.title : 'note content'}${value.truncated === true ? ' (truncated)' : ''}`
   }
   return {
     card: 'generic',

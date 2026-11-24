@@ -175,6 +175,24 @@ blocker、任务进度与多条 notes，另准备一个完全没有 notes 的项
     主题、栏宽和状态；自动刷新另附带时间戳的文件写入记录 + Remote 调用/录屏。文件名、日期、对应检查项和
     实际结果由发布证据记录；缺图、仅有旧截图或仅有自动化断言时不得把本轮人工验收标为通过。
 
+### 0.4.2-rc.5 复核加固必查
+
+rc.5 不改变 rc.4 的紧凑 UI 与 notes 功能；以下项目是对上述验收的增量，仍需在隔离 profile 的真实页面检查，
+不以单测代替视觉/读屏结论：
+
+1. **打开 reader 切 path**：在一个 workspace 打开 note，保持新 workspace 的首次读取尚未完成时切换 lead/path；
+   新路径下不得短暂显示旧 workspace 的 chip、note list、标题或正文。恢复后只读新 index，旧 note watch/timer
+   已 dispose，不继续 stat/readBytes。
+2. **index-only 更新不增加正文 I/O**：保持 reader 打开，只改 index 的 title/summary/updatedAt，记录 Remote
+   调用；metadata 应更新，但当前 note 的 watch 不重建，stat/readBytes 次数不增加。随后改变正文 bytes，当前
+   note 才重新读取。正常 note 自身 watch/poll 仍按既有契约工作，不能把这项优化误测成停止正文自动刷新。
+3. **视觉 busy 与读屏分离**：开启读屏软件观察至少 3 个 5s 周期；视觉上「正在刷新/自动刷新」可以变化，
+   polite live region 不得每轮重复播报。切换 paused/active、watch ended 或出现错误时仍应有对应状态迁移/错误
+   提示，刷新按钮的 `aria-busy` 保持可用。
+4. **边界错误局部恢复**：非法 UTF-8 的 index/note 即使字节数不变也必须显示局部解析错误；超限正文在模型
+   工具结果中是 `truncated:true` 的 64 KiB 有界 JSON，而浏览器仍按完整文件读取。大小写变体与 Windows 保留名
+   由共享 schema/Host/client 自动化覆盖，不要求在大小写不敏感主机上手工制造冲突文件。
+
 ### 清理
 
 ```sh

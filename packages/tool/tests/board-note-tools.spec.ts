@@ -36,6 +36,7 @@ describe('devlead board note tools', () => {
       updatedAt: metadata.updatedAt,
       project: harness.devLead.boardNoteRead.project,
       note: { ...metadata, content: '# Plan\n\nShip it.\n' },
+      truncated: true,
     }
     const result = await harness.call('devlead_board_note_read', { project: 'webapp', note: ' note-1 ' })
     expect(result).toEqual(harness.devLead.boardNoteRead)

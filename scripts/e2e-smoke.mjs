@@ -213,10 +213,10 @@
  * still run.
  *
  * Check counts are PINNED per phase (EXPECTED_CHECKS, baseline DSH
- * 0.2.2-rc.5): phase 1 = 30, phase 1b = 18, phase 2 = 24, phase 3 = 140,
- * phase 1e = 31, so every flow reports 243/243 checks (240 PASS + 3
+ * 0.2.2-rc.5): phase 1 = 30, phase 1b = 18, phase 2 = 24, phase 3 = 141,
+ * phase 1e = 31, so every flow reports 244/244 checks (241 PASS + 3
  * credential-less SKIP) when all five phases pass (`--no-worktree` skips
- * phase 2: 219/219). A deleted or added check fails the phase through the count
+ * phase 2: 220/220). A deleted or added check fails the phase through the count
  * pin. Run both flows before a release:
  *
  *   node scripts/e2e-smoke.mjs --flow patch
@@ -354,7 +354,7 @@ function decodeRemoteBytes(value) {
  * 0.2.2-rc.5). `Checks.summarize` fails when a phase reports a different
  * count, so deleting or silently skipping a check cannot pass unnoticed.
  */
-const EXPECTED_CHECKS = { phase1: 30, phase1b: 18, phase2: 24, phase3: 140, phase1e: 31 }
+const EXPECTED_CHECKS = { phase1: 30, phase1b: 18, phase2: 24, phase3: 141, phase1e: 31 }
 /** DSH version the pinned totals and scripted-turn contracts are verified against. */
 const BASELINE_DSH_VERSION = '0.2.2-rc.5'
 /** Probe command: queued-inbox visibility / ownership / idempotent retraction. */
@@ -1734,6 +1734,14 @@ async function runCloseChecks(client, paths, dshVersion) {
       && board.text.includes('verify automatic refresh')
       && String(board.report?.boardSummary ?? '').includes('E2E implementation plan'),
     board.text.slice(-900),
+  )
+  checks.expect(
+    'phase 3 real devlead_board_note_read tool reaches the service and returns committed markdown',
+    board.report?.noteToolRead?.isError === false
+      && board.report?.noteToolRead?.value?.note?.id === 'e2e-plan'
+      && board.report?.noteToolRead?.value?.note?.content?.includes('Read-only in the browser.')
+      && board.report?.noteToolRead?.value?.truncated === undefined,
+    JSON.stringify(board.report?.noteToolRead).slice(0, 700),
   )
   const notesIndexPath = derivedNotesIndexPath(paths.workspace)
   const persistedNotesIndex = existsSync(notesIndexPath)

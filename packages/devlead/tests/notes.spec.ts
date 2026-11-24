@@ -1,6 +1,6 @@
 /** Filesystem CRUD, CAS, locking, validation, lifecycle, and summary of board notes. */
 
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -16,6 +16,7 @@ import {
   DEVLEAD_NOTES_INDEX_MAX_BYTES,
   DEVLEAD_NOTES_MAX_PER_PROJECT,
   DEVLEAD_NOTES_NOTE_MAX_BYTES,
+  DEVLEAD_NOTES_READ_MAX_BYTES,
   DevLeadBoardNotesStore,
   type DevLeadBoardNoteWrite,
 } from '../src/notes.ts'
@@ -110,7 +111,9 @@ describe('DevLeadBoardNotesStore', () => {
     const listed = await fixture.notes.read({ project: '/tmp/alpha' })
     expect(listed.notes).toEqual([created.note])
     expect(listed.note).toBeUndefined()
-    expect((await fixture.notes.read({ project: 'alpha', note: id })).note?.content).toBe('# Plan\n')
+    const read = await fixture.notes.read({ project: 'alpha', note: id })
+    expect(read.note?.content).toBe('# Plan\n')
+    expect(read.truncated).toBeUndefined()
 
     const updated = await fixture.notes.write(write({
       project: 'alpha', operation: 'update', note: id, title: 'Release checklist', content: '# New\n', expectedBytes: 7,
@@ -154,6 +157,39 @@ describe('DevLeadBoardNotesStore', () => {
     }))).rejects.toMatchObject({ code: 'BOARD_INVALID' })
   })
 
+  it('rejects case-only create collisions without touching the index or any body', async () => {
+    const fixture = await boot()
+    const created = await fixture.notes.write(write({
+      project: 'alpha', operation: 'create', note: 'CaseNote', title: 'Original', content: 'original body',
+    }))
+    const bodyPath = join(fixture.notes.path!, created.note.path)
+    const beforeIndex = await readFile(fixture.notes.indexPath!, 'utf8')
+    await expect(fixture.notes.write(write({
+      project: 'alpha', operation: 'create', note: 'casenote', title: 'Collision', content: 'lost body',
+    }))).rejects.toMatchObject({ code: 'BOARD_INVALID' })
+    expect(await readFile(fixture.notes.indexPath!, 'utf8')).toBe(beforeIndex)
+    expect(await readFile(bodyPath, 'utf8')).toBe('original body')
+    expect(await readdir(dirname(bodyPath))).toEqual(['CaseNote.md'])
+  })
+
+  it('bounds a single-note model read to 64 KiB at a Unicode boundary', async () => {
+    const fixture = await boot()
+    const content = '🙂'.repeat(DEVLEAD_NOTES_NOTE_MAX_BYTES / 4)
+    const created = await fixture.notes.write(write({
+      project: 'alpha', operation: 'create', note: 'large', title: 'Large', content,
+    }))
+    const result = await fixture.notes.read({ project: 'alpha', note: created.note.id })
+    expect(result.truncated).toBe(true)
+    expect(result.note?.bytes).toBe(DEVLEAD_NOTES_NOTE_MAX_BYTES)
+    expect(result.note?.content.length).toBeGreaterThan(0)
+    expect(result.note?.content.length).toBeLessThan(content.length)
+    expect(content.startsWith(result.note!.content)).toBe(true)
+    expect(result.note?.content).not.toContain('�')
+    expect(Buffer.byteLength(JSON.stringify(result), 'utf8')).toBeLessThanOrEqual(DEVLEAD_NOTES_READ_MAX_BYTES)
+    // The storage/client limit remains 256 KiB; only the model result is cut.
+    expect(await readFile(join(fixture.notes.path!, created.note.path), 'utf8')).toBe(content)
+  })
+
   it('serializes two store instances through the index lock without lost notes', async () => {
     const fixture = await boot()
     const second = new DevLeadBoardNotesStore(
@@ -175,7 +211,7 @@ describe('DevLeadBoardNotesStore', () => {
 
   it('rejects unsafe ids and operation shapes without creating files', async () => {
     const fixture = await boot()
-    for (const id of ['../escape', '/absolute', 'a/b', 'a\\b', '.hidden', '-leading', 'white space']) {
+    for (const id of ['../escape', '/absolute', 'a/b', 'a\\b', '.hidden', '-leading', 'white space', 'CON', 'com1.txt', 'LPT9.']) {
       await expect(fixture.notes.write(write({
         project: 'alpha', operation: 'create', note: id, title: 'unsafe', content: 'no',
       }))).rejects.toMatchObject({ code: 'BOARD_INVALID' })
@@ -212,6 +248,27 @@ describe('DevLeadBoardNotesStore', () => {
     }
     await writeFile(fixture.notes.indexPath!, Buffer.alloc(DEVLEAD_NOTES_INDEX_MAX_BYTES + 1, 32))
     await expect(fixture.notes.read({ project: 'alpha' })).rejects.toMatchObject({ code: 'BOARD_LIMIT_EXCEEDED' })
+  })
+
+  it('rejects invalid UTF-8 even when byte counts still match', async () => {
+    const fixture = await boot()
+    const invalidIndex = Buffer.from([0x7b, 0xff, 0x7d])
+    await writeFile(fixture.notes.indexPath!, invalidIndex)
+    await expect(fixture.notes.read({ project: 'alpha' })).rejects.toMatchObject({ code: 'BOARD_INVALID' })
+    expect(await readFile(fixture.notes.indexPath!)).toEqual(invalidIndex)
+
+    await rm(fixture.notes.indexPath!)
+    const created = await fixture.notes.write(write({
+      project: 'alpha', operation: 'create', note: 'utf8', title: 'UTF-8', content: 'abc',
+    }))
+    const bodyPath = join(fixture.notes.path!, created.note.path)
+    await writeFile(bodyPath, Buffer.from([0x61, 0xff, 0x62]))
+    await expect(fixture.notes.read({ project: 'alpha', note: 'utf8' }))
+      .rejects.toMatchObject({ code: 'BOARD_INVALID' })
+    await expect(fixture.notes.write(write({
+      project: 'alpha', operation: 'update', note: 'utf8', content: 'overwrite',
+    }))).rejects.toMatchObject({ code: 'BOARD_INVALID' })
+    expect((await readFile(bodyPath)).length).toBe(created.note.bytes)
   })
 
   it('maps missing, oversized, and metadata-mismatched bodies and lets delete repair a missing body', async () => {

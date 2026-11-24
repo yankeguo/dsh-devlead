@@ -548,7 +548,13 @@ async function executeBoard(ctx, invocation) {
     expectedBytes: noteCreated.note.bytes,
   })
   const noteListing = await ctx.devLead.readBoardNote(agent, { project: 'E2E Board' })
-  const noteRead = await ctx.devLead.readBoardNote(agent, { project: 'e2e-board', note: 'e2e-plan' })
+  // Exercise the actual registered tool -> argument translation -> active-lead
+  // service path, not only a direct service call from this private probe.
+  const noteToolRead = await executeLeadReadTool(ctx, agent, 'devlead_board_note_read', {
+    project: 'e2e-board', note: 'e2e-plan',
+  })
+  if (noteToolRead.isError) throw new Error(`devlead_board_note_read failed: ${JSON.stringify(noteToolRead.content)}`)
+  const noteRead = noteToolRead.value
   return {
     kind: 'success',
     text: JSON.stringify({
@@ -564,6 +570,7 @@ async function executeBoard(ctx, invocation) {
       noteAppended,
       noteListing,
       noteRead,
+      noteToolRead,
       boardSummary: ctx.devLead.boardSummaryFor(agent),
     }),
   }

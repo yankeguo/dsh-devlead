@@ -27,6 +27,7 @@ import {
   DEVLEAD_NOTES_MAX_PROJECTS,
   DEVLEAD_NOTES_NOTE_MAX_BYTES,
   DEVLEAD_NOTES_PATH_MAX,
+  DEVLEAD_NOTES_READ_MAX_BYTES,
   DEVLEAD_NOTES_SCHEMA_VERSION,
   DEVLEAD_NOTES_SUMMARY_MAX,
   DEVLEAD_NOTES_TIMESTAMP_MAX,
@@ -47,6 +48,7 @@ export {
   DEVLEAD_NOTES_MAX_PROJECTS,
   DEVLEAD_NOTES_NOTE_MAX_BYTES,
   DEVLEAD_NOTES_PATH_MAX,
+  DEVLEAD_NOTES_READ_MAX_BYTES,
   DEVLEAD_NOTES_SCHEMA_VERSION,
   DEVLEAD_NOTES_SUMMARY_MAX,
   DEVLEAD_NOTES_TIMESTAMP_MAX,
@@ -77,18 +79,20 @@ export interface DevLeadBoardNoteProjectView {
   readonly directory: string
 }
 
-/** One selected note with its complete UTF-8 Markdown body. */
+/** One selected note with UTF-8 Markdown content bounded for a model result. */
 export interface DevLeadBoardNoteDocument extends DevLeadNoteMetadata {
   readonly content: string
 }
 
-/** Metadata listing or full-body read of one board project's notes. */
+/** Metadata listing or bounded single-note read of one board project's notes. */
 export interface DevLeadBoardNoteReadResult {
   readonly revision: number
   readonly updatedAt: string
   readonly project: DevLeadBoardNoteProjectView
   readonly notes?: DevLeadNoteMetadata[]
   readonly note?: DevLeadBoardNoteDocument
+  /** True when a single-note result was cut to the 64 KiB model-read budget. */
+  readonly truncated?: boolean
 }
 
 /** Logical note mutation. No field can redirect the notes root or a note path. */
@@ -217,6 +221,44 @@ function validateContentSize(content: string, pointer = '/content'): void {
   if (bytes > DEVLEAD_NOTES_NOTE_MAX_BYTES) {
     throw limit(`note content exceeds ${DEVLEAD_NOTES_NOTE_MAX_BYTES} UTF-8 bytes (${bytes})`, pointer)
   }
+}
+
+/** Match the browser's fail-closed UTF-8 contract for both index and body. */
+function decodeUtf8(bytes: Uint8Array, label: string): string {
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+  } catch (error) {
+    throw invalid(`${label} is not valid UTF-8: ${errorMessage(error)}`, '')
+  }
+}
+
+function serializedBytes(value: unknown): number {
+  return Buffer.byteLength(JSON.stringify(value), 'utf8')
+}
+
+/** Keep the complete model-facing JSON result within the board's 64 KiB budget. */
+function boundNoteRead(result: DevLeadBoardNoteReadResult): DevLeadBoardNoteReadResult {
+  if (result.note === undefined || serializedBytes(result) <= DEVLEAD_NOTES_READ_MAX_BYTES) return result
+  const characters = Array.from(result.note.content)
+  let low = 0
+  let high = characters.length
+  let content = ''
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2)
+    const candidate = characters.slice(0, middle).join('')
+    const bounded: DevLeadBoardNoteReadResult = {
+      ...result,
+      note: { ...result.note, content: candidate },
+      truncated: true,
+    }
+    if (serializedBytes(bounded) <= DEVLEAD_NOTES_READ_MAX_BYTES) {
+      content = candidate
+      low = middle + 1
+    } else {
+      high = middle - 1
+    }
+  }
+  return { ...result, note: { ...result.note, content }, truncated: true }
 }
 
 /** Validate fields that do not depend on the locked current index/body. */
@@ -379,20 +421,22 @@ export class DevLeadBoardNotesStore {
           )
           return
         }
-        const content = await readFile(filePath, 'utf8')
+        const bytes = await readFile(filePath)
         const after = await stat(filePath)
         if (!sameFingerprint({ mtimeMs: before.mtimeMs, size: before.size, ino: before.ino }, {
           mtimeMs: after.mtimeMs, size: after.size, ino: after.ino,
-        }) || Buffer.byteLength(content, 'utf8') !== after.size) continue
+        }) || bytes.length !== after.size) continue
         let value: unknown
         try {
-          value = JSON.parse(content)
+          value = JSON.parse(decodeUtf8(bytes, 'notes index'))
         } catch (error) {
-          this.lastError = new DevLeadBoardError(
-            `notes index is not valid JSON: ${errorMessage(error)}`,
-            'BOARD_INVALID',
-            [{ pointer: '', message: errorMessage(error) }],
-          )
+          this.lastError = isDevLeadBoardError(error)
+            ? error
+            : new DevLeadBoardError(
+              `notes index is not valid JSON: ${errorMessage(error)}`,
+              'BOARD_INVALID',
+              [{ pointer: '', message: errorMessage(error) }],
+            )
           return
         }
         try {
@@ -427,7 +471,7 @@ export class DevLeadBoardNotesStore {
     return this.cache ?? emptyIndex()
   }
 
-  /** Read one project's metadata list, or one complete note body. */
+  /** Read one project's metadata list, or one note body bounded for the model result. */
   async read(filter: DevLeadBoardNoteReadFilter): Promise<DevLeadBoardNoteReadResult> {
     this.requireRoot()
     const boardProject = await this.board.resolveProject(filter.project)
@@ -448,12 +492,12 @@ export class DevLeadBoardNotesStore {
       throw new DevLeadBoardError(`note "${filter.note}" was not found`, 'BOARD_NOTE_NOT_FOUND')
     }
     const body = await this.readBody(project, metadata)
-    return {
+    return boundNoteRead({
       revision: index.revision,
       updatedAt: index.updatedAt,
       project: view,
       note: { ...structuredClone(metadata), content: body.content },
-    }
+    })
   }
 
   /** Serialize Host calls, then use the index file's cross-process writer lock for each mutation. */
@@ -736,7 +780,7 @@ export class DevLeadBoardNotesStore {
             '/bytes',
           )
         }
-        return { buffer, content: buffer.toString('utf8') }
+        return { buffer, content: decodeUtf8(buffer, `note "${metadata.id}"`) }
       }
       throw ioError('read stable note', path, new Error('file changed repeatedly; retry'))
     } catch (error) {

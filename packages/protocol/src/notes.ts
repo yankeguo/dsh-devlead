@@ -11,6 +11,7 @@
 
 import { z as zod } from 'zod'
 import type { ZodType } from 'zod'
+import { DEVLEAD_BOARD_READ_MAX_BYTES } from './board.ts'
 
 /** Current on-disk notes-index schema version. */
 export const DEVLEAD_NOTES_SCHEMA_VERSION = 1
@@ -20,8 +21,10 @@ export const DEVLEAD_NOTES_DIR_NAME = 'notes'
 export const DEVLEAD_NOTES_INDEX_FILE_NAME = 'index.json'
 /** Maximum serialized index size (128 KiB); larger files are never decoded. */
 export const DEVLEAD_NOTES_INDEX_MAX_BYTES = 128 * 1024
-/** Maximum UTF-8 size of one Markdown note (256 KiB). */
+/** Maximum UTF-8 size of one stored Markdown note (256 KiB). */
 export const DEVLEAD_NOTES_NOTE_MAX_BYTES = 256 * 1024
+/** Maximum serialized size of one model-facing single-note read (64 KiB). */
+export const DEVLEAD_NOTES_READ_MAX_BYTES = DEVLEAD_BOARD_READ_MAX_BYTES
 /** Maximum project entries in one notes index (matching the board limit). */
 export const DEVLEAD_NOTES_MAX_PROJECTS = 50
 /** Maximum note metadata rows in one project. */
@@ -71,6 +74,19 @@ const projectIdSchema = zod.string().min(1).max(DEVLEAD_NOTES_ID_MAX)
 const titleSchema = zod.string().min(1).max(DEVLEAD_NOTES_TITLE_MAX)
 const summarySchema = zod.string().max(DEVLEAD_NOTES_SUMMARY_MAX)
 
+const WINDOWS_RESERVED_NAMES = new Set([
+  'CON', 'PRN', 'AUX', 'NUL',
+  ...Array.from({ length: 9 }, (_, index) => `COM${index + 1}`),
+  ...Array.from({ length: 9 }, (_, index) => `LPT${index + 1}`),
+])
+
+/** Match Win32 device names even with an extension or trailing spaces/dots. */
+function isWindowsReservedName(value: string): boolean {
+  const normalized = value.replace(/[. ]+$/gu, '')
+  const basename = normalized.split('.', 1)[0]?.replace(/ +$/gu, '').toUpperCase() ?? ''
+  return WINDOWS_RESERVED_NAMES.has(basename)
+}
+
 /**
  * Filename-safe ids keep the note body beneath its generated project directory.
  * A UUID fits this grammar; caller-supplied ids may also use dots, underscores,
@@ -78,6 +94,8 @@ const summarySchema = zod.string().max(DEVLEAD_NOTES_SUMMARY_MAX)
  */
 const noteIdSchema = projectIdSchema.regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/u, {
   message: 'note id must start with an alphanumeric and contain only alphanumerics, dot, underscore, or dash',
+}).refine(value => !isWindowsReservedName(value), {
+  message: 'note id must not be a Windows reserved device name',
 })
 const directorySchema = zod.string().min(1).max(DEVLEAD_NOTES_DIRECTORY_MAX)
   .regex(/^[a-z0-9][a-z0-9._-]*$/u, {
@@ -85,6 +103,9 @@ const directorySchema = zod.string().min(1).max(DEVLEAD_NOTES_DIRECTORY_MAX)
   })
   .refine(value => value !== '.' && value !== '..', {
     message: 'directory must not be a traversal segment',
+  })
+  .refine(value => !isWindowsReservedName(value), {
+    message: 'directory must not be a Windows reserved device name',
   })
 
 const relativePathSchema = zod.string().min(1).max(DEVLEAD_NOTES_PATH_MAX)
@@ -135,13 +156,14 @@ const indexSchema = zod.object({
     directories.add(project.directory)
     const noteIds = new Set<string>()
     project.notes.forEach((note, noteIndex) => {
-      if (noteIds.has(note.id)) {
+      const portableId = note.id.toLowerCase()
+      if (noteIds.has(portableId)) {
         context.addIssue({
           code: 'custom', path: ['projects', projectIndex, 'notes', noteIndex, 'id'],
-          message: `duplicate note id "${note.id}"`,
+          message: `duplicate note id "${note.id}" ignoring case`,
         })
       }
-      noteIds.add(note.id)
+      noteIds.add(portableId)
       const expectedPath = `${project.directory}/${note.id}.md`
       if (note.path !== expectedPath) {
         context.addIssue({
@@ -149,13 +171,14 @@ const indexSchema = zod.object({
           message: `note path must be "${expectedPath}"`,
         })
       }
-      if (paths.has(note.path)) {
+      const portablePath = note.path.toLowerCase()
+      if (paths.has(portablePath)) {
         context.addIssue({
           code: 'custom', path: ['projects', projectIndex, 'notes', noteIndex, 'path'],
-          message: `duplicate note path "${note.path}"`,
+          message: `duplicate note path "${note.path}" ignoring case`,
         })
       }
-      paths.add(note.path)
+      paths.add(portablePath)
     })
   })
 })
@@ -163,9 +186,10 @@ const indexSchema = zod.object({
 /**
  * Build the strict schema-v1 decoder shared by Host and browser.
  *
- * Unknown fields, duplicate project/note ids, duplicate directories/paths,
- * malformed timestamps, unsafe path spellings, and metadata paths that do not
- * exactly match their project directory and note id are all rejected.
+ * Unknown fields, duplicate project ids, case-insensitive duplicate note
+ * ids/paths, Windows reserved device names, duplicate directories, malformed
+ * timestamps, unsafe path spellings, and metadata paths that do not exactly
+ * match their project directory and note id are all rejected.
  */
 export function createDevLeadNotesIndexSchema(): ZodType<DevLeadNotesIndex> {
   return indexSchema as unknown as ZodType<DevLeadNotesIndex>

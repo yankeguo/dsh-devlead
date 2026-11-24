@@ -258,6 +258,26 @@ describe('DevLeadBoardPanelView', () => {
     expect(textOf(pausedConnecting.root)).not.toContain(zh['board.watch.connecting'])
   })
 
+  it('keeps polling busy text out of the polite live region', async () => {
+    const renderer = await mount(view(READY))
+    const announcement = renderer.root.findByProps({ 'data-devlead-board-live-announcement': 'true' })
+    expect(announcement.props.role).toBe('status')
+    expect(announcement.props['aria-live']).toBe('polite')
+    expect(textOf(announcement)).toBe(zh['board.autoRefresh.active'])
+    expect(renderer.root.findByProps({ 'data-auto-refresh': 'active' }).props.role).toBeUndefined()
+    await act(async () => {
+      renderer.update(view({ ...READY, refreshing: true }))
+    })
+    expect(textOf(renderer.root.findByProps({ 'data-devlead-board-live-announcement': 'true' })))
+      .toBe(zh['board.autoRefresh.active'])
+    expect(textOf(renderer.root.findByProps({ 'data-auto-refresh': 'active' }))).toContain(zh['board.refresh.loading'])
+    await act(async () => {
+      renderer.update(view(READY, { autoRefresh: 'paused' }))
+    })
+    expect(textOf(renderer.root.findByProps({ 'data-devlead-board-live-announcement': 'true' })))
+      .toBe(zh['board.autoRefresh.paused'])
+  })
+
   it('renders parse failure, last success, technical detail, and a working retry', async () => {
     const onRefresh = vi.fn()
     const renderer = await mount(view({
@@ -738,13 +758,12 @@ describe('DevLeadBoardPanel wiring', () => {
 
   it('derives notes paths and automatically refreshes both index metadata and the open note', async () => {
     vi.useFakeTimers()
-    const boardPath = '/work/project/.dsh/devlead/board.json'
     const indexPath = '/work/project/.dsh/devlead/notes/index.json'
     const notePath = '/work/project/.dsh/devlead/notes/active-dir/n2.md'
     let index = NOTES_INDEX
     let markdown = '# First body'
     const encode = (value: unknown): Uint8Array<ArrayBuffer> => new TextEncoder().encode(typeof value === 'string' ? value : JSON.stringify(value)) as Uint8Array<ArrayBuffer>
-    const valueFor = (path: string): unknown => path === boardPath ? BOARD : path === indexPath ? index : markdown
+    const valueFor = (path: string): unknown => path.endsWith('/board.json') ? BOARD : path.endsWith('/notes/index.json') ? index : markdown
     const stat = vi.fn(async (_sessionId: string, path: string) => ({
       ok: true as const,
       value: { absolutePath: path, version: 'v1', bytes: encode(valueFor(path)).byteLength },
@@ -772,6 +791,9 @@ describe('DevLeadBoardPanel wiring', () => {
     expect(readBytes).toHaveBeenCalledWith('session-1', notePath, {}, expect.any(AbortSignal))
     expect(textOf(renderer.root)).toContain('First body')
 
+    const noteReadsBeforeMetadataPoll = readBytes.mock.calls.filter((call: unknown[]) => call[1] === notePath).length
+    const noteWatchesBeforeMetadataPoll = changes.mock.calls.filter((call: unknown[]) => call[1] === notePath).length
+    const noteStreamBeforeMetadataPoll = streams.get(notePath)
     index = {
       ...index,
       revision: 2,
@@ -784,6 +806,9 @@ describe('DevLeadBoardPanel wiring', () => {
     })
     await flush()
     expect(textOf(renderer.root)).toContain('Fresh title')
+    expect(readBytes.mock.calls.filter((call: unknown[]) => call[1] === notePath).length).toBe(noteReadsBeforeMetadataPoll)
+    expect(changes.mock.calls.filter((call: unknown[]) => call[1] === notePath).length).toBe(noteWatchesBeforeMetadataPoll)
+    expect(streams.get(notePath)).toBe(noteStreamBeforeMetadataPoll)
 
     markdown = '# Second body'
     await act(async () => {
@@ -805,5 +830,31 @@ describe('DevLeadBoardPanel wiring', () => {
     await flush()
     expect(textOf(renderer.root)).toContain('Polled title')
     expect(textOf(renderer.root.findByProps({ 'data-devlead-note-document': 'n2' }))).toContain('Polled body')
+
+    // Switch workspace while the reader is open and hold the replacement reads.
+    // Neither the old index metadata nor its open document may flash under the
+    // new path, even before the new network requests settle.
+    let releaseNextReads!: () => void
+    const nextReads = new Promise<void>(resolve => { releaseNextReads = resolve })
+    stat.mockImplementation(async (_sessionId: string, path: string) => {
+      if (path.startsWith('/work/next/')) await nextReads
+      const data = encode(valueFor(path))
+      return { ok: true as const, value: { absolutePath: path, version: 'v1', bytes: data.byteLength } }
+    })
+    const oldNoteReads = readBytes.mock.calls.filter((call: unknown[]) => call[1] === notePath).length
+    act(() => {
+      renderer.update(<DevLeadBoardPanel {...panelProps({
+        'session-1': { ...LEAD_ROW, cwd: '/work/next' },
+      }, files)} />)
+    })
+    expect(textOf(renderer.root)).not.toContain('Polled title')
+    expect(textOf(renderer.root)).not.toContain('Polled body')
+    expect(renderer.root.findAllByProps({ 'data-devlead-note-document': 'n2' })).toHaveLength(0)
+    expect(readBytes.mock.calls.filter((call: unknown[]) => call[1] === notePath).length).toBe(oldNoteReads)
+    await act(async () => { releaseNextReads() })
+    await flush()
+    expect(stat).toHaveBeenCalledWith('session-1', '/work/next/.dsh/devlead/notes/index.json', expect.any(AbortSignal))
+    expect(textOf(renderer.root)).toContain('Polled title')
+    expect(readBytes.mock.calls.filter((call: unknown[]) => call[1] === '/work/next/.dsh/devlead/notes/active-dir/n2.md')).toHaveLength(0)
   })
 })

@@ -505,6 +505,12 @@ export function DevLeadBoardPanelView({
       : autoRefresh === 'paused' ? t('board.autoRefresh.paused')
         : state.refreshing || state.status === 'loading' ? t('board.refresh.loading')
           : watch === 'connecting' ? t('board.watch.connecting') : t(`board.autoRefresh.${autoRefresh}`)
+  // Polling flips `refreshing` every five seconds. Keep that visual busy text
+  // out of the live region; announce only health/lifecycle transitions/errors.
+  const announcementText = state.status === 'error' ? t('board.refresh.error')
+    : watch === 'ended' ? t(endedKey)
+      : autoRefresh === 'paused' ? t('board.autoRefresh.paused')
+        : watch === 'connecting' ? t('board.watch.connecting') : t(`board.autoRefresh.${autoRefresh}`)
   const readerProject = notes?.selection === undefined || board === undefined
     ? undefined
     : board.projects.find(project => project.id === notes.selection?.projectId)
@@ -527,11 +533,17 @@ export function DevLeadBoardPanelView({
           </Tooltip>
         </div>
         <div className="devlead-board-header-strip">
-          <div className="devlead-board-live" data-auto-refresh={autoRefresh} role="status" aria-live="polite" aria-atomic="true"
-            title={`${t('board.live')}: ${statusText}`}>
+          <div className="devlead-board-live" data-auto-refresh={autoRefresh} title={`${t('board.live')}: ${statusText}`}>
             <StateDot state={refreshState} size={8} />
             <span className="devlead-sr-only">{t('board.live')}</span>
-            <span>{statusText}</span>
+            <span aria-hidden="true">{statusText}</span>
+            <span
+              className="devlead-sr-only"
+              data-devlead-board-live-announcement="true"
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"
+            >{announcementText}</span>
           </div>
           {board !== undefined && (
             <div className="devlead-board-meta">

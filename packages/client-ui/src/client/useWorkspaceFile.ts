@@ -321,5 +321,12 @@ export function useWorkspaceFile<T>({
     if (config !== undefined) setWatchGeneration(current => current + 1)
   }, [config, refreshRead])
 
-  return { ...state, watch, autoRefresh, refresh }
+  // A config path changes during render, before the old watch effect cleans up
+  // and the first replacement read settles. Never expose the previous path's
+  // retained value as the new workspace's board/index/note in that interval.
+  const staleValue = config !== undefined && state.valuePath !== undefined && state.valuePath !== config.path
+  const currentState: DevLeadWorkspaceFileState<T> = staleValue
+    ? { status: 'loading', refreshing: true }
+    : state
+  return { ...currentState, watch, autoRefresh, refresh }
 }

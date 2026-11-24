@@ -182,6 +182,10 @@ schema 错误、未知字段或超限文件会产生带 RFC 6901 JSON pointer �
 后保留安全 ASCII 段，截断的可读 base 加 project id 的 SHA-256 短 digest，避免不同 id 清理成同名目录；
 极端短 digest 冲突使用完整 hash。已有项目的 directory 永久沿用 index 中的值。create 省略 note id 时由
 Host 生成 UUID；调用者提供的 id 必须匹配 `[A-Za-z0-9][A-Za-z0-9._-]*`，不能是路径或 traversal。
+为保证 macOS/Windows 的大小写不敏感文件系统与跨平台移动安全，项目内 note id 按 `id.toLowerCase()` 判重，
+全局 note path 按 `path.toLowerCase()` 判重；`CaseNote` 与 `casenote` 是同一个冲突身份，不能写入两份正文。
+note id 与 project directory 还拒绝 Windows 设备保留名 `CON/PRN/AUX/NUL/COM1-9/LPT1-9`，包括大小写、
+带扩展名、尾随空格/点等变体（例如 `con.txt`、`AUX.`、`com1`）；`COM10` 等普通名字不受影响。
 
 index 的完整形状如下（正文**绝不**进入 index）：
 
@@ -209,9 +213,9 @@ index 的完整形状如下（正文**绝不**进入 index）：
 - project strict：原始 board `id`、单个 sanitized lowercase `directory`、`notes[]`。note metadata strict：
   `id/title/summary/updatedAt/bytes/path`；`bytes` 是实际 UTF-8 正文大小的非负整数，`path` 是 notes 根
   相对的 POSIX 路径，不是 Host 绝对路径。
-- 未知字段、重复 project id、重复 directory、项目内重复 note id、全局重复 note path、非法时间、
-  绝对/反斜杠/空 segment/`.`/`..`/path traversal，以及任何不等于精确
-  `<project.directory>/<note.id>.md` 的 metadata path 都拒绝。path 按 schema 校验后才能拼到固定 root。
+- 未知字段、重复 project id、重复 directory、项目内**忽略大小写**的重复 note id、全局**忽略大小写**的
+  重复 note path、Windows 保留设备名、非法时间、绝对/反斜杠/空 segment/`.`/`..`/path traversal，
+  以及任何不等于精确 `<project.directory>/<note.id>.md` 的 metadata path 都拒绝。path 按 schema 校验后才能拼到固定 root。
 - 限制：index 序列化文件 **≤128 KiB**，单 note UTF-8 正文 **≤256 KiB**，最多 50 个 project entries、
   每项目 **≤100 notes**；project/note id ≤128、directory ≤128、title ≤200、summary ≤500、
   root-relative path ≤512 个 UTF-16 code units。超限是 `BOARD_LIMIT_EXCEEDED`，其它 schema/参数错误是
@@ -225,12 +229,13 @@ index 的完整形状如下（正文**绝不**进入 index）：
 `DevLeadBoardNotesStore`。`start()` 只在已解析 board path 下预创建 notes root 并 fresh read；start 失败与
 board 一样只记 warning / `boardStartError`，不阻塞 DevLead 加载。notes store 自己不留 watcher/timer；
 每次操作 fresh read，最多 4 次比较 `mtimeMs/size/ino` 与实际字节，持续变化映射为 `BOARD_IO_ERROR`。
-index 不存在等价于空 revision-0 index，不是错误；坏 JSON/schema/超限保留最后合法 cache 供摘要使用，
-但读写失败，绝不拿旧 cache 覆盖坏 index。
+index 与正文都使用 fatal `TextDecoder('utf-8', {fatal:true})`，因此即使字节数与 metadata 一致，非法 UTF-8
+仍是 `BOARD_INVALID`，不会被替换字符静默吞掉。index 不存在等价于空 revision-0 index，不是错误；坏
+UTF-8/JSON/schema/超限保留最后合法 cache 供摘要使用，但读写失败，绝不拿旧 cache 覆盖坏 index。
 
 - `read({project,note?})`：先在当前合法 board 快照上按精确 id、workspace title 或绝对 workspace path
   解析 project（title 歧义仍为 `BOARD_PROJECT_AMBIGUOUS`），再读 index。省略 note 返回该项目 metadata
-  列表；指定 note 返回 metadata + 完整 Markdown `content`。
+  列表；指定 note 返回 metadata + 有界 Markdown `content`，完整结果超过 64 KiB 时截断并标 `truncated:true`。
 - `write(patch,signal?)`：Host 内 promise 链串行化，再在 **index 文件的 `withFileLock`** 内 fresh read、
   校验 CAS、构造并 strict-validate 完整 next index，最后原子写文件。正文与 index 都用
   `writeFileAtomic`、文件 `0600`、目录 `0700`。取消按标准 `AbortError`，不伪装成领域错误。
@@ -247,6 +252,23 @@ index 不存在等价于空 revision-0 index，不是错误；坏 JSON/schema/�
 - update/append 无任何实际变化时不写文件、不 bump revision，返回 `changed:false`。readBody 要求稳定
   快照且实际字节等于 metadata.bytes；正文缺失是 `BOARD_NOTE_NOT_FOUND`，byte mismatch 是
   `BOARD_INVALID`，防止把外部交错修改覆盖掉。原子替换不等于 fsync 或跨多文件事务/掉电持久性保证。
+
+### 坏 index、orphan 与 board 重建后的恢复
+
+先执行 `/devlead off`（或停止 Host），确保没有 writer，再备份整个 `dirname(boardPath)/notes/`；不要在与
+active lead 并发写入时手改文件。恢复后重新 `/devlead on`，store 会 fresh read 并 strict-validate：
+
+- **坏 JSON / 非法 UTF-8 / schema 错误**：保留备份，修复 `notes/index.json` 后重试。若只需丢弃全部
+  notes 重新开始，可删除整个 notes 目录；board.json 不受影响。不要用最后合法 cache 或空 projects 静默
+  覆盖坏 index。
+- **未入 index 的 orphan 正文**：它们不参与 listing、摘要不计数，也不占每项目 100 条的 metadata 上限；
+  可在备份后删除未被任何 `metadata.path` 引用的 `.md` 文件。提交失败或 delete 清理失败留下的 orphan 可
+  安全按此方式回收。
+- **board 重建/项目 id 改换后滞留的旧 project entries**：这些 metadata 仍可能占用 50 projects / 每项目
+  100 notes 上限。手工编辑 `notes/index.json`，删除不再需要的 `projects[]` entry，并保持剩余 entry 的
+  schema、path、revision 类型有效；下一次成功 mutation 会推进 revision。若旧 notes 全部不再需要，删除
+  整个 notes 目录是更低风险的完整清理方式。若只想移除仍存在于当前 board 的项目中的一条 stale note，
+  优先用无 `expected_bytes` 的 `devlead_board_note_write delete`，它也能修复正文已缺失的 metadata。
 
 ### Notes AI 工具
 
@@ -265,11 +287,15 @@ lead。**四个 board/notes 工具都没有文件路径参数**；`project` 只�
 项目尚无 notes 或 index 不存在时 `notes: []`。指定 note 时省略 `notes`，返回：
 
 ```ts
-{ revision, updatedAt, project: { id, directory }, note: DevLeadNoteMetadata & { content: string } }
+{ revision, updatedAt, project: { id, directory }, note: DevLeadNoteMetadata & { content: string }, truncated?: true }
 ```
 
-未知 metadata id 或 indexed body 缺失为 `BOARD_NOTE_NOT_FOUND`。完成态卡片只显示项目、revision 与
-note 数/标题，不把 Markdown 正文重复画到工具卡片上。
+**单 note 模型读取上限 64 KiB**：上限与 `devlead_board_read` 相同，按**完整 JSON 结果的 UTF-8 字节数**
+计算（含 metadata 与 `truncated` 字段），不是只截正文到 64 KiB。超限时 `content` 保留原文前缀，按 Unicode
+码点边界截断并返回 `truncated:true`，不会切出半个 surrogate pair；`note.bytes` 仍是磁盘完整正文字节数。
+磁盘上限 256 KiB 与浏览器 reader 的完整读取不变。当前没有 offset/limit 分页参数，需要后半段时应由 Host
+文件维护者拆分 note；不要把截断结果误当全文覆盖写回。未知 metadata id 或 indexed body 缺失为
+`BOARD_NOTE_NOT_FOUND`。完成态卡片只显示项目、revision 与 note 数/标题/截断标记，不重复 Markdown 正文。
 
 #### `devlead_board_note_write`
 
@@ -278,7 +304,7 @@ note 数/标题，不把 Markdown 正文重复画到工具卡片上。
 
 | operation | 字段与行为 |
 | --- | --- |
-| `create` | 非空 `title` 必填；`note` 可省略以生成 UUID；`summary` 默认空、`content` 默认空；不接受 `expected_bytes`。重复 note id 拒绝 |
+| `create` | 非空 `title` 必填；`note` 可省略以生成 UUID；`summary` 默认空、`content` 默认空；不接受 `expected_bytes`。忽略大小写的重复 note id 拒绝 |
 | `update` | `note` 必填；只替换实际提供的 `title/summary/content`，省略字段保持不变；title trim 后不能为空 |
 | `append` | `note` 与 `content` 必填，把 content **原样追加**到旧正文，不自动补换行；不接受 title/summary |
 | `delete` | `note` 必填；不接受 title/summary/content；按上述 index-first 语义删除 |
@@ -439,7 +465,9 @@ client 按旧部署级宽路径语义继续工作；旧 client 会忽略新字�
   done/total 进度条与原生 `<details>` 任务清单；展开任务会同时解除 focus/next/goal/blocker/task
   的 line-clamp，全文不只能依赖 hover。非自明图标带 tooltip/可访问名称。paused/done 与
   「未在看板中的项目」使用次级折叠。样式覆盖 light/dark，标题关联、状态 live region、进度值、窄栏
-  焦点顺序等 aria 与原生键盘 disclosure 均可验收，且没有编辑控件。
+  焦点顺序等 aria 与原生键盘 disclosure 均可验收，且没有编辑控件。视觉 busy/「正在刷新」文案与 polite
+  live region 分离：5s 轮询造成的 refreshing 翻转不进入播报区域，只有健康/生命周期状态迁移与错误播报，
+  避免读屏软件每个周期重复提醒。
 - 「未在看板中的项目」折叠区只连接 Host 的 `useWorkspaces` / `useSessions` 投影，按 workspace
   path 过滤（POSIX 尾斜杠、Windows 分隔符/大小写做语法规范化），显示名称、path、会话数和这些
   Sessions 的最新 updatedAt；Session 清单 pending 时显示读取中，不谎报无活动。workspace 清单
@@ -454,7 +482,11 @@ client 按旧部署级宽路径语义继续工作；旧 client 会忽略新字�
   `useWorkspaceFile` 是 board、notes index、当前 note 共用的只读 `stat/readBytes/changes` 状态机；
   index 在面板可见时持续 watch+poll，正文只在 reader 打开时 watch+poll，关闭后立即 abort/dispose。
   外部修改 index 会刷新 chips/list/selection，外部修改当前 note 会刷新正文；response 还带 valuePath
-  代际核对，旧 note 的慢响应不能覆盖新选择。空/加载/读取/解析/超限/watch ended 分开呈现，坏 index 只
+  代际核对，旧 note 的慢响应不能覆盖新选择。`useWorkspaceFile` 在 path 切换的 render/effect 间隙也会按
+  `valuePath !== config.path` 隐藏旧 value 并显示 loading，chips 与已打开 reader 不会短暂借用旧 workspace
+  metadata。`useDevLeadNote` 的 memo key 是原始 `id/path/bytes`（加 notes root/platform），因此每次 index
+  poll 产生新 metadata 对象但正文代际未变时不会重开 watch 或重复 stat/readBytes；bytes 改变则会刷新正文。
+  空/加载/读取/解析/超限/watch ended 分开呈现，坏 index 只
   显示 notes unavailable notice，坏 note 只降级当前 reader，board 卡片与原自动刷新不受影响。
 - **notes chips 与全栏 reader**：项目只有实际 note 时才显示 chip，包含 note 数与按 updatedAt 最近
   的标题；长标题截断但 tooltip/aria 保留全文。打开后 reader 占满整个 board content，而不是某个卡片

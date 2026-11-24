@@ -12,6 +12,7 @@ import {
   DEVLEAD_NOTES_DIR_NAME,
   DEVLEAD_NOTES_NOTE_MAX_BYTES,
   DEVLEAD_NOTES_PATH_MAX,
+  DEVLEAD_NOTES_READ_MAX_BYTES,
   DEVLEAD_NOTES_SCHEMA_VERSION,
   DEVLEAD_NOTES_SUMMARY_MAX,
   DEVLEAD_NOTES_TIMESTAMP_MAX,
@@ -58,6 +59,7 @@ describe('shared notes-index wire contract', () => {
     expect(DEVLEAD_NOTES_INDEX_FILE_NAME).toBe('index.json')
     expect(DEVLEAD_NOTES_INDEX_MAX_BYTES).toBe(128 * 1024)
     expect(DEVLEAD_NOTES_NOTE_MAX_BYTES).toBe(256 * 1024)
+    expect(DEVLEAD_NOTES_READ_MAX_BYTES).toBe(64 * 1024)
     expect(DEVLEAD_NOTES_MAX_PROJECTS).toBe(50)
     expect(DEVLEAD_NOTES_MAX_PER_PROJECT).toBe(100)
     expect(DEVLEAD_NOTES_ID_MAX).toBe(128)
@@ -92,9 +94,25 @@ describe('shared notes-index wire contract', () => {
   it.each([
     ['duplicate project id', index([project(), project()]), '/projects/1/id'],
     ['duplicate note id', index([{ ...project(), notes: [note(), note()] }]), '/projects/0/notes/1/id'],
+    ['case-insensitive duplicate note id', index([{ ...project(), notes: [note('CaseNote'), note('casenote')] }]), '/projects/0/notes/1/id'],
+    ['case-insensitive duplicate note path', index([{ ...project(), notes: [note('CaseNote'), note('casenote')] }]), '/projects/0/notes/1/path'],
     ['wrong metadata path', index([{ ...project(), notes: [{ ...note(), path: 'other/note-1.md' }] }]), '/projects/0/notes/0/path'],
   ])('rejects %s', (_label, value, pointer) => {
     expect(pointersOf(value)).toContain(pointer)
+  })
+
+  it.each(['CON', 'con.txt', 'PRN.', 'aux...', 'NUL .md', 'COM1', 'com9.backup', 'LPT1', 'lpt9.'])(
+    'rejects a Windows reserved note id variant: %s',
+    id => {
+      expect(pointersOf(index([{ ...project(), notes: [note(id)] }]))).toContain('/projects/0/notes/0/id')
+    },
+  )
+
+  it('rejects reserved project directories while accepting ordinary COM10/LPT0 names', () => {
+    for (const directory of ['con', 'prn.txt', 'aux.', 'nul...', 'com1', 'lpt9.md']) {
+      expect(pointersOf(index([project('alpha', directory)]))).toContain('/projects/0/directory')
+    }
+    expect(schema.safeParse(index([{ ...project(), notes: [note('COM10'), note('LPT0')] }])).success).toBe(true)
   })
 
   it.each([

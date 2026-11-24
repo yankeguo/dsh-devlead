@@ -54,4 +54,21 @@ describe('notes paths and decoder', () => {
     }))).toThrow('notes schema v1 validation failed')
     expect(() => parseDevLeadNotesIndexBytes(encoded({ ...INDEX, extra: true }))).toThrow('notes schema v1 validation failed')
   })
+
+  it('rejects case-only collisions and Windows reserved names through the shared schema', () => {
+    const project = INDEX.projects[0]!
+    const metadata = project.notes[0]!
+    const withNotes = (notes: Array<Record<string, unknown>>) => encoded({
+      ...INDEX,
+      projects: [{ ...project, notes: notes.map(note => ({ ...metadata, ...note })) }],
+    })
+    expect(() => parseDevLeadNotesIndexBytes(withNotes([
+      { id: 'CaseNote', path: 'project-dir/CaseNote.md' },
+      { id: 'casenote', path: 'project-dir/casenote.md' },
+    ]))).toThrow('notes schema v1 validation failed')
+    for (const id of ['CON', 'prn.txt', 'AUX.', 'com1', 'LPT9.md']) {
+      expect(() => parseDevLeadNotesIndexBytes(withNotes([{ id, path: `project-dir/${id}.md` }])))
+        .toThrow('notes schema v1 validation failed')
+    }
+  })
 })

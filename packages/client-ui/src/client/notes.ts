@@ -159,6 +159,9 @@ export function useDevLeadNote({ sessionId, paths, metadata, files, visible = tr
       parse: parseDevLeadNoteBytes,
       parseError: (message, options) => new DevLeadNotesParseError(message, options),
     }
-  }, [metadata, paths])
+  // Index polling creates fresh metadata objects. Reopen the note watch only
+  // when its identity/path/byte generation changes, not for title/summary/
+  // updatedAt-only metadata refreshes of the same body.
+  }, [metadata?.id, metadata?.path, metadata?.bytes, paths?.root, paths?.pathPlatform])
   return useWorkspaceFile({ sessionId, config: fileConfig, files, visible: visible && metadata !== undefined, debounceMs, pollMs, pollMaxMs, now })
 }
