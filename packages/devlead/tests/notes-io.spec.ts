@@ -1,6 +1,6 @@
 /** Notes I/O mapping, index-last rollback, and orphan cleanup at dependency seams. */
 
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -99,27 +99,35 @@ describe('DevLeadBoardNotesStore I/O surface', () => {
     },
   )
 
-  it('restores the previous body when an updated index cannot commit', async () => {
+  it('leaves a native body untouched when a metadata index commit fails', async () => {
     const { notes } = await boot()
     const created = await notes.write({ project: 'alpha', operation: 'create', note: 'n1', title: 'N', content: 'old' })
-    const bodyPath = join(notes.path!, created.note.path)
     const beforeIndex = await readFile(notes.indexPath!, 'utf8')
     writeFailure = { kind: 'index', code: 'ENOSPC' }
-    await expect(notes.write({ project: 'alpha', operation: 'update', note: 'n1', content: 'new' }))
+    await expect(notes.write({ project: 'alpha', operation: 'update-metadata', note: 'n1', title: 'new title' }))
       .rejects.toMatchObject({ code: 'BOARD_IO_ERROR' })
-    expect(await readFile(bodyPath, 'utf8')).toBe('old')
+    expect(await readFile(created.note.absolutePath, 'utf8')).toBe('old')
     expect(await readFile(notes.indexPath!, 'utf8')).toBe(beforeIndex)
   })
 
-  it('does not touch the index when the body write fails', async () => {
+  it('does not create an index when the initial body write fails', async () => {
+    const { notes } = await boot()
+    writeFailure = { kind: 'body', code: 'EACCES' }
+    await expect(notes.write({ project: 'alpha', operation: 'create', note: 'n1', title: 'N', content: 'new' }))
+      .rejects.toMatchObject({ code: 'BOARD_IO_ERROR' })
+    expect(existsSync(notes.indexPath!)).toBe(false)
+    expect((await notes.read({ project: 'alpha' })).notes).toEqual([])
+  })
+
+  it('does not roll back a native body when reconciliation cannot commit the index', async () => {
     const { notes } = await boot()
     const created = await notes.write({ project: 'alpha', operation: 'create', note: 'n1', title: 'N', content: 'old' })
     const beforeIndex = await readFile(notes.indexPath!, 'utf8')
-    writeFailure = { kind: 'body', code: 'EACCES' }
-    await expect(notes.write({ project: 'alpha', operation: 'append', note: created.note.id, content: 'new' }))
-      .rejects.toMatchObject({ code: 'BOARD_IO_ERROR' })
+    await writeFile(created.note.absolutePath, 'native edit', 'utf8')
+    writeFailure = { kind: 'index', code: 'ENOSPC' }
+    await expect(notes.read({ project: 'alpha', note: 'n1' })).rejects.toMatchObject({ code: 'BOARD_IO_ERROR' })
+    expect(await readFile(created.note.absolutePath, 'utf8')).toBe('native edit')
     expect(await readFile(notes.indexPath!, 'utf8')).toBe(beforeIndex)
-    expect((await notes.read({ project: 'alpha', note: 'n1' })).note?.content).toBe('old')
   })
 
   it('maps lock acquisition failures without changing either file', async () => {

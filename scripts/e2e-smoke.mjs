@@ -178,7 +178,7 @@
  *                 request with DEVLEAD_TEAM_UNAVAILABLE and create nothing.
  *             140 checks (including the derived board path, four real Host
  *             board writes — CAS plus workspace-path/title references — real
-  *             markdown-note create/append, the injected
+  *             markdown-note create/native-edit reconciliation, the injected
  *             browser global, independent index/markdown disk read-back,
   *             browser-facing workspaceFiles stat/readBytes, lead-off store
  *             release and the mode-off board state; the pre-board
@@ -1728,9 +1728,11 @@ async function runCloseChecks(client, paths, dshVersion) {
   )
 
   checks.expect(
-    'phase 3 real notes create + append + project references + bounded summary succeed',
+    'phase 3 real notes create + native edit + lazy reconciliation + bounded summary succeed',
     board.report?.noteCreated?.revision === 1
-      && board.report?.noteAppended?.revision === 2
+      && board.report?.noteListing?.revision === 2
+      && board.report?.noteListing?.notes?.[0]?.bytes === board.report?.nativeNoteBytes
+      && board.report?.noteListing?.notes?.[0]?.absolutePath === board.report?.nativeNotePath
       && board.text.includes('verify automatic refresh')
       && String(board.report?.boardSummary ?? '').includes('E2E implementation plan'),
     board.text.slice(-900),
@@ -1740,6 +1742,8 @@ async function runCloseChecks(client, paths, dshVersion) {
     board.report?.noteToolRead?.isError === false
       && board.report?.noteToolRead?.value?.note?.id === 'e2e-plan'
       && board.report?.noteToolRead?.value?.note?.content?.includes('Read-only in the browser.')
+      && board.report?.noteToolRead?.value?.note?.absolutePath === board.report?.nativeNotePath
+      && board.report?.noteToolRead?.value?.note?.bytes === board.report?.nativeNoteBytes
       && board.report?.noteToolRead?.value?.truncated === undefined,
     JSON.stringify(board.report?.noteToolRead).slice(0, 700),
   )
@@ -1756,7 +1760,7 @@ async function runCloseChecks(client, paths, dshVersion) {
     ? readFileSync(notePath, 'utf8')
     : undefined
   checks.expect(
-    'phase 3 notes index and markdown disk bytes agree after atomic Host writes',
+    'phase 3 notes index reconciles native markdown disk bytes without overwriting them',
     persistedNotesIndex?.schemaVersion === 1
       && persistedNotesIndex?.revision === 2
       && persistedNote?.title === 'E2E implementation plan'

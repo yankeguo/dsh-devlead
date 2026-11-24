@@ -2387,7 +2387,7 @@ DSH peer 依赖。最小可交付闭环是 1b + 1c + 1d：question 快、answer 
 | `devlead_board_read` | `project?`(id / workspace title / 绝对 path), `include_tasks?`, `limit?` | `{ revision, updatedAt, projects, truncated? }` |
 | `devlead_board_update` | `project`, `expected_revision?`, `create?`, `set?`, `blockers?`, `tasks?` | `{ revision, updatedAt, project, changed[] }`；仅 lead AI 可写，详见 [BOARD](BOARD.md) |
 | `devlead_board_note_read` | `project`(看板 id / workspace title / 绝对 path), `note?`；无路径参数 | 省略 note 返回该项目 metadata 列表；指定 note 返回 metadata + Markdown 正文，详见 [BOARD](BOARD.md) |
-| `devlead_board_note_write` | `project`, `operation: create/update/append/delete`, `note?`, `title?`, `summary?`, `content?`, `expected_revision?`, `expected_bytes?`；无路径参数 | 仅 active lead AI 可写；锁内 fresh read + index revision/body bytes CAS + 原子替换，详见 [BOARD](BOARD.md) |
+| `devlead_board_note_write` | `project`, `operation: create/update-metadata/delete`, `note?`, `title?`, `summary?`、仅 create 的 `content?`, `expected_revision?`；无路径输入 | 仅 active lead AI 可写 index；锁内 fresh read + index revision CAS + 原子替换；返回 absolutePath 供原生文件工具编辑正文，详见 [BOARD](BOARD.md) |
 | `devlead_use_workspace` | `path`(必填，绝对路径), `title?`, `create?`(默认 false；显式 true 才 mkdir) | `{ workspace }` |
 | `devlead_list_sessions` | `workspace?`(id / 注册路径 / 精确 title), `watched_only?`, `limit?` | `{ sessions, watched: string[] }` |
 | `devlead_create_session` | `workspace?`(id / 注册路径 / 精确 title), `prompt?`, `title?`, `watch?`(默认 true), `preset?`(Host 定义 id；空白回退插件默认再 Host 默认), `isolation?`(默认 `none`；`worktree` = 尽力隔离), `provider?`+`model?`(成对；可选 `reasoning_effort?`), `agent_teams?` | `DevLeadCreatedSession`（含 `isolation`；请求时含已应用的 `model`/`agentTeams`） |
@@ -2416,9 +2416,11 @@ DSH peer 依赖。最小可交付闭环是 1b + 1c + 1d：question 快、answer 
   （P2-2），不阻塞服务激活。notes store 固定派生 `dirname(boardPath)/notes/index.json`，正文为
   `<sanitized project>/<note-id>.md`，index schema v1 只含 metadata；strict schema 拒绝未知字段、
   重复 id/directory/path 与 traversal，index ≤128 KiB、单 note ≤256 KiB、每项目 ≤100 条，
-  `board.json` 不变。写入同样走 Host promise 链 + `withFileLock` + `writeFileAtomic`，以
-  `expected_revision` 做 index CAS，并在适用的 update/append/delete 上用 `expected_bytes` 做正文 CAS；
-  已提交 index 是事实源，orphan Markdown 忽略。摘要为 active 项目追加 `notes:N` 与最近标题，标题先
+  `board.json` 不变。index 写入同样走 Host promise 链 + `withFileLock` + `writeFileAtomic`，以
+  `expected_revision` 做 CAS；工具仅 create（可选初始正文）/update-metadata/delete，后续正文用返回的
+  absolutePath 走 DSH 原生 read/write/edit，不走正文 CAS。read/list 串行在锁内读取稳定正文快照，惰性修复
+  bytes/文件 mtime updatedAt，缺失、坏 UTF-8 或超限时结构化报错且不提交修复，也绝不重写正文。已提交 index
+  是 metadata 事实源，orphan Markdown 忽略。摘要为 active 项目追加 `notes:N` 与最近标题，标题先
   折叠为安全单行，整体仍 ≤1536 UTF-8 bytes。完整 schema / lifecycle / store / global / Step B
   衔接见 [BOARD](BOARD.md)。
 - 输出 schema 用 `defineTool` 的 `ValueSchemaSpec`；`output.render` 把 canonical JSON 以文本
@@ -2736,7 +2738,7 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
 | `DEVLEAD_SELF_WATCH` | `watchSession` 试图关注自己（`promptSession` 向自己投递使用 `DEVLEAD_INVALID_INPUT`） |
 | `DEVLEAD_PROJECTION_INVALID` | 持久记录损坏（fold failure）；人类可用 `/devlead reset`（或冻结时的 `/devlead off`）恢复，`setEnabled(true)` 会拒绝并提示先 reset |
 
-| `BOARD_*` | 项目看板/notes 域错误：`BOARD_DISABLED`（没有 active lead/workspace 根、调用者不是当前 active lead，或看板被禁用）、`BOARD_NOT_FOUND`、`BOARD_INVALID`、`BOARD_PROJECT_NOT_FOUND` / `BOARD_PROJECT_AMBIGUOUS`（锁内快照解析失败）、`BOARD_REVISION_CONFLICT`（board 或 notes index CAS）、`BOARD_BYTES_CONFLICT`（notes 正文 bytes CAS）、`BOARD_NOTE_NOT_FOUND`（metadata 或 indexed body 缺失）、`BOARD_LIMIT_EXCEEDED`、`BOARD_IO_ERROR`（含 degraded start 后的真实 I/O 故障）。board/notes start 失败本身不映射为服务加载失败，只记录 `boardStartError` 并 warn |
+| `BOARD_*` | 项目看板/notes 域错误：`BOARD_DISABLED`（没有 active lead/workspace 根、调用者不是当前 active lead，或看板被禁用）、`BOARD_NOT_FOUND`、`BOARD_INVALID`、`BOARD_PROJECT_NOT_FOUND` / `BOARD_PROJECT_AMBIGUOUS`（锁内快照解析失败）、`BOARD_REVISION_CONFLICT`（board 或 notes index CAS）、`BOARD_NOTE_NOT_FOUND`（metadata 或 indexed body 缺失）、`BOARD_LIMIT_EXCEEDED`、`BOARD_IO_ERROR`（含 degraded start 后的真实 I/O 故障）。board/notes start 失败本身不映射为服务加载失败，只记录 `boardStartError` 并 warn |
 取消（`AbortSignal`）不映射到上面任何码：调用按标准 `AbortError` 拒绝。
 
 ## 9. 测试策略
@@ -2788,8 +2790,9 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   override 优先、`/devlead off` 与 lead 切换释放旧 store/watcher、start/预创建失败只 degraded
   且服务照常激活）、板文件读写/CAS/watcher、64 KiB 读取裁剪与 `truncated`、以及长
   workspace path/title 引用在锁内快照上解析（P2-1，不再误报 `BOARD_LIMIT_EXCEEDED`）。notes store 覆盖
-  directory/note id 派生、missing index、strict/corrupt/超限降级、metadata/full-body read、四种 write、
-  revision/bytes CAS、no-op、正文先写/index 提交/rollback、delete orphan、body bytes mismatch 与 lead
+  directory/note id/absolutePath 派生、missing index、strict/corrupt/超限降级、metadata/full-body read、
+  create/update-metadata/delete、index revision CAS/no-op、初始正文先写/index 提交/rollback、delete orphan、
+  原生写后的 bytes/mtime 惰性对账、并发只修一次、坏 UTF-8/缺失/超限不破坏 index、修复失败不覆盖正文与 lead
   生命周期；summary 覆盖 active notes count/latest 和总 1536-byte cap。另有独立
   `active.spec.ts` 覆盖 `lastEnabledAt`（reset/坏记录）、`rankActiveSessions` 的确定性排序、
   `activeSessionLabel` 与两种 refusal 文案。
@@ -2894,10 +2897,10 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   暴露）。
   patch 与 installed 两条加载流都跑完整多阶段；`--no-worktree` 跳过阶段 2（阶段 1、1b、3 仍
   运行，调试用）。每阶段 check 总数已 pin（`EXPECTED_CHECKS`，删/增 check 未更新 pin 会失败），
-  PASS 与 SKIP 分开输出；当前 rc.5 pin 以脚本为准（phase 1=30、1b=18、2=24、**3=141**、1e=31，
+  PASS 与 SKIP 分开输出；当前 rc.7 pin 以脚本为准（phase 1=30、1b=18、2=24、**3=141**、1e=31，
   完整流 **244/244**、no-worktree **220/220**，见 [CONTRIBUTING](CONTRIBUTING.md) 与
-  [COMPATIBILITY](COMPATIBILITY.md)）。rc.5 三条流的真实结果与退出码见
-  [v0.4.2-rc.5 release prep](e2e-evidence/v0.4.2-rc.5-release-prep.md)。以下为 Phase 1e 时点的历史实测：基线 DSH 0.2.2-rc.5
+  [COMPATIBILITY](COMPATIBILITY.md)）。rc.7 三条流的真实结果与退出码见
+  [v0.4.2-rc.7 release prep](e2e-evidence/v0.4.2-rc.7-release-prep.md)。以下为 Phase 1e 时点的历史实测：基线 DSH 0.2.2-rc.5
   的两条加载流完整组合计数为 **221/221**
   （阶段 1 27 + 阶段 1b 12 + 阶段 2 23 + 阶段 3 128 + 阶段 1e 31，阶段 3 含 agent preset roster、
   watched-Session 问题路由、排队 inbox、question conclude/durable/memory-only、两条 scripted

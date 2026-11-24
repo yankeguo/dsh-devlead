@@ -58,7 +58,10 @@ Browser half of the DevLead suite, loaded on the DSH **Web** platform.
   Files state machine (`stat`, `readBytes`, `changes`, watch + poll). Cards show note count and
   latest-title chips from index metadata; bodies are not embedded in the index. Opening a note loads
   only that validated `<project.directory>/<note.id>.md` body into a full-pane, read-only reader.
-  Both the index and current note refresh automatically after external changes. Empty/missing,
+  Both the index and current note refresh automatically after external/native edits. The ready reader
+  header prefers the current file's successful-stat observation time and exposes its live byte count;
+  DSH's opaque stat `version` is never parsed as an mtime. List ordering/times and chips still use index
+  metadata, whose stale bytes/updatedAt never gate body freshness or reopen the watch. Empty/missing,
   loading, read, malformed, oversized, and watch-ended states remain distinct; a bad index or note
   degrades only its notes surface, not the board. The dependency-free Markdown subset renders
   headings, paragraphs, lists, quotes, fenced/inline code, emphasis, strikethrough, and explicit
@@ -128,9 +131,11 @@ field label，但保留 focus/next/blocker 与任务进度，非自明图标有�
 client 从已解析的 board config 派生 `dirname(boardPath)/notes/index.json`，不接受用户路径，index
 与正文 I/O 都只经既有 Workspace Files `stat/readBytes/changes` 和 watch+poll 状态机。卡片从 metadata
 显示 note 数与最近标题 chip，index 不含正文；打开 note 时才读取经过校验的
-`<project.directory>/<note.id>.md`，并用全栏只读 reader 展示。index 与当前 note 都会在外部修改后
-自动刷新；缺失/空、加载、读取/解析错误、超限与 watch ended 分开呈现，坏 index/note 只降级对应
-notes 区域，不影响 board。无依赖 Markdown 子集以 React 元素/文本渲染标题、段落、列表、引用、
+`<project.directory>/<note.id>.md`，并用全栏只读 reader 展示。index 与当前 note 都会在外部/原生修改后
+自动刷新；ready reader 标题栏优先显示当前文件成功 stat 的观察时间并保留 live bytes，绝不把 DSH opaque
+version 当 mtime 解析。list 排序/时间与 chip 仍用 index metadata，过期的 bytes/updatedAt 不决定正文代际，
+也不触发 watch 重建。缺失/空、加载、读取/解析错误、超限与 watch ended 分开呈现，坏 index/note 只降级
+对应 notes 区域，不影响 board。无依赖 Markdown 子集以 React 元素/文本渲染标题、段落、列表、引用、
  fenced/inline code、强调、删除线与显式 HTTP(S) 链接；raw HTML 和危险 scheme 保持惰性文本，不使用
 `dangerouslySetInnerHTML`，浏览器没有写路径。
 0.2.0 起样式注入用跨模块实例引用计数（HMR 新旧实例交替不误删标签），组件与准入 hook 用

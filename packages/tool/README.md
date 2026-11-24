@@ -15,8 +15,8 @@ active lead.
 - `devlead_list_agent_presets` (Host Agent preset roster: id, name/description, default marker, broken reason)
 - `devlead_board_read` (user-visible project board, on by default for the active lead; id/title/workspace-path selection and bounded listings)
 - `devlead_board_update` (lead-only project create/set, blockers, tasks, and expected-revision CAS)
-- `devlead_board_note_read` (`project`, optional `note`; project note metadata or one Markdown body)
-- `devlead_board_note_write` (`project`, `operation: create|update|append|delete`, optional `note`, `title`, `summary`, `content`, `expected_revision`, and `expected_bytes` CAS)
+- `devlead_board_note_read` (`project`, optional `note`; project note metadata or one Markdown body, with Host-derived `absolutePath` in every metadata result)
+- `devlead_board_note_write` (`project`, `operation: create|update-metadata|delete`, optional `note`, `title`, `summary`, create-only `content`, and `expected_revision` CAS; existing bodies use DSH-native file tools)
 - `devlead_use_workspace`
 - `devlead_list_sessions`
 - `devlead_create_session` (optional `isolation: "none" | "worktree"`; creation-time
@@ -59,17 +59,21 @@ degrades the board only: the tools report `BOARD_IO_ERROR` while DevLead keeps w
 read-only; only the enabled lead AI writes.
 `devlead:board-summary` is a cache-safe `systemPrompt.context()` snapshot capped at 1536 UTF-8
 bytes; active-project rows include note counts and the latest note title when available. The independent lead-only
-`devlead:board-policy` section tells the model to batch updates at dispatch/close and material project changes, read
-notes before resuming or briefing, preserve concise plans/decisions/handoffs, reconcile stale state before reporting,
-and report board degradation once instead of repeatedly retrying. Ordinary Sessions see neither text nor board tools.
+`devlead:board-policy` section tells the model to maintain the board proactively, batch updates at dispatch/close and
+material project changes, prefer note list/read before resuming or briefing, create/update metadata/delete through the
+tool and then edit bodies with native file tools, reconcile stale state before reporting, and report board degradation
+once instead of repeatedly retrying. Ordinary Sessions see neither text nor board tools.
 
 The two notes tools use the same active-lead gate and board-project id/title/absolute-path resolver,
-but never accept a notes file path. They read and mutate only `dirname(boardPath)/notes/`: the strict
+but never accept a notes file path argument. They read and manage only `dirname(boardPath)/notes/`: the strict
 schema-v1 `index.json` contains `{ revision, updatedAt, projects:[{ id, directory, notes[] }] }` and
-metadata only, while each body is `<directory>/<note-id>.md`. Writes use a cross-process file lock,
-atomic replacement, index `expected_revision` CAS and note-body `expected_bytes` CAS. The index is
-limited to 128 KiB, each note to 256 KiB, and each project to 100 notes. The committed index is the
-source of truth; unindexed/orphan Markdown files are ignored. See
+metadata only, while each body is `<directory>/<note-id>.md`. Every read/create/update-metadata/delete result adds a
+Host-derived `absolutePath` to returned note metadata; it is not persisted in the disk index. `create` accepts an
+optional initial body (default empty), `update-metadata` changes only title/summary, and `delete` removes the note.
+Later body edits use DSH-native `read`/`write`/`edit` on `absolutePath`, never direct edits to `notes/index.json`.
+Tool-managed index/metadata/deletion writes use a cross-process file lock, atomic replacement, and index
+`expected_revision` CAS. The index is limited to 128 KiB, each note to 256 KiB of valid UTF-8, and each project to
+100 notes. The committed index is the source of truth; unindexed/orphan Markdown files are ignored. See
 [docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md) for operation-specific
 arguments, stable `BOARD_*` errors, and corruption semantics.
 
@@ -195,15 +199,19 @@ workspace path/title 不再误报 `BOARD_LIMIT_EXCEEDED`，未知引用仍是
 `BOARD_PROJECT_NOT_FOUND`/`BOARD_PROJECT_AMBIGUOUS`。start 失败只降级看板（`BOARD_IO_ERROR`），
 不阻塞 DevLead。用户只读，只有 enabled lead AI 可通过工具写入。
 动态 `devlead:board-summary` 使用 cache-safe `systemPrompt.context()`，上限 1536 UTF-8 bytes；active
-项目行在有数据时附带 note 数与最近标题。独立 lead-only `devlead:board-policy` 引导模型在派发/收口和实质变化时
-批量更新，恢复/派发前读 notes，保存简短计划/决策/交接，汇报前对齐过期状态，看板降级只报告一次而不反复重试；
-普通 Session 看不到该文案或看板工具。`devlead_board_note_read(project,note?)` 读取项目 notes
-metadata 或单条 Markdown 正文；`devlead_board_note_write` 接收 `project`、`operation`
-（create/update/append/delete）、可选 `note/title/summary/content` 与 `expected_revision/expected_bytes`
-CAS。project 仍按看板 id/title/绝对 path 解析，两个工具都不接受文件路径。notes 根目录固定为
-`dirname(boardPath)/notes/`，index 只含 metadata，正文路径固定为 `<directory>/<note-id>.md`；写入
-使用跨进程文件锁与原子替换，index 是提交事实、orphan Markdown 忽略。index ≤128 KiB、单 note
-≤256 KiB、每项目 ≤100 条。详见
+项目行在有数据时附带 note 数与最近标题。独立 lead-only `devlead:board-policy` 引导模型主动维护看板，在派发/收口和
+实质变化时批量更新，恢复/派发前优先用工具 list/read notes，用工具 create/更新 metadata/delete 后以原生文件工具
+编辑正文，汇报前对齐过期状态，看板降级只报告一次而不反复重试；普通 Session 看不到该文案或看板工具。
+`devlead_board_note_read(project,note?)` 读取项目 notes metadata 或单条 Markdown 正文；
+`devlead_board_note_write` 接收 `project`、`operation`（create/update-metadata/delete）、可选
+`note/title/summary/content` 与 `expected_revision` CAS。create 的 content 是可选初始正文（默认空），
+update-metadata 只改 title/summary；既有正文只能由原生文件工具修改。read/create/update-metadata/delete
+返回的每个 note metadata 都增加 Host 派生的 `absolutePath`（不写入磁盘 index），后续用 DSH 原生
+`read`/`write`/`edit` 编辑该绝对路径，不要手改 `notes/index.json`。project 仍按看板 id/title/绝对 path 解析，
+两个工具都不接受文件路径参数。notes 根目录固定为 `dirname(boardPath)/notes/`，index 只含 metadata，正文路径固定为
+`<directory>/<note-id>.md`；工具管理的 index/metadata/删除写入使用跨进程文件锁、原子替换与
+`expected_revision` CAS，index 是提交事实、orphan Markdown 忽略。index ≤128 KiB、单 note ≤256 KiB 合法 UTF-8、
+每项目 ≤100 条。详见
 [docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md)。`devlead_report` 返回 `{ report, durable, queued, warning? }`：报告先写入
 durable outbox，lead 日志 flush 成功后才清理；Host 无 storage 时 `durable:false` 并带 warning。
 报告参数：`message`（≤4000 码点）、

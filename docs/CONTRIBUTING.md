@@ -179,7 +179,8 @@ provider / 基础设施凭据按名称模式从环境清除，turn 稳定以 pro
   为 0，`devlead:policy` 文案契约，archive/unarchive/`stop_running`，注销 Workspace 的 durable
   行为，模型目录与创建时的模型 / Agent Teams 设置，以及 watched child 的 `devlead_report` 与
   `ask_user_question` 转发。board/notes 检查：真实 `ctx.devLead.updateBoard` 写入（CAS 与
-  workspace-path/title 引用）、notes create/append、真实 `devlead_board_note_read` tool→service、index + Markdown 磁盘 read-back、浏览器
+  workspace-path/title 引用）、notes create → 原生 absolutePath 写入 → read/list 对账、真实
+  `devlead_board_note_read` tool→service、index + Markdown 磁盘 read-back、浏览器
   `workspaceFiles.stat/readBytes`、lead-off 释放 store，以及没有 workspace 的 Session 返回
   `BOARD_DISABLED`。
 - **阶段 1e**：消息通道——progress/fyi background 不唤醒、blocked/decision 的 action steer、
@@ -195,7 +196,7 @@ PASS 与 SKIP 分开输出：
 | `pnpm e2e --no-worktree` | **220/220** | 1 + 1b + 3 + 1e（跳过阶段 2） |
 
 阶段 pin 为 30 / 18 / 24 / **141** / 31（`scripts/e2e-smoke.mjs` 的 `EXPECTED_CHECKS`，删/增
-check 未更新 pin 会失败），完整流目标计数是 **240 PASS + 3** 条无 provider 凭据的正向模型检查
+check 未更新 pin 会失败），完整流目标计数是 **241 PASS + 3** 条无 provider 凭据的正向模型检查
 SKIP；SKIP 未执行、不能算通过。这些是**当前 harness 的 pin**，真实 PASS 日志与证据由 Lead
 记录在 `docs/e2e-evidence/`，不以本页数字代替实跑证据。上一轮 Step B 复核修复轮的历史基线
 （28 / 12 / 23 / 132 / 31，完整流 226/226、no-worktree 203/203）保留为历史记录。原始日志与

@@ -165,40 +165,36 @@ export const TOOL_PARAMETERS = {
     operation: {
       type: 'string',
       required: true,
-      enum: ['create', 'update', 'append', 'delete'],
-      description: 'create makes a new note; update replaces supplied title/summary/content fields; append adds '
-        + 'content exactly to the existing body; delete removes the note from the index and its body when possible.',
+      enum: ['create', 'update-metadata', 'delete'],
+      description: 'create makes a new index entry and an optionally non-empty initial body; update-metadata changes '
+        + 'only title/summary; delete removes the note from the index and its body when possible. Existing bodies '
+        + 'are edited with DSH-native file tools, never through this tool.',
     },
     note: {
       type: 'string',
-      description: 'Note id. Required for update/append/delete. Optional for create: omit it to have the Host '
+      description: 'Note id. Required for update-metadata/delete. Optional for create: omit it to have the Host '
         + 'generate a UUID. Supplied ids must be filename-safe; do not pass paths or traversal segments.',
     },
     title: {
       type: 'string',
-      description: 'Non-empty display title, required for create and optionally replaced by update. Not accepted '
-        + 'for append/delete. Maximum 200 UTF-16 code units.',
+      description: 'Non-empty display title, required for create and optionally replaced by update-metadata. Not '
+        + 'accepted for delete. Maximum 200 UTF-16 code units.',
     },
     summary: {
       type: 'string',
-      description: 'Optional short metadata summary for create/update; defaults to empty on create and remains '
-        + 'unchanged when omitted on update. Maximum 500 UTF-16 code units. Not accepted for append/delete.',
+      description: 'Optional short metadata summary for create/update-metadata; defaults to empty on create and '
+        + 'remains unchanged when omitted on update-metadata. Maximum 500 UTF-16 code units. Not accepted for delete.',
     },
     content: {
       type: 'string',
-      description: 'Markdown body. Create defaults to empty; update replaces the body only when supplied; append '
-        + 'requires this and adds it exactly as supplied; delete does not accept it. The resulting note is limited '
-        + 'to 256 KiB UTF-8 and content is never duplicated into the index.',
+      description: 'Optional initial Markdown body for create only; defaults to empty. Not accepted for '
+        + 'update-metadata/delete. The resulting note is limited to 256 KiB of valid UTF-8 and content is never '
+        + 'duplicated into the index. Use the returned absolutePath with DSH-native file tools for later body edits.',
     },
     expected_revision: {
       type: 'integer',
       description: 'Optional non-negative notes-index compare-and-swap revision from devlead_board_note_read. '
         + 'A stale value fails with BOARD_REVISION_CONFLICT before any mutation.',
-    },
-    expected_bytes: {
-      type: 'integer',
-      description: 'Optional non-negative current-note UTF-8 byte count for update/append/delete. Use note.bytes '
-        + 'from a prior result; a mismatch fails with BOARD_BYTES_CONFLICT. Not valid for create.',
     },
   },
   devlead_use_workspace: {

@@ -57,7 +57,9 @@ rejection. The notes contract adds `DevLeadNotesIndex` / `DevLeadNotesProject` /
 `{ schemaVersion:1, revision, updatedAt, projects:[{ id, directory, notes[] }] }`; metadata rows are
 `{ id, title, summary, updatedAt, bytes, path }`. Unknown fields, duplicate project ids/directories,
 duplicate note ids/paths, unsafe absolute/traversal paths, and any path other than the exact
-`<project.directory>/<note.id>.md` are rejected. Note bodies never appear in the index.
+`<project.directory>/<note.id>.md` are rejected. Note bodies never appear in the index. Host tool results may
+derive an additional `absolutePath` for DSH-native body editing, but that field is deliberately not part of this
+wire schema and is never persisted.
 `client-ui` imports these constants and decoders from this package instead of depending on the Host
 core package.
 

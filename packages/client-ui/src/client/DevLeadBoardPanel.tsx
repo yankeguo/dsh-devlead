@@ -436,6 +436,10 @@ export function DevLeadNotesReader({ project, notesProject, notes, now, t }: {
   const metadata = sorted.find(note => note.id === notes.selection?.noteId) ?? sorted[0]
   const expectedPath = metadata === undefined ? undefined : resolveDevLeadNotePath(notes.paths, metadata)
   const documentReady = notes.note.status === 'ready' && notes.note.value !== undefined && notes.note.valuePath === expectedPath
+  // Native edits can leave index metadata stale. Only the selected, ready
+  // document uses its own live stat observation; list rows and chips keep the
+  // index ordering/metadata contract and never borrow another note's time.
+  const liveObservedAt = documentReady ? notes.note.observedAt : undefined
   return (
     <section className="devlead-notes-reader" data-devlead-notes-reader={project.id} aria-labelledby={`${idPrefix}-title`}>
       <header className="devlead-notes-reader-header">
@@ -460,7 +464,7 @@ export function DevLeadNotesReader({ project, notesProject, notes, now, t }: {
                     <header>
                       <h4 title={metadata.title}>{metadata.title}</h4>
                       {metadata.summary.length > 0 && <p>{metadata.summary}</p>}
-                      <RelativeTime iso={metadata.updatedAt} now={now} t={t} label={t('board.project.updated')} />
+                      <RelativeTime iso={liveObservedAt ?? metadata.updatedAt} now={now} t={t} label={t('board.project.updated')} />
                     </header>
                     {notes.note.status === 'error' ? <NotesState kind="error" t={t} message={notes.note.error?.message} />
                       : notes.note.status === 'empty' ? <NotesState kind="note-empty" t={t} />

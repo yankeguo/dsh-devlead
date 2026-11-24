@@ -563,6 +563,34 @@ describe('DevLeadBoardPanelView', () => {
     expect(onClose).toHaveBeenCalledTimes(1)
   })
 
+  it('uses live stat time only for the selected ready document, never list order or chips', async () => {
+    const liveObservedAt = '2026-11-24T08:00:00.000Z'
+    const notes = notesView({
+      selection: { projectId: 'active', noteId: 'n1' },
+      note: {
+        ...notesView().note,
+        value: { markdown: '# Older note body' },
+        valuePath: `${NOTES_PATHS.root}/active-dir/n1.md`,
+        observedAt: liveObservedAt,
+        observedBytes: 17,
+      },
+    })
+    const reader = await mount(view(READY, { notes }))
+    const document = reader.root.findByProps({ 'data-devlead-note-document': 'n1' })
+    expect(document.findByType('header').findByType('time').props.dateTime).toBe(liveObservedAt)
+    // The selected row still exposes the stale index timestamp, as do its siblings.
+    expect(reader.root.findByProps({ 'data-devlead-note': 'n1' }).findByType('time').props.dateTime)
+      .toBe('2026-11-23T06:00:00.000Z')
+    expect(reader.root.findByProps({ 'data-devlead-note': 'n2' }).findByType('time').props.dateTime).toBe(ISO)
+    const rows = reader.root.findAll(instance => instance.props['data-devlead-note'] !== undefined)
+    expect(rows.map(row => row.props['data-devlead-note'])).toEqual(['n2', 'n1'])
+
+    const board = await mount(view(READY, { notes: notesView({ note: notes.note }) }))
+    const chip = board.root.findByProps({ 'data-devlead-notes-chip': 'active' })
+    expect(textOf(chip)).toContain('Latest note')
+    expect(textOf(chip)).not.toContain('Older note')
+  })
+
   it('degrades empty, bad-index, missing-note, and bad-note states without harming the board', async () => {
     const emptyIndex = { ...NOTES_INDEX, projects: [] }
     const empty = await mount(view(READY, { notes: notesView({
@@ -758,9 +786,16 @@ describe('DevLeadBoardPanel wiring', () => {
 
   it('derives notes paths and automatically refreshes both index metadata and the open note', async () => {
     vi.useFakeTimers()
+    vi.setSystemTime(NOW)
     const indexPath = '/work/project/.dsh/devlead/notes/index.json'
     const notePath = '/work/project/.dsh/devlead/notes/active-dir/n2.md'
-    let index = NOTES_INDEX
+    let index: DevLeadNotesIndex = {
+      ...NOTES_INDEX,
+      projects: [{
+        ...NOTES_INDEX.projects[0]!,
+        notes: [NOTES_INDEX.projects[0]!.notes[0]!, { ...NOTES_INDEX.projects[0]!.notes[1]!, bytes: 1 }],
+      }],
+    }
     let markdown = '# First body'
     const encode = (value: unknown): Uint8Array<ArrayBuffer> => new TextEncoder().encode(typeof value === 'string' ? value : JSON.stringify(value)) as Uint8Array<ArrayBuffer>
     const valueFor = (path: string): unknown => path.endsWith('/board.json') ? BOARD : path.endsWith('/notes/index.json') ? index : markdown
@@ -790,6 +825,10 @@ describe('DevLeadBoardPanel wiring', () => {
     await flush()
     expect(readBytes).toHaveBeenCalledWith('session-1', notePath, {}, expect.any(AbortSignal))
     expect(textOf(renderer.root)).toContain('First body')
+    const documentTime = () => renderer.root.findByProps({ 'data-devlead-note-document': 'n2' })
+      .findByType('header').findByType('time')
+    const initialObservedAt = new Date(Date.now()).toISOString()
+    expect(documentTime().props.dateTime).toBe(initialObservedAt)
 
     const noteReadsBeforeMetadataPoll = readBytes.mock.calls.filter((call: unknown[]) => call[1] === notePath).length
     const noteWatchesBeforeMetadataPoll = changes.mock.calls.filter((call: unknown[]) => call[1] === notePath).length
@@ -797,7 +836,7 @@ describe('DevLeadBoardPanel wiring', () => {
     index = {
       ...index,
       revision: 2,
-      projects: [{ ...index.projects[0]!, notes: [{ ...index.projects[0]!.notes[1]!, title: 'Fresh title' }, index.projects[0]!.notes[0]!] }],
+      projects: [{ ...index.projects[0]!, notes: [{ ...index.projects[0]!.notes[1]!, title: 'Fresh title', bytes: 999 }, index.projects[0]!.notes[0]!] }],
     }
     await act(async () => {
       streams.get(indexPath)?.push({ kind: 'change', change: { absolutePath: indexPath, version: 'v2' } })
@@ -809,8 +848,11 @@ describe('DevLeadBoardPanel wiring', () => {
     expect(readBytes.mock.calls.filter((call: unknown[]) => call[1] === notePath).length).toBe(noteReadsBeforeMetadataPoll)
     expect(changes.mock.calls.filter((call: unknown[]) => call[1] === notePath).length).toBe(noteWatchesBeforeMetadataPoll)
     expect(streams.get(notePath)).toBe(noteStreamBeforeMetadataPoll)
+    expect(documentTime().props.dateTime).toBe(initialObservedAt)
+    expect(renderer.root.findByProps({ 'data-devlead-note': 'n2' }).findByType('time').props.dateTime).toBe(ISO)
 
     markdown = '# Second body'
+    vi.setSystemTime(NOW + 60_000)
     await act(async () => {
       streams.get(notePath)?.push({ kind: 'change', change: { absolutePath: notePath, version: 'v2' } })
       await Promise.resolve()
@@ -819,8 +861,13 @@ describe('DevLeadBoardPanel wiring', () => {
     await flush()
     expect(textOf(renderer.root.findByProps({ 'data-devlead-note-document': 'n2' }))).toContain('Second body')
     expect(textOf(renderer.root.findByProps({ 'data-devlead-note-document': 'n2' }))).not.toContain('First body')
+    expect(documentTime().props.dateTime).toBe(new Date(Date.now()).toISOString())
+    expect(documentTime().props.dateTime).not.toBe(initialObservedAt)
+    expect(renderer.root.findByProps({ 'data-devlead-note': 'n2' }).findByType('time').props.dateTime).toBe(ISO)
+    const watchedObservedAt = String(documentTime().props.dateTime)
 
     markdown = '# Polled body'
+    vi.setSystemTime(NOW + 120_000)
     index = {
       ...index,
       revision: 3,
@@ -830,6 +877,8 @@ describe('DevLeadBoardPanel wiring', () => {
     await flush()
     expect(textOf(renderer.root)).toContain('Polled title')
     expect(textOf(renderer.root.findByProps({ 'data-devlead-note-document': 'n2' }))).toContain('Polled body')
+    expect(Date.parse(String(documentTime().props.dateTime))).toBeGreaterThan(Date.parse(watchedObservedAt))
+    expect(renderer.root.findByProps({ 'data-devlead-note': 'n2' }).findByType('time').props.dateTime).toBe(ISO)
 
     // Switch workspace while the reader is open and hold the replacement reads.
     // Neither the old index metadata nor its open document may flash under the

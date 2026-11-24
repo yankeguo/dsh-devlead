@@ -45,20 +45,24 @@ const BOARD_UPDATE_DESCRIPTION =
 const BOARD_NOTE_READ_DESCRIPTION =
   'Read Markdown notes attached to one existing DevLead board project. project is required and resolves exactly as '
   + 'in the other board tools. Omit note for the project\'s bounded metadata listing (id, title, summary, updatedAt, '
-  + 'bytes, and root-relative path); provide its id for Markdown content plus metadata. A single-note JSON result '
-  + 'is capped at 64 KiB and longer content is cut at a Unicode boundary with truncated:true. A missing notes '
+  + 'bytes, root-relative path, and Host-derived absolutePath); provide its id for Markdown content plus metadata. '
+  + 'Prefer this list/read interface over direct filesystem reads for board notes. A single-note JSON result is '
+  + 'capped at 64 KiB and longer content is cut at a Unicode boundary with truncated:true. To edit a body, use '
+  + 'DSH-native read/write/edit on the returned absolutePath; never edit notes/index.json directly. A missing notes '
   + 'index reads as an empty revision-0 project listing. Only the active lead can use this tool, and no argument '
   + 'accepts or redirects a Host filesystem path. Use when resuming a project or preparing a dispatch brief so prior '
   + 'plans, decisions, and handoffs inform the work.'
 
 const BOARD_NOTE_WRITE_DESCRIPTION =
-  'Create, update, append to, or delete one Markdown note on an existing project of the active lead\'s DevLead '
-  + 'board. create requires title and may omit note to generate a UUID; update changes only supplied title/summary/'
-  + 'content; append requires note and content and appends it exactly; delete requires note. Use expected_revision '
-  + 'for notes-index CAS and expected_bytes for existing-note CAS when a lost update would matter. Returns the '
-  + 'resulting metadata (or deleted metadata), revision, and changed state without returning the body. Note content '
-  + 'stays out of the index. The Host owns all locations; write arguments contain no file path. Use when a plan, '
-  + 'design, decision, or handoff should survive across turns; keep it concise instead of copying transcripts or logs.'
+  'Maintain only the notes index, note metadata, or deletion for one existing project of the active lead\'s DevLead '
+  + 'board. create requires title, accepts optional summary/content (the initial body defaults to empty), and may '
+  + 'omit note to generate a UUID; update-metadata requires note and changes only supplied title/summary; delete '
+  + 'requires note. This tool never updates or appends to an existing Markdown body. Use expected_revision for '
+  + 'notes-index CAS when a lost update would matter. Returns resulting or deleted metadata including absolutePath, '
+  + 'revision, and changed state without returning the body. After create, use DSH-native read/write/edit on '
+  + 'absolutePath for body edits; never edit notes/index.json directly. Note content stays out of the index. The Host '
+  + 'owns all locations; write arguments contain no file path. Use when a plan, design, decision, or handoff should '
+  + 'survive across turns; keep it concise instead of copying transcripts or logs.'
 
 const BLOCKER_SCHEMA = {
   type: 'object',
@@ -158,6 +162,7 @@ const NOTE_METADATA_SCHEMA = {
     updatedAt: { type: 'string', required: true },
     bytes: { type: 'integer', required: true },
     path: { type: 'string', required: true },
+    absolutePath: { type: 'string', required: true },
   },
 } as const
 
@@ -193,7 +198,7 @@ export const BOARD_NOTE_WRITE_OUTPUT = jsonOutput({
     updatedAt: { type: 'string', required: true },
     project: { ...NOTE_PROJECT_SCHEMA, required: true },
     note: { ...NOTE_METADATA_SCHEMA, required: true },
-    operation: { type: 'string', required: true, enum: ['create', 'update', 'append', 'delete'] },
+    operation: { type: 'string', required: true, enum: ['create', 'update-metadata', 'delete'] },
     changed: { type: 'boolean', required: true },
     deleted: { type: 'boolean' },
   },
@@ -256,7 +261,6 @@ export function boardUpdateRequest(args: BoardUpdateArgs): Omit<DevLeadBoardUpda
 export function boardNoteWriteRequest(args: BoardNoteWriteArgs): DevLeadBoardNoteWrite {
   const note = optionalNoteRef(args.note)
   const expectedRevision = optionalNonNegativeInteger(args.expected_revision, 'expected_revision')
-  const expectedBytes = optionalNonNegativeInteger(args.expected_bytes, 'expected_bytes')
   return {
     project: requireProjectRef(args.project),
     operation: args.operation,
@@ -265,7 +269,6 @@ export function boardNoteWriteRequest(args: BoardNoteWriteArgs): DevLeadBoardNot
     ...args.summary === undefined ? {} : { summary: args.summary },
     ...args.content === undefined ? {} : { content: args.content },
     ...expectedRevision === undefined ? {} : { expectedRevision },
-    ...expectedBytes === undefined ? {} : { expectedBytes },
   }
 }
 

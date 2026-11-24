@@ -184,14 +184,36 @@ rc.5 不改变 rc.4 的紧凑 UI 与 notes 功能；以下项目是对上述验�
    新路径下不得短暂显示旧 workspace 的 chip、note list、标题或正文。恢复后只读新 index，旧 note watch/timer
    已 dispose，不继续 stat/readBytes。
 2. **index-only 更新不增加正文 I/O**：保持 reader 打开，只改 index 的 title/summary/updatedAt，记录 Remote
-   调用；metadata 应更新，但当前 note 的 watch 不重建，stat/readBytes 次数不增加。随后改变正文 bytes，当前
-   note 才重新读取。正常 note 自身 watch/poll 仍按既有契约工作，不能把这项优化误测成停止正文自动刷新。
+   调用；metadata 应更新，但当前 note 的 watch 不重建，stat/readBytes 次数不增加。rc.7 起 bytes 也不再作为
+   正文代际 key（它可能尚未对账），正文只由自身 watch/poll + live stat/readBytes 驱动；不能把这项优化误测成
+   停止正文自动刷新。
 3. **视觉 busy 与读屏分离**：开启读屏软件观察至少 3 个 5s 周期；视觉上「正在刷新/自动刷新」可以变化，
    polite live region 不得每轮重复播报。切换 paused/active、watch ended 或出现错误时仍应有对应状态迁移/错误
    提示，刷新按钮的 `aria-busy` 保持可用。
 4. **边界错误局部恢复**：非法 UTF-8 的 index/note 即使字节数不变也必须显示局部解析错误；超限正文在模型
    工具结果中是 `truncated:true` 的 64 KiB 有界 JSON，而浏览器仍按完整文件读取。大小写变体与 Windows 保留名
    由共享 schema/Host/client 自动化覆盖，不要求在大小写不敏感主机上手工制造冲突文件。
+
+### 0.4.2-rc.7 必查：原生正文编辑与 live reader
+
+本轮 notes 索引仍由 Host 工具维护，但正文改由 agent 通过 DSH 原生 read/write/edit 直接修改。沿用全新隔离
+profile，不以单测代替真实浏览器观察：
+
+1. **原生编辑自动刷新**：用 `devlead_board_note_write create` 创建 note，从返回结果记录 `absolutePath`，
+   不调用 update/append（工具面已移除），直接通过原生文件编辑修改该 md。保持 reader 打开且不点手动刷新，
+   watch change 后正文与标题栏 live 时间应更新；watch ended 时由可见且聚焦页面的 poll 恢复。read/list 后
+   index bytes/updatedAt 已对账，磁盘正文仍是原生编辑内容。
+2. **live 时间的含义与隔离**：reader 标题栏优先显示当前 ready 文件成功 `stat` 的观察时间；DSH
+   `WorkspaceFileStat.version` 是 opaque token，不能当 mtime 解析。index 的 title/summary/updatedAt/bytes
+   刷新不得重建正文 watch 或增加正文 I/O；note list 排序/时间和项目 chip 最新标题仍只看 index，不能借用
+   另一 note 的 live 时间。path/note 切换期间不得显示旧正文或旧 live 时间。
+3. **旧 index 与错误降级**：在 Host 尚未 read/list 对账时，index bytes/updatedAt 旧值不得导致 reader 报错、
+   停止轮询或展示旧正文。分别直接制造缺文件、超过 256 KiB、非法 UTF-8：Host read/list 返回结构化错误且
+   index 不变；UI 仅当前 reader 或 notes 区降级，board 卡片/KPI/chip 与原 watch/poll 不回归。修复文件后
+   自动恢复，delete 仍能清理缺失/非法正文的 index entry。
+4. **notes chip / reader 回归**：light/dark 与宽/窄栏复查 notes chip/count/latest、全栏 Markdown reader、
+   返回焦点、危险载荷文本化与只读性。保存本轮真实截图和带时间戳的原生文件写入 + Remote stat/readBytes
+   记录；仅有组件测试或旧 rc.4/rc.5 截图时不得把本轮人工验收标为通过。
 
 ### 清理
 

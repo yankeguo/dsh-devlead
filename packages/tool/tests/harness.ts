@@ -299,6 +299,7 @@ export class FakeDevLead {
     notes: [{
       id: 'note-1', title: 'Release plan', summary: 'checklist', updatedAt: '2026-01-02T00:00:00.000Z',
       bytes: 7, path: 'webapp-0123456789ab/note-1.md',
+      absolutePath: '/tmp/lead/.dsh/devlead/notes/webapp-0123456789ab/note-1.md',
     }],
   }
 
@@ -310,8 +311,9 @@ export class FakeDevLead {
     note: {
       id: 'note-1', title: 'Release plan', summary: 'checklist', updatedAt: '2026-01-02T00:00:00.000Z',
       bytes: 7, path: 'webapp-0123456789ab/note-1.md',
+      absolutePath: '/tmp/lead/.dsh/devlead/notes/webapp-0123456789ab/note-1.md',
     },
-    operation: 'update',
+    operation: 'update-metadata',
     changed: true,
   }
 

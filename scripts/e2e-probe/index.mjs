@@ -539,14 +539,11 @@ async function executeBoard(ctx, invocation) {
     content: '# E2E implementation plan\n\n## Context\n\nThe lead and the human read the same project note.\n\n- persist markdown outside `board.json`\n- render **safe** project context\n\n> Read-only in the browser.\n',
     expectedRevision: 0,
   })
-  const noteAppended = await ctx.devLead.writeBoardNote(agent, {
-    project: workspacePath,
-    operation: 'append',
-    note: 'e2e-plan',
-    content: '\n## Next\n\n- [ ] verify automatic refresh\n',
-    expectedRevision: noteCreated.revision,
-    expectedBytes: noteCreated.note.bytes,
-  })
+  // Native file edits deliberately bypass the notes tool. Append through the
+  // returned absolute Markdown path, then prove read/list reconciliation fixes
+  // the index without rewriting that external body.
+  const nativeMarkdown = `${readFileSync(noteCreated.note.absolutePath, 'utf8')}\n## Next\n\n- [ ] verify automatic refresh\n`
+  writeFileSync(noteCreated.note.absolutePath, nativeMarkdown, 'utf8')
   const noteListing = await ctx.devLead.readBoardNote(agent, { project: 'E2E Board' })
   // Exercise the actual registered tool -> argument translation -> active-lead
   // service path, not only a direct service call from this private probe.
@@ -567,9 +564,10 @@ async function executeBoard(ctx, invocation) {
       byTitle,
       detail,
       noteCreated,
-      noteAppended,
       noteListing,
       noteRead,
+      nativeNotePath: noteCreated.note.absolutePath,
+      nativeNoteBytes: Buffer.byteLength(nativeMarkdown, 'utf8'),
       noteToolRead,
       boardSummary: ctx.devLead.boardSummaryFor(agent),
     }),

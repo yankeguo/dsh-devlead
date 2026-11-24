@@ -56,10 +56,11 @@ AI writes via `devlead_board_update`; humans and browser clients are read-only. 
 the `window.__DSH_DEVLEAD_BOARD__` contract. No user path is hardcoded in this package.
 
 Each project can also carry long-form Markdown notes outside `board.json`: the active lead uses
-`devlead_board_note_read` / `devlead_board_note_write` for list/read and create/update/append/delete,
-while people get a compact notes chip and an immersive, read-only Markdown reader in the board. Notes
-use a bounded metadata index under `dirname(boardPath)/notes/`, locked atomic Host writes, and the same
-Workspace Files read path as the board; the browser has no write API or custom Remote.
+`devlead_board_note_read` for list/read and `devlead_board_note_write` only for create/metadata/delete,
+then edits the returned absolute Markdown path with DSH-native file tools. People get a compact notes chip
+and an immersive, read-only Markdown reader in the board. Notes use a bounded metadata index under
+`dirname(boardPath)/notes/`; Host reads lazily reconcile file metadata without rewriting bodies, and the
+browser uses the same Workspace Files read path as the board with no write API or custom Remote.
 
 ## What's inside
 
@@ -110,9 +111,10 @@ dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 [docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md)。
 
 每个项目还可在 `board.json` 之外保存长篇 Markdown notes：active lead 用
-`devlead_board_note_read` / `devlead_board_note_write` 读取列表/全文并创建、更新、追加、删除；
-用户通过项目卡上的紧凑 notes chip 打开全栏只读阅读器。notes 在 `dirname(boardPath)/notes/` 下
-使用有界元数据索引、文件锁与 Host 原子写，浏览器沿用 Workspace Files 只读路径，没有写 API 或新增 Remote。
+`devlead_board_note_read` 读取列表/全文，只用 `devlead_board_note_write` 创建/更新元数据/删除，
+再用 DSH 原生文件工具编辑返回的绝对 Markdown 路径；用户通过项目卡上的紧凑 notes chip 打开全栏
+只读阅读器。notes 在 `dirname(boardPath)/notes/` 下使用有界元数据索引，Host read/list 惰性对账且
+不重写正文；浏览器沿用 Workspace Files 只读路径，没有写 API 或新增 Remote。
 
 更多文档见[根 README.zh.md](https://github.com/yankeguo/dsh-devlead/blob/main/README.zh.md)与
 [设计说明](https://github.com/yankeguo/dsh-devlead/blob/main/docs/DESIGN.md)；License 为 MIT，

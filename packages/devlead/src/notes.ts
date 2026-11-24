@@ -2,11 +2,10 @@
  * Host-owned Markdown notes beside the project board.
  *
  * The notes root is always `dirname(boardPath)/notes`; callers resolve a board
- * project but never supply a filesystem path. Every mutation revalidates the
- * index under its cross-process writer lock, writes the Markdown first, and
- * atomically commits the index last. Consequently an unindexed body is only an
- * ignored orphan, and a failed index write is followed by best-effort body
- * rollback.
+ * project but never supply a filesystem path. The tool owns index metadata and
+ * lifecycle only: create may seed a body, while later Markdown edits use DSH's
+ * native file tools directly. Reads reconcile file size/mtime back into the
+ * index under its cross-process writer lock without writing the body.
  *
  * @module @yankeguo/dsh-devlead
  */
@@ -79,8 +78,13 @@ export interface DevLeadBoardNoteProjectView {
   readonly directory: string
 }
 
+/** Tool-facing metadata; the absolute path is derived by Host and never persisted in the index. */
+export interface DevLeadBoardNoteMetadata extends DevLeadNoteMetadata {
+  readonly absolutePath: string
+}
+
 /** One selected note with UTF-8 Markdown content bounded for a model result. */
-export interface DevLeadBoardNoteDocument extends DevLeadNoteMetadata {
+export interface DevLeadBoardNoteDocument extends DevLeadBoardNoteMetadata {
   readonly content: string
 }
 
@@ -89,7 +93,7 @@ export interface DevLeadBoardNoteReadResult {
   readonly revision: number
   readonly updatedAt: string
   readonly project: DevLeadBoardNoteProjectView
-  readonly notes?: DevLeadNoteMetadata[]
+  readonly notes?: DevLeadBoardNoteMetadata[]
   readonly note?: DevLeadBoardNoteDocument
   /** True when a single-note result was cut to the 64 KiB model-read budget. */
   readonly truncated?: boolean
@@ -98,13 +102,13 @@ export interface DevLeadBoardNoteReadResult {
 /** Logical note mutation. No field can redirect the notes root or a note path. */
 export interface DevLeadBoardNoteWrite {
   readonly project: string
-  readonly operation: 'create' | 'update' | 'append' | 'delete'
+  readonly operation: 'create' | 'update-metadata' | 'delete'
   readonly note?: string
   readonly title?: string
   readonly summary?: string
+  /** Optional initial Markdown for create only; later body edits use native file tools. */
   readonly content?: string
   readonly expectedRevision?: number
-  readonly expectedBytes?: number
 }
 
 /** Result of one committed or no-op logical note mutation. */
@@ -112,7 +116,7 @@ export interface DevLeadBoardNoteWriteResult {
   readonly revision: number
   readonly updatedAt: string
   readonly project: DevLeadBoardNoteProjectView
-  readonly note: DevLeadNoteMetadata
+  readonly note: DevLeadBoardNoteMetadata
   readonly operation: DevLeadBoardNoteWrite['operation']
   readonly changed: boolean
   readonly deleted?: boolean
@@ -131,6 +135,7 @@ interface FileFingerprint {
 interface ExistingNoteBody {
   readonly buffer: Buffer
   readonly content: string
+  readonly updatedAt: string
 }
 
 function emptyIndex(): DevLeadNotesIndex {
@@ -264,9 +269,8 @@ function boundNoteRead(result: DevLeadBoardNoteReadResult): DevLeadBoardNoteRead
 /** Validate fields that do not depend on the locked current index/body. */
 function validateWriteShape(patch: DevLeadBoardNoteWrite): void {
   validateNonNegativeInteger(patch.expectedRevision, 'expectedRevision')
-  validateNonNegativeInteger(patch.expectedBytes, 'expectedBytes')
-  if (!['create', 'update', 'append', 'delete'].includes(patch.operation)) {
-    throw invalid('operation must be create, update, append, or delete', '/operation')
+  if (!['create', 'update-metadata', 'delete'].includes(patch.operation)) {
+    throw invalid('operation must be create, update-metadata, or delete', '/operation')
   }
   if (patch.operation !== 'create' && patch.note === undefined) {
     throw invalid(`note is required for ${patch.operation}`, '/note')
@@ -275,18 +279,11 @@ function validateWriteShape(patch: DevLeadBoardNoteWrite): void {
     if (patch.title === undefined || patch.title.trim().length === 0) {
       throw invalid('create requires a non-empty title', '/title')
     }
-    if (patch.expectedBytes !== undefined) {
-      throw invalid('expectedBytes is not valid for create', '/expectedBytes')
-    }
+  } else if (patch.content !== undefined) {
+    throw invalid(`${patch.operation} does not accept content; edit the returned Markdown path with native file tools`, '/content')
   }
-  if (patch.operation === 'append') {
-    if (patch.content === undefined) throw invalid('append requires content', '/content')
-    if (patch.title !== undefined || patch.summary !== undefined) {
-      throw invalid('append accepts content but not title or summary', '/content')
-    }
-  }
-  if (patch.operation === 'delete' && (patch.title !== undefined || patch.summary !== undefined || patch.content !== undefined)) {
-    throw invalid('delete does not accept title, summary, or content', '/operation')
+  if (patch.operation === 'delete' && (patch.title !== undefined || patch.summary !== undefined)) {
+    throw invalid('delete does not accept title or summary', '/operation')
   }
   if (patch.content !== undefined) validateContentSize(patch.content)
   const id = patch.note ?? '00000000-0000-4000-8000-000000000000'
@@ -474,30 +471,89 @@ export class DevLeadBoardNotesStore {
   /** Read one project's metadata list, or one note body bounded for the model result. */
   async read(filter: DevLeadBoardNoteReadFilter): Promise<DevLeadBoardNoteReadResult> {
     this.requireRoot()
-    const boardProject = await this.board.resolveProject(filter.project)
-    const index = await this.current()
-    const project = index.projects.find(candidate => candidate.id === boardProject.id)
-    const view = { id: boardProject.id, directory: projectDirectory(boardProject.id, index) }
-    if (filter.note === undefined) {
-      return {
-        revision: index.revision,
-        updatedAt: index.updatedAt,
-        project: view,
-        notes: structuredClone(project?.notes ?? []),
-      }
+    const operation = this.writeTail.then(() => this.readReconciled(filter))
+    this.writeTail = operation.catch(() => undefined)
+    return operation
+  }
+
+  /**
+   * Native Markdown edits bypass this store, so every model read/list lazily
+   * reconciles the selected file snapshots. One locked transaction validates
+   * all selected bodies before committing any metadata repair; an invalid or
+   * missing body therefore leaves the previous index untouched.
+   */
+  private async readReconciled(filter: DevLeadBoardNoteReadFilter): Promise<DevLeadBoardNoteReadResult> {
+    const root = this.requireRoot()
+    const filePath = this.requireIndexPath()
+    try {
+      const boardProject = await this.board.resolveProject(filter.project)
+      return await withFileLock(filePath, async () => {
+        const current = await this.current()
+        const currentProject = current.projects.find(candidate => candidate.id === boardProject.id)
+        let selected: readonly DevLeadNoteMetadata[] = currentProject?.notes ?? []
+        if (filter.note !== undefined) {
+          const metadata = currentProject?.notes.find(note => note.id === filter.note)
+          if (currentProject === undefined || metadata === undefined) {
+            throw new DevLeadBoardError(`note "${filter.note}" was not found`, 'BOARD_NOTE_NOT_FOUND')
+          }
+          selected = [metadata]
+        }
+        const bodies = new Map<string, ExistingNoteBody>()
+        if (currentProject !== undefined) {
+          for (const metadata of selected) bodies.set(metadata.id, await this.readBody(currentProject, metadata))
+        }
+        let index = current
+        if (currentProject !== undefined && selected.some(metadata => {
+          const body = bodies.get(metadata.id)!
+          return metadata.bytes !== body.buffer.length || metadata.updatedAt !== body.updatedAt
+        })) {
+          const next = structuredClone(current)
+          const project = next.projects.find(candidate => candidate.id === boardProject.id)!
+          for (const metadata of project.notes) {
+            const body = bodies.get(metadata.id)
+            if (body === undefined) continue
+            metadata.bytes = body.buffer.length
+            metadata.updatedAt = body.updatedAt
+          }
+          next.revision = current.revision + 1
+          next.updatedAt = new Date(this.now()).toISOString()
+          index = this.validateNext(next)
+          await this.commitIndex(filePath, index)
+        }
+        const project = index.projects.find(candidate => candidate.id === boardProject.id)
+        const view = { id: boardProject.id, directory: projectDirectory(boardProject.id, index) }
+        if (filter.note === undefined) {
+          return {
+            revision: index.revision,
+            updatedAt: index.updatedAt,
+            project: view,
+            notes: (project?.notes ?? []).map(metadata => this.publicMetadata(root, project!, metadata)),
+          }
+        }
+        const metadata = project!.notes.find(note => note.id === filter.note)!
+        return boundNoteRead({
+          revision: index.revision,
+          updatedAt: index.updatedAt,
+          project: view,
+          note: {
+            ...this.publicMetadata(root, project!, metadata),
+            content: bodies.get(metadata.id)!.content,
+          },
+        })
+      })
+    } catch (error) {
+      if (isDevLeadBoardError(error)) throw error
+      if (isWriteIoError(error)) throw ioError('read notes', filePath, error)
+      throw error
     }
-    if (project === undefined) throw new DevLeadBoardError(`note "${filter.note}" was not found`, 'BOARD_NOTE_NOT_FOUND')
-    const metadata = project.notes.find(note => note.id === filter.note)
-    if (metadata === undefined) {
-      throw new DevLeadBoardError(`note "${filter.note}" was not found`, 'BOARD_NOTE_NOT_FOUND')
-    }
-    const body = await this.readBody(project, metadata)
-    return boundNoteRead({
-      revision: index.revision,
-      updatedAt: index.updatedAt,
-      project: view,
-      note: { ...structuredClone(metadata), content: body.content },
-    })
+  }
+
+  private publicMetadata(
+    root: string,
+    project: DevLeadNotesProject,
+    metadata: DevLeadNoteMetadata,
+  ): DevLeadBoardNoteMetadata {
+    return { ...structuredClone(metadata), absolutePath: noteFilePath(root, project, metadata) }
   }
 
   /** Serialize Host calls, then use the index file's cross-process writer lock for each mutation. */
@@ -544,23 +600,12 @@ export class DevLeadBoardNotesStore {
         if (metadata === undefined) {
           throw new DevLeadBoardError(`note "${patch.note ?? ''}" was not found`, 'BOARD_NOTE_NOT_FOUND')
         }
-        // Deleting an indexed metadata row does not require its body to exist:
-        // a missing body is precisely the orphan/stale-index case deletion can
-        // repair. A byte-CAS delete still has to prove the existing body first.
-        const body = patch.operation === 'delete' && patch.expectedBytes === undefined
-          ? undefined
-          : await this.readBody(project, metadata)
-        if (body !== undefined && patch.expectedBytes !== undefined && body.buffer.length !== patch.expectedBytes) {
-          throw new DevLeadBoardError(
-            `note byte conflict: expected ${patch.expectedBytes}, current ${body.buffer.length}`,
-            'BOARD_BYTES_CONFLICT',
-            [{ pointer: '/expectedBytes', message: `expected ${patch.expectedBytes}, current ${body.buffer.length}` }],
-          )
-        }
+        // Index lifecycle and metadata are independent from the body. Deletion
+        // can repair a missing body, and native Markdown edits never enter CAS.
         if (patch.operation === 'delete') {
           return await this.deleteNote(root, filePath, current, next, project, metadata, timestamp)
         }
-        return await this.changeNote(root, filePath, current, next, project, metadata, body!, patch, timestamp)
+        return await this.changeMetadata(root, filePath, current, next, project, metadata, patch)
       }, signal === undefined ? {} : { signal })
     } catch (error) {
       if (isDevLeadBoardError(error)) throw error
@@ -623,58 +668,47 @@ export class DevLeadBoardNotesStore {
       revision: validated.revision,
       updatedAt: validated.updatedAt,
       project: { id: project.id, directory: project.directory },
-      note: structuredClone(validatedNote),
+      note: this.publicMetadata(root, validatedProject, validatedNote),
       operation: 'create',
       changed: true,
     }
   }
 
-  private async changeNote(
+  private async changeMetadata(
     root: string,
     filePath: string,
     current: DevLeadNotesIndex,
     next: DevLeadNotesIndex,
     project: DevLeadNotesProject,
     metadata: DevLeadNoteMetadata,
-    body: ExistingNoteBody,
     patch: DevLeadBoardNoteWrite,
-    timestamp: string,
   ): Promise<DevLeadBoardNoteWriteResult> {
     const title = patch.title === undefined ? metadata.title : patch.title.trim()
     if (title.length === 0) throw invalid('title must not be empty', '/title')
     const summary = patch.summary ?? metadata.summary
-    const content = patch.operation === 'append'
-      ? body.content + patch.content!
-      : patch.content ?? body.content
-    validateContentSize(content)
-    const changed = title !== metadata.title || summary !== metadata.summary || content !== body.content
+    const changed = title !== metadata.title || summary !== metadata.summary
     if (!changed) {
       return {
         revision: current.revision,
         updatedAt: current.updatedAt,
         project: { id: project.id, directory: project.directory },
-        note: structuredClone(metadata),
+        note: this.publicMetadata(root, project, metadata),
         operation: patch.operation,
         changed: false,
       }
     }
-    Object.assign(metadata, {
-      title,
-      summary,
-      updatedAt: timestamp,
-      bytes: Buffer.byteLength(content, 'utf8'),
-    })
+    Object.assign(metadata, { title, summary })
     next.revision = current.revision + 1
-    next.updatedAt = timestamp
+    next.updatedAt = new Date(this.now()).toISOString()
     const validated = this.validateNext(next)
     const validatedProject = validated.projects.find(candidate => candidate.id === project.id)!
     const validatedNote = validatedProject.notes.find(note => note.id === metadata.id)!
-    await this.writeBodyAndCommit(root, filePath, validatedProject, validatedNote, content, body.buffer, validated)
+    await this.commitIndex(filePath, validated)
     return {
       revision: validated.revision,
       updatedAt: validated.updatedAt,
       project: { id: project.id, directory: project.directory },
-      note: structuredClone(validatedNote),
+      note: this.publicMetadata(root, validatedProject, validatedNote),
       operation: patch.operation,
       changed: true,
     }
@@ -707,7 +741,7 @@ export class DevLeadBoardNotesStore {
       revision: validated.revision,
       updatedAt: validated.updatedAt,
       project: { id: project.id, directory: project.directory },
-      note: structuredClone(metadata),
+      note: this.publicMetadata(root, project, metadata),
       operation: 'delete',
       changed: true,
       deleted: true,
@@ -760,7 +794,7 @@ export class DevLeadBoardNotesStore {
     this.lastError = undefined
   }
 
-  /** Read a stable body and reject a stale index/body byte mismatch instead of overwriting it. */
+  /** Read a stable native-edited body; reconciliation, never body rewriting, handles stale metadata. */
   private async readBody(project: DevLeadNotesProject, metadata: DevLeadNoteMetadata): Promise<ExistingNoteBody> {
     const root = this.requireRoot()
     const path = noteFilePath(root, project, metadata)
@@ -774,13 +808,11 @@ export class DevLeadBoardNotesStore {
         const after = await stat(path)
         if (before.mtimeMs !== after.mtimeMs || before.size !== after.size || before.ino !== after.ino
           || buffer.length !== after.size) continue
-        if (buffer.length !== metadata.bytes) {
-          throw invalid(
-            `note "${metadata.id}" body has ${buffer.length} bytes but its index metadata records ${metadata.bytes}`,
-            '/bytes',
-          )
+        return {
+          buffer,
+          content: decodeUtf8(buffer, `note "${metadata.id}"`),
+          updatedAt: after.mtime.toISOString(),
         }
-        return { buffer, content: decodeUtf8(buffer, `note "${metadata.id}"`) }
       }
       throw ioError('read stable note', path, new Error('file changed repeatedly; retry'))
     } catch (error) {

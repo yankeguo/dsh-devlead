@@ -45,6 +45,10 @@ export interface DevLeadWorkspaceFileState<T> {
   readonly error?: DevLeadBoardFileError
   /** Last successful valid read, retained across a later failure. */
   readonly lastSuccessAt?: string
+  /** Client observation time of the stat paired with this ready value; not a filesystem mtime. */
+  readonly observedAt?: string
+  /** Live byte count reported by that stat, never metadata from another file or index. */
+  readonly observedBytes?: number
   /** A refresh is in flight; ready content may remain visible meanwhile. */
   readonly refreshing: boolean
 }
@@ -171,6 +175,9 @@ export function useWorkspaceFile<T>({
           else fail('read', metadata.error)
           return
         }
+        // WorkspaceFileStat.version is an opaque freshness token, not a timestamp.
+        // Record our own observation time without inferring filesystem mtimes.
+        const observedAt = new Date(now()).toISOString()
         if (metadata.value.bytes !== undefined && metadata.value.bytes > config.maxBytes) {
           fail('parse', config.parseError(`${config.fileLabel} exceeds ${config.maxBytes} bytes`))
           return
@@ -198,6 +205,8 @@ export function useWorkspaceFile<T>({
           value,
           valuePath: config.path,
           lastSuccessAt: new Date(now()).toISOString(),
+          observedAt,
+          ...metadata.value.bytes === undefined ? {} : { observedBytes: metadata.value.bytes },
           refreshing: false,
         })
       } catch (error) {

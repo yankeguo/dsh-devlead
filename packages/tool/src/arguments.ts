@@ -128,13 +128,12 @@ export interface BoardNoteReadArgs {
 /** Arguments of `devlead_board_note_write`. */
 export interface BoardNoteWriteArgs {
   readonly project: string
-  readonly operation: 'create' | 'update' | 'append' | 'delete'
+  readonly operation: 'create' | 'update-metadata' | 'delete'
   readonly note?: string
   readonly title?: string
   readonly summary?: string
   readonly content?: string
   readonly expected_revision?: number
-  readonly expected_bytes?: number
 }
 
 /** Arguments of `devlead_use_workspace`. */
