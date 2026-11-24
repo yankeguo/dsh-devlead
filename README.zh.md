@@ -7,7 +7,7 @@
 **Session**（会话），创建并续写其他会话、读取它们的状态、在状态变化时被唤醒——于是一个
 agent 就能在人可见、可参与的标准界面里统管多个仓库。
 
-当前候选版 **0.4.2-rc.6**（prerelease，npm dist-tag `next`；稳定版 `latest` 仍为 **0.4.1**） ·
+当前候选版 **0.4.2-rc.7**（prerelease，npm dist-tag `next`；稳定版 `latest` 仍为 **0.4.1**） ·
 DSH **0.2.2-rc.1 – 0.2.2-rc.5** · 一条 `dsh plugin` 命令即可装好全部组件。
 
 ## 核心能力
@@ -67,16 +67,17 @@ Web 页面。
 固定到精确版本：
 
 ```sh
-dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.6
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.7
 ```
 
-0.4.2-rc.6 是计划中 0.4.2 补丁版的当前 prerelease 候选，基于已发布的 rc.5。本轮新增独立 lead-only
-`devlead:board-policy` system prompt section，并给四个 board/notes 工具补充具体 `Use when …` 场景，
-引导 lead 在派发/收口时维护当前项目状态、恢复或派发前读取持久 notes，并记录简短计划、决策与交接；
-同时明确降级只报告一次、没有实质变化不制造噪声。board/notes schema、工具语义、UI 与 DSH 兼容面均不变。
-本候选按发布流程以 npm dist-tag `next` stage，在稳定版 0.4.2 被 approve 前请按上面的精确版本安装；
+0.4.2-rc.7 是计划中 0.4.2 补丁版的当前 prerelease 候选，基于已发布的 rc.6。本轮分离 notes 职责：
+devlead 工具负责 create/metadata/delete 与 index CAS，既有 Markdown 正文改用 DSH 原生文件工具编辑返回的
+`absolutePath`；Host read/list 惰性对账文件 bytes/mtime 且不覆盖原生编辑，只读 client 自动跟随正文变化，
+并在选中的 reader 显示 live stat 观察时间。rc.6 的主动 board workflow 保留，policy 与工具描述同步一致。
+board/notes 磁盘 schema 与 DSH 兼容面不变。本候选按发布流程以 npm dist-tag `next` stage，在稳定版 0.4.2
+被 approve 前请按上面的精确版本安装；
 `latest` 仍为 **0.4.1**。旧候选保持历史记录，从未 approve 的 0.4.2-rc.1/rc.4 staged 记录不得 approve。详见
-[0.4.2-rc.6 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.2-rc.6.md)；
+[0.4.2-rc.7 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.2-rc.7.md)；
 上一个稳定补丁的说明见
 [0.4.1 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.1.md)。
 
@@ -90,7 +91,7 @@ dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.6
 dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 
 # 或固定到某个版本（prerelease 必须写精确版本）
-dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.6
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.7
 ```
 
 > **从旧版本（低于 0.4.0）升级：** 0.4.0 会直接丢弃旧的 DevLead 会话状态（模式、关注集合、
@@ -305,7 +306,7 @@ path；两个 notes 工具都不接受文件路径参数。
 | `devlead_board_read` | 读取用户可见项目看板（结果有界） | `project?`、`include_tasks?`、`limit?` |
 | `devlead_board_update` | 仅 lead AI 可写的项目状态/阻塞/任务更新 | `project`、`expected_revision?`、`create?`、`set?`、`blockers?`、`tasks?` |
 | `devlead_board_note_read` | 读取项目 note metadata 列表或单条 Markdown 正文 | `project`、`note?` |
-| `devlead_board_note_write` | 以 CAS 创建/更新/追加/删除项目 note | `project`、`operation`、`note?`、`title?`、`summary?`、`content?`、`expected_revision?`、`expected_bytes?` |
+| `devlead_board_note_write` | 以 index CAS 创建 note、更新元数据或删除 | `project`、`operation: create/update-metadata/delete`、`note?`、`title?`、`summary?`、仅 create 的 `content?`、`expected_revision?` |
 | `devlead_use_workspace` | 注册 Workspace（幂等） | `path`（绝对路径）、`title?`、`create?`（默认 false） |
 | `devlead_list_sessions` | 列出 Session | `workspace?`、`watched_only?`、`limit?` |
 | `devlead_create_session` | 创建（并可选 prompt）子会话 | `workspace?`、`prompt?`、`title?`、`watch?`、`preset?`、`isolation?`、`provider?`+`model?`、`agent_teams?` |
@@ -391,16 +392,20 @@ lead 同步/切换会重新解析。start 失败（例如目录不可写）只�
 
 项目 notes 位于 `dirname(boardPath)/notes/`：严格 schema v1 的 `index.json` 只存 metadata，Markdown
 正文分别在 `<sanitized project>/<note-id>.md`。index 上限 128 KiB、单 note 上限 256 KiB、每项目最多
-100 条，`board.json` 本身不变。只有 active lead AI 能写 notes；写入使用文件锁、原子替换、
-`expected_revision` index CAS，以及 update/append/delete 的 `expected_bytes` 正文 CAS。人类与浏览器
-只读。浏览器从已解析的 board path 派生 notes 根目录，只通过既有 Workspace Files Remote 读取，既不接受
-任意路径，也不暴露写 API。note id/path 按忽略大小写判重并拒绝 Windows 保留设备名；Host 对非法 UTF-8
-直接报错。单 note 工具结果按完整 JSON 限制为 64 KiB，超限时按 Unicode 边界保留前缀并标 `truncated:true`；
-磁盘 256 KiB 正文与浏览器完整读取不变。完整 index schema、错误码、坏 index 恢复、board 重建后的
+100 条，`board.json` 本身不变。lead 只用 `devlead_board_note_write` 创建（可选初始正文）、更新
+title/summary 或删除，`expected_revision` 保护 index 元数据写入。后续正文通过 DSH 原生
+`read`/`write`/`edit` 编辑工具返回的 `absolutePath`，不再提供第二条工具正文写入路径，也不要手改
+`notes/index.json`。人类与浏览器只读。Host 的 note read/list 在 index 锁内惰性对账 `bytes` 与文件
+`updatedAt`，绝不重写正文；文件缺失、非法 UTF-8 或超过 256 KiB 会返回结构化错误并保持 index 不变。
+浏览器从已解析的 board path 派生 notes 根目录，只通过既有 Workspace Files Remote 读取，既不接受任意
+路径，也不暴露写 API。note id/path 按忽略大小写判重并拒绝 Windows 保留设备名。单 note 工具结果按完整
+JSON 限制为 64 KiB，超限时按 Unicode 边界保留前缀并标 `truncated:true`；磁盘 256 KiB 正文与浏览器完整
+读取不变。完整 index schema、错误码、坏 index 恢复、board 重建后的
 orphan/GC 清理与持久性边界见 [docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md)。
 
 enabled lead 另有独立的 `devlead:board-policy` system prompt section，引导它在派发/收口和项目状态实质变化时
-批量更新看板，恢复项目或写派发简报前先读 notes，把简短计划/决策/交接写入 notes，并在汇报前对齐过期状态。
+批量更新看板，恢复项目或写派发简报前先读 notes，用工具创建/维护索引并以原生文件工具编辑简短计划/决策/交接正文，
+并在汇报前对齐过期状态。
 该引导同时禁止整段搬运聊天/日志和遇 `BOARD_DISABLED` / `BOARD_IO_ERROR` 后反复重试；普通 Session 不可见。
 
 `tool` / `command` / `client-ui` 没有部署配置；领域限制（watch 上限、通知保留条数等）由核心
@@ -444,9 +449,11 @@ worktree 服务时才存在，并且每次派发通过 `isolation` 参数使用�
   notes index 提供数据时，项目卡片显示 note 数与最近标题 chip。打开 note 后 reader 使用右侧栏全宽，
   不挤在卡片列里；安全 Markdown 子集只生成 React 文本/元素，不使用 raw-HTML sink，只有显式 HTTP(S)
   目标会变成链接，界面始终只读。index 与当前打开的 note 分别复用看板的 Workspace Files watch +
-  visibility/focus-gated polling，外部修改会自动刷新；path 代际校验避免切换 workspace 时闪现旧 value，
-  原始 id/path/bytes memo key 避免每次 index poll 重开 note watch。视觉 refreshing 文案与独立 polite live
-  region 分离，只播报健康状态迁移而非每个 5s 轮询。坏 index 或坏 note 只降级对应 notes 区域，不会隐藏或损坏 board。
+  visibility/focus-gated polling，原生/外部修改会自动刷新；path 代际校验避免切换 workspace 时闪现旧 value，
+  原始 id/path memo key 避免每次 index poll 重开 note watch，过期 index bytes 不决定正文代际。ready reader
+  标题栏优先显示成功 stat 的观察时间（不解析 opaque version），list/chip 仍使用 index metadata。视觉
+  refreshing 文案与独立 polite live region 分离，只播报健康状态迁移而非每个 5s 轮询。坏 index 或坏 note
+  只降级对应 notes 区域，不会隐藏或损坏 board。
 
 关闭（工具条开关是唯一控件）：
 

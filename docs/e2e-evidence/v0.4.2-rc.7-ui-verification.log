@@ -1,0 +1,6 @@
+UI verification attempt: 2026-11-24 Asia/Shanghai
+Runtime: DeepSeek Harness 0.2.2-rc.5, installed scratch profile devlead-e2e, plugin 0.4.2-rc.7
+Action: started isolated DSH web on 127.0.0.1:34001 (token intentionally omitted), then requested Browser MCP goto/snapshot.
+Browser MCP result: Error: No browser is connected. Install the Browser MCP extension, or update it to 2.0.
+Resolution: did not install extensions or alter browser/desktop profiles; stopped the isolated DSH job.
+Result: NO_MANUAL_VISUAL_PASS; no screenshots captured. Automated client tests and real Workspace Files e2e are separate evidence.

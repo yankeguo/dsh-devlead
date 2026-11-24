@@ -1,17 +1,18 @@
 # DSH 兼容性矩阵
 
 本仓库的目标兼容面是 **DeepSeek Harness `0.2.2-rc.1` – `0.2.2-rc.5`**；当前候选发布版本是插件版本
-**`0.4.2-rc.6`**（6 个可发布包共用同一版本号；prerelease，CI 以 npm dist-tag `next` stage，维护者
-approve 后公开）。稳定版 `latest` 当前为 **`0.4.1`**，已发布的上一候选 rc.5 使 `next` 指向
-**`0.4.2-rc.5`**；approve `0.4.2-rc.6` 后 `next` 指向本候选、`latest` 仍为 `0.4.1`，直到计划中
+**`0.4.2-rc.7`**（6 个可发布包共用同一版本号；prerelease，CI 以 npm dist-tag `next` stage，维护者
+approve 后公开）。稳定版 `latest` 当前为 **`0.4.1`**，已发布的上一候选 rc.6 使 `next` 指向
+**`0.4.2-rc.6`**；approve `0.4.2-rc.7` 后 `next` 指向本候选、`latest` 仍为 `0.4.1`，直到计划中
 的稳定版 `0.4.2` 发布。`0.4.2-rc.1` 与 rc.4 已 stage 但**未 approve、从未公开**，其历史 staged
-记录不得 approve；其它旧候选的 release notes 保持历史事实。当前 rc.6 只增加 lead-only board/notes
-workflow system prompt 与四个工具的使用场景描述，不改 board/notes schema、工具语义、UI、Host API 或 DSH
-兼容面。`0.4.2-rc.6` 只是**插件版本**，**不代表 DSH 0.4.2**。6 个可发布包的
+记录不得 approve；其它旧候选的 release notes 保持历史事实。当前 rc.7 把 notes 工具收窄为
+create/update-metadata/delete 与 index CAS，正文改由 DSH 原生 read/write/edit 修改；Host read/list 惰性
+对账 bytes/mtime，client 使用既有 Workspace Files stat/readBytes/changes 自动刷新。磁盘 schema 与 DSH
+兼容面不变。`0.4.2-rc.7` 只是**插件版本**，**不代表 DSH 0.4.2**。6 个可发布包的
 `engines.dsh` 均为 `>=0.2.2-rc.1 <0.3.0`（根 `package.json` 是 private 包，不声明
 `engines.dsh`，只声明 `engines.node`），所有
 `@deepseek-ai/dsh-*` peer 使用同一范围；本地 devDependencies 与编译基线仍固定 rc.1，用最旧 API
-做类型检查，本机运行验证使用安装版 rc.5。新 prompt section 与工具描述不使用任何新 Host API，
+做类型检查，本机运行验证使用安装版 rc.5。新工具描述、对账与 client 观察时间不使用任何新 Host API，
 兼容范围保持 `>=0.2.2-rc.1 <0.3.0`。
 
 ## 契约
@@ -451,11 +452,11 @@ git -C "$REPO" add -f \
   "docs/e2e-evidence/upgrade-$RC-no-worktree.log"
 ```
 
-当前 rc.5 harness 的 pin 来自 `scripts/e2e-smoke.mjs` 的 `EXPECTED_CHECKS`
+当前 rc.7 harness 的 pin 来自 `scripts/e2e-smoke.mjs` 的 `EXPECTED_CHECKS`
 （phase 1=30、1b=18、2=24、**3=141**、1e=31）：patch / installed 完整流目标各为 **244/244**，
 no-worktree 目标为 **220/220**（仅跳过 phase 2）；完整流目标计数为 **241 PASS + 3** 条有真实
-原因的正向模型选择 SKIP，其他检查不得通过删除或放宽断言来凑数。rc.5 冻结树的真实输出、退出码
-与证据见 [v0.4.2-rc.5 release prep](e2e-evidence/v0.4.2-rc.5-release-prep.md)；未来 pin 变化
+原因的正向模型选择 SKIP，其他检查不得通过删除或放宽断言来凑数。rc.7 冻结树的真实输出、退出码
+与证据见 [v0.4.2-rc.7 release prep](e2e-evidence/v0.4.2-rc.7-release-prep.md)；未来 pin 变化
 只能先更新 `EXPECTED_CHECKS` 并在证据中解释。
 
 每个 rc 的 typings/build/三条 E2E 日志都必须复制到 `docs/e2e-evidence/`，保留真实 `*_EXIT=`
@@ -515,7 +516,7 @@ lane/deliveryState、blocked/decision action steer、真实 T1 followup / T2 rev
 
 上表 Phase 1e 行即 **Batch 1 最终树**的 pin 实测：installed / patch 完整流各 **221/221**
 （218 PASS + 3 SKIP；phase 1 27 + 1b 12 + 2 23 + 3 128 + 1e 31），`--no-worktree` **198/198**
-（phase 2 skipped）。当前候选发布版本是插件 **`0.4.2-rc.6`**（prerelease，dist-tag `next`；
+（phase 2 skipped）。当前候选发布版本是插件 **`0.4.2-rc.7`**（prerelease，dist-tag `next`；
 stage 本身不改变公开 dist-tag，approve 后 `next` 才指向本候选，`latest` 仍为 `0.4.1`；DSH 兼容面
 仍为 rc.1–rc.5）。
 `0.4.0-rc.1` 候选的三条真实
@@ -528,9 +529,9 @@ E2E 重跑（含真实 `*_EXIT=0` 与总计行）记录在
 当前 board 加固轮保留上述全部旧检查，并在 phase 3 新增真实 `ctx.devLead.updateBoard` 写入/CAS、
 `webserver/index-inject` board global 与独立磁盘 revision/内容 read-back；Step B 复核修复轮又把
 phase 1 与 1b 改回未配置 `boardPath` 的默认组合并固定当轮目标 pin（phase 1=28、phase 3=132、
-完整流=226、no-worktree=203）。**当前 rc.5 的权威 pin 是 `scripts/e2e-smoke.mjs` 的
+完整流=226、no-worktree=203）。**当前 rc.7 的权威 pin 是 `scripts/e2e-smoke.mjs` 的
 `EXPECTED_CHECKS`：phase 1=30、phase 1b=18、phase 2=24、phase 3=141、phase 1e=31，完整流目标
-244/244（241 PASS + 3 credential-less SKIP），`--no-worktree` 220/220；rc.5 实测与退出码以当轮
+244/244（241 PASS + 3 credential-less SKIP），`--no-worktree` 220/220；rc.7 实测与退出码以当轮
 release-prep 原始日志为准。** 本轮新增/改写的断言
 包括：没有 lead 时不注入 board global、lead 开启后从 `SessionHeader.cwd` 派生默认路径并发布
 `{leadSessionId, override:false}`、预创建父目录、冷 lead 从持久 header 派生、`/devlead off`
@@ -591,6 +592,14 @@ Session 为空，400–800 chars 独立预算），四个 board/notes 工具描�
 最终冻结树门禁、三条真实 E2E 与 6 包 `next` dry-run 证据见
 [v0.4.2-rc.6 release prep](e2e-evidence/v0.4.2-rc.6-release-prep.md)；本发布仍只使用 rc.1 typings 已有
 system prompt API，DSH 兼容范围与 engines/peer range 不变。
+
+**0.4.2-rc.7 发布轮**分离 notes 索引与正文职责：工具仅 create/update-metadata/delete 并保留 index
+revision CAS，移除 update/append/expected_bytes；read/list 结果派生 absolutePath，既有正文由 DSH 原生
+read/write/edit 修改。Host 以既有 stat/readFile/withFileLock/writeFileAtomic 惰性对账 bytes/mtime，client
+以既有 Workspace Files stat/readBytes/changes 自动刷新并以成功 stat 的观察时间显示 live reader 时间；
+不解析 opaque version，不新增 Remote、client inject、磁盘 schema 或 DSH API。E2E 将 rc.4 的工具 append
+改为 probe 直接写 absolutePath 后 read/list 对账，保留全部检查数与真实 client 读取。最终门禁与证据见
+[v0.4.2-rc.7 release prep](e2e-evidence/v0.4.2-rc.7-release-prep.md)。
 
 每条 flow 有 3 条正向模型选择检查因无 provider 凭据 SKIP（打印真实原因）；负向
 `DEVLEAD_MODEL_UNAVAILABLE`、`devlead_list_models`、preset roster 与 watched-child
