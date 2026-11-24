@@ -58,7 +58,10 @@ references still report `BOARD_PROJECT_NOT_FOUND`/`BOARD_PROJECT_AMBIGUOUS`. A b
 degrades the board only: the tools report `BOARD_IO_ERROR` while DevLead keeps working. The human is
 read-only; only the enabled lead AI writes.
 `devlead:board-summary` is a cache-safe `systemPrompt.context()` snapshot capped at 1536 UTF-8
-bytes; active-project rows include note counts and the latest note title when available.
+bytes; active-project rows include note counts and the latest note title when available. The independent lead-only
+`devlead:board-policy` section tells the model to batch updates at dispatch/close and material project changes, read
+notes before resuming or briefing, preserve concise plans/decisions/handoffs, reconcile stale state before reporting,
+and report board degradation once instead of repeatedly retrying. Ordinary Sessions see neither text nor board tools.
 
 The two notes tools use the same active-lead gate and board-project id/title/absolute-path resolver,
 but never accept a notes file path. They read and mutate only `dirname(boardPath)/notes/`: the strict
@@ -192,7 +195,9 @@ workspace path/title 不再误报 `BOARD_LIMIT_EXCEEDED`，未知引用仍是
 `BOARD_PROJECT_NOT_FOUND`/`BOARD_PROJECT_AMBIGUOUS`。start 失败只降级看板（`BOARD_IO_ERROR`），
 不阻塞 DevLead。用户只读，只有 enabled lead AI 可通过工具写入。
 动态 `devlead:board-summary` 使用 cache-safe `systemPrompt.context()`，上限 1536 UTF-8 bytes；active
-项目行在有数据时附带 note 数与最近标题。`devlead_board_note_read(project,note?)` 读取项目 notes
+项目行在有数据时附带 note 数与最近标题。独立 lead-only `devlead:board-policy` 引导模型在派发/收口和实质变化时
+批量更新，恢复/派发前读 notes，保存简短计划/决策/交接，汇报前对齐过期状态，看板降级只报告一次而不反复重试；
+普通 Session 看不到该文案或看板工具。`devlead_board_note_read(project,note?)` 读取项目 notes
 metadata 或单条 Markdown 正文；`devlead_board_note_write` 接收 `project`、`operation`
 （create/update/append/delete）、可选 `note/title/summary/content` 与 `expected_revision/expected_bytes`
 CAS。project 仍按看板 id/title/绝对 path 解析，两个工具都不接受文件路径。notes 根目录固定为

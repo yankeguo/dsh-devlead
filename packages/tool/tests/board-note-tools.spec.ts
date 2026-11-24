@@ -17,6 +17,18 @@ async function failureOf(promise: Promise<unknown>): Promise<HarnessError> {
 }
 
 describe('devlead board note tools', () => {
+  it('describes when to read durable project context and preserve new handoffs', () => {
+    const harness = boot()
+    const read = harness.tool('devlead_board_note_read').definition.description
+    const write = harness.tool('devlead_board_note_write').definition.description
+    expect(read).toContain('Use when resuming a project or preparing a dispatch brief')
+    expect(read).toContain('capped at 64 KiB')
+    expect(write).toContain('Use when a plan, design, decision, or handoff should survive across turns')
+    expect(write).toContain('keep it concise instead of copying transcripts or logs')
+    expect(write).toContain('expected_revision')
+    expect(write).toContain('expected_bytes')
+  })
+
   it('forwards metadata reads and preserves the canonical result', async () => {
     const harness = boot()
     const result = await harness.call('devlead_board_note_read', { project: ' webapp ' })

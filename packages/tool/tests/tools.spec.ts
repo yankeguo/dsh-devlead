@@ -38,7 +38,7 @@ import {
   TOOL_PARAMETERS,
   WORKSPACE_ARGUMENT_DESCRIPTION,
 } from '../src/parameters.ts'
-import { DEVLEAD_POLICY_BASE } from '../src/policy.ts'
+import { DEVLEAD_BOARD_POLICY, DEVLEAD_POLICY_BASE } from '../src/policy.ts'
 import {
   ASK_USER_QUESTION_TOOL,
   formatQuestionReport,
@@ -318,10 +318,12 @@ describe('registration', () => {
     await expect(harness.visible(enabledAgent, 'devlead_report')).resolves.toBe(false)
   })
 
-  it('registers the lead and child report policy sections in the subagent ordering', () => {
+  it('registers the lead, board workflow, and child report policy sections in the subagent ordering', () => {
     const harness = boot()
     expect(harness.section.name).toBe('devlead:policy')
     expect(harness.section.order).toBe(2800)
+    expect(harness.boardPolicySection.name).toBe('devlead:board-policy')
+    expect(harness.boardPolicySection.order).toBe(2800)
     expect(harness.reportSection.name).toBe('devlead:report-policy')
     expect(harness.reportSection.order).toBe(2800)
   })
@@ -345,6 +347,35 @@ describe('registration', () => {
     const provider = harness.section.text
     if (typeof provider !== 'function') throw new Error('policy section must resolve its text per assembly')
     expect(provider({})).toBe('')
+  })
+
+  it('shows board workflow guidance only to an enabled lead without changing disabled-board behavior', () => {
+    const harness = boot()
+    const agent = makeAgent('agent-board-policy')
+    expect(harness.boardPolicySectionText(agent)).toBe('')
+    expect(harness.boardPolicySectionText(undefined)).toBe('')
+    expect(harness.boardSummaryText(agent)).toBe('')
+
+    harness.devLead.boardSummary = ''
+    harness.devLead.enabled.add(agent.id)
+    const text = harness.boardPolicySectionText(agent)
+    expect(text).toBe(DEVLEAD_BOARD_POLICY)
+    expect(text).toContain('source of truth for cross-project state')
+    expect(text).toContain('when dispatching or closing work')
+    expect(text).toContain('batch related edits')
+    expect(text).toContain('before resuming a project or writing a dispatch brief')
+    expect(text).toContain('Before reporting to the human, reconcile stale board state with reality')
+    expect(text).toContain('never paste chats, logs, or tool output wholesale')
+    expect(text).toContain('BOARD_DISABLED or BOARD_IO_ERROR')
+    expect(text).toContain('report degradation once')
+    expect(text).toContain('No material change means no update')
+    // An unavailable board still has an empty summary; the lead-only workflow
+    // text explains the one-report degradation path instead of altering it.
+    expect(harness.boardSummaryText(agent)).toBe('')
+    expect(harness.sectionText(agent)).not.toContain('Board workflow:')
+
+    harness.devLead.enabled.delete(agent.id)
+    expect(harness.boardPolicySectionText(agent)).toBe('')
   })
 
   it('shows the one-way report policy only to a watched non-lead Session', () => {
@@ -653,6 +684,13 @@ describe('policy', () => {
     // Measuring the exported base keeps the guard independent of the
     // capability-conditional checkout paragraphs.
     expect(DEVLEAD_POLICY_BASE.length).toBeLessThanOrEqual(11_900)
+  })
+
+  it('keeps the independent board workflow section within its 400–800 character budget', () => {
+    expect(DEVLEAD_BOARD_POLICY.length).toBeGreaterThanOrEqual(400)
+    expect(DEVLEAD_BOARD_POLICY.length).toBeLessThanOrEqual(800)
+    // The new operational guidance must not silently inflate the resident base.
+    expect(DEVLEAD_POLICY_BASE).not.toContain('Board workflow:')
   })
 
   it('stays hidden without DevLead mode even when the capability exists', () => {

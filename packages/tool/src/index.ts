@@ -36,7 +36,7 @@ import {
 import { runTool } from './errors.ts'
 import { registerDevLeadBoardTools } from './board-tools.ts'
 import { DEFAULT_NOTIFICATIONS_LIMIT, TOOL_PARAMETERS } from './parameters.ts'
-import { DEVLEAD_REPORT_POLICY, devLeadPolicy } from './policy.ts'
+import { DEVLEAD_BOARD_POLICY, DEVLEAD_REPORT_POLICY, devLeadPolicy } from './policy.ts'
 import { registerQuestionRouting } from './question-routing.ts'
 import {
   presentArchiveSessionCall,
@@ -294,6 +294,15 @@ export function apply(ctx: Context): void {
     order: ctx.systemPrompt.getSectionOrder('TOOL_SUBAGENT'),
     text: ({ agent }) => agent !== undefined && ctx.devLead.isEnabled(agent)
       ? devLeadPolicy({ worktreeIsolation: ctx.devLead.worktreeIsolationAvailable })
+      : '',
+  })
+  // Board/notes workflow is lead-only too, but lives outside the base policy
+  // so its operational guidance has an independent, explicit size budget.
+  ctx.systemPrompt.section({
+    name: 'devlead:board-policy',
+    order: ctx.systemPrompt.getSectionOrder('TOOL_SUBAGENT'),
+    text: ({ agent }) => agent !== undefined && ctx.devLead.isEnabled(agent)
+      ? DEVLEAD_BOARD_POLICY
       : '',
   })
   // A watched, non-DevLead Session gets the one-way reporting guidance instead

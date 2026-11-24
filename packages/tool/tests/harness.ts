@@ -577,6 +577,8 @@ export interface Harness {
   readonly tools: ReadonlyMap<string, CapturedTool>
   /** Captured `devlead:policy` prompt section. */
   readonly section: PromptSection
+  /** Captured `devlead:board-policy` prompt section. */
+  readonly boardPolicySection: PromptSection
   /** Captured `devlead:report-policy` prompt section. */
   readonly reportSection: PromptSection
   /** Captured cache-safe board context. */
@@ -595,6 +597,8 @@ export interface Harness {
   visible(agent?: Agent, toolName?: string): Promise<boolean>
   /** Resolve the policy section text for one assembling Agent. */
   sectionText(agent?: Agent): string
+  /** Resolve the board workflow policy text for one assembling Agent. */
+  boardPolicySectionText(agent?: Agent): string
   /** Resolve the child report-policy text for one assembling Agent. */
   reportSectionText(agent?: Agent): string
   /** Resolve the board summary for one assembling Agent. */
@@ -673,6 +677,8 @@ export function boot(): Harness {
   apply(ctx)
   const policySection = sections.get('devlead:policy')
   if (policySection === undefined) throw new Error('apply() did not register the devlead:policy section')
+  const boardPolicySection = sections.get('devlead:board-policy')
+  if (boardPolicySection === undefined) throw new Error('apply() did not register the devlead:board-policy section')
   const reportPolicySection = sections.get('devlead:report-policy')
   if (reportPolicySection === undefined) throw new Error('apply() did not register the devlead:report-policy section')
   const boardContext = contexts.get('devlead:board-summary')
@@ -693,6 +699,7 @@ export function boot(): Harness {
     devLead,
     tools: registered,
     section: policySection,
+    boardPolicySection,
     reportSection: reportPolicySection,
     boardContext,
     agent,
@@ -714,6 +721,9 @@ export function boot(): Harness {
     },
     sectionText(candidate = agent) {
       return sectionTextOf(policySection, candidate)
+    },
+    boardPolicySectionText(candidate = agent) {
+      return sectionTextOf(boardPolicySection, candidate)
     },
     reportSectionText(candidate = agent) {
       return sectionTextOf(reportPolicySection, candidate)

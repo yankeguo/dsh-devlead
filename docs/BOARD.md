@@ -315,6 +315,15 @@ lead。**四个 board/notes 工具都没有文件路径参数**；`project` 只�
 `BOARD_LIMIT_EXCEEDED`、`BOARD_IO_ERROR`，并新增 `BOARD_NOTE_NOT_FOUND` 与 `BOARD_BYTES_CONFLICT`；
 工具层映射为同 code 的 `HarnessError`。
 
+## Lead 的 board / notes 工作流引导
+
+`tool` 包另注册独立的 `devlead:board-policy` system prompt section，仅对 `ctx.devLead.isEnabled(agent)` 的 lead
+可见，普通 Session 与无 Agent 的组装均为空；它不占用 `DEVLEAD_POLICY_BASE` 的尺寸预算。引导把每轮注入的
+board summary 视为跨项目状态事实源：派发/收口或 focus、next、blockers、tasks 有实质变化时批量更新看板；
+计划、设计、决策与交接写入 notes，恢复项目或写派发简报前先读 notes；向用户汇报前先对齐过期状态。内容应
+简短可读，不整段复制聊天、日志或工具输出；`BOARD_DISABLED` / `BOARD_IO_ERROR` 时继续主任务、只报告一次
+降级且不反复重试；没有实质变化时不为“勤更新”制造噪声。四个工具描述也各自带 `Use when …` 场景提示。
+
 ## AI 工具
 
 四个 board/notes 工具均带 `when: ({agent}) => ctx.devLead.isEnabled(agent)`，并与其他工具共用

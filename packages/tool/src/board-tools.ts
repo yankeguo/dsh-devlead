@@ -31,7 +31,7 @@ const BOARD_READ_DESCRIPTION =
   + 'through devlead_board_update. The board belongs to the active lead Session; its file location is derived from '
   + 'that Session workspace (or a deployment override) and is never a tool argument. Results are bounded and may be '
   + 'truncated:true; no active lead workspace (including a recorded workspace root that no longer exists) means '
-  + 'BOARD_DISABLED.'
+  + 'BOARD_DISABLED. Use when reconciling current cross-project state before dispatching, resuming, closing, or reporting.'
 
 const BOARD_UPDATE_DESCRIPTION =
   'Update one project on the user-visible DevLead board; the human is read-only and only the enabled lead AI may '
@@ -39,7 +39,8 @@ const BOARD_UPDATE_DESCRIPTION =
   + 'goal/focus/next updates, blocker clear/remove/add, and task remove/upsert. Use expected_revision from '
   + 'devlead_board_read for compare-and-swap when a lost update would matter. Returns only the changed project without '
   + 'task rows and the changed lanes, never the whole board. The file belongs to the active lead Session workspace and '
-  + 'no argument can redirect it.'
+  + 'no argument can redirect it. Use when dispatching or closing work, or when project focus/next/blockers/tasks '
+  + 'materially change; batch related changes.'
 
 const BOARD_NOTE_READ_DESCRIPTION =
   'Read Markdown notes attached to one existing DevLead board project. project is required and resolves exactly as '
@@ -47,7 +48,8 @@ const BOARD_NOTE_READ_DESCRIPTION =
   + 'bytes, and root-relative path); provide its id for Markdown content plus metadata. A single-note JSON result '
   + 'is capped at 64 KiB and longer content is cut at a Unicode boundary with truncated:true. A missing notes '
   + 'index reads as an empty revision-0 project listing. Only the active lead can use this tool, and no argument '
-  + 'accepts or redirects a Host filesystem path.'
+  + 'accepts or redirects a Host filesystem path. Use when resuming a project or preparing a dispatch brief so prior '
+  + 'plans, decisions, and handoffs inform the work.'
 
 const BOARD_NOTE_WRITE_DESCRIPTION =
   'Create, update, append to, or delete one Markdown note on an existing project of the active lead\'s DevLead '
@@ -55,7 +57,8 @@ const BOARD_NOTE_WRITE_DESCRIPTION =
   + 'content; append requires note and content and appends it exactly; delete requires note. Use expected_revision '
   + 'for notes-index CAS and expected_bytes for existing-note CAS when a lost update would matter. Returns the '
   + 'resulting metadata (or deleted metadata), revision, and changed state without returning the body. Note content '
-  + 'stays out of the index. The Host owns all locations; write arguments contain no file path.'
+  + 'stays out of the index. The Host owns all locations; write arguments contain no file path. Use when a plan, '
+  + 'design, decision, or handoff should survive across turns; keep it concise instead of copying transcripts or logs.'
 
 const BLOCKER_SCHEMA = {
   type: 'object',

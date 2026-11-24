@@ -403,6 +403,10 @@ lead 同步/切换会重新解析。start 失败（例如目录不可写）只�
 磁盘 256 KiB 正文与浏览器完整读取不变。完整 index schema、错误码、坏 index 恢复、board 重建后的
 orphan/GC 清理与持久性边界见 [docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md)。
 
+enabled lead 另有独立的 `devlead:board-policy` system prompt section，引导它在派发/收口和项目状态实质变化时
+批量更新看板，恢复项目或写派发简报前先读 notes，把简短计划/决策/交接写入 notes，并在汇报前对齐过期状态。
+该引导同时禁止整段搬运聊天/日志和遇 `BOARD_DISABLED` / `BOARD_IO_ERROR` 后反复重试；普通 Session 不可见。
+
 `tool` / `command` / `client-ui` 没有部署配置；领域限制（watch 上限、通知保留条数等）由核心
 服务与 protocol 常量决定。可选 worktree 隔离**没有配置键**：只有当 profile 组合了实验性
 worktree 服务时才存在，并且每次派发通过 `isolation` 参数使用。

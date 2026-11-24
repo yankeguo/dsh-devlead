@@ -2162,6 +2162,8 @@ question 路由。
 - `DEVLEAD_POLICY_BASE` 是常驻 system prompt，现有测试要求相对 10,839 字符基线不超过
   +10%。新文案应**改写**「Incoming reports」与「Waiting after dispatch」附近段落，而不是
   在末尾追加；如果确实超预算，先压缩重复的 reporting/close 说明，再更新预算测试。
+- board/notes 工作流使用独立的 `devlead:board-policy` section，预算为 **400–800 chars**；测试同时防止它
+  被并回 `DEVLEAD_POLICY_BASE`，因此新增操作化引导不消耗上述常驻 base 的 +10% 余量。
 - 工具描述不属于 system prompt 预算，但同样消耗 token；`devlead_prompt_session` 的 intent
   说明要短、用例子，不要写成长篇策略。
 
@@ -2500,6 +2502,12 @@ DSH peer 依赖。最小可交付闭环是 1b + 1c + 1d：question 快、answer 
   当前 Agent 重新求值，关闭模式后下一步即消失。`devlead_create_session`
   的工具描述与 `workspace`/`prompt`/模型/Agent Teams 参数说明同步强调「把工作派发到归属
   Workspace 的 Session、简报可带开放问题」，避免模型把「创建 + prompt」当成本会话的直接实现入口。
+- `systemPrompt.section({ name: 'devlead:board-policy', order: TOOL_SUBAGENT, text: ({ agent }) =>
+  ctx.devLead.isEnabled(agent) ? DEVLEAD_BOARD_POLICY : '' })` 是独立的 lead-only board/notes 工作流段，
+  不并入 `DEVLEAD_POLICY_BASE`。每轮 board summary 是跨项目状态事实源；派发/收口及 focus/next/blockers/tasks
+  实质变化时批量 `devlead_board_update`，恢复项目或写派发简报前读 notes，计划/设计/决策/交接写 notes，
+  汇报前对齐过期状态；禁止整段搬运聊天/日志，`BOARD_DISABLED` / `BOARD_IO_ERROR` 只报告一次降级并继续
+  主任务，无实质变化不制造更新噪声。四个工具 description 保留原约束并各补 `Use when …` 场景。
 - 派发后的等待契约（模型可见文案）：派发是异步的，`devlead_create_session` /
   `devlead_prompt_session` 返回后模型不得在同一个 turn 内等待——不得用 shell `sleep`，不得用
   `devlead_list_sessions` / `devlead_get_session` / `devlead_notifications` 轮询，也不得用

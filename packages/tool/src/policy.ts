@@ -88,6 +88,12 @@ export function devLeadPolicy(options: { worktreeIsolation: boolean }): string {
 
 
 /**
+ * Lead-only board/notes workflow guidance. Kept as an independent prompt
+ * section so the resident base policy retains its historical size budget.
+ */
+export const DEVLEAD_BOARD_POLICY = `Board workflow: the per-turn board summary is the source of truth for cross-project state. Use devlead_board_update when dispatching or closing work, or when a project's focus, next step, blockers, or tasks materially change; batch related edits instead of writing or announcing every step. Preserve plans, designs, decisions, and handoffs in project notes with devlead_board_note_write; read notes with devlead_board_note_read before resuming a project or writing a dispatch brief. Before reporting to the human, reconcile stale board state with reality. Keep entries short and readable; never paste chats, logs, or tool output wholesale. On BOARD_DISABLED or BOARD_IO_ERROR, continue the task, report degradation once, and do not retry repeatedly. No material change means no update.`
+
+/**
  * Guidance shown to a watched, non-DevLead Session that may send mid-turn
  * reports to its active lead. Registered as a separate prompt section with its
  * own visibility condition, so a normal Session never sees it and a DevLead

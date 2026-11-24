@@ -446,6 +446,11 @@ JSON and uses a Unicode-safe prefix plus `truncated:true`; the 256 KiB stored bo
 See [docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md) for the complete index schema,
 error codes, malformed-index recovery, orphan/GC cleanup after board rebuilds, and durability boundary.
 
+For an enabled lead, the separate `devlead:board-policy` system-prompt section makes this an active workflow:
+batch board updates at dispatch/close and material project changes, read notes before resuming or briefing work,
+preserve concise plans/decisions/handoffs, and reconcile stale state before reporting. It also avoids transcript/log
+dumps and repeated retries after `BOARD_DISABLED` / `BOARD_IO_ERROR`; ordinary Sessions never see this guidance.
+
 `tool` / `command` / `client-ui` have no deployment configuration; domain limits (watch cap,
 notification retention, etc.) are owned by the core service and protocol constants. Optional
 worktree isolation has **no configuration key**: it exists only when the profile composes the

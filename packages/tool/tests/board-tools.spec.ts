@@ -17,6 +17,17 @@ async function failureOf(promise: Promise<unknown>): Promise<HarnessError> {
 }
 
 describe('devlead board tools', () => {
+  it('describes concrete use cases for the board read and update tools', () => {
+    const harness = boot()
+    const read = harness.tool('devlead_board_read').definition.description
+    const update = harness.tool('devlead_board_update').definition.description
+    expect(read).toContain('Use when reconciling current cross-project state before dispatching, resuming, closing, or reporting.')
+    expect(read).toContain('BOARD_DISABLED')
+    expect(update).toContain('Use when dispatching or closing work, or when project focus/next/blockers/tasks materially change')
+    expect(update).toContain('Create requires create:true and set.workspace.path')
+    expect(update).toContain('expected_revision')
+  })
+
   it('forwards read filters and preserves the bounded read result', async () => {
     const harness = boot()
     const result = await harness.call('devlead_board_read', { project: ' webapp ', include_tasks: false, limit: 5 })
