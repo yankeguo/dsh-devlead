@@ -8,7 +8,7 @@ upgrades **one ordinary session** into a **DevLead session**: it can operate DSH
 their state changes — so one agent can orchestrate multiple repositories inside a standard
 interface the human can see and interact with.
 
-Current release candidate **0.4.2-rc.4** (prerelease, npm dist-tag `next`; stable `latest` stays
+Current release candidate **0.4.2-rc.5** (prerelease, npm dist-tag `next`; stable `latest` stays
 **0.4.1**) · DSH **0.2.2-rc.1 – 0.2.2-rc.5** · one `dsh plugin` command installs everything.
 
 ## What you get
@@ -70,13 +70,14 @@ page.
 To pin an exact version:
 
 ```sh
-dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.4
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.5
 ```
 
-0.4.2-rc.4 is the current prerelease candidate for the planned 0.4.2 patch release, superseding
-the rc.3 candidate. It adds lead-only Markdown project notes beside `board.json`, compact board cards,
-a single-line KPI pill strip, responsive 2/3/1-column layouts, and a full-pane read-only notes reader
-with safe Markdown rendering and independent automatic refresh for the notes index and open note. The
+0.4.2-rc.5 is the current prerelease candidate for the planned 0.4.2 patch release, superseding
+the never-approved rc.4 candidate. It preserves rc.4's lead-only Markdown project notes, compact board cards,
+single-line KPI pill strip, responsive 2/3/1-column layouts, and safe full-pane reader while hardening
+portable note ids/paths, bounding model-facing note reads, eliminating stale metadata and redundant note I/O,
+and separating visual polling activity from screen-reader announcements. The
 0.4.2 line makes the project board **on by default** for the active lead (derived from that Session's
 original workspace root), adds a **lead-only read-only board UI** in the right Sidebar, bounds the
 model-facing board read at 64 KiB, fixes long workspace path/title project references, and degrades
@@ -85,8 +86,8 @@ surface is unchanged. The release flow stages this prerelease with npm dist-tag 
 version above until the stable 0.4.2 is approved; `latest` remains **0.4.1**. For history, the rc.3 candidate added automatic
 refresh across every board-file state and its visual redesign. The rc.1/rc.2/rc.3 release notes remain
 historical records; this candidate does not retroactively approve any earlier candidate, and the never-approved
-0.4.2-rc.1 staged records must not be approved. See the
-[0.4.2-rc.4 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.2-rc.4.md);
+0.4.2-rc.1/rc.4 staged records must not be approved. See the
+[0.4.2-rc.5 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.2-rc.5.md);
 the previous stable patch is documented in the
 [0.4.1 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.1.md).
 
@@ -100,7 +101,7 @@ profile's `cordis.patch.yml` themselves; the bundle is the recommended path.
 dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 
 # or pin a specific version (required for prereleases)
-dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.4
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.5
 ```
 
 > **Upgrading from an older release (below 0.4.0):** 0.4.0 intentionally discards older DevLead
@@ -439,8 +440,11 @@ and each Markdown body is `<sanitized project>/<note-id>.md`. The index is cappe
 using locked atomic read-modify-write plus `expected_revision` and, for update/append/delete,
 `expected_bytes` body CAS. Humans and browser clients are read-only. The browser derives the notes root from
 the already-resolved board path and uses only the existing Workspace Files Remote; it never accepts an arbitrary
-path or exposes a write API. See [docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md)
-for the complete index schema, error codes, orphan handling, and durability boundary.
+path or exposes a write API. Note ids and paths collide case-insensitively, Windows reserved device names are
+rejected, and Host decoding rejects malformed UTF-8. A selected-note tool result is capped at 64 KiB of serialized
+JSON and uses a Unicode-safe prefix plus `truncated:true`; the 256 KiB stored body and browser read remain complete.
+See [docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md) for the complete index schema,
+error codes, malformed-index recovery, orphan/GC cleanup after board rebuilds, and durability boundary.
 
 `tool` / `command` / `client-ui` have no deployment configuration; domain limits (watch cap,
 notification retention, etc.) are owned by the core service and protocol constants. Optional
@@ -497,8 +501,11 @@ permanent bar on every conversation:
   a note uses the full right-Sidebar pane rather than a card column. The reader renders a safe Markdown
   subset as React text/elements (no raw-HTML sink), turns only explicit HTTP(S) destinations into links,
   and remains read-only. The index and currently open note each follow the same Workspace Files watch +
-  visibility/focus-gated polling state machine as the board, so external edits refresh automatically;
-  a malformed index or note degrades only that notes surface and does not hide or corrupt the board.
+  visibility/focus-gated polling state machine as the board, so external edits refresh automatically. Path
+  generation checks hide the old workspace's value during switches, and primitive note id/path/bytes memo keys avoid
+  reopening a watch on every index poll. Visual refreshing text is aria-hidden from the separate polite live region,
+  which announces health transitions rather than every five-second poll. A malformed index or note degrades only that
+  notes surface and does not hide or corrupt the board.
 
 Off (the toolbar toggle is the only control):
 

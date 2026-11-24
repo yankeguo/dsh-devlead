@@ -1,0 +1,48 @@
+
+ RUN  v4.1.12 /Users/guoyk/Workspace/src/dsh-devlead
+
+ ❯ packages/devlead/tests/notes.spec.ts (15 tests | 1 failed) 151ms
+     ✓ derives dirname(boardPath)/notes and reads a missing index as revision zero 5ms
+     ✓ creates, lists, reads, updates, appends, and deletes with a consistent index and body 6ms
+     ✓ enforces both index-revision and existing-note-byte CAS without changing bytes 3ms
+     ✓ rejects case-only create collisions without touching the index or any body 2ms
+     × bounds a single-note model read to 64 KiB at a Unicode boundary 3ms
+     ✓ serializes two store instances through the index lock without lost notes 27ms
+     ✓ rejects unsafe ids and operation shapes without creating files 15ms
+     ✓ preserves project resolution and ambiguity errors 2ms
+     ✓ refuses malformed, strict-invalid, and oversized indexes without overwriting them 2ms
+     ✓ rejects invalid UTF-8 even when byte counts still match 2ms
+     ✓ maps missing, oversized, and metadata-mismatched bodies and lets delete repair a missing body 3ms
+     ✓ enforces note size and per-project count limits and ignores orphan bodies 66ms
+     ✓ merges active-project counts/latest titles into a UTF-8-bounded cached summary 2ms
+     ✓ switches and restarts the notes root with the active lead board path 10ms
+     ✓ allows only the service active lead and follows mode-off lifecycle 3ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  packages/devlead/tests/notes.spec.ts > DevLeadBoardNotesStore > bounds a single-note model read to 64 KiB at a Unicode boundary
+AssertionError: expected undefined to be true // Object.is equality
+
+- Expected:
+true
+
++ Received:
+undefined
+
+ ❯ packages/devlead/tests/notes.spec.ts:182:30
+    180|     }))
+    181|     const result = await fixture.notes.read({ project: 'alpha', note: …
+    182|     expect(result.truncated).toBe(true)
+       |                              ^
+    183|     expect(result.note?.bytes).toBe(DEVLEAD_NOTES_NOTE_MAX_BYTES)
+    184|     expect(result.note?.content.length).toBeGreaterThan(0)
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 14 passed (15)
+   Start at  08:11:23
+   Duration  348ms (transform 106ms, setup 0ms, import 153ms, tests 151ms, environment 0ms)
+
+MUTATION_EXIT=1

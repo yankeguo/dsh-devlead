@@ -1,0 +1,62 @@
+
+ RUN  v4.1.12 /Users/guoyk/Workspace/src/dsh-devlead
+
+ ❯ packages/protocol/tests/notes.spec.ts (35 tests | 1 failed) 8ms
+     ✓ publishes the schema, locations, and all byte/count/text limits 1ms
+     ✓ accepts empty and complete indexes without admitting note content 2ms
+     ✓ allows the same note id in different projects but not duplicate paths 0ms
+     ✓ rejects duplicate project id 0ms
+     ✓ rejects duplicate note id 0ms
+     × rejects case-insensitive duplicate note id 1ms
+     ✓ rejects case-insensitive duplicate note path 0ms
+     ✓ rejects wrong metadata path 0ms
+     ✓ rejects a Windows reserved note id variant: CON 0ms
+     ✓ rejects a Windows reserved note id variant: con.txt 0ms
+     ✓ rejects a Windows reserved note id variant: PRN. 0ms
+     ✓ rejects a Windows reserved note id variant: aux... 0ms
+     ✓ rejects a Windows reserved note id variant: NUL .md 0ms
+     ✓ rejects a Windows reserved note id variant: COM1 0ms
+     ✓ rejects a Windows reserved note id variant: com9.backup 0ms
+     ✓ rejects a Windows reserved note id variant: LPT1 0ms
+     ✓ rejects a Windows reserved note id variant: lpt9. 0ms
+     ✓ rejects reserved project directories while accepting ordinary COM10/LPT0 names 1ms
+     ✓ rejects traversal, absolute, backslash, and empty path segments: ../escape 0ms
+     ✓ rejects traversal, absolute, backslash, and empty path segments: alpha/../note-1.md 0ms
+     ✓ rejects traversal, absolute, backslash, and empty path segments: /absolute/note-1.md 0ms
+     ✓ rejects traversal, absolute, backslash, and empty path segments: alpha\note-1.md 0ms
+     ✓ rejects traversal, absolute, backslash, and empty path segments: alpha//note-1.md 0ms
+     ✓ rejects traversal, absolute, backslash, and empty path segments: ./note-1.md 0ms
+     ✓ rejects an unsafe caller-supplied note id ../escape 0ms
+     ✓ rejects an unsafe caller-supplied note id .hidden 0ms
+     ✓ rejects an unsafe caller-supplied note id a/b 0ms
+     ✓ rejects an unsafe caller-supplied note id a\b 0ms
+     ✓ rejects an unsafe caller-supplied note id -leading 0ms
+     ✓ rejects an unsafe caller-supplied note id white space 0ms
+     ✓ rejects an unsafe caller-supplied note id  0ms
+     ✓ rejects unknown fields at every strict object level 0ms
+     ✓ enforces revision, timestamp, and note byte limits 0ms
+     ✓ enforces project and per-project note count limits 1ms
+     ✓ enforces id, directory, title, summary, and path length limits 0ms
+ ✓ packages/devlead/tests/notes.spec.ts (15 tests) 158ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  packages/protocol/tests/notes.spec.ts > shared notes-index wire contract > rejects case-insensitive duplicate note id
+AssertionError: expected [ '/projects/0/notes/1/path' ] to include '/projects/0/notes/1/id'
+ ❯ packages/protocol/tests/notes.spec.ts:101:31
+     99|     ['wrong metadata path', index([{ ...project(), notes: [{ ...note()…
+    100|   ])('rejects %s', (_label, value, pointer) => {
+    101|     expect(pointersOf(value)).toContain(pointer)
+       |                               ^
+    102|   })
+    103|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed | 1 passed (2)
+      Tests  1 failed | 49 passed (50)
+   Start at  08:11:07
+   Duration  369ms (transform 126ms, setup 0ms, import 203ms, tests 166ms, environment 0ms)
+
+MUTATION_EXIT=1

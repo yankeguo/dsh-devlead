@@ -1,0 +1,14 @@
+
+ RUN  v4.1.12 /Users/guoyk/Workspace/src/dsh-devlead
+
+ ✓ packages/protocol/tests/notes.spec.ts (35 tests) 7ms
+ ✓ packages/client-ui/tests/notes.spec.ts (4 tests) 4ms
+ ✓ packages/client-ui/tests/board-render.spec.tsx (29 tests) 53ms
+ ✓ packages/tool/tests/board-note-tools.spec.ts (8 tests) 14ms
+ ✓ packages/devlead/tests/notes.spec.ts (15 tests) 168ms
+
+ Test Files  5 passed (5)
+      Tests  91 passed (91)
+   Start at  08:12:19
+   Duration  393ms (transform 406ms, setup 0ms, import 698ms, tests 246ms, environment 0ms)
+

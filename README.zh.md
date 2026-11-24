@@ -7,7 +7,7 @@
 **Session**（会话），创建并续写其他会话、读取它们的状态、在状态变化时被唤醒——于是一个
 agent 就能在人可见、可参与的标准界面里统管多个仓库。
 
-当前候选版 **0.4.2-rc.4**（prerelease，npm dist-tag `next`；稳定版 `latest` 仍为 **0.4.1**） ·
+当前候选版 **0.4.2-rc.5**（prerelease，npm dist-tag `next`；稳定版 `latest` 仍为 **0.4.1**） ·
 DSH **0.2.2-rc.1 – 0.2.2-rc.5** · 一条 `dsh plugin` 命令即可装好全部组件。
 
 ## 核心能力
@@ -67,20 +67,20 @@ Web 页面。
 固定到精确版本：
 
 ```sh
-dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.4
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.5
 ```
 
-0.4.2-rc.4 是计划中 0.4.2 补丁版的当前 prerelease 候选，取代 rc.3 候选。本轮新增位于
-`board.json` 旁、仅 active lead 可写的项目 Markdown notes，并把看板收紧为单行 KPI pill strip、
-紧凑卡片与 2/3/1 列响应式布局；全栏只读 notes reader 提供安全 Markdown 子集，index 与当前 note
-分别自动刷新。0.4.2 系列让项目看板对 active lead **默认启用**（由该 Session 的原始 workspace 根
+0.4.2-rc.5 是计划中 0.4.2 补丁版的当前 prerelease 候选，取代未 approve 的 rc.4 候选。本轮保留
+rc.4 的 lead-only Markdown notes、紧凑卡片、单行 KPI pill strip、2/3/1 列响应式布局与全栏安全 reader，
+修复跨平台 note id/path 冲突，限制模型侧单 note 读取，消除旧 workspace metadata 闪现与重复 note I/O，
+并把视觉轮询 busy 与读屏播报分离。0.4.2 系列让项目看板对 active lead **默认启用**（由该 Session 的原始 workspace 根
 派生），右侧栏提供 **仅 lead 可见的只读看板 UI**；模型侧看板读取有 64 KiB 上限，修复长 workspace
 path/title 作为 project 引用的误判；看板 start 失败时只降级、不阻塞插件加载。没有公网 API 破坏性
 变更，DSH 兼容面不变。本候选按发布流程以 npm dist-tag `next` stage，在稳定版 0.4.2 被 approve 前请按上面的
 精确版本安装；`latest` 仍为 **0.4.1**。历史上，rc.3 候选为看板加入覆盖所有文件状态的自动刷新
 并重做视觉；rc.1/rc.2/rc.3 release notes 保持为历史记录。本候选不会把任何旧候选追认为已 approve，
-从未 approve 的 0.4.2-rc.1 staged 记录不得 approve。详见
-[0.4.2-rc.4 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.2-rc.4.md)；
+从未 approve 的 0.4.2-rc.1/rc.4 staged 记录不得 approve。详见
+[0.4.2-rc.5 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.2-rc.5.md)；
 上一个稳定补丁的说明见
 [0.4.1 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.1.md)。
 
@@ -94,7 +94,7 @@ path/title 作为 project 引用的误判；看板 start 失败时只降级、�
 dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 
 # 或固定到某个版本（prerelease 必须写精确版本）
-dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.4
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.5
 ```
 
 > **从旧版本（低于 0.4.0）升级：** 0.4.0 会直接丢弃旧的 DevLead 会话状态（模式、关注集合、
@@ -398,8 +398,10 @@ lead 同步/切换会重新解析。start 失败（例如目录不可写）只�
 100 条，`board.json` 本身不变。只有 active lead AI 能写 notes；写入使用文件锁、原子替换、
 `expected_revision` index CAS，以及 update/append/delete 的 `expected_bytes` 正文 CAS。人类与浏览器
 只读。浏览器从已解析的 board path 派生 notes 根目录，只通过既有 Workspace Files Remote 读取，既不接受
-任意路径，也不暴露写 API。完整 index schema、错误码、orphan 处理与持久性边界见
-[docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md)。
+任意路径，也不暴露写 API。note id/path 按忽略大小写判重并拒绝 Windows 保留设备名；Host 对非法 UTF-8
+直接报错。单 note 工具结果按完整 JSON 限制为 64 KiB，超限时按 Unicode 边界保留前缀并标 `truncated:true`；
+磁盘 256 KiB 正文与浏览器完整读取不变。完整 index schema、错误码、坏 index 恢复、board 重建后的
+orphan/GC 清理与持久性边界见 [docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md)。
 
 `tool` / `command` / `client-ui` 没有部署配置；领域限制（watch 上限、通知保留条数等）由核心
 服务与 protocol 常量决定。可选 worktree 隔离**没有配置键**：只有当 profile 组合了实验性
@@ -442,8 +444,9 @@ worktree 服务时才存在，并且每次派发通过 `isolation` 参数使用�
   notes index 提供数据时，项目卡片显示 note 数与最近标题 chip。打开 note 后 reader 使用右侧栏全宽，
   不挤在卡片列里；安全 Markdown 子集只生成 React 文本/元素，不使用 raw-HTML sink，只有显式 HTTP(S)
   目标会变成链接，界面始终只读。index 与当前打开的 note 分别复用看板的 Workspace Files watch +
-  visibility/focus-gated polling，外部修改会自动刷新；坏 index 或坏 note 只降级对应 notes 区域，不会
-  隐藏或损坏 board。
+  visibility/focus-gated polling，外部修改会自动刷新；path 代际校验避免切换 workspace 时闪现旧 value，
+  原始 id/path/bytes memo key 避免每次 index poll 重开 note watch。视觉 refreshing 文案与独立 polite live
+  region 分离，只播报健康状态迁移而非每个 5s 轮询。坏 index 或坏 note 只降级对应 notes 区域，不会隐藏或损坏 board。
 
 关闭（工具条开关是唯一控件）：
 

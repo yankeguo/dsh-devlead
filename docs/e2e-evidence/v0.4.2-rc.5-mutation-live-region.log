@@ -1,0 +1,59 @@
+
+ RUN  v4.1.12 /Users/guoyk/Workspace/src/dsh-devlead
+
+ ❯ packages/client-ui/tests/board-render.spec.tsx (29 tests | 1 failed) 43ms
+     ✓ renders nothing for a Session that is not an eligible lead 3ms
+     ✓ opens the board from an icon-only, localized header action 1ms
+     ✓ rerenders the tab-chip title when the locale changes 0ms
+     ✓ renders nothing while disabled 0ms
+     ✓ renders initial loading and file-not-found states distinctly 1ms
+     ✓ keeps automatic polling explicit when the file watch ends 2ms
+     ✓ renders active, paused, and disabled auto-refresh states distinctly 4ms
+     × keeps polling busy text out of the polite live region 4ms
+     ✓ renders parse failure, last success, technical detail, and a working retry 0ms
+     ✓ renders blocked first, project details, native task disclosure, and revision metadata 1ms
+     ✓ removes redundant visible field labels while retaining their accessible semantics 1ms
+     ✓ renders labelled KPI counts for every project status 0ms
+     ✓ exposes native task progress with explicit values and accessible copy 0ms
+     ✓ collapses paused, done, and unlisted into native secondary disclosures 1ms
+     ✓ renders a valid empty project list separately from a missing file 0ms
+     ✓ renders real unlisted workspaces, session counts, activity, and no-activity rows 1ms
+     ✓ does not claim no activity while the Session catalog is still pending 0ms
+     ✓ keeps workspace pending/error states honest and supports English copy 1ms
+     ✓ reports a workspace-list failure ahead of pending and unavailable hints 1ms
+     ✓ renders hostile board text literally without mounting markup or event handlers 0ms
+     ✓ pins refresh, live status, error, disclosure, and read-only accessibility semantics 3ms
+     ✓ scopes generated group heading ids to each mounted panel 1ms
+     ✓ shows a compact notes count/latest chip and opens the immersive reader 1ms
+     ✓ degrades empty, bad-index, missing-note, and bad-note states without harming the board 1ms
+     ✓ reads the default board path derived from the tab Session root 5ms
+     ✓ never reads a board for a tab Session that is not an eligible lead 1ms
+     ✓ re-reads the new file when the tab Session root changes 2ms
+     ✓ stops reading and renders nothing when the tab Session leaves DevLead mode 1ms
+     ✓ derives notes paths and automatically refreshes both index metadata and the open note 6ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  packages/client-ui/tests/board-render.spec.tsx > DevLeadBoardPanelView > keeps polling busy text out of the polite live region
+AssertionError: expected '正在读取最新内容' to be '自动刷新已开启' // Object.is equality
+
+Expected: "自动刷新已开启"
+Received: "正在读取最新内容"
+
+ ❯ packages/client-ui/tests/board-render.spec.tsx:272:8
+    270|     })
+    271|     expect(textOf(renderer.root.findByProps({ 'data-devlead-board-live…
+    272|       .toBe(zh['board.autoRefresh.active'])
+       |        ^
+    273|     expect(textOf(renderer.root.findByProps({ 'data-auto-refresh': 'ac…
+    274|     await act(async () => {
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 28 passed (29)
+   Start at  08:12:08
+   Duration  169ms (transform 52ms, setup 0ms, import 80ms, tests 43ms, environment 0ms)
+
+MUTATION_EXIT=1

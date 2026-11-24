@@ -2886,10 +2886,10 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   暴露）。
   patch 与 installed 两条加载流都跑完整多阶段；`--no-worktree` 跳过阶段 2（阶段 1、1b、3 仍
   运行，调试用）。每阶段 check 总数已 pin（`EXPECTED_CHECKS`，删/增 check 未更新 pin 会失败），
-  PASS 与 SKIP 分开输出；当前 rc.4 pin 以脚本为准（phase 1=30、1b=18、2=24、**3=140**、1e=31，
-  完整流 **243/243**、no-worktree **219/219**，见 [CONTRIBUTING](CONTRIBUTING.md) 与
-  [COMPATIBILITY](COMPATIBILITY.md)）。rc.4 三条流均按此 pin 实测通过，证据见
-  [v0.4.2-rc.4 release prep](e2e-evidence/v0.4.2-rc.4-release-prep.md)。以下为 Phase 1e 时点的历史实测：基线 DSH 0.2.2-rc.5
+  PASS 与 SKIP 分开输出；当前 rc.5 pin 以脚本为准（phase 1=30、1b=18、2=24、**3=141**、1e=31，
+  完整流 **244/244**、no-worktree **220/220**，见 [CONTRIBUTING](CONTRIBUTING.md) 与
+  [COMPATIBILITY](COMPATIBILITY.md)）。rc.5 三条流的真实结果与退出码见
+  [v0.4.2-rc.5 release prep](e2e-evidence/v0.4.2-rc.5-release-prep.md)。以下为 Phase 1e 时点的历史实测：基线 DSH 0.2.2-rc.5
   的两条加载流完整组合计数为 **221/221**
   （阶段 1 27 + 阶段 1b 12 + 阶段 2 23 + 阶段 3 128 + 阶段 1e 31，阶段 3 含 agent preset roster、
   watched-Session 问题路由、排队 inbox、question conclude/durable/memory-only、两条 scripted

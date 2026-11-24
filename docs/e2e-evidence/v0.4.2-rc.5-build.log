@@ -1,0 +1,11 @@
+$ node scripts/build.mjs
+built packages/protocol/lib/index.js
+built packages/protocol/lib/client.js
+built packages/devlead/lib/index.js
+built packages/tool/lib/index.js
+built packages/command/lib/index.js
+built packages/client-ui/lib/index.js
+built packages/client-ui/lib/client.js
+validated bundle (patch-only)
+build complete (6 targets)
+BUILD_EXIT=0

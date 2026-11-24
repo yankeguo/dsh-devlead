@@ -93,7 +93,7 @@ pnpm install
 | --- | --- |
 | 任意改动 | `pnpm verify` |
 | 包边界、`exports`、`dsh.client.inject`、包元数据 | `pnpm check:packages` |
-| Session、命令、projection、通知、浏览器加载路径、board/notes 路径派生与写路径、board global | `pnpm e2e`（两条完整流 243/243；调试可用 `--no-worktree` 219/219，须说明跳过阶段 2 的理由） |
+| Session、命令、projection、通知、浏览器加载路径、board/notes 路径派生与写路径、board global | `pnpm e2e`（两条完整流 244/244；调试可用 `--no-worktree` 220/220，须说明跳过阶段 2 的理由） |
 | 浏览器端视觉行为 | 自动化断言之外，按 [UI-VERIFICATION.md](UI-VERIFICATION.md) 在隔离 profile 人工验收 |
 
 CI 的 [`verify.yml`](../.github/workflows/verify.yml) 在 PR 与 main push 上跑
@@ -179,7 +179,7 @@ provider / 基础设施凭据按名称模式从环境清除，turn 稳定以 pro
   为 0，`devlead:policy` 文案契约，archive/unarchive/`stop_running`，注销 Workspace 的 durable
   行为，模型目录与创建时的模型 / Agent Teams 设置，以及 watched child 的 `devlead_report` 与
   `ask_user_question` 转发。board/notes 检查：真实 `ctx.devLead.updateBoard` 写入（CAS 与
-  workspace-path/title 引用）、notes create/append、index + Markdown 磁盘 read-back、浏览器
+  workspace-path/title 引用）、notes create/append、真实 `devlead_board_note_read` tool→service、index + Markdown 磁盘 read-back、浏览器
   `workspaceFiles.stat/readBytes`、lead-off 释放 store，以及没有 workspace 的 Session 返回
   `BOARD_DISABLED`。
 - **阶段 1e**：消息通道——progress/fyi background 不唤醒、blocked/decision 的 action steer、
@@ -190,11 +190,11 @@ PASS 与 SKIP 分开输出：
 
 | 流 | pin | 阶段 |
 | --- | --- | --- |
-| `pnpm e2e`（patch，默认） | **243/243** | 1 + 1b + 2 + 3 + 1e |
-| `pnpm e2e --flow installed` | **243/243** | 同上 |
-| `pnpm e2e --no-worktree` | **219/219** | 1 + 1b + 3 + 1e（跳过阶段 2） |
+| `pnpm e2e`（patch，默认） | **244/244** | 1 + 1b + 2 + 3 + 1e |
+| `pnpm e2e --flow installed` | **244/244** | 同上 |
+| `pnpm e2e --no-worktree` | **220/220** | 1 + 1b + 3 + 1e（跳过阶段 2） |
 
-阶段 pin 为 30 / 18 / 24 / **140** / 31（`scripts/e2e-smoke.mjs` 的 `EXPECTED_CHECKS`，删/增
+阶段 pin 为 30 / 18 / 24 / **141** / 31（`scripts/e2e-smoke.mjs` 的 `EXPECTED_CHECKS`，删/增
 check 未更新 pin 会失败），完整流目标计数是 **240 PASS + 3** 条无 provider 凭据的正向模型检查
 SKIP；SKIP 未执行、不能算通过。这些是**当前 harness 的 pin**，真实 PASS 日志与证据由 Lead
 记录在 `docs/e2e-evidence/`，不以本页数字代替实跑证据。上一轮 Step B 复核修复轮的历史基线
@@ -266,7 +266,7 @@ gh release create v<version> --repo yankeguo/dsh-devlead --title v<version> \
 - [ ] `pnpm verify` 通过（typecheck + test + build）。
 - [ ] 触及包边界、导出、`dsh.client.inject` 或包元数据：`pnpm check:packages` 通过。
 - [ ] 触及 Session、命令、projection、通知、浏览器加载路径、board/notes 路径派生与写路径或 board global：
-  `pnpm e2e` 两条流通过（完整流 243/243；只跑 `--no-worktree` 时说明 219/219 与跳过阶段 2
+  `pnpm e2e` 两条流通过（完整流 244/244；只跑 `--no-worktree` 时说明 220/220 与跳过阶段 2
   的理由）。
 - [ ] 浏览器端视觉行为：按 [UI-VERIFICATION.md](UI-VERIFICATION.md) 在隔离 profile 人工验收并
   记录结论（`pnpm e2e` 的自动化断言不能替代）。
