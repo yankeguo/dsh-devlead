@@ -10,7 +10,9 @@ import {
 import {
   Button,
   IconCheckCircleOutlineRegular,
+  IconChevronDownOutlineRegular,
   IconChevronLeftOutlineRegular,
+  IconChevronUpOutlineRegular,
   IconClockOutlineRegular,
   IconListPenOutlineRegular,
   IconPauseOutlineRegular,
@@ -194,29 +196,27 @@ function RelativeTime({ iso, now, t, label }: {
 }
 
 /** Labels remain accessible, while typography and position carry visible meaning. */
-function ProjectField({ label, text, className = '', arrow }: {
+function ProjectField({ label, text, section, className = '', arrow }: {
   readonly label: string
   readonly text: string
+  readonly section: 'focus' | 'next' | 'goal'
   readonly className?: string
   readonly arrow?: string | undefined
 }) {
-  if (text.trim().length === 0) return null
+  const empty = text.trim().length === 0
   return (
-    <div className={`devlead-board-field ${className}`.trim()} aria-label={label}>
+    <div
+      className={`devlead-board-field ${className}`.trim()}
+      data-devlead-board-section={section}
+      data-empty={empty ? 'true' : 'false'}
+      aria-label={empty ? undefined : label}
+      aria-hidden={empty ? true : undefined}
+    >
       <span className="devlead-sr-only">{label}</span>
       {arrow !== undefined && <span className="devlead-board-field-arrow" aria-hidden="true">{arrow}</span>}
       <p title={text}>{text}</p>
     </div>
   )
-}
-
-function statusDot(status: DevLeadBoardProjectStatus): 'warning' | 'ongoing' | 'done' | 'idle' {
-  switch (status) {
-    case 'blocked': return 'warning'
-    case 'active': return 'ongoing'
-    case 'done': return 'done'
-    case 'paused': return 'idle'
-  }
 }
 
 /** Repeated status glyph: the text label remains visible and accessible. */
@@ -227,6 +227,35 @@ function ProjectStatusIcon({ status }: { readonly status: DevLeadBoardProjectSta
     case 'paused': return <IconPauseOutlineRegular size={13} />
     case 'done': return <IconCheckCircleOutlineRegular size={13} />
   }
+}
+
+/** Shape-first priority glyph: double up, single up, or single down chevron. */
+function ProjectPriorityIcon({ priority, t }: {
+  readonly priority: DevLeadBoardProject['priority']
+  readonly t: DevLeadBoardPanelViewProps['t']
+}): ReactNode {
+  const label = t(`board.priority.${priority}`)
+  return (
+    <Tooltip label={label} side="left" delayMs={300} openOnClick portal>
+      <span
+        className="devlead-board-priority"
+        data-devlead-board-priority={priority}
+        role="img"
+        aria-label={label}
+        title={label}
+        tabIndex={0}
+      >
+        <span className="devlead-board-priority-glyph" aria-hidden="true">
+          {priority === 'low' ? <IconChevronDownOutlineRegular size={14} /> : (
+            <>
+              <IconChevronUpOutlineRegular size={14} />
+              {priority === 'high' && <IconChevronUpOutlineRegular size={14} />}
+            </>
+          )}
+        </span>
+      </span>
+    </Tooltip>
+  )
 }
 
 /** One project with native task disclosure and an optional notes entry point. */
@@ -250,18 +279,15 @@ function ProjectCard({ project, now, t, notesProject, onOpenNotes }: {
       data-priority={project.priority}
       aria-labelledby={`${idPrefix}-title`}
     >
-      <header className="devlead-board-card-header">
+      <header className="devlead-board-card-header" data-devlead-board-section="title">
         <div className="devlead-board-card-heading">
-          <span className="devlead-board-card-status" title={t(`board.status.${project.status}`)} aria-label={t(`board.status.${project.status}`)}>
-            <StateDot state={statusDot(project.status)} size={8} />
-          </span>
           <h5 id={`${idPrefix}-title`} title={project.workspace.title}>{project.workspace.title}</h5>
           <code className="devlead-board-project-id" title={project.id}>{project.id}</code>
         </div>
+        <ProjectPriorityIcon priority={project.priority} t={t} />
       </header>
-      <code className="devlead-board-workspace" title={project.workspace.path}>{project.workspace.path}</code>
-      <div className="devlead-board-card-badges">
-        <Tag tone="outline">{t(`board.priority.${project.priority}`)}</Tag>
+      <code className="devlead-board-workspace" data-devlead-board-section="workspace" title={project.workspace.path}>{project.workspace.path}</code>
+      <div className="devlead-board-card-badges" data-devlead-board-section="meta">
         {latestNote !== undefined && onOpenNotes !== undefined && (
           <button
             type="button"
@@ -278,25 +304,27 @@ function ProjectCard({ project, now, t, notesProject, onOpenNotes }: {
           </button>
         )}
       </div>
-      <ProjectField label={t('board.field.focus')} text={project.focus} className="devlead-board-field-focus" />
-      <ProjectField label={t('board.field.next')} text={project.next} className="devlead-board-field-next" arrow="→" />
-      <ProjectField label={t('board.field.goal')} text={project.goal} className="devlead-board-field-goal" />
-      {project.blockers.length > 0 && (
-        <section className="devlead-board-blockers" aria-label={t('board.blockers')}>
-          <h6><IconWarningOutlineRegular size={14} />{t('board.blockers')}</h6>
-          <ul>
-            {project.blockers.map(blocker => (
-              <li key={blocker.id}>
-                <span title={blocker.text}>{blocker.text}</span>
-                <span className="devlead-board-blocker-since">
-                  <RelativeTime iso={blocker.since} now={now} t={t} label={t('board.blocker.since')} />
-                </span>
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
-      <div className="devlead-board-progress" title={progressText}>
+      <ProjectField label={t('board.field.focus')} text={project.focus} section="focus" className="devlead-board-field-focus" />
+      <ProjectField label={t('board.field.next')} text={project.next} section="next" className="devlead-board-field-next" arrow="→" />
+      <ProjectField label={t('board.field.goal')} text={project.goal} section="goal" className="devlead-board-field-goal" />
+      <div className="devlead-board-blockers-slot" data-devlead-board-section="blockers" data-empty={project.blockers.length === 0 ? 'true' : 'false'}>
+        {project.blockers.length > 0 && (
+          <section className="devlead-board-blockers" aria-label={t('board.blockers')}>
+            <h6><IconWarningOutlineRegular size={14} />{t('board.blockers')}</h6>
+            <ul>
+              {project.blockers.map(blocker => (
+                <li key={blocker.id}>
+                  <span title={blocker.text}>{blocker.text}</span>
+                  <span className="devlead-board-blocker-since">
+                    <RelativeTime iso={blocker.since} now={now} t={t} label={t('board.blocker.since')} />
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+      </div>
+      <div className="devlead-board-progress" data-devlead-board-section="progress" title={progressText}>
         <span className="devlead-sr-only">{progressText}</span>
         <progress
           data-devlead-board-progress={project.id}
@@ -308,6 +336,7 @@ function ProjectCard({ project, now, t, notesProject, onOpenNotes }: {
       </div>
       <details
         className="devlead-board-tasks"
+        data-devlead-board-section="tasks"
         data-devlead-board-tasks={project.id}
         aria-labelledby={`${idPrefix}-tasks`}
         open={tasksOpen}
@@ -336,7 +365,7 @@ function ProjectCard({ project, now, t, notesProject, onOpenNotes }: {
           </ul>
         )}
       </details>
-      <footer className="devlead-board-card-footer">
+      <footer className="devlead-board-card-footer" data-devlead-board-section="footer">
         <IconClockOutlineRegular size={12} />
         <RelativeTime iso={project.updatedAt} now={now} t={t} label={t('board.project.updated')} />
       </footer>
@@ -535,20 +564,8 @@ export function DevLeadBoardPanelView({
     ? undefined
     : devLeadNotesForProject(notes.index.value, readerProject)
   return (
-    <div className="devlead-board" data-devlead-board="true" data-state={state.status}>
+    <div className="devlead-board" data-devlead-board="true" data-state={state.status} aria-label={t('board.title')}>
       <header className="devlead-board-header">
-        <div className="devlead-board-title-row">
-          <div className="devlead-board-title-group">
-            <h3>{t('board.title')}</h3>
-            <Tag tone="quiet">{t('board.readonly')}</Tag>
-          </div>
-          <Tooltip label={t('board.refresh.action')} side="left" delayMs={300}>
-            <Button variant="ghost" size="sm" className="devlead-board-refresh" aria-label={t('board.refresh.action')}
-              aria-busy={state.refreshing} disabled={state.refreshing} onClick={onRefresh}>
-              <IconRefreshOutlineRegular size={15} />
-            </Button>
-          </Tooltip>
-        </div>
         <div className="devlead-board-header-strip">
           <div className="devlead-board-live" data-auto-refresh={autoRefresh} title={`${t('board.live')}: ${statusText}`}>
             <StateDot state={refreshState} size={8} />
@@ -562,17 +579,25 @@ export function DevLeadBoardPanelView({
               aria-atomic="true"
             >{announcementText}</span>
           </div>
-          {board !== undefined && (
-            <div className="devlead-board-meta">
-              <span className="devlead-board-updated" title={`${t('board.updated')}: ${board.updatedAt}`}>
-                <IconClockOutlineRegular size={11} />
-                <RelativeTime iso={board.updatedAt} now={now} t={t} label={t('board.updated')} />
-              </span>
-              <span className="devlead-board-revision" title={t('board.revision.full', { revision: board.revision })}>
-                {t('board.revision', { revision: board.revision })}
-              </span>
-            </div>
-          )}
+          <div className="devlead-board-header-actions">
+            {board !== undefined && (
+              <div className="devlead-board-meta">
+                <span className="devlead-board-updated" title={`${t('board.updated')}: ${board.updatedAt}`}>
+                  <IconClockOutlineRegular size={11} />
+                  <RelativeTime iso={board.updatedAt} now={now} t={t} label={t('board.updated')} />
+                </span>
+                <span className="devlead-board-revision" title={t('board.revision.full', { revision: board.revision })}>
+                  {t('board.revision', { revision: board.revision })}
+                </span>
+              </div>
+            )}
+            <Tooltip label={t('board.refresh.action')} side="left" delayMs={300}>
+              <Button variant="ghost" size="sm" className="devlead-board-refresh" aria-label={t('board.refresh.action')}
+                aria-busy={state.refreshing} disabled={state.refreshing} onClick={onRefresh}>
+                <IconRefreshOutlineRegular size={15} />
+              </Button>
+            </Tooltip>
+          </div>
         </div>
         {board !== undefined && (
           <dl className="devlead-board-kpis" aria-label={t('board.kpi.aria')} tabIndex={0}>

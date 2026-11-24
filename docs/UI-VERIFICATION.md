@@ -266,6 +266,30 @@ paused、done 项目，先以 active revision 打开面板，再让一次自动 
    KPI 与 guide icon 的自动化回归。guide 的带描述卡片图标遵循 shell 实际 26px 契约，Session header
    按钮仍是 18px glyph / 28×28 按钮，二者不要混写。
 
+### 0.4.2-rc.10 必查：同行内部对齐、priority 图标与紧凑 header
+
+本轮只微调项目看板，仍需全新隔离 profile 的真实 Chromium 前后截图和几何记录，不以组件断言代替视觉结论。
+准备同一 active 组内 high/medium/low 各一张卡，混合长短标题、focus/next/goal、可选 blocker 与 notes chip：
+
+1. **十条同行轨道**：同一视觉行卡片等高，title/workspace/meta/focus/next/goal/blockers/progress/tasks/footer
+   对应 DOMRect 的 y 一致。focus 最多 3 行、next/goal 最多 2 行，短文本与空 goal 不让后续轨道塌陷；全文仍可
+   通过原生 title 或展开任务 disclosure 阅读。记录每张卡高度及 progress/tasks/footer 的 y；再展开其中一张任务，
+   确认共享轨道扩大时同行 footer 不错位。不支持 subgrid 的降级只承诺卡片等高与 footer 贴底。
+2. **标题行 priority**：high/medium/low 同排分别显示双上箭头、单上箭头、下单箭头，不只靠颜色区分；图标固定
+   最右且右边缘按列对齐，长标题 ellipsis、窄栏不挤掉图标。正文 badges 不再有 priority 文字，notes chip/count/
+   latest 保留。hover 有本地化 tooltip，`role=img` 与 aria-label 分别为「高/中/低优先级」（英文同步）；light/dark
+   均可辨，卡片四边 status 色不受 priority 影响。
+3. **卡片状态点边界**：卡片标题左侧不再渲染 `StateDot`，active 卡片没有 spinner；状态仍由分组标题、KPI 与
+   status 边框/底色表达。**不要误删** LIVE 的状态点或手动刷新按钮 `aria-busy` 的 IconRefresh 旋转；点击刷新时
+   按钮仍 disabled、状态文本与 live-region 行为不变，轮询/watch 不受影响。
+4. **单行面板 header**：右侧 tab 标题保持「项目看板」，面板内不再显示重复 h3 或「只读」Tag；根容器有本地化
+   aria-label。header 左侧是 LIVE 圆点/标签/状态，右侧是 updated 相对时间、rN 与最右刷新按钮，KPI 紧随其后。
+   宽栏两侧 space-between；240–340px 窄栏允许优雅换行/收缩但无横向溢出，刷新始终可达且位于 actions 末端。
+5. **证据组合**：保存同一 fixture 的 rc.9 改动前与 rc.10 改动后 wide/dark 对照，另存 rc.10 wide/light、
+   三档 priority 同排、窄栏 light/dark、priority hover tooltip、刷新中静态/旋转边界（卡片无 spinner、刷新按钮
+   保留）及任务展开图。记录 console error、横向 overflow、priority ARIA、卡片边框 computed style 和十轨几何；
+   不得用旧 rc 截图或 DOM 属性冒充本轮真实视觉通过。
+
 ### 清理
 
 ```sh

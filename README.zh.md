@@ -7,7 +7,7 @@
 **Session**（会话），创建并续写其他会话、读取它们的状态、在状态变化时被唤醒——于是一个
 agent 就能在人可见、可参与的标准界面里统管多个仓库。
 
-当前候选版 **0.4.2-rc.9**（prerelease，npm dist-tag `next`；稳定版 `latest` 仍为 **0.4.1**） ·
+当前候选版 **0.4.2-rc.10**（prerelease，npm dist-tag `next`；稳定版 `latest` 仍为 **0.4.1**） ·
 DSH **0.2.2-rc.1 – 0.2.2-rc.5** · 一条 `dsh plugin` 命令即可装好全部组件。
 
 ## 核心能力
@@ -21,7 +21,7 @@ DSH **0.2.2-rc.1 – 0.2.2-rc.5** · 一条 `dsh plugin` 命令即可装好全�
 | **18 个主工具 + 1 个汇报工具** | 注册/列出/移除 Workspace，列出 Host 模型与 Agent preset，创建/读取/续写/归档/恢复/关注 Session，查看并撤回排队的 inbox 输入，读取通知与汇报摘要，并维护对 active lead 默认启用的用户可见项目看板与项目 Markdown notes。被关注的子会话另有单向的 `devlead_report`。 |
 | **人类命令** | `/devlead`、`/devlead on\|off`、`/devlead reset`、`/devlead watch\|unwatch <session>`——会话可用完整 id 或唯一前缀寻址。 |
 | **可选的 worktree 隔离** | 当 Host 组合了 DSH 的实验性 Git worktree 服务时，被派发的 Session 可以拥有自己的分支和检出，而不必共享 Workspace checkout。缺少该能力时退化为共享 checkout，并在结果里如实上报状态。 |
-| **Web 界面** | composer 工具条里的带文本 DevLead 开关（两态都在）、开启后的只读 DevLeadBar、侧边栏 active/watched 标记，以及仅 lead 可见的右侧栏只读项目看板；看板支持随页面可见性/焦点自动刷新、单行 KPI pill strip、紧凑的 2/3/1 列响应式卡片、项目 notes chip 与安全的全栏 Markdown notes reader。 |
+| **Web 界面** | composer 工具条里的带文本 DevLead 开关（两态都在）、开启后的只读 DevLeadBar、侧边栏 active/watched 标记，以及仅 lead 可见的右侧栏只读项目看板；看板支持随页面可见性/焦点自动刷新、单行 KPI pill strip、内部区块同行对齐且 priority 图标置于标题行右侧的紧凑 2/3/1 列响应式卡片、项目 notes chip 与安全的全栏 Markdown notes reader。 |
 
 ## 与 subagent / agent-team 的对比
 
@@ -67,20 +67,18 @@ Web 页面。
 固定到精确版本：
 
 ```sh
-dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.9
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.10
 ```
 
-0.4.2-rc.9 是计划中 0.4.2 补丁版的当前 prerelease 候选，基于已 staged 但从未 approve 的 rc.8。相对 rc.8，
-active lead 角标从绝对定位改为 trailing seat 的内联布局，触屏或窄栏下 time、badge 与 actions 不再重叠；
-`sidebar.session.row.leading` 新增 visually-hidden lead 说明，hover/focus 时即使 shell 隐藏 trailing seat，
-辅助技术仍能读到 lead 身份，hover card 继续保留。若高优先级状态点替换 leading seat，该常驻文本会缺失，
-此时以 hover card 作为补充说明；这是 shell 限制。本轮还补强 watchdog error/read 断言、hung `readBytes` 恢复、
-全 0 KPI 与 guide icon 的回归测试，并更新发布文档。rc.8 的看板层级、status 驱动卡片与读取 watchdog 保留，
-原生 notes 编辑与主动 board workflow 也不变；board/notes 磁盘 schema 与 DSH 兼容面不变。本候选按发布流程以
-npm dist-tag `next` stage，在稳定版 0.4.2 被 approve 前请按上面的精确版本安装；
-`latest` 仍为 **0.4.1**。旧候选保持历史记录，从未 approve 的 0.4.2-rc.1/rc.4 staged 记录不得 approve，
-rc.8 的 staged 记录也不得混入本候选的批准。详见
-[0.4.2-rc.9 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.2-rc.9.md)；
+0.4.2-rc.10 是计划中 0.4.2 补丁版的当前 prerelease 候选，基于已发布的 rc.9。本轮只微调项目看板：
+同一视觉行的卡片共享十条内部网格轨道，标题、元信息、focus、next、goal、blockers、任务进度、任务与 footer
+在长短内容混合时仍逐块对齐。priority 从重复文字 badge 改为标题行最右侧的高/中/低图形图标，以双上箭头、
+单上箭头、下单箭头区分形状，并保留本地化 tooltip 与 ARIA。卡片标题左侧旋转状态点移除，LIVE 与刷新反馈
+保持原样。面板 header 不再重复可见 tab 标题和「只读」Tag，LIVE、更新时间/rN 与最右刷新按钮合并为紧凑一行。
+status 四边边框、KPI、blocked 警示、notes、原生 disclosure、board/notes 磁盘 schema 与 DSH 兼容面均不变。
+本候选按发布流程以 npm dist-tag `next` stage，在稳定版 0.4.2 被 approve 前请按上面的精确版本安装；
+`latest` 仍为 **0.4.1**。旧候选保持历史记录，从未 approve 的 rc.1/rc.4/rc.8 staged 记录不得混入本候选批准。详见
+[0.4.2-rc.10 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.2-rc.10.md)；
 上一个稳定补丁的说明见
 [0.4.1 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.1.md)。
 
@@ -94,7 +92,7 @@ rc.8 的 staged 记录也不得混入本候选的批准。详见
 dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 
 # 或固定到某个版本（prerelease 必须写精确版本）
-dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.9
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.10
 ```
 
 > **从旧版本（低于 0.4.0）升级：** 0.4.0 会直接丢弃旧的 DevLead 会话状态（模式、关注集合、

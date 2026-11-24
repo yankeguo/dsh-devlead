@@ -478,6 +478,27 @@ describe('styles', () => {
     expect(boardCss).not.toContain('linear-gradient')
   })
 
+  it('aligns ten card sections with subgrid and keeps compact priority/header fallbacks', () => {
+    expect(styles).toMatch(/\.devlead-board-cards \{[^}]*grid-auto-rows: 1fr;/u)
+    expect(styles).toMatch(/\.devlead-board-card \{[^}]*display: flex;/u)
+    expect(styles).toMatch(/\.devlead-board-card \{[^}]*height: 100%;/u)
+    expect(styles).toMatch(/\.devlead-board-card-footer \{[^}]*margin-top: auto;/u)
+    expect(styles).toMatch(/@supports \(grid-template-rows: subgrid\) \{[\s\S]*\.devlead-board-card \{[^}]*grid-row: span 10;[^}]*grid-template-rows: subgrid;/u)
+    expect(styles).toMatch(/\.devlead-board-field-focus p \{[^}]*-webkit-line-clamp: 3;/u)
+    expect(styles).toMatch(/\.devlead-board-field p \{[^}]*-webkit-line-clamp: 2;/u)
+    expect(styles).toMatch(/\.devlead-board-field\[data-empty="true"\] \{[^}]*visibility: hidden;/u)
+    expect(styles).toMatch(/\.devlead-board-priority \{[^}]*flex: none;/u)
+    expect(styles).toMatch(/\.devlead-board-priority-glyph > svg \+ svg \{[^}]*margin-top: -9px;/u)
+    expect(styles).toMatch(/\.devlead-board-card-heading \{[^}]*grid-template-columns: minmax\(0, auto\) minmax\(0, 1fr\);/u)
+    expect(styles).not.toContain('.devlead-board-card-status')
+    expect(styles).not.toContain('.devlead-board-title-row')
+    expect(styles).toMatch(/\.devlead-board-header-strip \{[^}]*justify-content: space-between;/u)
+    expect(styles).toMatch(/\.devlead-board-header-actions \{[^}]*margin-left: auto;/u)
+    // The correction is limited to card-title dots: LIVE and refresh motion stay.
+    expect(styles).toContain('.devlead-board-refresh[aria-busy="true"] > svg')
+    expect(styles).toContain('@keyframes devlead-board-spin')
+  })
+
   it('uses status-only four-side card borders and one blocked warning token everywhere', () => {
     const expectations = {
       active: '--dsw-alias-state-business-primary',

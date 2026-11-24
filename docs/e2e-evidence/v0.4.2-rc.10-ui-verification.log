@@ -1,0 +1,58 @@
+2026-11-24 Asia/Shanghai — isolated DSH 0.2.2-rc.5 / real Chromium via Browser MCP / linked rc.10 build
+Temporary DSH_HOME/profile and scratch default-workspace fixture; desktop profile and the running user GUI were not modified.
+Launch token is intentionally omitted. Browser console --errors after final wide/light and narrow/light captures: no messages.
+Actual model: nanollm / kimi-k3.1-pro / high; no 429 and no fallback.
+
+BEFORE (rc.9 production build, same mixed-length active-high/medium/low fixture, board container 1147.5px, 3 columns, dark):
+- All three outer cards happened to be height=362, but their internal origins differed.
+- active-high progress y=862, tasks y=870, footer y=901; active-medium progress y=742, tasks y=750, footer y=781;
+  active-low progress y=758, tasks y=766, footer y=797.
+- Priority was visible text in the badges row: 高优先级 / 中优先级 / 低优先级.
+- The card-title active StateDot was <svg class=_spinner...>; its <g> used animation=_dsh-state-dot-spin_1i3xo_1
+  and its circle used _dsh-state-dot-dash_1i3xo_1.
+- Visible panel header contained 项目看板 / 只读 in addition to the right-tab title.
+- Screenshot: v0.4.2-rc.10-ui-before-wide-dark.jpg.
+
+AFTER (final rc.10 build, same fixture, board container 1147.5px, 3 columns):
+- CSS.supports(grid-template-rows, subgrid)=true; every card display=grid, height=410.
+- All three cards have exactly ten direct data-devlead-board-section tracks and identical DOMRect y values:
+  title=537, workspace=557, meta=572, focus=613, next=680, goal=723, blockers=761,
+  progress=875, tasks=883, footer=909.
+- The notes-bearing and empty meta slots both start at y=572 (the earlier margin/padding discrepancy was corrected).
+- focus is clamped to 3 lines and next/goal to 2; native titles remain. Empty goal is visibility:hidden + aria-hidden.
+- After opening only active-high tasks, all three cards height=593, tasks y=902, footer y=1092; active-high
+  focus clamp=none while its siblings remain clamped. Expanded-row evidence: v0.4.2-rc.10-ui-task-expanded-light.jpg.
+- Final wide screenshots: v0.4.2-rc.10-ui-after-wide-light.jpg and v0.4.2-rc.10-ui-after-wide-dark.jpg.
+
+PRIORITY / CARD TITLE:
+- high=double chevron-up, medium=single chevron-up, low=single chevron-down; colors are supplementary.
+- Every glyph is at the title row's right edge (cardRight-iconRight=11px including the card border/padding),
+  flex:none, role=img, tabIndex=0 and localized aria-label/title. No priority text remains in badges; notes chip remains.
+- Hover produced role=tooltip 高优先级. Starting at the refresh button and pressing Tab four times focused active-high
+  priority, displayed the tooltip and focus outline, and set aria-describedby=:r1p:. Clicking pinned the same tooltip;
+  Escape removed it (tooltipCountAfterEscape=0). The portal bubble was not clipped by the card.
+- Evidence: v0.4.2-rc.10-ui-priority-tooltip-light.jpg and v0.4.2-rc.10-ui-priority-keyboard-light.jpg.
+- Final .devlead-board-card-status count=0. LIVE StateDot and .devlead-board-refresh[aria-busy=true] > svg
+  devlead-board-spin CSS remain covered by rendering/style tests. A local manual refresh completed before a busy-frame
+  screenshot could be captured; no busy screenshot or animated-refresh visual claim is fabricated.
+- light computed active-card border top/right/bottom/left were identical for high/medium/low:
+  color(srgb 0.254902 0.462745 0.901961 / 0.62); backgrounds were also identical. Priority icon colors/ARIA remained distinct.
+
+NARROW (actual right-pane drag, final build, board container 299.5px, one column):
+- LIVE y=48 and right-side actions y=67: the requested graceful wrap occurs rather than forcing unreadable compression.
+  Both right edges=2544; refresh is the last action. header scrollWidth<=clientWidth and content overflow=false.
+- All three priority icon right edges=2529 and cardRight-iconRight=11px; long titles ellipsize without squeezing the icons.
+- Final screenshots: v0.4.2-rc.10-ui-after-narrow-light.jpg and v0.4.2-rc.10-ui-after-narrow-dark.jpg.
+
+HEADER:
+- Right tab remains 项目看板. Visible panel h3 and 只读 Tag are absent; root has localized aria-label=项目看板.
+- Wide header is one compact strip (LIVE left; updated/rN/rightmost refresh right), followed directly by the unchanged KPI strip.
+- Narrow header wraps to LIVE then updated/rN/refresh without horizontal overflow, as explicitly allowed by the requirement.
+
+LIMITS:
+- No physical touch device or touch emulation was used; the ordinary click/pin path was verified, not claimed as a touch-device test.
+- No operating-system screen reader was run; accessibility conclusions are limited to real DOM/ARIA/focus/tooltip behavior.
+- Non-subgrid engines were not available in this Chromium run; the flex equal-height/footer fallback is covered structurally,
+  while exact ten-track alignment is claimed only for the verified Chromium subgrid path.
+
+UI_VERIFICATION_EXIT=0

@@ -33,8 +33,13 @@ vi.mock('@deepseek-ai/dsh-client-ui-primitives', () => {
   const Button = ({ children, ...rest }: { readonly children?: ReactNode } & Record<string, unknown>) => (
     <button {...rest}>{children}</button>
   )
-  const Tooltip = ({ label, children }: { readonly label?: string; readonly children?: ReactNode }) => (
-    <span data-mock-tooltip={label}>{children}</span>
+  const Tooltip = ({ label, children, openOnClick = false, portal = false }: {
+    readonly label?: string
+    readonly children?: ReactNode
+    readonly openOnClick?: boolean
+    readonly portal?: boolean
+  }) => (
+    <span data-mock-tooltip={label} data-open-on-click={openOnClick || undefined} data-portal={portal || undefined}>{children}</span>
   )
   const Pill = ({ children, className }: { readonly children?: ReactNode; readonly className?: string }) => (
     <span className={className} data-mock-pill="true">{children}</span>
@@ -45,6 +50,8 @@ vi.mock('@deepseek-ai/dsh-client-ui-primitives', () => {
   const StateDot = ({ state }: { readonly state: string }) => <span data-mock-state-dot={state} aria-hidden="true" />
   const Icon = ({ size }: { readonly size?: number }) => <span data-mock-icon="true" data-icon-size={size} aria-hidden="true" />
   const GaugeIcon = ({ size }: { readonly size?: number }) => <span data-mock-icon="gauge" data-icon-size={size} aria-hidden="true" />
+  const ChevronUpIcon = ({ size }: { readonly size?: number }) => <span data-mock-icon="chevron-up" data-icon-size={size} aria-hidden="true" />
+  const ChevronDownIcon = ({ size }: { readonly size?: number }) => <span data-mock-icon="chevron-down" data-icon-size={size} aria-hidden="true" />
   return {
     Button,
     Tooltip,
@@ -62,6 +69,8 @@ vi.mock('@deepseek-ai/dsh-client-ui-primitives', () => {
     IconPauseOutlineRegular: Icon,
     IconCheckCircleOutlineRegular: Icon,
     IconChevronLeftOutlineRegular: Icon,
+    IconChevronUpOutlineRegular: ChevronUpIcon,
+    IconChevronDownOutlineRegular: ChevronDownIcon,
   }
 })
 
@@ -318,7 +327,8 @@ describe('DevLeadBoardPanelView', () => {
     expect(textOf(card)).toContain('Focus blocked')
     expect(textOf(card)).toContain('Next blocked')
     expect(textOf(card)).toContain('Waiting for review')
-    expect(textOf(card)).toContain('高优先级')
+    expect(visibleTextOf(card.findByProps({ className: 'devlead-board-card-badges' }))).not.toContain('高优先级')
+    expect(card.findByProps({ 'data-devlead-board-priority': 'high' }).props['aria-label']).toBe('高优先级')
     const tasks = renderer.root.findByProps({ 'data-devlead-board-tasks': 'blocked' })
     expect(tasks.type).toBe('details')
     expect(tasks.findByType('summary').props['aria-label']).toBe(zh['board.tasks.summary'].replace('{done}', '1').replace('{total}', '2'))
@@ -326,6 +336,72 @@ describe('DevLeadBoardPanelView', () => {
     expect(textOf(tasks)).toContain('session-12…bcdef')
     // The only buttons in a healthy board are refresh controls, never writes.
     expect(renderer.root.findAllByType('button')).toHaveLength(1)
+  })
+
+  it('uses one compact header row without duplicating the tab title or read-only tag', async () => {
+    const renderer = await mount(view(READY))
+    const board = renderer.root.findByProps({ 'data-devlead-board': 'true' })
+    expect(board.props['aria-label']).toBe(zh['board.title'])
+    const header = board.findByProps({ className: 'devlead-board-header' })
+    expect(header.findAllByType('h3')).toHaveLength(0)
+    expect(header.findAllByProps({ className: 'devlead-board-title-row' })).toHaveLength(0)
+    expect(visibleTextOf(header)).not.toContain(zh['board.title'])
+    expect(visibleTextOf(header)).not.toContain(zh['board.readonly'])
+    const strip = header.findByProps({ className: 'devlead-board-header-strip' })
+    expect(strip.children.map(child => typeof child === 'string' ? child : child.props.className)).toEqual([
+      'devlead-board-live', 'devlead-board-header-actions',
+    ])
+    const actions = strip.findByProps({ className: 'devlead-board-header-actions' })
+    expect(actions.findByProps({ className: 'devlead-board-meta' })).toBeDefined()
+    const lastAction = actions.children.at(-1)!
+    expect(typeof lastAction === 'string' ? undefined : lastAction.findByProps({ className: 'devlead-board-refresh' }).props['aria-label'])
+      .toBe(zh['board.refresh.action'])
+  })
+
+  it('keeps ten stable card sections and replaces status dots and priority text with title-row glyphs', async () => {
+    const renderer = await mount(view({
+      ...READY,
+      board: {
+        ...BOARD,
+        projects: [
+          { ...project('active-high', 'active', 'high'), goal: '', focus: 'short', next: 'a much longer next action '.repeat(12) },
+          { ...project('active-medium', 'active', 'medium'), focus: 'a much longer focus '.repeat(12), next: 'short' },
+          project('active-low', 'active', 'low'),
+        ],
+      },
+    }))
+    const expectedSections = ['title', 'workspace', 'meta', 'focus', 'next', 'goal', 'blockers', 'progress', 'tasks', 'footer']
+    for (const [id, priority, upCount, downCount] of [
+      ['active-high', 'high', 2, 0],
+      ['active-medium', 'medium', 1, 0],
+      ['active-low', 'low', 0, 1],
+    ] as const) {
+      const card = renderer.root.findByProps({ 'data-devlead-board-project': id })
+      expect(card.findAll(instance => instance.props['data-devlead-board-section'] !== undefined)
+        .map(instance => instance.props['data-devlead-board-section'])).toEqual(expectedSections)
+      expect(card.findAllByProps({ className: 'devlead-board-card-status' })).toHaveLength(0)
+      expect(card.findAllByProps({ 'data-mock-state-dot': 'ongoing' })).toHaveLength(0)
+      const header = card.findByProps({ className: 'devlead-board-card-header' })
+      const priorityIcon = header.findByProps({ 'data-devlead-board-priority': priority })
+      expect(priorityIcon.props.role).toBe('img')
+      expect(priorityIcon.props['aria-label']).toBe(zh[`board.priority.${priority}`])
+      expect(priorityIcon.props.title).toBe(zh[`board.priority.${priority}`])
+      expect(priorityIcon.props.tabIndex).toBe(0)
+      const priorityTooltip = header.findByProps({ 'data-mock-tooltip': zh[`board.priority.${priority}`] })
+      expect(priorityTooltip.props['data-open-on-click']).toBe(true)
+      expect(priorityTooltip.props['data-portal']).toBe(true)
+      expect(priorityIcon.findAllByProps({ 'data-mock-icon': 'chevron-up' })).toHaveLength(upCount)
+      expect(priorityIcon.findAllByProps({ 'data-mock-icon': 'chevron-down' })).toHaveLength(downCount)
+      const lastHeaderChild = header.children.at(-1)!
+      expect(typeof lastHeaderChild === 'string' ? undefined : lastHeaderChild.findByProps({ 'data-devlead-board-priority': priority }))
+        .toBeDefined()
+      expect(visibleTextOf(card.findByProps({ className: 'devlead-board-card-badges' }))).not.toContain(zh[`board.priority.${priority}`])
+      expect(card.findByProps({ 'data-devlead-board-section': 'focus' }).findByType('p').props.title).toContain(id === 'active-medium' ? 'longer focus' : id === 'active-high' ? 'short' : 'Focus')
+    }
+    const emptyGoal = renderer.root.findByProps({ 'data-devlead-board-project': 'active-high' })
+      .findByProps({ 'data-devlead-board-section': 'goal' })
+    expect(emptyGoal.props['data-empty']).toBe('true')
+    expect(emptyGoal.props['aria-hidden']).toBe(true)
   })
 
   it('removes redundant visible field labels while retaining their accessible semantics', async () => {
@@ -490,8 +566,10 @@ describe('DevLeadBoardPanelView', () => {
     const failed = await mount(view(READY, { workspaceError: true }))
     expect(textOf(failed.root)).toContain(zh['board.unlisted.error'])
     const english = await mount(view(READY, { t: translate(en) as DevLeadBoardPanelViewProps['t'] }))
-    expect(textOf(english.root)).toContain('Project board')
-    expect(textOf(english.root)).toContain('Read-only')
+    expect(english.root.findByProps({ 'data-devlead-board': 'true' }).props['aria-label']).toBe('Project board')
+    expect(visibleTextOf(english.root.findByProps({ className: 'devlead-board-header' }))).not.toContain('Project board')
+    expect(visibleTextOf(english.root.findByProps({ className: 'devlead-board-header' }))).not.toContain('Read-only')
+    expect(english.root.findByProps({ 'data-devlead-board-priority': 'high' }).props['aria-label']).toBe('High priority')
     expect(english.root.findByProps({ 'data-devlead-board-tasks': 'blocked' }).findByType('summary').props['aria-label'])
       .toBe('View task details (1/2 done)')
     expect(textOf(english.root)).toContain('Auto refresh on')

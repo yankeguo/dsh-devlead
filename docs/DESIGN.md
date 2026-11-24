@@ -2682,10 +2682,19 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   视觉采用根 `.devlead-board` container：顶部按 blocked/active/paused/done 排列的四状态 KPI 为单行可横滚
   pill strip，状态图标与文字并存，零值中性、仅 blocked>0 强 warning；`summarizeDevLeadBoardProjects` 从
   实际渲染 groups 派生 counts，KPI/banner/卡片不会各自使用不同 blocked 判定。revision/updated/Live 是紧凑
-  元信息，Live 标签肉眼可见、长状态独立 ellipsis。blocked 强警示置顶，active 默认 1 列、container ≥620px
+  元信息，Live 标签肉眼可见、长状态独立 ellipsis。面板根以 `aria-label` 保留本地化看板名称；可见标题不再
+  重复 tab，也不显示「只读」Tag。LIVE 在单行 header 左侧，updated/revision 与最右刷新按钮在右侧 actions，
+  窄栏允许 flex 优雅换行；KPI 紧随 header。blocked 强警示置顶，active 默认 1 列、container ≥620px
   2 列、≥980px 3 列。卡片使用完整四边边框和轻底色，颜色只由 status 决定：active=business primary、
   blocked=warning primary、paused=neutral label secondary、done=success primary；priority 仅保留独立 Tag，
-  不得通过 `data-priority` CSS 改卡片主色。卡片不重复渲染可见 field label（保留 sr-only/aria），但项目名、
+  不得通过 `data-priority` CSS 改卡片主色。卡片标题左侧不再渲染 active 时旋转的 `StateDot`（LIVE 与刷新按钮
+  动画保留）；priority 从正文文字 badge 移到标题行最右，以双上/单上/单下 chevron 区分 high/medium/low，
+  图标 `flex:none`，带本地化 tooltip、`role=img` 与 aria-label，长标题 ellipsis 不挤压图标。卡片固定十个
+  `data-devlead-board-section` 轨道：title/workspace/meta/focus/next/goal/blockers/progress/tasks/footer；支持
+  subgrid 的 Chromium 中每张卡片跨同一父网格的十条共享轨道，同行对应区块严格同 y，短/空字段保留隐藏占位，
+  focus 最多 3 行、next/goal 最多 2 行且 title 可读全文。不支持 subgrid 时保留 `grid-auto-rows:1fr`、卡片 flex
+  等高与 footer `margin-top:auto` 降级；展开原生任务 disclosure 仍解除 informational clamp，扩大的任务轨道
+  同样由同行共享。卡片不重复渲染可见 field label（保留 sr-only/aria），但项目名、
   workspace、status/priority、focus/next/blockers、任务进度/disclosure 与 updated 信息完整，非自明图标有 tooltip；
   paused/done/unlisted 为次级折叠。组内 priority + updatedAt 排序，tasks/blockers 只读；unlisted 连接
   Host Workspace/Session 投影，path 做有限语法规范化并显示会话数与最近 Session 活动，Session pending
@@ -2900,10 +2909,10 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   暴露）。
   patch 与 installed 两条加载流都跑完整多阶段；`--no-worktree` 跳过阶段 2（阶段 1、1b、3 仍
   运行，调试用）。每阶段 check 总数已 pin（`EXPECTED_CHECKS`，删/增 check 未更新 pin 会失败），
-  PASS 与 SKIP 分开输出；当前 rc.9 pin 以脚本为准（phase 1=30、1b=18、2=24、**3=141**、1e=31，
+  PASS 与 SKIP 分开输出；当前 rc.10 pin 以脚本为准（phase 1=30、1b=18、2=24、**3=141**、1e=31，
   完整流 **244/244**、no-worktree **220/220**，见 [CONTRIBUTING](CONTRIBUTING.md) 与
-  [COMPATIBILITY](COMPATIBILITY.md)）。rc.9 三条流的真实结果与退出码详见
-  [v0.4.2-rc.9 release prep](e2e-evidence/v0.4.2-rc.9-release-prep.md)。以下为 Phase 1e 时点的历史实测：基线 DSH 0.2.2-rc.5
+  [COMPATIBILITY](COMPATIBILITY.md)）。rc.10 三条流的真实结果与退出码详见
+  [v0.4.2-rc.10 release prep](e2e-evidence/v0.4.2-rc.10-release-prep.md)。以下为 Phase 1e 时点的历史实测：基线 DSH 0.2.2-rc.5
   的两条加载流完整组合计数为 **221/221**
   （阶段 1 27 + 阶段 1b 12 + 阶段 2 23 + 阶段 3 128 + 阶段 1e 31，阶段 3 含 agent preset roster、
   watched-Session 问题路由、排队 inbox、question conclude/durable/memory-only、两条 scripted
