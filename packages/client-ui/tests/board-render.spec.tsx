@@ -361,6 +361,24 @@ describe('DevLeadBoardPanelView', () => {
     expect(kpis[1]?.findByType('dd').props['aria-label']).toBe('进行中：1 个项目')
   })
 
+  it('renders all-zero KPIs with neutral emphasis and accurate accessible counts', async () => {
+    const renderer = await mount(view({ ...READY, board: { ...BOARD, projects: [] } }))
+    const kpis = renderer.root.findAll(instance => instance.props['data-devlead-board-kpi'] !== undefined)
+    expect(kpis.map(kpi => kpi.props['data-devlead-board-kpi'])).toEqual(['blocked', 'active', 'paused', 'done'])
+    expect(kpis.map(kpi => textOf(kpi.findByType('dd')))).toEqual(['0', '0', '0', '0'])
+    expect(kpis.map(kpi => kpi.props['data-empty'])).toEqual(['true', 'true', 'true', 'true'])
+    expect(kpis.map(kpi => kpi.props['data-emphasis'])).toEqual(['false', 'false', 'false', 'false'])
+    expect(kpis.map(kpi => kpi.findByType('dd').props['aria-label'])).toEqual([
+      '已阻塞：0 个项目',
+      '进行中：0 个项目',
+      '已暂停：0 个项目',
+      '已完成：0 个项目',
+    ])
+    expect(renderer.root.findAllByProps({ className: 'devlead-board-blocked-notice' })).toHaveLength(0)
+    expect(renderer.root.findAllByProps({ 'data-board-group': 'blocked' })).toHaveLength(0)
+    expect(renderer.root.findAll(instance => instance.props['data-board-group'] !== undefined)).toHaveLength(0)
+  })
+
   it('counts only status=blocked as blocked, even when another status has blockers', async () => {
     const activeWithBlockers = {
       ...project('active-blockers', 'active'),

@@ -8,7 +8,7 @@ upgrades **one ordinary session** into a **DevLead session**: it can operate DSH
 their state changes — so one agent can orchestrate multiple repositories inside a standard
 interface the human can see and interact with.
 
-Current release candidate **0.4.2-rc.8** (prerelease, npm dist-tag `next`; stable `latest` stays
+Current release candidate **0.4.2-rc.9** (prerelease, npm dist-tag `next`; stable `latest` stays
 **0.4.1**) · DSH **0.2.2-rc.1 – 0.2.2-rc.5** · one `dsh plugin` command installs everything.
 
 ## What you get
@@ -70,21 +70,24 @@ page.
 To pin an exact version:
 
 ```sh
-dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.8
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.9
 ```
 
-0.4.2-rc.8 is the current prerelease candidate for the planned 0.4.2 patch release, building on the
-published rc.7 candidate. It clarifies the board entry icon, four-status KPIs, and card visual hierarchy. It also
-fixes a hung automatic read that could permanently wedge watch/polling and leave blocked projects and KPIs on an old
-snapshot; KPIs, groups, and the blocked banner now share one status summary. Cards use status-driven four-side borders
-and light surfaces, while priority stays in its independent badge and no longer selects a card's main color. The
-active lead's whole-row sidebar ring is now a corner badge, distinct from the selected Session. rc.7's native notes
-editing and proactive board workflow remain. Board/notes disk schemas and the DSH compatibility surface are unchanged. The release flow
-stages this prerelease with npm dist-tag `next`, so pin the exact version above until stable 0.4.2 is approved;
+0.4.2-rc.9 is the current prerelease candidate for the planned 0.4.2 patch release, building on the staged but
+never-approved rc.8 candidate. Relative to rc.8, the active lead badge now participates in the trailing seat's inline
+layout instead of absolute positioning, so the time, badge, and actions do not overlap on touch devices or narrow
+sidebars. A visually hidden lead description in `sidebar.session.row.leading` keeps the lead fact available to
+assistive technology on hover/focus even when the shell hides the trailing seat; the hover card remains. If a
+higher-priority status dot replaces the leading seat, that persistent text is unavailable and the hover card is the
+supplementary explanation—a shell limitation. Regression coverage now includes watchdog error/read assertions,
+recovery from a hung `readBytes`, all-zero KPIs, and the guide icon; this candidate also updates the release
+documentation. rc.8's board hierarchy, status-driven cards, and read watchdog remain, as do native notes editing and
+the proactive board workflow. Board/notes disk schemas and the DSH compatibility surface are unchanged. The release
+flow stages this prerelease with npm dist-tag `next`, so pin the exact version above until stable 0.4.2 is approved;
 `latest` remains **0.4.1**.
 Earlier candidates remain historical records; the never-approved 0.4.2-rc.1/rc.4 staged records must not be
-approved. See the
-[0.4.2-rc.8 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.2-rc.8.md);
+approved, and rc.8's staged records must not be mixed into this candidate's approval. See the
+[0.4.2-rc.9 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.2-rc.9.md);
 the previous stable patch is documented in the
 [0.4.1 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.1.md).
 
@@ -98,7 +101,7 @@ profile's `cordis.patch.yml` themselves; the bundle is the recommended path.
 dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 
 # or pin a specific version (required for prereleases)
-dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.8
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.9
 ```
 
 > **Upgrading from an older release (below 0.4.0):** 0.4.0 intentionally discards older DevLead

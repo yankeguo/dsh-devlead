@@ -3,9 +3,10 @@
  * row's DevLead mark (`sidebar.session.row.hover`).
  *
  * The row's trailing seat is hidden by the shell while the row is hovered (that
- * is when the row's own actions take over), so the explanation of what the mark
- * means lives here: it mounts with the hover card and explains the active lead
- * or watched role. A plain row renders nothing.
+ * is when the row's own actions take over). Active leads also have a visually
+ * hidden explanation in the leading seat; this hover-card line supplements it
+ * and explains both the active-lead and watched roles. A plain row renders
+ * nothing.
  */
 
 import { IconGoalOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'

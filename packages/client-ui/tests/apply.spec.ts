@@ -12,13 +12,21 @@
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { createElement, type ComponentType } from 'react'
+import { act, create, type ReactTestRenderer } from 'react-test-renderer'
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
+
+Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
 // The primitives package is a browser platform module whose own dependencies
 // (e.g. `clsx`) are supplied by the DSH shell bundle, not by this workspace's
 // node_modules; registration wiring only needs the component identities.
 vi.mock('@deepseek-ai/dsh-client-ui-primitives', () => {
   const Placeholder = (): null => null
+  const GaugeIcon = ({ size }: { readonly size?: number }) => createElement('span', {
+    'data-mock-icon': 'gauge',
+    'data-icon-size': size,
+  })
   return {
     Button: Placeholder,
     Tooltip: Placeholder,
@@ -26,7 +34,7 @@ vi.mock('@deepseek-ai/dsh-client-ui-primitives', () => {
     IconSparkleRegular: Placeholder,
     IconUsersOutlineRegular: Placeholder,
     IconFlatListOutlineRegular: Placeholder,
-    IconGaugeOutlineRegular: Placeholder,
+    IconGaugeOutlineRegular: GaugeIcon,
     IconRefreshOutlineRegular: Placeholder,
     IconWarningOutlineRegular: Placeholder,
     Pill: Placeholder,
@@ -54,6 +62,30 @@ interface FakeOpenTab {
   readonly tabId: string
   readonly kind: string
   readonly contentId: string
+}
+
+/** Registered guide entry, including the icon component consumed by the shell. */
+interface FakeGuideEntry {
+  readonly id: string
+  readonly order: number
+  readonly title: () => string
+  readonly description?: () => string
+  readonly icon?: ComponentType<{ readonly size?: number; readonly className?: string }>
+}
+
+/**
+ * Controlled stand-in for the shipped GuideBody EntryBox rendering contract.
+ * DSH rc.1 and current master pass 26px with a description and 22px without;
+ * the separate Session-header menu action owns the 18px gauge assertion.
+ */
+function ShellGuideEntry({ entry }: { readonly entry: FakeGuideEntry }) {
+  const Icon = entry.icon
+  if (Icon === undefined) throw new Error('guide entry has no icon')
+  const description = entry.description?.()
+  return createElement('button', { 'data-sidebar-right-guide-entry': 'devlead-board' },
+    createElement(Icon, { size: description === undefined ? 22 : 26 }),
+    createElement('span', null, entry.title()),
+    description === undefined ? null : createElement('span', null, description))
 }
 
 /** Summary facts the board manager reads from one Session-list row. */
@@ -287,14 +319,16 @@ describe('client apply', () => {
       'conversation.input.left',
       'conversation.input.dock',
       'sidebar.session.row.trailing',
+      'sidebar.session.row.leading',
       'sidebar.session.row.hover',
       'conversation.session.header.utilities',
     ])
-    expect(state.registrations).toHaveLength(5)
+    expect(state.registrations).toHaveLength(6)
     expect(state.registrations.map(entry => entry.name)).toEqual([
       'conversation.input.left',
       'conversation.input.dock',
       'sidebar.session.row.trailing',
+      'sidebar.session.row.leading',
       'sidebar.session.row.hover',
       'conversation.session.header.utilities',
     ])
@@ -312,15 +346,19 @@ describe('client apply', () => {
     expect(state.conditionalInjects).toEqual([])
   })
 
-  it('registers the sidebar row mark and its hover-card explanation', () => {
+  it('registers distinct visible, accessible-leading, and hover Session-row components', () => {
     const { ctx, state } = fakeContext()
     apply(ctx)
     const rowMark = state.registrations.find(entry => entry.name === 'sidebar.session.row.trailing')
+    const leadingMark = state.registrations.find(entry => entry.name === 'sidebar.session.row.leading')
     const hoverMark = state.registrations.find(entry => entry.name === 'sidebar.session.row.hover')
     expect(rowMark).toMatchObject({ id: 'devlead', order: 20, locale: 'devlead' })
+    expect(leadingMark).toMatchObject({ id: 'devlead-accessible', order: 20, locale: 'devlead' })
     expect(hoverMark).toMatchObject({ id: 'devlead', order: 20, locale: 'devlead' })
-    // The row seats are different React components; the mark must not be
-    // mounted into the hover-card section (it is inline-only there).
+    // Each seat owns a distinct React component: the visible glyph cannot be
+    // reused as the visually-hidden leading text or the hover explanation.
+    expect(leadingMark?.component).not.toBe(rowMark?.component)
+    expect(leadingMark?.component).not.toBe(hoverMark?.component)
     expect(rowMark?.component).not.toBe(hoverMark?.component)
   })
 
@@ -361,7 +399,7 @@ describe('client apply', () => {
       id: string
       kind: string
       title: () => string
-      guide: readonly { id: string; order: number; title: () => string; description?: () => string }[]
+      guide: readonly FakeGuideEntry[]
     }
     expect(definition.id).toBe(TAB_ID)
     expect(definition.kind).toBe('devlead-board')
@@ -379,6 +417,27 @@ describe('client apply', () => {
     const injected = (body?.inject as () => Record<string, unknown>)()
     expect(Object.keys(injected)).toEqual(['files'])
     expect(injected['files']).toBeTypeOf('object')
+  })
+
+  it('registers the gauge guide icon and renders it at the real described-card size', async () => {
+    const { ctx, state, mount, publishRows } = fakeContext()
+    apply(ctx)
+    publishRows({ 'session-lead': LEAD })
+    mount('session-lead')
+    const definition = state.tabDefinitions[0] as { guide: readonly FakeGuideEntry[] }
+    const entry = definition.guide[0]!
+    // The named component and unique gauge output pin the registration without
+    // adding a runtime DSH import to this linked-root packaging test.
+    expect(entry.icon?.name).toBe('GaugeIcon')
+    let renderer: ReactTestRenderer | undefined
+    await act(async () => {
+      renderer = create(createElement(ShellGuideEntry, { entry }))
+    })
+    if (renderer === undefined) throw new Error('no renderer')
+    const guideRenderer = renderer
+    const card = guideRenderer.root.findByProps({ 'data-sidebar-right-guide-entry': 'devlead-board' })
+    expect(card.findByProps({ 'data-mock-icon': 'gauge' }).props['data-icon-size']).toBe(26)
+    await act(async () => { guideRenderer.unmount() })
   })
 
   it('installs the board surfaces for a lead named by the Host global, with no workspace root', () => {
@@ -493,7 +552,7 @@ describe('client apply', () => {
     // The inject call history stays; the registrations themselves are gone.
     expect(state.registrations.some(entry => entry.name === 'sidebar.right.pane.tab')).toBe(false)
     expect(state.registrations.some(entry => entry.name === 'sidebar.right.pane.tab.title')).toBe(false)
-    expect(state.registrations).toHaveLength(5)
+    expect(state.registrations).toHaveLength(6)
     // Only the on-screen Session's own board tab is closed; another Session's
     // store is unreachable from `ctx.sidebarRight.close` and the guide stays.
     expect(state.closedTabs).toEqual(['tab-board'])
@@ -507,7 +566,7 @@ describe('client apply', () => {
     expect(state.tabDefinitions).toHaveLength(1)
     mount('session-idle')
     expect(state.tabDefinitions).toEqual([])
-    expect(state.registrations).toHaveLength(5)
+    expect(state.registrations).toHaveLength(6)
     mount('session-lead')
     expect(state.tabDefinitions).toHaveLength(1)
     expect(state.registrations.filter(entry => entry.name === 'sidebar.right.pane.tab')).toHaveLength(1)
@@ -570,7 +629,7 @@ describe('client apply', () => {
     publishTabs([{ sessionId: 'session-lead', tabId: 'tab-board', kind: 'devlead-board', contentId: 'devlead-board' }])
     disposeEffects()
     expect(state.tabDefinitions).toEqual([])
-    expect(state.registrations).toHaveLength(5)
+    expect(state.registrations).toHaveLength(6)
     expect(state.closedTabs).toEqual(['tab-board'])
   })
 })

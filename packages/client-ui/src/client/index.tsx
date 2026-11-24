@@ -8,10 +8,12 @@
  *   control stays in place while the enabled-only strip appears and disappears.
  * - `conversation.input.dock` carries the status-only DevLeadBar, rendered
  *   only while mode is enabled for that Session.
- * - `sidebar.session.row.trailing` carries the Session-list mark, and
- *   `sidebar.session.row.hover` restates it in the row's hover card. Both read
- *   the summary-sized `devLeadMode` projection, because the digest-bearing
- *   `devLead` projection is excluded from Session summaries by design.
+ * - `sidebar.session.row.trailing` carries the Session-list mark,
+ *   `sidebar.session.row.leading` keeps an active lead's visually hidden
+ *   explanation available when the trailing seat is hidden, and
+ *   `sidebar.session.row.hover` restates the marks in the row's hover card. All
+ *   read summary-sized projections, because the digest-bearing `devLead`
+ *   projection is excluded from Session summaries by design.
  *
  * The read-only project board is a lead-only surface, so it is *dynamic* on top
  * of that static face: its right-Sidebar tab type, guide card, keyed body, and
@@ -59,6 +61,7 @@ import {
   resolveDevLeadBoardSessionConfig,
 } from './board.ts'
 import { DevLeadIconToggle, type DevLeadCommandInjected } from './DevLeadIconToggle.tsx'
+import { DevLeadSessionAccessibleMark } from './DevLeadSessionAccessibleMark.tsx'
 import { DevLeadSessionHoverMark } from './DevLeadSessionHoverMark.tsx'
 import { DevLeadSessionMark } from './DevLeadSessionMark.tsx'
 import { en, zh, type DevLeadKey } from './locales.ts'
@@ -135,8 +138,18 @@ export function apply(ctx: ClientContext): void {
     locale: NS,
   }, DevLeadSessionMark))
 
-  // The row's trailing seat is hidden while the row is hovered, so the hover
-  // card carries the same fact as an explicit explanation line.
+  // The leading seat remains mounted while hover/focus replaces the trailing
+  // seat with actions. A visually hidden companion preserves the lead fact in
+  // the accessibility tree without adding a second visible mark.
+  ctx.slots.inject('sidebar.session.row.leading', () => ctx.slots.register({
+    name: 'sidebar.session.row.leading',
+    id: 'devlead-accessible',
+    order: 20,
+    locale: NS,
+  }, DevLeadSessionAccessibleMark))
+
+  // The hover card supplements the persistent lead description and carries the
+  // watched-row explanation while the trailing seat is hidden.
   ctx.slots.inject('sidebar.session.row.hover', () => ctx.slots.register({
     name: 'sidebar.session.row.hover',
     id: 'devlead',

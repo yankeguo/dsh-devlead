@@ -1,17 +1,18 @@
 # DSH 兼容性矩阵
 
 本仓库的目标兼容面是 **DeepSeek Harness `0.2.2-rc.1` – `0.2.2-rc.5`**；当前候选发布版本是插件版本
-**`0.4.2-rc.8`**（6 个可发布包共用同一版本号；prerelease，CI 以 npm dist-tag `next` stage，维护者
+**`0.4.2-rc.9`**（6 个可发布包共用同一版本号；prerelease，CI 以 npm dist-tag `next` stage，维护者
 approve 后公开）。稳定版 `latest` 当前为 **`0.4.1`**，已发布的上一候选 rc.7 使 `next` 指向
-**`0.4.2-rc.7`**；approve `0.4.2-rc.8` 后 `next` 指向本候选、`latest` 仍为 `0.4.1`，直到计划中
+**`0.4.2-rc.7`**；approve `0.4.2-rc.9` 后 `next` 指向本候选、`latest` 仍为 `0.4.1`，直到计划中
 的稳定版 `0.4.2` 发布。`0.4.2-rc.1` 与 rc.4 已 stage 但**未 approve、从未公开**，其历史 staged
-记录不得 approve；其它旧候选的 release notes 保持历史事实。当前 rc.8 只调整 client 看板入口/KPI/卡片，
-并为既有 Workspace Files 读取增加 10s watchdog；KPI/分组/banner 共享状态汇总。Host、工具、磁盘 schema
-与 DSH 兼容面不变。`0.4.2-rc.8` 只是**插件版本**，**不代表 DSH 0.4.2**。6 个可发布包的
+记录不得 approve；rc.8 同样已 staged 未 approve，其记录不得混入 rc.9 的批准；其它旧候选的 release
+notes 保持历史事实。当前 rc.9 只调整 client-ui 的侧栏角标内联布局与 leading seat 可访问说明、补充
+回归测试，并同步文档和版本号。Host、工具、磁盘 schema、Remote、`dsh.client.inject` 与 DSH 兼容面不变。
+`0.4.2-rc.9` 只是**插件版本**，**不代表 DSH 0.4.2**。6 个可发布包的
 `engines.dsh` 均为 `>=0.2.2-rc.1 <0.3.0`（根 `package.json` 是 private 包，不声明
 `engines.dsh`，只声明 `engines.node`），所有
 `@deepseek-ai/dsh-*` peer 使用同一范围；本地 devDependencies 与编译基线仍固定 rc.1，用最旧 API
-做类型检查，本机运行验证使用安装版 rc.5。新工具描述、对账与 client 观察时间不使用任何新 Host API，
+做类型检查，本机运行验证使用安装版 rc.5。本轮 client-ui 布局与可访问性调整不使用任何新 Host API，
 兼容范围保持 `>=0.2.2-rc.1 <0.3.0`。
 
 ## 契约
@@ -451,11 +452,11 @@ git -C "$REPO" add -f \
   "docs/e2e-evidence/upgrade-$RC-no-worktree.log"
 ```
 
-当前 rc.7 harness 的 pin 来自 `scripts/e2e-smoke.mjs` 的 `EXPECTED_CHECKS`
+当前 rc.9 harness 的 pin 来自 `scripts/e2e-smoke.mjs` 的 `EXPECTED_CHECKS`
 （phase 1=30、1b=18、2=24、**3=141**、1e=31）：patch / installed 完整流目标各为 **244/244**，
 no-worktree 目标为 **220/220**（仅跳过 phase 2）；完整流目标计数为 **241 PASS + 3** 条有真实
-原因的正向模型选择 SKIP，其他检查不得通过删除或放宽断言来凑数。rc.7 冻结树的真实输出、退出码
-与证据见 [v0.4.2-rc.7 release prep](e2e-evidence/v0.4.2-rc.7-release-prep.md)；未来 pin 变化
+原因的正向模型选择 SKIP，其他检查不得通过删除或放宽断言来凑数。rc.9 冻结树的真实输出、退出码
+与证据详见 [v0.4.2-rc.9 release prep](e2e-evidence/v0.4.2-rc.9-release-prep.md)；未来 pin 变化
 只能先更新 `EXPECTED_CHECKS` 并在证据中解释。
 
 每个 rc 的 typings/build/三条 E2E 日志都必须复制到 `docs/e2e-evidence/`，保留真实 `*_EXIT=`
@@ -515,7 +516,7 @@ lane/deliveryState、blocked/decision action steer、真实 T1 followup / T2 rev
 
 上表 Phase 1e 行即 **Batch 1 最终树**的 pin 实测：installed / patch 完整流各 **221/221**
 （218 PASS + 3 SKIP；phase 1 27 + 1b 12 + 2 23 + 3 128 + 1e 31），`--no-worktree` **198/198**
-（phase 2 skipped）。当前候选发布版本是插件 **`0.4.2-rc.8`**（prerelease，dist-tag `next`；
+（phase 2 skipped）。当前候选发布版本是插件 **`0.4.2-rc.9`**（prerelease，dist-tag `next`；
 stage 本身不改变公开 dist-tag，approve 后 `next` 才指向本候选，`latest` 仍为 `0.4.1`；DSH 兼容面
 仍为 rc.1–rc.5）。
 `0.4.0-rc.1` 候选的三条真实
@@ -528,9 +529,9 @@ E2E 重跑（含真实 `*_EXIT=0` 与总计行）记录在
 当前 board 加固轮保留上述全部旧检查，并在 phase 3 新增真实 `ctx.devLead.updateBoard` 写入/CAS、
 `webserver/index-inject` board global 与独立磁盘 revision/内容 read-back；Step B 复核修复轮又把
 phase 1 与 1b 改回未配置 `boardPath` 的默认组合并固定当轮目标 pin（phase 1=28、phase 3=132、
-完整流=226、no-worktree=203）。**当前 rc.8 的权威 pin 是 `scripts/e2e-smoke.mjs` 的
+完整流=226、no-worktree=203）。**当前 rc.9 的权威 pin 是 `scripts/e2e-smoke.mjs` 的
 `EXPECTED_CHECKS`：phase 1=30、phase 1b=18、phase 2=24、phase 3=141、phase 1e=31，完整流目标
-244/244（241 PASS + 3 credential-less SKIP），`--no-worktree` 220/220；rc.8 实测与退出码以当轮
+244/244（241 PASS + 3 credential-less SKIP），`--no-worktree` 220/220；rc.9 实测与退出码以当轮
 release-prep 原始日志为准。** 本轮新增/改写的断言
 包括：没有 lead 时不注入 board global、lead 开启后从 `SessionHeader.cwd` 派生默认路径并发布
 `{leadSessionId, override:false}`、预创建父目录、冷 lead 从持久 header 派生、`/devlead off`
@@ -607,6 +608,14 @@ poll；只使用既有 AbortController/setTimeout 与 Workspace Files API，不�
 `dsh.client.inject`、engines 或 peer 范围。最终门禁与证据见
 [v0.4.2-rc.8 release prep](e2e-evidence/v0.4.2-rc.8-release-prep.md)。
 
+**0.4.2-rc.9 发布轮**只改变 client-ui、文档与版本号：active lead 角标从绝对定位改为 trailing seat
+内联布局，避免 time/badge/actions 在触屏或窄栏重叠；`sidebar.session.row.leading` 新增 visually-hidden
+lead 说明，trailing 在 hover/focus 被 shell 隐藏时仍保留可访问文本，hover card 继续作为补充。leading
+seat 被高优先级状态点替换时常驻文本不可用，这是如实保留的 shell 限制。回归测试覆盖 watchdog error/read、
+hung `readBytes` 恢复、全 0 KPI 与 guide icon。不改 Host、schema、工具、Remote、`dsh.client.inject`、
+engines 或 peer 范围。最终门禁与证据详见
+[v0.4.2-rc.9 release prep](e2e-evidence/v0.4.2-rc.9-release-prep.md)。
+
 每条 flow 有 3 条正向模型选择检查因无 provider 凭据 SKIP（打印真实原因）；负向
 `DEVLEAD_MODEL_UNAVAILABLE`、`devlead_list_models`、preset roster 与 watched-child
 `devlead_report` 均真实运行。
@@ -616,8 +625,9 @@ poll；只使用既有 AbortController/setTimeout 与 Workspace Files API，不�
 - rc.5 的 `@deepseek-ai/dsh-client-ui-workspace` 仍提供
   `sidebar.session.row.leading` / `.trailing` / `.hover`，Session 行仍带
   `data-row-key="session:<id>"`，行 CSS 仍使用 `border-inline: var(--dsh-sidebar-paint-inset)
-  solid transparent`。active 角标只读稳定 `data-row-key` 作为定位上下文，不改变 shell 行盒或选中样式；
-  watched mark 的 DOM 依赖未变化。
+  solid transparent`。active/watched 标记参与 trailing seat 的内联布局，不改变 shell 行盒或选中样式；
+  active lead 另在 leading seat 提供 visually-hidden 文本，leading 被高优先级状态点替换时由 hover card
+  补充说明。watched mark 的 summary 读取与非交互语义未变化。
 - E2E boot graph 确认 rc.5 加载 `@yankeguo/dsh-client-ui-devlead/client.js`；lead 的
   `devLead` / `devLeadMode` / `devLeadWatch` projection 均存在，summary 携带
   `devLeadMode` 与 `devLeadWatch`，且不携带 digest。DevLeadBar 读取的 `devLead` projection

@@ -7,7 +7,7 @@
 **Session**（会话），创建并续写其他会话、读取它们的状态、在状态变化时被唤醒——于是一个
 agent 就能在人可见、可参与的标准界面里统管多个仓库。
 
-当前候选版 **0.4.2-rc.8**（prerelease，npm dist-tag `next`；稳定版 `latest` 仍为 **0.4.1**） ·
+当前候选版 **0.4.2-rc.9**（prerelease，npm dist-tag `next`；稳定版 `latest` 仍为 **0.4.1**） ·
 DSH **0.2.2-rc.1 – 0.2.2-rc.5** · 一条 `dsh plugin` 命令即可装好全部组件。
 
 ## 核心能力
@@ -67,18 +67,20 @@ Web 页面。
 固定到精确版本：
 
 ```sh
-dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.8
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.9
 ```
 
-0.4.2-rc.8 是计划中 0.4.2 补丁版的当前 prerelease 候选，基于已发布的 rc.7。本轮改进看板入口图标、
-四状态 KPI 与卡片视觉层级，并修复自动读取永不 settle 时 watch/poll 被永久卡住、blocked 项目与 KPI 停留在
-旧快照的问题；KPI、分组和 blocked banner 现在共享同一状态汇总。卡片使用 status 驱动的完整四边边框与轻底色，
-priority 仅保留独立 badge，不再改变卡片主色；active lead 的侧栏整行 ring 也改为独立角标，避免与
-当前选中 Session 混淆。rc.7 的原生 notes 编辑与主动 board workflow 保留，
-board/notes 磁盘 schema 与 DSH 兼容面不变。本候选按发布流程以 npm dist-tag `next` stage，在稳定版 0.4.2
-被 approve 前请按上面的精确版本安装；
-`latest` 仍为 **0.4.1**。旧候选保持历史记录，从未 approve 的 0.4.2-rc.1/rc.4 staged 记录不得 approve。详见
-[0.4.2-rc.8 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.2-rc.8.md)；
+0.4.2-rc.9 是计划中 0.4.2 补丁版的当前 prerelease 候选，基于已 staged 但从未 approve 的 rc.8。相对 rc.8，
+active lead 角标从绝对定位改为 trailing seat 的内联布局，触屏或窄栏下 time、badge 与 actions 不再重叠；
+`sidebar.session.row.leading` 新增 visually-hidden lead 说明，hover/focus 时即使 shell 隐藏 trailing seat，
+辅助技术仍能读到 lead 身份，hover card 继续保留。若高优先级状态点替换 leading seat，该常驻文本会缺失，
+此时以 hover card 作为补充说明；这是 shell 限制。本轮还补强 watchdog error/read 断言、hung `readBytes` 恢复、
+全 0 KPI 与 guide icon 的回归测试，并更新发布文档。rc.8 的看板层级、status 驱动卡片与读取 watchdog 保留，
+原生 notes 编辑与主动 board workflow 也不变；board/notes 磁盘 schema 与 DSH 兼容面不变。本候选按发布流程以
+npm dist-tag `next` stage，在稳定版 0.4.2 被 approve 前请按上面的精确版本安装；
+`latest` 仍为 **0.4.1**。旧候选保持历史记录，从未 approve 的 0.4.2-rc.1/rc.4 staged 记录不得 approve，
+rc.8 的 staged 记录也不得混入本候选的批准。详见
+[0.4.2-rc.9 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.2-rc.9.md)；
 上一个稳定补丁的说明见
 [0.4.1 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.1.md)。
 
@@ -92,7 +94,7 @@ board/notes 磁盘 schema 与 DSH 兼容面不变。本候选按发布流程以 
 dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 
 # 或固定到某个版本（prerelease 必须写精确版本）
-dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.8
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.9
 ```
 
 > **从旧版本（低于 0.4.0）升级：** 0.4.0 会直接丢弃旧的 DevLead 会话状态（模式、关注集合、

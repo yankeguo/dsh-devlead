@@ -1,0 +1,44 @@
+2026-11-24 Asia/Shanghai — isolated DSH 0.2.2-rc.5 / real Chromium (Microsoft Edge) / linked rc.9 build
+Temporary DSH_HOME/profile; desktop profile and running DSH GUI were not modified. Launch token intentionally omitted.
+The isolated Sessions deliberately used missing provider credentials only to create non-blank rows; no model result is claimed.
+Browser console --errors: no messages. UI/UX subagent verdict: PASS (no blocking or substantiated concerns).
+
+P1 geometry (DOMRects, CSS px; overlap requires positive intersection on both axes):
+- selected-resting-dark: badge position=static; resting=flex; time before badge=true; actions=none.
+  time={x:195.078,y:304,right:215.078,bottom:320,width:20,height:16}
+  badge={x:220.078,y:305,right:261,bottom:319,width:40.922,height:14}; timeBadgeOverlap=false; badgeActionsOverlap=false.
+- unselected-resting-dark: aria-selected=false; time={x:189.070,y:338,right:215.078,bottom:354,width:26.008,height:16};
+  badge={x:220.078,y:339,right:261,bottom:353,width:40.922,height:14}; overlap=false; position=static; timeBeforeBadge=true.
+- selected-resting-light: aria-selected=true; time={x:187.438,y:338,right:215.078,bottom:354,width:27.641,height:16};
+  badge={x:220.078,y:339,right:261,bottom:353,width:40.922,height:14}; overlap=false; position=static.
+- selected-264px-sidebar-light: actual shell drag handle left=264px; row={x:8,right:256,width:248};
+  time={x:171.344,y:338,right:199.078,bottom:354,width:27.734,height:16};
+  badge={x:204.078,y:339,right:245,bottom:353,width:40.922,height:14}; overlap=false; actions=none; documentOverflow=false.
+
+P3 hover / keyboard focus:
+- hover-dark: restingDisplay=none; actionsDisplay=flex; hoverCardLeadLines=1.
+  leading [data-devlead-row-accessible=lead] text=当前激活的 DevLead 会话：可调度并关注其他会话。
+  accessibleDisplay=block; accessibleClip=rect(0px, 0px, 0px, 0px).
+- keyboard-focus-dark: html inputModality=keyboard; lead row :focus-within=true; restingDisplay=none; actionsDisplay=flex.
+  The same leading text remains present with display=block and the same visually-hidden clip.
+- No operating-system screen reader was run; accessibility conclusions are limited to real DOM/ARIA/AX text and focus behavior.
+- Documented shell limit: a higher-priority Session status dot replaces the leading seat; the hover card supplements that state.
+  Blank rows and search-result rows keep their existing no-mark limitation.
+
+Touch boundary:
+- matchMedia before optional emulation attempt: hover:none=false, hover:hover=true, pointer:coarse=false.
+- Browser MCP exposes no touch-emulation command; DevTools shortcut attempt did not change those media facts.
+- Therefore touch hover:none was NOT simulated. No touch screenshot or measured touch PASS is claimed.
+  The touch fix is supported structurally by the inline-flex/non-absolute production CSS and the shell's separate resting/actions tracks.
+
+Screenshots (all new real Chromium captures from this isolated rc.9 instance):
+- v0.4.2-rc.9-ui-lead-selected-dark.jpg
+- v0.4.2-rc.9-ui-lead-unselected-dark.jpg
+- v0.4.2-rc.9-ui-lead-selected-light.jpg
+- v0.4.2-rc.9-ui-lead-unselected-light.jpg
+- v0.4.2-rc.9-ui-lead-narrow-light.jpg
+- v0.4.2-rc.9-ui-lead-hover-dark.jpg
+- v0.4.2-rc.9-ui-lead-keyboard-dark.jpg
+Before/after comparison uses the unchanged historical rc.8 evidence, especially v0.4.2-rc.8-ui-lead-unselected-dark.jpg.
+
+UI_VERIFICATION_EXIT=0

@@ -2633,24 +2633,28 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   - top-level Session 的开关不随状态条出现/消失而消失；同一时刻只有一个模式开关。subagent
   Session 不渲染开关与状态条。
 - **侧边栏会话行标记**：
-  - **当前激活的 lead** 行使用右上角小角标（sparkle + `LEAD`），business-accent 描边、menu
-    底色、无 halo；角标 `role=img` 同时带本地化 `aria-label` 与原生 `title`，窄 viewport 可只留图标。
-    shell 行只加 `position:relative` 作为定位上下文，**绝不修改其 border/background/padding/height、
-    选中/hover/focus 样式**；未选中的 lead 因此不会被误认为当前选中 Session。旧的 `::after`
-    四边 overlay ring 与 `--dsh-sidebar-paint-inset` 依赖已移除，没有其它调用方。实现使用稳定
-    `[data-row-key^="session:"]:has([data-devlead-active-mark="true"])`，不靠哈希类名。
-  - **被当前 lead 关注的普通 Session** 在行尾显示弱化准星图标
-    （`IconGoalOutlineRegular`，13px；`sidebar.session.row.trailing`；非交互、不绑定/不激活
-    Session），谓词读 lead 的 summary 级 `devLeadWatch`，不读被排除的 digest，也不给被关注
-    会话写日志；cold 行/重启 cache 行同样成立。未 watched 不渲染。
-  - `:has` 依赖 shell 的稳定 `data-row-key` 属性（`Rows.tsx` 明确写入）；`:has` 在目标 Web
-    浏览器可用。trailing seat 在悬停/聚焦时可被 shell 隐藏，`sidebar.session.row.hover` 另提供
-    「已关注/激活 DevLead」说明（i18n `row.watched.aria` / `row.hover.watched` /
-    `row.mark.aria` / `row.hover.enabled`）。active 角标自身始终带 `aria-label`/`title`，
-    屏幕阅读器不依赖位置或颜色。
+  - **当前激活的 lead** 行在 `sidebar.session.row.trailing` 使用小角标（sparkle + `LEAD`），
+    business-accent 描边、menu 底色、无 halo；角标 `role=img` 同时带本地化 `aria-label` 与原生
+    `title`，窄 viewport 可只留图标。角标参与 trailing seat 的内联 flex 布局，位于 time 之后，
+    不再绝对定位，因此不会覆盖 time 或独立 action strip；触屏与窄栏下 time/badge/actions 不重叠。
+    **绝不修改 shell 行的 border/background/padding/height/position、选中/hover/focus 样式**；
+    未选中的 lead 因此不会被误认为当前选中 Session。旧的 `::after` 四边 overlay ring、行级
+    `position:relative` 与 `:has([data-devlead-active-mark])` 定位 CSS 均已移除。
+  - **被当前 lead 关注的普通 Session** 在同一 trailing seat 显示弱化准星图标
+    （`IconGoalOutlineRegular`，13px；非交互、不绑定/不激活 Session），谓词读 lead 的 summary 级
+    `devLeadWatch`，不读被排除的 digest，也不给被关注会话写日志；cold 行/重启 cache 行同样成立。
+    未 watched 不渲染。
+  - shell 在 hover、键盘 focus 或菜单打开时会以 `display:none` 隐藏 trailing seat。
+    `sidebar.session.row.leading` 因此新增仅 active lead 渲染的 visually-hidden 文本
+    （`row.hover.enabled`），使这些交互发生时可访问树仍保留 lead 说明，而不增加第二个可见标记；
+    `sidebar.session.row.hover` 继续提供「已关注/激活 DevLead」说明（i18n `row.watched.aria` /
+    `row.hover.watched` / `row.mark.aria` / `row.hover.enabled`）。active 角标自身始终带
+    `aria-label`/`title`，屏幕阅读器不依赖位置或颜色。**限制**：Session active 时，shell 的高优先级
+    状态点会替换 leading seat，此时常驻 visually-hidden lead 文本不可用，hover card 是补充说明，
+    不声称该状态仍有同等的常驻 leading AX 文本。
   - rc.1 对 blank（尚无 turn）行不渲染 trailing seat：空白新会话上的标记/hover 说明要等第一次
     turn；active 角标也随 mark 无法显示，这是 shell seat 限制。搜索视图复用另一套结果行，同
-    样不挂载该 seat；搜索期间不显示 active/watched 标识。
+    样不挂载这些 seat；搜索期间不显示 active/watched 标识。
 - **右侧栏只读项目看板**：所需服务按官方插件方式静态组合（`remote.workspaceFiles`、
   `sidebarRight`、`sidebarRightTabs`、`workspaces`，均在 `dsh.client.inject` 静态声明中）。
   入口是 **lead-only** 的：tab、guide entry 与会话头按钮只在屏幕上当前 active lead Session
@@ -2896,10 +2900,10 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   暴露）。
   patch 与 installed 两条加载流都跑完整多阶段；`--no-worktree` 跳过阶段 2（阶段 1、1b、3 仍
   运行，调试用）。每阶段 check 总数已 pin（`EXPECTED_CHECKS`，删/增 check 未更新 pin 会失败），
-  PASS 与 SKIP 分开输出；当前 rc.7 pin 以脚本为准（phase 1=30、1b=18、2=24、**3=141**、1e=31，
+  PASS 与 SKIP 分开输出；当前 rc.9 pin 以脚本为准（phase 1=30、1b=18、2=24、**3=141**、1e=31，
   完整流 **244/244**、no-worktree **220/220**，见 [CONTRIBUTING](CONTRIBUTING.md) 与
-  [COMPATIBILITY](COMPATIBILITY.md)）。rc.7 三条流的真实结果与退出码见
-  [v0.4.2-rc.7 release prep](e2e-evidence/v0.4.2-rc.7-release-prep.md)。以下为 Phase 1e 时点的历史实测：基线 DSH 0.2.2-rc.5
+  [COMPATIBILITY](COMPATIBILITY.md)）。rc.9 三条流的真实结果与退出码详见
+  [v0.4.2-rc.9 release prep](e2e-evidence/v0.4.2-rc.9-release-prep.md)。以下为 Phase 1e 时点的历史实测：基线 DSH 0.2.2-rc.5
   的两条加载流完整组合计数为 **221/221**
   （阶段 1 27 + 阶段 1b 12 + 阶段 2 23 + 阶段 3 128 + 阶段 1e 31，阶段 3 含 agent preset roster、
   watched-Session 问题路由、排队 inbox、question conclude/durable/memory-only、两条 scripted

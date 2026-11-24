@@ -340,10 +340,11 @@ export const styles = `
 }
 
 /* Sidebar Session-row marks never change the shell row's border, background,
-   padding, height, or selection/focus treatment. The watched target remains an
-   inline trailing glyph. The active lead uses a small corner badge instead of
-   the old four-side overlay ring, so an unselected lead cannot be mistaken for
-   the selected Session. */
+   padding, height, position, or selection/focus treatment. Both marks share the
+   trailing seat's inline flex layout: the time label naturally moves left for
+   the active lead's small right-side badge, while hover/focus replaces the whole
+   resting seat with the separate action strip. No absolute positioning means a
+   badge cannot paint over either shell-owned neighbour. */
 .devlead-row-mark {
   display: inline-flex;
   flex: none;
@@ -351,15 +352,7 @@ export const styles = `
   color: var(--dsw-alias-label-secondary, GrayText);
 }
 
-[data-row-key^="session:"]:has([data-devlead-active-mark="true"]) {
-  position: relative;
-}
-
 .devlead-row-mark-lead {
-  position: absolute;
-  z-index: 1;
-  top: 1px;
-  right: 2px;
   gap: 2px;
   min-height: 12px;
   padding: 0 3px;

@@ -165,6 +165,7 @@ function Probe({ config, files, visible = true, debounceMs = 20, pollMs = 5_000,
         data-status={state.status}
         data-revision={state.board?.revision ?? ''}
         data-error={state.error?.kind ?? ''}
+        data-error-message={state.error?.message ?? ''}
         data-last-success={state.lastSuccessAt ?? ''}
         data-refreshing={state.refreshing ? 'true' : 'false'}
         data-watch={state.watch}
@@ -641,10 +642,10 @@ describe('useBoardFile', () => {
     expect(fake.stat).toHaveBeenCalledTimes(3)
   })
 
-  it('times out a hung automatic read so watch and polling can recover a newer board', async () => {
+  it('publishes a timeout error before aborting a hung stat and recovering a newer board', async () => {
     vi.useFakeTimers()
     const fake = fakeFiles()
-    const renderer = await mount(<Probe config={CONFIG} files={fake.files} debounceMs={5} pollMs={10} readTimeoutMs={20} />)
+    const renderer = await mount(<Probe config={CONFIG} files={fake.files} debounceMs={5} pollMs={10} readTimeoutMs={15} />)
     await flush()
     expect(stateOf(renderer)).toMatchObject({ 'data-status': 'ready', 'data-revision': 1 })
 
@@ -653,18 +654,83 @@ describe('useBoardFile', () => {
     await flush()
     expect(fake.stat).toHaveBeenCalledTimes(2)
     const hungSignal = fake.stat.mock.calls[1]?.[2]
+    expect(stateOf(renderer)).toMatchObject({ 'data-status': 'ready', 'data-revision': 1, 'data-refreshing': 'true' })
+
+    // The intervening poll shares the hung request. At the watchdog deadline,
+    // the public error is fully settled and the aborted Remote is still hung.
+    await act(async () => { vi.advanceTimersByTime(14) })
+    await flush()
+    expect(stateOf(renderer)).toMatchObject({ 'data-status': 'ready', 'data-error': '', 'data-refreshing': 'true' })
+    await act(async () => { vi.advanceTimersByTime(1) })
+    expect(stateOf(renderer)).toMatchObject({
+      'data-status': 'error',
+      'data-error': 'read',
+      'data-error-message': 'board file read timed out after 15 ms',
+      'data-refreshing': 'false',
+    })
+    expect(hungSignal?.aborted).toBe(true)
+
     fake.readBytes.mockResolvedValue(ok(readValue(board(2))))
     await act(async () => {
       fake.streams[0]!.push({ kind: 'change', change: { absolutePath: CONFIG.boardPath, version: 'v2' } })
       await vi.advanceTimersByTimeAsync(20)
     })
     await flush()
+
+    // The next automatic trigger is no longer blocked by the never-settling
+    // Promise; it reads the newer revision without a manual refresh.
+    expect(fake.stat.mock.calls.length).toBeGreaterThan(2)
+    expect(stateOf(renderer)).toMatchObject({
+      'data-status': 'ready',
+      'data-revision': 2,
+      'data-error': '',
+      'data-refreshing': 'false',
+    })
+  })
+
+  it.each([
+    { recovery: 'automatic', pollMs: 10 },
+    { recovery: 'manual', pollMs: 60_000 },
+  ] as const)('times out hung readBytes and recovers a newer revision through $recovery refresh', async ({ recovery, pollMs }) => {
+    vi.useFakeTimers()
+    const fake = fakeFiles()
+    fake.readBytes
+      .mockImplementationOnce(() => new Promise<ReadBytesResult>(() => {}))
+      .mockResolvedValueOnce(ok(readValue(board(2))))
+    const renderer = await mount(<Probe config={CONFIG} files={fake.files} pollMs={pollMs} readTimeoutMs={15} />)
+    await flush()
+    expect(fake.stat).toHaveBeenCalledTimes(1)
+    expect(fake.readBytes).toHaveBeenCalledTimes(1)
+    expect(stateOf(renderer)).toMatchObject({ 'data-status': 'loading', 'data-refreshing': 'true' })
+    const hungSignal = fake.readBytes.mock.calls[0]?.[3]
+
+    // stat succeeded, so this deadline specifically exercises a readBytes
+    // Promise that ignores AbortSignal and never settles.
+    await act(async () => { vi.advanceTimersByTime(15) })
+    expect(stateOf(renderer)).toMatchObject({
+      'data-status': 'error',
+      'data-error': 'read',
+      'data-error-message': 'board file read timed out after 15 ms',
+      'data-refreshing': 'false',
+    })
     expect(hungSignal?.aborted).toBe(true)
 
-    // The same-time poll is no longer blocked by the never-settling Promise;
-    // it has already read the newer revision without a manual refresh.
-    expect(fake.stat).toHaveBeenCalledTimes(3)
-    expect(stateOf(renderer)).toMatchObject({ 'data-status': 'ready', 'data-revision': 2, 'data-refreshing': 'false' })
+    if (recovery === 'automatic') {
+      await act(async () => { await vi.advanceTimersByTimeAsync(10) })
+    } else {
+      await act(async () => {
+        renderer.root.findByProps({ 'data-probe': 'refresh' }).props.onClick()
+      })
+    }
+    await flush()
+    expect(fake.stat.mock.calls.length).toBeGreaterThan(1)
+    expect(fake.readBytes.mock.calls.length).toBeGreaterThan(1)
+    expect(stateOf(renderer)).toMatchObject({
+      'data-status': 'ready',
+      'data-revision': 2,
+      'data-error': '',
+      'data-refreshing': 'false',
+    })
   })
 
   it('stops empty-state polling on unmount', async () => {

@@ -245,6 +245,27 @@ paused、done 项目，先以 active revision 打开面板，再让一次自动 
    aria-label 中英文、窄栏和 light/dark 可读性；保存「lead 未选中」与「lead 选中」对照截图和 computed
    row border/background/box-shadow 记录，确认没有任何 `[data-devlead-active-mark]::after` 复用。
 
+### 0.4.2-rc.9 必查：内联角标与 focus 下 lead 说明
+
+本轮针对 rc.8 复核发现的遮挡与可访问性退化，仍需真实 Chrome 截图和几何记录，不能只跑样式字符串断言：
+
+1. **time/badge/actions 不重叠**：lead 选中、未选中各查 light/dark；把左侧栏实际拖到 shell 最小的
+   264px。resting 状态下角标必须是 trailing seat 内 time 后面的普通 flex 子项，computed
+   `position=static`，time/badge 矩形不相交；hover 或键盘 focus 时整个 resting seat 由 shell 隐藏、独立
+   actions 显示，不允许插件把角标绝对定位到 actions 上。触屏 `hover:none` 若工具支持模拟，需另外保存
+   time/badge/actions 的几何与截图；若不支持，必须明确写「未模拟」，不能用桌面 hover 结果冒充。
+2. **hover/focus 的可访问 lead 事实**：hover lead 行、等待 hover card，再只用键盘让该行 `:focus-within`。
+   两种状态下 `[data-devlead-row-accessible="lead"]` 的中文/英文完整说明都必须仍在 leading seat，computed
+   样式是 visually-hidden 而不是 `display:none`；hover card 内另有 `[data-devlead-row-hover]` 可见说明。
+   保存 hover 与键盘 focus 截图及文本/computed 记录。无需操作系统读屏器时，结论只限 DOM/aria/AX 文本，
+   不声称完成读屏软件验收。
+3. **shell 限制不得隐瞒**：Session 的高优先级状态点会替换 leading seat，此刻常驻 visually-hidden lead
+   文本不存在，hover card 只是补充；blank 行与搜索结果行仍无标记。这些限制写入 DESIGN 与 release notes，
+   不把「hover/focus 修复」扩大成「所有状态都有常驻 AX 文本」。
+4. **P4 同步检查**：watchdog 超时必须先断言 `error/read` 再验证 abort 后恢复；新增 hung `readBytes`、全 0
+   KPI 与 guide icon 的自动化回归。guide 的带描述卡片图标遵循 shell 实际 26px 契约，Session header
+   按钮仍是 18px glyph / 28×28 按钮，二者不要混写。
+
 ### 清理
 
 ```sh

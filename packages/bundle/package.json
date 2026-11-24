@@ -1,6 +1,6 @@
 {
   "name": "@yankeguo/dsh-devlead-bundle",
-  "version": "0.4.2-rc.8",
+  "version": "0.4.2-rc.9",
   "description": "Dev Lead mode for DeepSeek Harness: turn one session into a lead that creates and steers ordinary Workspaces and Sessions, watches their state, and is woken on change.",
   "license": "MIT",
   "type": "module",

@@ -8,9 +8,11 @@
  * by the active lead gets a quiet target mark. It reads the summary-sized
  * `devLeadMode` and `devLeadWatch` projections (never the digest), and
  * activates, retains, or opens nothing: the enclosing row keeps every cell as
- * its activation area. The trailing seat is hidden by the shell while the row
- * is hovered or focused on hover-capable devices; the same fact is restated in
- * the row's hover card by `DevLeadSessionHoverMark`.
+ * its activation area. The badge participates in the trailing seat's inline
+ * flex layout after the time label, so it cannot paint over that label or the
+ * separate action strip. The trailing seat is hidden by the shell while the row
+ * is hovered or focused on hover-capable devices; the lead fact remains in the
+ * leading seat's visually hidden companion and in the row's hover card.
  */
 
 import { IconGoalOutlineRegular, IconSparkleRegular } from '@deepseek-ai/dsh-client-ui-primitives'

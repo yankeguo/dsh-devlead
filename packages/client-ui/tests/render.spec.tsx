@@ -43,6 +43,10 @@ import {
   type DevLeadIconToggleProps,
 } from '../src/client/DevLeadIconToggle.tsx'
 import {
+  DevLeadSessionAccessibleMark,
+  type DevLeadSessionAccessibleMarkProps,
+} from '../src/client/DevLeadSessionAccessibleMark.tsx'
+import {
   DevLeadSessionHoverMark,
   type DevLeadSessionHoverMarkProps,
 } from '../src/client/DevLeadSessionHoverMark.tsx'
@@ -254,6 +258,11 @@ function toggleProps(fakes: SurfaceFakes): DevLeadIconToggleProps {
  */
 function markProps(fakes: SurfaceFakes): DevLeadSessionMarkProps {
   return surfaceProps(fakes) as unknown as DevLeadSessionMarkProps
+}
+
+/** Props of the leading-seat accessibility companion for one test input. */
+function accessibleMarkProps(fakes: SurfaceFakes): DevLeadSessionAccessibleMarkProps {
+  return surfaceProps(fakes) as unknown as DevLeadSessionAccessibleMarkProps
 }
 
 /**
@@ -1061,8 +1070,8 @@ describe('DevLeadSessionMark', () => {
   })
 
   it('adds no layout props to the Session row (no inline border/padding/height)', async () => {
-    // The shell row owns selection and the only layout contract; the corner
-    // badge is positioned through CSS and carries no inline row overrides.
+    // The shell row owns selection and the only layout contract; the badge is
+    // an ordinary inline flex child and carries no inline row overrides.
     const active = await mount(<DevLeadSessionMark {...markProps({
       rows: { 'session-1': { projectionValues: { [DEVLEAD_MODE_PROJECTION_KEY]: { enabled: true } } } },
     })} />)
@@ -1092,6 +1101,42 @@ describe('DevLeadSessionMark', () => {
         }
       }
     }
+  })
+})
+
+describe('DevLeadSessionAccessibleMark', () => {
+  it('keeps a localized lead explanation outside the hideable trailing seat', async () => {
+    const rows: TestRows = {
+      'session-1': { projectionValues: { [DEVLEAD_MODE_PROJECTION_KEY]: { enabled: true } } },
+    }
+    const renderer = await mount(
+      <DevLeadSessionAccessibleMark {...accessibleMarkProps({ rows })} />,
+    )
+    const text = renderer.root.findByProps({ 'data-devlead-row-accessible': 'lead' })
+    expect(text.type).toBe('span')
+    expect(text.props.className).toBe('devlead-sr-only')
+    expect(text.props['aria-hidden']).toBeUndefined()
+    expect(textOf(text)).toBe(zh['row.hover.enabled'])
+    // Unlike the visible trailing badge, this node is the persistent AX fact:
+    // shell hover/focus CSS can hide the latter without removing this text.
+    expect(renderer.root.findAllByProps({ 'data-devlead-active-mark': 'true' })).toHaveLength(0)
+  })
+
+  it('renders no lead description for plain or watched non-lead rows', async () => {
+    const plain = await mount(<DevLeadSessionAccessibleMark {...accessibleMarkProps({
+      rows: { 'session-1': { projectionValues: { [DEVLEAD_MODE_PROJECTION_KEY]: { enabled: false } } } },
+    })} />)
+    expect(plain.toJSON()).toBeNull()
+    const watched = await mount(<DevLeadSessionAccessibleMark {...accessibleMarkProps({
+      rows: {
+        'lead-1': { projectionValues: {
+          [DEVLEAD_MODE_PROJECTION_KEY]: { enabled: true },
+          [DEVLEAD_WATCH_PROJECTION_KEY]: { sessions: ['session-1'] },
+        } },
+        'session-1': { projectionValues: { [DEVLEAD_MODE_PROJECTION_KEY]: { enabled: false } } },
+      },
+    })} />)
+    expect(watched.toJSON()).toBeNull()
   })
 })
 

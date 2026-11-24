@@ -317,20 +317,21 @@ describe('styles', () => {
     expect(styles).toMatch(/\.devlead-row-hover \{[^}]*font-size: 12px;/u)
   })
 
-  it('marks the active lead with a corner badge without touching row selection styles', () => {
+  it('lays the active lead badge inline without overlapping shell time or actions', () => {
     expect(styles).not.toContain('[data-devlead-active-mark="true"]::after')
     expect(styles).not.toContain('--dsh-sidebar-paint-inset')
-    const rowRule = /\[data-row-key\^="session:"\]:has\(\[data-devlead-active-mark="true"\]\) \{([^}]*)\}/u.exec(styles)?.[1] ?? ''
-    expect(rowRule.trim()).toBe('position: relative;')
+    // The shell owns the row box. In particular, do not recreate a positioning
+    // context that would let a plugin badge escape the trailing flex sequence.
+    expect(styles).not.toMatch(/\[data-row-key\^="session:"\][^{]*\{/u)
     const badge = /\.devlead-row-mark-lead \{([^}]*)\}/u.exec(styles)?.[1] ?? ''
-    expect(badge).toContain('position: absolute')
-    expect(badge).toContain('top: 1px')
-    expect(badge).toContain('right: 2px')
+    expect(badge).not.toMatch(/^\s*(?:position|inset|top|right|bottom|left|z-index|transform|margin)\s*:/mu)
     expect(badge).toContain('border: 1px solid')
     expect(badge).toContain('var(--dsw-alias-state-business-primary')
     expect(badge).toContain('background: var(--dsw-specific-menu')
     expect(badge).toContain('pointer-events: none')
     expect(badge).not.toContain('box-shadow')
+    expect(styles).toMatch(/\.devlead-row-mark \{[^}]*display: inline-flex;/u)
+    expect(styles).toMatch(/\.devlead-row-mark \{[^}]*flex: none;/u)
     expect(styles).toContain('.devlead-row-mark-lead-label')
   })
 
@@ -395,10 +396,10 @@ describe('styles', () => {
   })
 
   it('keeps the Phase-1e chip attributes away from Session-row layout', () => {
-    // The lane/status/wake selectors must only scope strip chips; the sole
-    // Session-row rule is the lead badge's positioning context.
+    // The lane/status/wake selectors must only scope strip chips. The plugin
+    // owns no Session-row rule at all: inline badge layout needs no row hook.
     const rowRules = [...styles.matchAll(/\[data-row-key[^\{]*\{/gu)]
-    expect(rowRules).toHaveLength(1)
+    expect(rowRules).toHaveLength(0)
     for (const attribute of ['data-lane', 'data-wake-suppressed', 'data-question-status', 'data-answer-status']) {
       expect(styles).not.toMatch(new RegExp(`\\[data-row-key[^{]*\\[${attribute}`, 'u'))
     }
