@@ -155,12 +155,12 @@ git status                 # 必须干净
 
 ### 2. 统一升级 6 个包的版本
 
-所有包使用同一版本号。一行命令改完（当前示例 `0.4.2-rc.7`；历史 `0.4.2-rc.1` / `0.4.2-rc.2` /
+所有包使用同一版本号。一行命令改完（当前示例 `0.4.2-rc.8`；历史 `0.4.2-rc.1` / `0.4.2-rc.2` /
 `0.4.2-rc.3` / `0.4.2-rc.4` / `0.4.2-rc.5` 的 bump 已在各自发布准备中完成，`0.4.0-rc.1` 的 bump 在 Batch 2 完成，稳定版 `0.4.0`
 与补丁版 `0.4.1` 的 bump 分别在各自发布准备中完成；此命令保留为流程模板，重复执行同版本无副作用）：
 
 ```sh
-export VERSION=0.4.2-rc.7
+export VERSION=0.4.2-rc.8
 node -e '
   const fs = require("node:fs")
   const files = ["package.json"]
@@ -233,7 +233,7 @@ pnpm e2e --no-worktree --no-build         # 跳过实验 forge bundle 组合（�
 check 都会使对应阶段失败），不要在本页复制旧数字作为验收依据。当前 rc.7 目标完整流为 **244/244**、
 `--no-worktree` 为 **220/220**，实际结果只能以当次真实输出为准；完整流目标是 **241 PASS + 3** 条无
 provider 凭据的正向模型选择 SKIP（SKIP 未执行、不能算通过）。rc.7 的冻结树实测与退出码见
-[`docs/e2e-evidence/v0.4.2-rc.7-release-prep.md`](e2e-evidence/v0.4.2-rc.7-release-prep.md)。
+[`docs/e2e-evidence/v0.4.2-rc.8-release-prep.md`](e2e-evidence/v0.4.2-rc.8-release-prep.md)。
 阶段 3 在全部旧检查之上另含 board/notes 检查：真实 `updateBoard` 写入/CAS、notes create → 原生 absolutePath
 写入 → read/list 惰性对账、真实 `devlead_board_note_read` tool→service 路径、index/Markdown 磁盘 read-back、webserver/index-inject global、lead-off store 释放、独立磁盘 revision/
 内容 read-back；动态看板默认路径/global 相关断言在阶段 1、1b、2。上一稳定版 `0.4.0` 冻结树的历史真实输出（含真实
@@ -268,13 +268,13 @@ provider 凭据的正向模型选择 SKIP（SKIP 未执行、不能算通过）�
 
 ```sh
 git add -A
-git commit -m "chore(release): v0.4.2-rc.7"
+git commit -m "chore(release): v0.4.2-rc.8"
 git push origin main
-git tag -a v0.4.2-rc.7 -m "v0.4.2-rc.7"
-git push origin v0.4.2-rc.7       # 触发 .github/workflows/publish.yml
+git tag -a v0.4.2-rc.8 -m "v0.4.2-rc.8"
+git push origin v0.4.2-rc.8       # 触发 .github/workflows/publish.yml
 ```
 
-> 本版 `0.4.2-rc.7` 是 **prerelease 候选**：CI 按版本自动推导 dist-tag 为 `next`
+> 本版 `0.4.2-rc.8` 是 **prerelease 候选**：CI 按版本自动推导 dist-tag 为 `next`
 > （稳定版才是 `latest`）。打 tag 与 push 属于人类批准动作；本次由人类明确指示后执行。
 > 通用检查清单可参考下文 [「0.4.0 稳定版发布步骤与检查」](#9-040-稳定版发布步骤与检查)
 > （历史稳定版实例）与 0.4.2-rc.1 / rc.2 / rc.3 的历史检查记录；旧记录不替代本候选冻结树验收。
@@ -319,7 +319,7 @@ stage 成功后**什么都不会公开**。维护者在 npmjs.com 网页上批�
 1. 用对 `@yankeguo` 有写权限的维护者账号登录 [npmjs.com](https://www.npmjs.com/)，按提示完成 2FA。
 2. 打开 staged 队列 / pending approvals 页面（账号下的 staged packages；每个包的 **Versions**
    页也会显示该版本的 staged / 待批准状态与审批入口，页面约每分钟自动刷新）。
-3. **先核对再批准**：6 条 staged 记录的包名、版本号（本次全部为 `0.4.2-rc.7`）与记录携带的
+3. **先核对再批准**：6 条 staged 记录的包名、版本号（本次全部为 `0.4.2-rc.8`）与记录携带的
    dist-tag（稳定版 `latest`；prerelease `next`）必须与 CI job summary 一致。
    **版本或 dist-tag 不对的记录不要批准**，先按本节末尾的 reject 说明清理。历史候选
    `0.4.2-rc.1` 与 `0.4.2-rc.4` 的 staged 记录从未 approve，**不要批准**；批准本候选前请 reject 或明确忽略
@@ -339,7 +339,7 @@ approve 后逐包核对 npm `dist-tags`（`latest` 指向稳定版；`next`/其�
 npm view @yankeguo/dsh-devlead-bundle dist-tags
 npm view @yankeguo/dsh-devlead dist-tags
 # 本次候选期望：stage 不改变公开 dist-tag，approve 前 latest = 0.4.1；
-# approve 0.4.2-rc.7 后 next = 0.4.2-rc.7，latest 仍为 0.4.1
+# approve 0.4.2-rc.8 后 next = 0.4.2-rc.8，latest 仍为 0.4.1
 ```
 
 也可以在 npmjs.com 各包页面的 **Versions** 里核对哪个版本带 `latest` / `next` 标签。
@@ -365,9 +365,9 @@ reject staged 记录**不会**撤销任何已 approve 的版本（已 approve = 
 在仓库根目录执行：
 
 ```sh
-# 预发布版（本次 0.4.2-rc.7；tag 已存在，--verify-tag 保证只对既有 tag 建 Release，绝不创建/移动 tag）
-gh release create v0.4.2-rc.7 --repo yankeguo/dsh-devlead --title v0.4.2-rc.7 \
-  --notes-file docs/releases/v0.4.2-rc.7.md --verify-tag --prerelease --latest=false
+# 预发布版（本次 0.4.2-rc.8；tag 已存在，--verify-tag 保证只对既有 tag 建 Release，绝不创建/移动 tag）
+gh release create v0.4.2-rc.8 --repo yankeguo/dsh-devlead --title v0.4.2-rc.8 \
+  --notes-file docs/releases/v0.4.2-rc.8.md --verify-tag --prerelease --latest=false
 
 # 稳定版（历史示例 0.4.1）
 gh release create v0.4.1 --repo yankeguo/dsh-devlead --title v0.4.1 \
@@ -388,15 +388,15 @@ gh release create v0.4.1 --repo yankeguo/dsh-devlead --title v0.4.1 \
 创建后核对「npm dist-tags ↔ git tag ↔ GitHub Release」三者一致：
 
 ```sh
-git rev-parse v0.4.2-rc.7^{commit}             # tag 指向的 commit
-gh release view v0.4.2-rc.7 --repo yankeguo/dsh-devlead \
+git rev-parse v0.4.2-rc.8^{commit}             # tag 指向的 commit
+gh release view v0.4.2-rc.8 --repo yankeguo/dsh-devlead \
   --json tagName,isPrerelease,isDraft,targetCommitish
 gh release list --repo yankeguo/dsh-devlead --limit 5 --json tagName,isLatest
 npm view @yankeguo/dsh-devlead-bundle dist-tags
 ```
 
-本次候选期望：6 个包的 `@0.4.2-rc.7` 在 npm 可见；`dist-tags.next = 0.4.2-rc.7`、`latest` 仍为
-`0.4.1`；GitHub Release 指向 tag `v0.4.2-rc.7` 与同一 commit，`isPrerelease=true`、
+本次候选期望：6 个包的 `@0.4.2-rc.8` 在 npm 可见；`dist-tags.next = 0.4.2-rc.8`、`latest` 仍为
+`0.4.1`；GitHub Release 指向 tag `v0.4.2-rc.8` 与同一 commit，`isPrerelease=true`、
 `isLatest` 仍指向稳定版、`isDraft=false`。稳定版发布时则是 6 个包的 `@<version>` 可见、
 `dist-tags.latest = <version>`、`next` 保持 `0.4.0-rc.1` 的前一候选，Release `isLatest=true`、
 `isPrerelease=false`。
@@ -406,15 +406,15 @@ npm view @yankeguo/dsh-devlead-bundle dist-tags
 网页 approve 完成、并按第 7 步手动创建 GitHub Release 后执行：
 
 ```sh
-npm view @yankeguo/dsh-devlead-bundle@0.4.2-rc.7 version dist-tags
-npm view @yankeguo/dsh-devlead@0.4.2-rc.7 version
-npm view @yankeguo/dsh-command-devlead@0.4.2-rc.7 version
+npm view @yankeguo/dsh-devlead-bundle@0.4.2-rc.8 version dist-tags
+npm view @yankeguo/dsh-devlead@0.4.2-rc.8 version
+npm view @yankeguo/dsh-command-devlead@0.4.2-rc.8 version
 
-gh release view v0.4.2-rc.7 --repo yankeguo/dsh-devlead
+gh release view v0.4.2-rc.8 --repo yankeguo/dsh-devlead
 ```
 
-本次候选三方核对：6 个包的 `@0.4.2-rc.7` 在 npm 可见、`dist-tags.next` 指向 **`0.4.2-rc.7`**、
-`dist-tags.latest` 保持 **`0.4.1`**；GitHub Release 指向 tag `v0.4.2-rc.7` 与同一 commit
+本次候选三方核对：6 个包的 `@0.4.2-rc.8` 在 npm 可见、`dist-tags.next` 指向 **`0.4.2-rc.8`**、
+`dist-tags.latest` 保持 **`0.4.1`**；GitHub Release 指向 tag `v0.4.2-rc.8` 与同一 commit
 （`isPrerelease=true`、`isLatest` 仍为稳定版）。
 npmjs.com 上每个包应显示 **provenance / attestation**（公开仓库 + GitHub-hosted runner 自动
 生成）。
@@ -423,7 +423,7 @@ npmjs.com 上每个包应显示 **provenance / attestation**（公开仓库 + Gi
 
 ```sh
 dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
-# 或：dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.7
+# 或：dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.8
 ```
 
 然后刷新 Web 页面，开一个会话执行 `/devlead on`，再让模型
@@ -454,7 +454,7 @@ Batch 1 的 breaking 兼容性清理与正确性收口；稳定版只做版本 b
   [`docs/e2e-evidence/v0.4.0-release-prep.md`](e2e-evidence/v0.4.0-release-prep.md)。
 - [ ] **(d) 浏览器可视验收（人工）**：按 [UI-VERIFICATION](UI-VERIFICATION.md) 在隔离 profile
   由人类走查 composer 的 DevLead 开关、`DevLeadBar`、三 lane 配色、question 状态与 `provisional`
-  标记、侧栏 active ring / watched 准星，并把结果记录到发布检查/证据中。e2e 与渲染测试只覆盖
+  标记、侧栏 active lead 角标 / watched 准星，并把结果记录到发布检查/证据中。e2e 与渲染测试只覆盖
   projection/DOM/断言，**不替代**这一步。
 - [ ] **(e) 人类批准 tag（硬门禁）**：只有人类明确指示后才执行
   `git tag -a v0.4.0 -m "v0.4.0"` + `git push origin v0.4.0`；推送即触发 CI stage 6 个包
@@ -607,13 +607,17 @@ bundle 依赖，把它加进 workspace 后 `pnpm install` 会同步锁文件；�
   消除 client path 切换旧值、index poll 引起的重复 note I/O 和 live-region 轮询播报，并补 orphan/GC 恢复
   文档及真实 note tool→service e2e。board schema、rc.4 功能边界与 DSH 兼容面不变。发布说明见
   `docs/releases/v0.4.2-rc.5.md`。
-  **0.4.2-rc.6**（prerelease，dist-tag `next`，上一候选）新增 lead-only board/notes workflow prompt
+  **0.4.2-rc.6**（prerelease，dist-tag `next`，历史候选）新增 lead-only board/notes workflow prompt
   与四个工具的使用场景描述，不改 schema、UI、工具语义或 DSH 兼容面。发布说明见
   `docs/releases/v0.4.2-rc.6.md`。
-  **0.4.2-rc.7**（prerelease，dist-tag `next`，当前候选）把 notes 工具收窄为
+  **0.4.2-rc.7**（prerelease，dist-tag `next`，上一候选）把 notes 工具收窄为
   create/update-metadata/delete 与 index CAS，正文改用 DSH 原生 read/write/edit；Host read/list 惰性对账，
   client 自动刷新并显示 live stat 观察时间，policy/工具描述同步。磁盘 schema 与 DSH 兼容面不变。发布说明见
   `docs/releases/v0.4.2-rc.7.md`。
+  **0.4.2-rc.8**（prerelease，dist-tag `next`，当前候选）明确看板入口和 KPI 层级，卡片改为 status
+  驱动的完整四边边框，active lead 侧栏改用不影响选中态的角标，修复永不 settle 的自动读取使 watch/poll
+  与 blocked KPI 永久停留在旧快照的问题；
+  不改 Host、工具、磁盘 schema 或 DSH 兼容面。发布说明见 `docs/releases/v0.4.2-rc.8.md`。
   各版发布时同步 README / README.zh 与 `docs/releases/v<version>.md`；0.2.0 另复核
   旧 core + 新 tool 混装时 `isolation` 的防御性降级（tool 对缺失字段回退
   `{requested:'none',status:'none'}`）。

@@ -22,6 +22,7 @@ import {
   resolveDevLeadBoardConfig,
   resolveDevLeadBoardSessionConfig,
   joinDevLeadBoardPath,
+  summarizeDevLeadBoardProjects,
   taskProgress,
   taskStatusTone,
   truncateSessionId,
@@ -309,6 +310,27 @@ describe('board grouping and presentation helpers', () => {
       'blocked', 'active', 'paused', 'done',
     ])
     expect(groupDevLeadBoardProjects(board([]))).toEqual([])
+  })
+
+  it('derives KPI counts from the exact groups, including blocked negative controls', () => {
+    const activeWithBlockers = {
+      ...project('active-risk', 'active'),
+      blockers: [{ id: 'risk', text: 'not yet blocking', since: ISO }],
+    }
+    const summary = summarizeDevLeadBoardProjects(board([
+      activeWithBlockers,
+      project('blocked-one', 'blocked'),
+      project('blocked-two', 'blocked'),
+      project('done', 'done'),
+    ]))
+    expect(summary.counts).toEqual({ active: 1, blocked: 2, paused: 0, done: 1 })
+    expect(summary.groups.map(group => [group.status, group.projects.length])).toEqual([
+      ['blocked', 2], ['active', 1], ['done', 1],
+    ])
+    expect(summarizeDevLeadBoardProjects(board([activeWithBlockers])).counts.blocked).toBe(0)
+    // Parsing preserves the status enum that drives both projections.
+    const parsed = parseDevLeadBoard(JSON.stringify(board([project('blocked', 'blocked')])))
+    expect(summarizeDevLeadBoardProjects(parsed).counts.blocked).toBe(1)
   })
 
   it('sorts each group by priority, descending updatedAt, then stable id', () => {

@@ -9,10 +9,13 @@ import {
 } from 'react'
 import {
   Button,
+  IconCheckCircleOutlineRegular,
   IconChevronLeftOutlineRegular,
   IconClockOutlineRegular,
   IconListPenOutlineRegular,
+  IconPauseOutlineRegular,
   IconPlanOutlineRegular,
+  IconPlayOutlineRegular,
   IconRefreshOutlineRegular,
   IconWarningOutlineRegular,
   StateDot,
@@ -25,8 +28,8 @@ import type { WorkspaceSnapshot } from '@deepseek-ai/dsh-api-workspace-controlle
 import {
   boardRelativeTime,
   currentDevLeadBoardConfig,
-  groupDevLeadBoardProjects,
   projectStatusTone,
+  summarizeDevLeadBoardProjects,
   resolveDevLeadBoardSessionConfig,
   taskProgress,
   taskStatusTone,
@@ -213,6 +216,16 @@ function statusDot(status: DevLeadBoardProjectStatus): 'warning' | 'ongoing' | '
     case 'active': return 'ongoing'
     case 'done': return 'done'
     case 'paused': return 'idle'
+  }
+}
+
+/** Repeated status glyph: the text label remains visible and accessible. */
+function ProjectStatusIcon({ status }: { readonly status: DevLeadBoardProjectStatus }): ReactNode {
+  switch (status) {
+    case 'active': return <IconPlayOutlineRegular size={13} />
+    case 'blocked': return <IconWarningOutlineRegular size={13} />
+    case 'paused': return <IconPauseOutlineRegular size={13} />
+    case 'done': return <IconCheckCircleOutlineRegular size={13} />
   }
 }
 
@@ -494,9 +507,9 @@ export function DevLeadBoardPanelView({
   const idPrefix = useId()
   if (state.status === 'disabled') return null
   const board = state.board
-  const groups = board === undefined ? [] : groupDevLeadBoardProjects(board)
-  const counts: Record<DevLeadBoardProjectStatus, number> = { active: 0, blocked: 0, paused: 0, done: 0 }
-  for (const project of board?.projects ?? []) counts[project.status] += 1
+  const summary = board === undefined ? undefined : summarizeDevLeadBoardProjects(board)
+  const groups = summary?.groups ?? []
+  const counts = summary?.counts ?? { active: 0, blocked: 0, paused: 0, done: 0 }
   const blocked = counts.blocked
   const refreshState = state.status === 'error' ? 'error'
     : autoRefresh === 'paused' || watch === 'ended' ? 'warning'
@@ -539,8 +552,8 @@ export function DevLeadBoardPanelView({
         <div className="devlead-board-header-strip">
           <div className="devlead-board-live" data-auto-refresh={autoRefresh} title={`${t('board.live')}: ${statusText}`}>
             <StateDot state={refreshState} size={8} />
-            <span className="devlead-sr-only">{t('board.live')}</span>
-            <span aria-hidden="true">{statusText}</span>
+            <span className="devlead-board-live-label" aria-hidden="true">{t('board.live')}</span>
+            <span className="devlead-board-live-status" aria-hidden="true">{statusText}</span>
             <span
               className="devlead-sr-only"
               data-devlead-board-live-announcement="true"
@@ -562,12 +575,21 @@ export function DevLeadBoardPanelView({
           )}
         </div>
         {board !== undefined && (
-          <dl className="devlead-board-kpis" aria-label={t('board.kpi.aria')}>
-            {(['active', 'blocked', 'paused', 'done'] as const).map(status => {
+          <dl className="devlead-board-kpis" aria-label={t('board.kpi.aria')} tabIndex={0}>
+            {(['blocked', 'active', 'paused', 'done'] as const).map(status => {
               const count = counts[status]
               return (
-                <div key={status} data-devlead-board-kpi={status} data-tone={status}>
-                  <dt>{t(`board.status.${status}`)}</dt>
+                <div
+                  key={status}
+                  data-devlead-board-kpi={status}
+                  data-tone={status}
+                  data-empty={count === 0 ? 'true' : 'false'}
+                  data-emphasis={status === 'blocked' && count > 0 ? 'true' : 'false'}
+                >
+                  <dt>
+                    <span className="devlead-board-kpi-icon" aria-hidden="true"><ProjectStatusIcon status={status} /></span>
+                    <span>{t(`board.status.${status}`)}</span>
+                  </dt>
                   <dd aria-label={t('board.kpi.value', { status: t(`board.status.${status}`), count })}>{count}</dd>
                 </div>
               )

@@ -2633,30 +2633,23 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   - top-level Session 的开关不随状态条出现/消失而消失；同一时刻只有一个模式开关。subagent
   Session 不渲染开关与状态条。
 - **侧边栏会话行标记**：
-  - **当前激活的 lead** 行用 `::after` overlay 画 business-accent ring（1px border + 轻
-    outer halo），颜色与 composer 工具栏开关一致，不增加 padding/margin/height，因此 32px
-    行盒、标题省略和布局不位移；**不再显示行尾图标**，active 事实由 ring + hover 文案 +
-    视觉隐藏的 aria status 表达。
-    根因：shell 行只有 `border-inline: 3px solid transparent`（`--dsh-sidebar-paint-inset`，
-    上下 border 为 0）。给行加 `border-color` 会让左右多出 3px 色条；`inset box-shadow` 又被
-    裁到 padding box，左右同样内缩 3px、上下不缩，二者都会造成左右/上下视觉不一致。因此
-    overlay 用 `inset: 0 calc(-1 * var(--dsh-sidebar-paint-inset))` 对齐**border box**，四边
-    同宽、`border-radius: inherit`，绝不改 row 的 border/padding/height。实现只能走 CSS：shell
-    的行是 `<div data-row-key="session:<id>">`，没有行级装饰 slot；插件用
-    `[data-row-key^="session:"]:has([data-devlead-active-mark="true"])` 限定在会话行，不靠
-    哈希类名。
+  - **当前激活的 lead** 行使用右上角小角标（sparkle + `LEAD`），business-accent 描边、menu
+    底色、无 halo；角标 `role=img` 同时带本地化 `aria-label` 与原生 `title`，窄 viewport 可只留图标。
+    shell 行只加 `position:relative` 作为定位上下文，**绝不修改其 border/background/padding/height、
+    选中/hover/focus 样式**；未选中的 lead 因此不会被误认为当前选中 Session。旧的 `::after`
+    四边 overlay ring 与 `--dsh-sidebar-paint-inset` 依赖已移除，没有其它调用方。实现使用稳定
+    `[data-row-key^="session:"]:has([data-devlead-active-mark="true"])`，不靠哈希类名。
   - **被当前 lead 关注的普通 Session** 在行尾显示弱化准星图标
     （`IconGoalOutlineRegular`，13px；`sidebar.session.row.trailing`；非交互、不绑定/不激活
     Session），谓词读 lead 的 summary 级 `devLeadWatch`，不读被排除的 digest，也不给被关注
     会话写日志；cold 行/重启 cache 行同样成立。未 watched 不渲染。
   - `:has` 依赖 shell 的稳定 `data-row-key` 属性（`Rows.tsx` 明确写入）；`:has` 在目标 Web
-    浏览器可用。trailing seat 在悬停/聚焦时被 shell 隐藏，但 mark 仍挂载在 DOM 中，所以
-    `:has` 的 active ring 不会在 hover 时消失；`sidebar.session.row.hover` 另提供
+    浏览器可用。trailing seat 在悬停/聚焦时可被 shell 隐藏，`sidebar.session.row.hover` 另提供
     「已关注/激活 DevLead」说明（i18n `row.watched.aria` / `row.hover.watched` /
-    `row.mark.aria` / `row.hover.enabled`）。active 行视觉隐藏的 status 仍带
-    `aria-label`，屏幕阅读器不依赖边框或颜色。
+    `row.mark.aria` / `row.hover.enabled`）。active 角标自身始终带 `aria-label`/`title`，
+    屏幕阅读器不依赖位置或颜色。
   - rc.1 对 blank（尚无 turn）行不渲染 trailing seat：空白新会话上的标记/hover 说明要等第一次
-    turn；active ring 也随 mark 无法显示，这是 shell seat 限制。搜索视图复用另一套结果行，同
+    turn；active 角标也随 mark 无法显示，这是 shell seat 限制。搜索视图复用另一套结果行，同
     样不挂载该 seat；搜索期间不显示 active/watched 标识。
 - **右侧栏只读项目看板**：所需服务按官方插件方式静态组合（`remote.workspaceFiles`、
   `sidebarRight`、`sidebarRightTabs`、`workspaces`，均在 `dsh.client.inject` 静态声明中）。
@@ -2675,15 +2668,21 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   （status 驱动、refreshing 不重置）；只有 `useTabInfo().tab.visible` 且 document visible + focused
   时运行，blur/hidden/unmount/path change 清理 timer，恢复时立即读。watch、poll、focus/visibility
   恢复共享在途读取；在途期间新到的 watch ready/change 合并为**一次 trailing refresh**（poll/focus
-  只共享当前读取），既不叠发也不丢后续 change；
+  只共享当前读取），既不叠发也不丢后续 change。单次 stat/readBytes 另有 10s watchdog：Remote 永不 settle
+  时先完成 error 收尾再 abort 旧 controller，非强制触发看到 aborted single-flight 即可开启新 generation；
+  不依赖旧 Promise 的 `finally` 才能恢复，避免旧 active 快照和 blocked KPI=0 永久卡住。
   手动刷新可强制重读并重连。watch ended 不静默重连，但轮询继续并明确显示监听与轮询状态。
   浏览器 strict schema v1 直接复用 protocol 的 `createDevLeadBoardSchema`（不 import Host/Node；
   绝对路径谓词由 Host 发布的 `pathPlatform` 决定）；not-found、Remote read error、parse error 分别呈现
   empty / read error / parse error，错误时只保留 lastSuccessAt，不把旧卡片当当前数据。
-  视觉采用根 `.devlead-board` container：顶部四状态 KPI 为单行可横滚 pill strip，
-  revision/updated/Live 是紧凑元信息；blocked 强警示置顶，active 默认 1 列、container ≥620px 2 列、
-  ≥980px 3 列。卡片不重复渲染可见 field label（保留 sr-only/aria），但项目名、workspace、status/
-  priority、focus/next/blockers、任务进度/disclosure 与 updated 信息完整，非自明图标有 tooltip；
+  视觉采用根 `.devlead-board` container：顶部按 blocked/active/paused/done 排列的四状态 KPI 为单行可横滚
+  pill strip，状态图标与文字并存，零值中性、仅 blocked>0 强 warning；`summarizeDevLeadBoardProjects` 从
+  实际渲染 groups 派生 counts，KPI/banner/卡片不会各自使用不同 blocked 判定。revision/updated/Live 是紧凑
+  元信息，Live 标签肉眼可见、长状态独立 ellipsis。blocked 强警示置顶，active 默认 1 列、container ≥620px
+  2 列、≥980px 3 列。卡片使用完整四边边框和轻底色，颜色只由 status 决定：active=business primary、
+  blocked=warning primary、paused=neutral label secondary、done=success primary；priority 仅保留独立 Tag，
+  不得通过 `data-priority` CSS 改卡片主色。卡片不重复渲染可见 field label（保留 sr-only/aria），但项目名、
+  workspace、status/priority、focus/next/blockers、任务进度/disclosure 与 updated 信息完整，非自明图标有 tooltip；
   paused/done/unlisted 为次级折叠。组内 priority + updatedAt 排序，tasks/blockers 只读；unlisted 连接
   Host Workspace/Session 投影，path 做有限语法规范化并显示会话数与最近 Session 活动，Session pending
   不谎报无活动、workspace 清单 error 优先于 pending；组标题 DOM id 以 `useId` 前缀隔离多个面板实例；
@@ -3178,7 +3177,7 @@ GitHub Release、不 npm publish**——approve（npm login + 2FA）与 GitHub R
    （capability flag，不涉及 DSH 上游改动）。本 RC 不写原型、不作为发布承诺。
 4. **浏览器视觉验收 = release checklist 人工项。** 自动化 e2e 只证明 boot graph、projection、
    DOM/渲染与数据流；composer 开关、DevLeadBar 三 lane 配色、question 状态/`provisional`
-   标记、侧栏 active ring/watched 准星属于视觉与交互判断，必须按
+   标记、侧栏 active lead 角标/watched 准星属于视觉与交互判断，必须按
    [`UI-VERIFICATION.md`](UI-VERIFICATION.md) 在隔离 profile 中由人类验收（列在
    [PUBLISHING](PUBLISHING.md) 的发布检查中）。本轮无截图工具，不伪造视觉结论。
 5. **版本引用口径。** `0.4.0-rc.1` 候选为 7 个 workspace manifest lockstep；历史发布记录

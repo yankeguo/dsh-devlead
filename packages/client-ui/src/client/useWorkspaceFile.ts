@@ -109,6 +109,7 @@ export function useWorkspaceFile<T>({
   debounceMs = 120,
   pollMs = 5_000,
   pollMaxMs = 30_000,
+  readTimeoutMs = 10_000,
   now = Date.now,
 }: {
   readonly sessionId: SessionId
@@ -118,6 +119,8 @@ export function useWorkspaceFile<T>({
   readonly debounceMs?: number
   readonly pollMs?: number
   readonly pollMaxMs?: number
+  /** Bound one stat/readBytes pair so a hung Remote cannot wedge later polls. */
+  readonly readTimeoutMs?: number
   readonly now?: () => number
 }): DevLeadWorkspaceFileResult<T> {
   const [state, setState] = useState<DevLeadWorkspaceFileState<T>>(() => initialState(config))
@@ -127,10 +130,15 @@ export function useWorkspaceFile<T>({
   const [watchGeneration, setWatchGeneration] = useState(0)
   const generation = useRef(0)
   const readAbort = useRef<AbortController | undefined>(undefined)
+  const readTimeout = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const trailingRead = useRef(false)
 
   const refreshRead = useCallback((force = false, queueTrailing = false): void => {
     if (config === undefined) {
+      if (readTimeout.current !== undefined) {
+        clearTimeout(readTimeout.current)
+        readTimeout.current = undefined
+      }
       generation.current += 1
       readAbort.current?.abort()
       readAbort.current = undefined
@@ -141,11 +149,24 @@ export function useWorkspaceFile<T>({
       if (queueTrailing) trailingRead.current = true
       return
     }
+    if (readTimeout.current !== undefined) {
+      clearTimeout(readTimeout.current)
+      readTimeout.current = undefined
+    }
     const request = ++generation.current
     trailingRead.current = false
     readAbort.current?.abort()
     const controller = new AbortController()
     readAbort.current = controller
+    const timeout = setTimeout(() => {
+      if (readTimeout.current === timeout) readTimeout.current = undefined
+      if (generation.current !== request || controller.signal.aborted) return
+      fail('read', new Error(`${config.fileLabel} read timed out after ${readTimeoutMs} ms`))
+      // An aborted single-flight no longer blocks the next watch/poll trigger,
+      // even when the underlying Remote never settles its returned Promise.
+      controller.abort()
+    }, readTimeoutMs)
+    readTimeout.current = timeout
     setState(previous => ({
       ...previous,
       status: previous.status === 'disabled' ? 'loading' : previous.status,
@@ -213,6 +234,8 @@ export function useWorkspaceFile<T>({
         if (generation.current !== request || controller.signal.aborted) return
         fail('read', error)
       } finally {
+        clearTimeout(timeout)
+        if (readTimeout.current === timeout) readTimeout.current = undefined
         if (readAbort.current === controller) {
           readAbort.current = undefined
           if (trailingRead.current && generation.current === request && !controller.signal.aborted) {
@@ -224,7 +247,7 @@ export function useWorkspaceFile<T>({
         }
       }
     })()
-  }, [config, files, now, sessionId])
+  }, [config, files, now, readTimeoutMs, sessionId])
 
   useEffect(() => {
     if (config === undefined) {
@@ -270,6 +293,10 @@ export function useWorkspaceFile<T>({
       if (timer !== undefined) clearTimeout(timer)
       generation.current += 1
       watcher.abort()
+      if (readTimeout.current !== undefined) {
+        clearTimeout(readTimeout.current)
+        readTimeout.current = undefined
+      }
       readAbort.current?.abort()
     }
   }, [config, debounceMs, files, refreshRead, sessionId, watchGeneration])

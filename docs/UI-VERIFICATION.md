@@ -45,8 +45,8 @@
    - 关闭态：composer 工具栏只有 DevLead 图标 + 文本按钮。
    - 开启态：composer 上方出现只读 `DevLeadBar`；工具栏开关仍在原位，点击发送
      `/devlead off`。
-   - 侧栏：active lead 行有 accent ring、无行尾图标；被关注行有弱化准星；搜索态与 blank
-     行没有这些标记。
+   - 侧栏：active lead 行只有右上角 sparkle + `LEAD` 小角标，无整行 ring/选中态改变；被关注行有
+     弱化准星；搜索态与 blank 行没有这些标记。
    - 如需真实 watch/通知，再建一个会话并 watch，然后触发一次 turn 结束。
 
 ### 0.4.0 视觉验收项（发布前必查，对应 PUBLISHING checklist (d)）
@@ -214,6 +214,36 @@ profile，不以单测代替真实浏览器观察：
 4. **notes chip / reader 回归**：light/dark 与宽/窄栏复查 notes chip/count/latest、全栏 Markdown reader、
    返回焦点、危险载荷文本化与只读性。保存本轮真实截图和带时间戳的原生文件写入 + Remote stat/readBytes
    记录；仅有组件测试或旧 rc.4/rc.5 截图时不得把本轮人工验收标为通过。
+
+### 0.4.2-rc.8 必查：入口、blocked 恢复、KPI 与 status 卡片
+
+本轮沿用全新隔离 profile 和真实 Chrome，不以组件测试或旧截图替代。准备 active（high/low 各一）、blocked、
+paused、done 项目，先以 active revision 打开面板，再让一次自动 stat 永不 settle、外部把同一项目改为 blocked，
+随后恢复 Remote；不点手动刷新确认 watchdog 后卡片、blocked 分组、banner、KPI 和 revision 一起更新。
+
+1. **入口与窄栏元信息**：会话头部和 guide 都是仪表盘图标；按钮保持 28×28，glyph 18px，与相邻 utilities
+   协调且不偏小。tooltip/aria-label 中英文均明确「打开项目看板 / Open project board」，lead-only gating
+   不回归。Live 标签肉眼可见，长刷新状态在独立文本 lane ellipsis；revision、updated 不重叠，极窄栏四个
+   KPI 可在 strip 内横向访问而页面不横溢；strip 本身可聚焦并有可见焦点，键盘左右键可读到第四项。
+2. **KPI 层级**：固定 blocked → active → paused → done，状态图标和文字同时存在；零值统一中性边框/
+   tertiary 文字（不用低 opacity 损害对比度），非零数字清楚。只有 blocked>0 使用 warning 强底色/描边，
+   blocked=0 时 warning 和 banner 都退出。自动刷新后 KPI 与 groups/banner 同源同 revision，不出现 blocked
+   项目已显示而 KPI=0；只有 blockers 但 status=active 的负控不计 blocked。
+3. **四态四边卡片**：所有卡片都是完整四边同宽边框 + 轻底色，不再有 `::before` 单左边色条，也不再有
+   `[data-priority]` 卡片着色规则。高/低 priority 的 active 卡片 computed `border-top/right/bottom/left-color`
+   与 background 完全一致；priority 只读独立 badge。hover/focus 不得把其它 status 的边框改成 active 蓝。
+4. **固定颜色 token 映射**：active 使用 `--dsw-alias-state-business-primary`；blocked 使用
+   `--dsw-alias-state-warn-primary`；paused 使用 neutral `--dsw-alias-label-secondary`；done 使用
+   `--dsw-alias-state-success-primary`。blocked KPI、banner、卡片边框必须是同一个 warning token；
+   light/dark 各检查四态边框、底色、文字、图标和 focus 对比度，状态不能只靠颜色区分。
+5. **证据**：保存 light/dark 的四态全景、active high/low 对照、blocked>0 与 blocked=0、240–340px 窄栏、
+   header tooltip/focus，以及 hung-stat 恢复前后截图/带时间戳 Remote 记录。真实 computed style 记录四边
+   颜色；仅有渲染属性、CSS 文本断言或旧 rc 截图时不得标记本轮视觉验收通过。
+6. **lead 角标与选中态隔离**：分别选择 lead 行和另一个普通 Session 行，active lead 未选中时只在右上角
+   显示 sparkle + `LEAD` 小角标，无四边 ring、背景或发光；lead 被选中时仅呈现 shell 原生选中/hover/focus
+   样式，角标不与它混成第二重选中框。普通非 lead 行无角标，watched 准星保持弱化。检查角标原生 title/
+   aria-label 中英文、窄栏和 light/dark 可读性；保存「lead 未选中」与「lead 选中」对照截图和 computed
+   row border/background/box-shadow 记录，确认没有任何 `[data-devlead-active-mark]::after` 复用。
 
 ### 清理
 

@@ -153,10 +153,11 @@ interface ProbeProps {
   readonly debounceMs?: number
   readonly pollMs?: number
   readonly pollMaxMs?: number
+  readonly readTimeoutMs?: number
 }
 
-function Probe({ config, files, visible = true, debounceMs = 20, pollMs = 5_000, pollMaxMs = 30_000 }: ProbeProps) {
-  const state = useBoardFile({ sessionId: SESSION, config, files, visible, debounceMs, now: NOW_FN, pollMs, pollMaxMs })
+function Probe({ config, files, visible = true, debounceMs = 20, pollMs = 5_000, pollMaxMs = 30_000, readTimeoutMs = 10_000 }: ProbeProps) {
+  const state = useBoardFile({ sessionId: SESSION, config, files, visible, debounceMs, now: NOW_FN, pollMs, pollMaxMs, readTimeoutMs })
   return (
     <>
       <span
@@ -638,6 +639,32 @@ describe('useBoardFile', () => {
     await act(async () => { vi.advanceTimersByTime(1_000) })
     await flush()
     expect(fake.stat).toHaveBeenCalledTimes(3)
+  })
+
+  it('times out a hung automatic read so watch and polling can recover a newer board', async () => {
+    vi.useFakeTimers()
+    const fake = fakeFiles()
+    const renderer = await mount(<Probe config={CONFIG} files={fake.files} debounceMs={5} pollMs={10} readTimeoutMs={20} />)
+    await flush()
+    expect(stateOf(renderer)).toMatchObject({ 'data-status': 'ready', 'data-revision': 1 })
+
+    fake.stat.mockImplementationOnce(() => new Promise<StatResult>(() => {}))
+    await act(async () => { await vi.advanceTimersByTimeAsync(10) })
+    await flush()
+    expect(fake.stat).toHaveBeenCalledTimes(2)
+    const hungSignal = fake.stat.mock.calls[1]?.[2]
+    fake.readBytes.mockResolvedValue(ok(readValue(board(2))))
+    await act(async () => {
+      fake.streams[0]!.push({ kind: 'change', change: { absolutePath: CONFIG.boardPath, version: 'v2' } })
+      await vi.advanceTimersByTimeAsync(20)
+    })
+    await flush()
+    expect(hungSignal?.aborted).toBe(true)
+
+    // The same-time poll is no longer blocked by the never-settling Promise;
+    // it has already read the newer revision without a manual refresh.
+    expect(fake.stat).toHaveBeenCalledTimes(3)
+    expect(stateOf(renderer)).toMatchObject({ 'data-status': 'ready', 'data-revision': 2, 'data-refreshing': 'false' })
   })
 
   it('stops empty-state polling on unmount', async () => {

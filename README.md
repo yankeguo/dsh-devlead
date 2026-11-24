@@ -8,7 +8,7 @@ upgrades **one ordinary session** into a **DevLead session**: it can operate DSH
 their state changes — so one agent can orchestrate multiple repositories inside a standard
 interface the human can see and interact with.
 
-Current release candidate **0.4.2-rc.7** (prerelease, npm dist-tag `next`; stable `latest` stays
+Current release candidate **0.4.2-rc.8** (prerelease, npm dist-tag `next`; stable `latest` stays
 **0.4.1**) · DSH **0.2.2-rc.1 – 0.2.2-rc.5** · one `dsh plugin` command installs everything.
 
 ## What you get
@@ -70,20 +70,21 @@ page.
 To pin an exact version:
 
 ```sh
-dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.7
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.8
 ```
 
-0.4.2-rc.7 is the current prerelease candidate for the planned 0.4.2 patch release, building on the
-published rc.6 candidate. It separates notes responsibilities: the tools own create/metadata/delete and index CAS,
-while existing Markdown bodies are edited with DSH-native file tools at the returned `absolutePath`. Host reads/lists
-lazily reconcile file bytes/mtime without overwriting native edits; the read-only client follows those edits and shows
-a live stat observation time in the selected reader. rc.6's proactive board workflow remains, with consistent policy
-and tool descriptions. Board/notes disk schemas and the DSH compatibility surface are unchanged. The release flow
+0.4.2-rc.8 is the current prerelease candidate for the planned 0.4.2 patch release, building on the
+published rc.7 candidate. It clarifies the board entry icon, four-status KPIs, and card visual hierarchy. It also
+fixes a hung automatic read that could permanently wedge watch/polling and leave blocked projects and KPIs on an old
+snapshot; KPIs, groups, and the blocked banner now share one status summary. Cards use status-driven four-side borders
+and light surfaces, while priority stays in its independent badge and no longer selects a card's main color. The
+active lead's whole-row sidebar ring is now a corner badge, distinct from the selected Session. rc.7's native notes
+editing and proactive board workflow remain. Board/notes disk schemas and the DSH compatibility surface are unchanged. The release flow
 stages this prerelease with npm dist-tag `next`, so pin the exact version above until stable 0.4.2 is approved;
 `latest` remains **0.4.1**.
 Earlier candidates remain historical records; the never-approved 0.4.2-rc.1/rc.4 staged records must not be
 approved. See the
-[0.4.2-rc.7 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.2-rc.7.md);
+[0.4.2-rc.8 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.2-rc.8.md);
 the previous stable patch is documented in the
 [0.4.1 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.1.md).
 
@@ -97,7 +98,7 @@ profile's `cordis.patch.yml` themselves; the bundle is the recommended path.
 dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 
 # or pin a specific version (required for prereleases)
-dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.7
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.8
 ```
 
 > **Upgrading from an older release (below 0.4.0):** 0.4.0 intentionally discards older DevLead
@@ -470,9 +471,10 @@ permanent bar on every conversation:
   and the latest notification or report (or a help hint). Question/blocked/decision chips use the
   warning color and show the question lifecycle; progress/fyi chips are weakened background
   context. The bar owns no switch, so turning the mode off never hides the control that did it.
-- **Sidebar marks:** the active DevLead row gets a business-accent ring; watched non-lead rows get
-  a quieter target glyph. Both come from summary projections, so they render for cold rows and
-  after a restart without per-row Host reads. DSH 0.2.2-rc.1 does not render the trailing seat on
+- **Sidebar marks:** the active DevLead row gets a small sparkle + `LEAD` corner badge with a localized
+  aria-label/title, never a whole-row highlight or a change to the shell's selected/hover/focus treatment;
+  watched non-lead rows get a quieter target glyph. Both come from summary projections, so they render for
+  cold rows and after a restart without per-row Host reads. DSH 0.2.2-rc.1 does not render the trailing seat on
   a blank (no-turn-yet) Session row, so a brand-new Session shows its mark after the first turn;
   search results use a separate row surface and show no mark.
 - **Project board (lead-only, on by default):** the tab, its guide entry and the Session-header
@@ -485,16 +487,20 @@ permanent bar on every conversation:
   off or switching leads re-renders immediately and never keeps reading the old file and closes the
   on-screen Session's lingering board tab (including a tab restored from a previous page load). The panel
   reads the board file directly — the schema's 256 KiB file cap applies, not the model tool's 64 KiB
-  read cap. Its header keeps active/blocked/paused/done KPIs in a single-line pill strip beside compact
-  revision/updated/Live metadata. Blocked projects lead with a strong warning; compact active cards use
-  responsive two- or three-column layouts (one column when narrow), avoid redundant visible field labels,
+  read cap. The header and guide use a clear dashboard icon with a localized tooltip/aria-label. The panel keeps
+  blocked/active/paused/done KPIs with status icons in a single-line pill strip beside compact revision/updated and
+  visible Live metadata. Zero counts are neutral; only blocked>0 earns the strong warning emphasis, and KPIs, groups,
+  and the banner share one summary. Four-side card borders and light surfaces depend only on status (active=business,
+  blocked=warning, paused=neutral, done=success); priority stays in its independent badge. Blocked projects lead with
+  a strong warning; compact active cards use responsive two- or three-column layouts (one column when narrow), avoid redundant visible field labels,
   retain focus/next/blockers and task progress, and give icons accessible tooltips. Paused/done and
   unlisted projects use secondary disclosures.
   File changes retain a 120 ms debounce, and every state is polled: ready/loading at a fixed 5 s
   cadence by default, empty/error with 5 s exponential backoff capped at 30 s. Polling runs only
   while the document is visible and focused; resume triggers an immediate coalesced read, while blur,
-  hidden, unmount, and path changes clear timers. Watch/poll/resume reads share one in-flight request.
-  An ended watch does not reconnect silently, but polling continues; manual refresh still forces a
+  hidden, unmount, and path changes clear timers. Watch/poll/resume reads share one in-flight request, bounded by a
+  10-second stat/readBytes watchdog: a Remote that never settles is aborted so a later automatic trigger can recover
+  instead of leaving stale KPIs forever. An ended watch does not reconnect silently, but polling continues; manual refresh still forces a
   read and reconnects it. The panel distinguishes missing files from read/parse failures; the unlisted
   section shows registered Workspaces with Session counts and recent activity, and reports catalog
   failures as errors, never as pending reads. People can refresh and expand

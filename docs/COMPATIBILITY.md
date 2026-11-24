@@ -1,14 +1,13 @@
 # DSH 兼容性矩阵
 
 本仓库的目标兼容面是 **DeepSeek Harness `0.2.2-rc.1` – `0.2.2-rc.5`**；当前候选发布版本是插件版本
-**`0.4.2-rc.7`**（6 个可发布包共用同一版本号；prerelease，CI 以 npm dist-tag `next` stage，维护者
-approve 后公开）。稳定版 `latest` 当前为 **`0.4.1`**，已发布的上一候选 rc.6 使 `next` 指向
-**`0.4.2-rc.6`**；approve `0.4.2-rc.7` 后 `next` 指向本候选、`latest` 仍为 `0.4.1`，直到计划中
+**`0.4.2-rc.8`**（6 个可发布包共用同一版本号；prerelease，CI 以 npm dist-tag `next` stage，维护者
+approve 后公开）。稳定版 `latest` 当前为 **`0.4.1`**，已发布的上一候选 rc.7 使 `next` 指向
+**`0.4.2-rc.7`**；approve `0.4.2-rc.8` 后 `next` 指向本候选、`latest` 仍为 `0.4.1`，直到计划中
 的稳定版 `0.4.2` 发布。`0.4.2-rc.1` 与 rc.4 已 stage 但**未 approve、从未公开**，其历史 staged
-记录不得 approve；其它旧候选的 release notes 保持历史事实。当前 rc.7 把 notes 工具收窄为
-create/update-metadata/delete 与 index CAS，正文改由 DSH 原生 read/write/edit 修改；Host read/list 惰性
-对账 bytes/mtime，client 使用既有 Workspace Files stat/readBytes/changes 自动刷新。磁盘 schema 与 DSH
-兼容面不变。`0.4.2-rc.7` 只是**插件版本**，**不代表 DSH 0.4.2**。6 个可发布包的
+记录不得 approve；其它旧候选的 release notes 保持历史事实。当前 rc.8 只调整 client 看板入口/KPI/卡片，
+并为既有 Workspace Files 读取增加 10s watchdog；KPI/分组/banner 共享状态汇总。Host、工具、磁盘 schema
+与 DSH 兼容面不变。`0.4.2-rc.8` 只是**插件版本**，**不代表 DSH 0.4.2**。6 个可发布包的
 `engines.dsh` 均为 `>=0.2.2-rc.1 <0.3.0`（根 `package.json` 是 private 包，不声明
 `engines.dsh`，只声明 `engines.node`），所有
 `@deepseek-ai/dsh-*` peer 使用同一范围；本地 devDependencies 与编译基线仍固定 rc.1，用最旧 API
@@ -516,7 +515,7 @@ lane/deliveryState、blocked/decision action steer、真实 T1 followup / T2 rev
 
 上表 Phase 1e 行即 **Batch 1 最终树**的 pin 实测：installed / patch 完整流各 **221/221**
 （218 PASS + 3 SKIP；phase 1 27 + 1b 12 + 2 23 + 3 128 + 1e 31），`--no-worktree` **198/198**
-（phase 2 skipped）。当前候选发布版本是插件 **`0.4.2-rc.7`**（prerelease，dist-tag `next`；
+（phase 2 skipped）。当前候选发布版本是插件 **`0.4.2-rc.8`**（prerelease，dist-tag `next`；
 stage 本身不改变公开 dist-tag，approve 后 `next` 才指向本候选，`latest` 仍为 `0.4.1`；DSH 兼容面
 仍为 rc.1–rc.5）。
 `0.4.0-rc.1` 候选的三条真实
@@ -529,9 +528,9 @@ E2E 重跑（含真实 `*_EXIT=0` 与总计行）记录在
 当前 board 加固轮保留上述全部旧检查，并在 phase 3 新增真实 `ctx.devLead.updateBoard` 写入/CAS、
 `webserver/index-inject` board global 与独立磁盘 revision/内容 read-back；Step B 复核修复轮又把
 phase 1 与 1b 改回未配置 `boardPath` 的默认组合并固定当轮目标 pin（phase 1=28、phase 3=132、
-完整流=226、no-worktree=203）。**当前 rc.7 的权威 pin 是 `scripts/e2e-smoke.mjs` 的
+完整流=226、no-worktree=203）。**当前 rc.8 的权威 pin 是 `scripts/e2e-smoke.mjs` 的
 `EXPECTED_CHECKS`：phase 1=30、phase 1b=18、phase 2=24、phase 3=141、phase 1e=31，完整流目标
-244/244（241 PASS + 3 credential-less SKIP），`--no-worktree` 220/220；rc.7 实测与退出码以当轮
+244/244（241 PASS + 3 credential-less SKIP），`--no-worktree` 220/220；rc.8 实测与退出码以当轮
 release-prep 原始日志为准。** 本轮新增/改写的断言
 包括：没有 lead 时不注入 board global、lead 开启后从 `SessionHeader.cwd` 派生默认路径并发布
 `{leadSessionId, override:false}`、预创建父目录、冷 lead 从持久 header 派生、`/devlead off`
@@ -601,6 +600,13 @@ read/write/edit 修改。Host 以既有 stat/readFile/withFileLock/writeFileAtom
 改为 probe 直接写 absolutePath 后 read/list 对账，保留全部检查数与真实 client 读取。最终门禁与证据见
 [v0.4.2-rc.7 release prep](e2e-evidence/v0.4.2-rc.7-release-prep.md)。
 
+**0.4.2-rc.8 发布轮**只改变 client-ui：header/guide 使用仪表盘图标，KPI 统一状态图标、零值中性和
+blocked>0 强调，卡片由 status 决定完整四边边框/底色，priority 不再控制卡片主色；active lead 侧栏改用
+独立角标，不改变 shell 选中样式；KPI/分组/banner 使用同一汇总。共享只读文件状态机增加 10s stat/readBytes watchdog，永不 settle 的 Remote 不再永久阻塞 watch/
+poll；只使用既有 AbortController/setTimeout 与 Workspace Files API，不改 Host、schema、工具、Remote、
+`dsh.client.inject`、engines 或 peer 范围。最终门禁与证据见
+[v0.4.2-rc.8 release prep](e2e-evidence/v0.4.2-rc.8-release-prep.md)。
+
 每条 flow 有 3 条正向模型选择检查因无 provider 凭据 SKIP（打印真实原因）；负向
 `DEVLEAD_MODEL_UNAVAILABLE`、`devlead_list_models`、preset roster 与 watched-child
 `devlead_report` 均真实运行。
@@ -610,7 +616,8 @@ read/write/edit 修改。Host 以既有 stat/readFile/withFileLock/writeFileAtom
 - rc.5 的 `@deepseek-ai/dsh-client-ui-workspace` 仍提供
   `sidebar.session.row.leading` / `.trailing` / `.hover`，Session 行仍带
   `data-row-key="session:<id>"`，行 CSS 仍使用 `border-inline: var(--dsh-sidebar-paint-inset)
-  solid transparent`。现有 active overlay ring / watched mark 的 DOM 依赖未变化。
+  solid transparent`。active 角标只读稳定 `data-row-key` 作为定位上下文，不改变 shell 行盒或选中样式；
+  watched mark 的 DOM 依赖未变化。
 - E2E boot graph 确认 rc.5 加载 `@yankeguo/dsh-client-ui-devlead/client.js`；lead 的
   `devLead` / `devLeadMode` / `devLeadWatch` projection 均存在，summary 携带
   `devLeadMode` 与 `devLeadWatch`，且不携带 digest。DevLeadBar 读取的 `devLead` projection

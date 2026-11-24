@@ -317,24 +317,21 @@ describe('styles', () => {
     expect(styles).toMatch(/\.devlead-row-hover \{[^}]*font-size: 12px;/u)
   })
 
-  it('rings the active lead row symmetrically with a non-layout overlay', () => {
-    expect(styles).toContain('[data-row-key^="session:"]:has([data-devlead-active-mark="true"])::after')
-    expect(styles).toContain('border: 1px solid var(--dsw-alias-state-business-primary')
-    expect(styles).toContain('border-radius: inherit')
-    // The paint-inset read carries the shell's 3px value as a fallback so a
-    // renamed token degrades to a slightly inset ring, not a broken `inset`.
-    expect(styles).toContain('inset: 0 calc(-1 * var(--dsh-sidebar-paint-inset, 3px))')
-    expect(styles).toContain('box-shadow: 0 0 0 2px var(--dsw-alias-state-business-tertiary')
-    // The shell row has a 3px transparent border-inline but no top/bottom
-    // border. Colouring or resizing it would be asymmetric; the ring must be an
-    // absolutely positioned overlay covering all four sides instead.
-    const activeRule = /\[data-row-key\^="session:"\]:has\(\[data-devlead-active-mark="true"\]\)::after \{([^}]*)\}/u.exec(styles)?.[1] ?? ''
-    expect(activeRule).toContain('position: absolute')
-    expect(activeRule).toContain('pointer-events: none')
-    expect(activeRule).not.toContain('border-color')
-    expect(activeRule).not.toContain('padding')
-    expect(activeRule).not.toContain('margin')
-    expect(activeRule).not.toContain('height')
+  it('marks the active lead with a corner badge without touching row selection styles', () => {
+    expect(styles).not.toContain('[data-devlead-active-mark="true"]::after')
+    expect(styles).not.toContain('--dsh-sidebar-paint-inset')
+    const rowRule = /\[data-row-key\^="session:"\]:has\(\[data-devlead-active-mark="true"\]\) \{([^}]*)\}/u.exec(styles)?.[1] ?? ''
+    expect(rowRule.trim()).toBe('position: relative;')
+    const badge = /\.devlead-row-mark-lead \{([^}]*)\}/u.exec(styles)?.[1] ?? ''
+    expect(badge).toContain('position: absolute')
+    expect(badge).toContain('top: 1px')
+    expect(badge).toContain('right: 2px')
+    expect(badge).toContain('border: 1px solid')
+    expect(badge).toContain('var(--dsw-alias-state-business-primary')
+    expect(badge).toContain('background: var(--dsw-specific-menu')
+    expect(badge).toContain('pointer-events: none')
+    expect(badge).not.toContain('box-shadow')
+    expect(styles).toContain('.devlead-row-mark-lead-label')
   })
 
   it('ships the notice live region and the visually-hidden failure seat', () => {
@@ -398,10 +395,10 @@ describe('styles', () => {
   })
 
   it('keeps the Phase-1e chip attributes away from Session-row layout', () => {
-    // The new lane/status/wake selectors must only scope strip chips; the
-    // Session-row ring stays the sole row decoration, unchanged.
+    // The lane/status/wake selectors must only scope strip chips; the sole
+    // Session-row rule is the lead badge's positioning context.
     const rowRules = [...styles.matchAll(/\[data-row-key[^\{]*\{/gu)]
-    expect(rowRules).toHaveLength(2)
+    expect(rowRules).toHaveLength(1)
     for (const attribute of ['data-lane', 'data-wake-suppressed', 'data-question-status', 'data-answer-status']) {
       expect(styles).not.toMatch(new RegExp(`\\[data-row-key[^{]*\\[${attribute}`, 'u'))
     }
@@ -450,11 +447,19 @@ describe('styles', () => {
     expect(styles).toMatch(/\.devlead-board \{[^}]*container: devlead-board \/ inline-size;/u)
     expect(styles).toMatch(/\.devlead-board-kpis \{[^}]*display: flex;/u)
     expect(styles).toMatch(/\.devlead-board-kpis \{[^}]*overflow-x: auto;/u)
+    expect(styles).toContain('.devlead-board-kpis:focus-visible')
     expect(styles).toMatch(/\.devlead-board-kpis > div \{[^}]*border-radius: 999px;/u)
+    expect(styles).toMatch(/\.devlead-board-kpis > div \{[^}]*min-height: 28px;/u)
+    expect(styles).toMatch(/\.devlead-board-kpis > div\[data-empty="true"\] \{[^}]*background: transparent;/u)
+    expect(styles).toMatch(/\.devlead-board-kpis > div\[data-empty="true"\] dt,[\s\S]*color: var\(--dsw-alias-label-tertiary/u)
+    expect(styles).toMatch(/\.devlead-board-kpis dd \{[^}]*font-size: 14px;/u)
+    expect(styles).toMatch(/\.devlead-board-kpis > div\[data-tone="blocked"\]\[data-emphasis="true"\] \{[^}]*box-shadow:/u)
     expect(styles).not.toMatch(/\.devlead-board-kpis \{[^}]*grid-template-columns/u)
     expect(styles).toMatch(/@container devlead-board \(min-width: 620px\)[\s\S]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);/u)
     expect(styles).toMatch(/@container devlead-board \(min-width: 980px\)[\s\S]*grid-template-columns: repeat\(3, minmax\(0, 1fr\)\);/u)
-    expect(styles).toMatch(/\.devlead-board-card\[data-priority="high"\]::before/u)
+    expect(styles).toMatch(/\.devlead-board-card \{[^}]*border: 1px solid/u)
+    expect(styles).not.toMatch(/\.devlead-board-card::before/u)
+    expect(styles).not.toMatch(/\.devlead-board-card\[data-priority=/u)
     expect(styles).toMatch(/\.devlead-board-progress progress \{[^}]*height: 2px;/u)
     expect(styles).toContain('.devlead-board-notes-chip')
     expect(styles).toMatch(/\.devlead-board-notes-chip \{[\s\S]*min-height: 28px;/u)
@@ -470,6 +475,29 @@ describe('styles', () => {
     expect(styles).not.toMatch(/\.devlead-board[^{]*module/u)
     const boardCss = styles.slice(styles.indexOf('/* Read-only board:'))
     expect(boardCss).not.toContain('linear-gradient')
+  })
+
+  it('uses status-only four-side card borders and one blocked warning token everywhere', () => {
+    const expectations = {
+      active: '--dsw-alias-state-business-primary',
+      blocked: '--dsw-alias-state-warn-primary',
+      paused: '--dsw-alias-label-secondary',
+      done: '--dsw-alias-state-success-primary',
+    } as const
+    for (const [status, token] of Object.entries(expectations)) {
+      const rule = new RegExp(`\\.devlead-board-card\\[data-status="${status}"\\] \\{([^}]*)\\}`, 'u').exec(styles)?.[1] ?? ''
+      expect(rule).toContain('border-color:')
+      expect(rule).toContain(`var(${token}`)
+      expect(rule).toContain('background:')
+    }
+    expect(styles).not.toMatch(/\.devlead-board-card\[data-priority=/u)
+    expect(styles).not.toMatch(/\.devlead-board-card::before/u)
+    const blockedKpi = /\.devlead-board-kpis > div\[data-tone="blocked"\] \{([^}]*)\}/u.exec(styles)?.[1] ?? ''
+    const blockedBanner = /\.devlead-board-blocked-notice \{([^}]*)\}/u.exec(styles)?.[1] ?? ''
+    const blockedCard = /\.devlead-board-card\[data-status="blocked"\] \{([^}]*)\}/u.exec(styles)?.[1] ?? ''
+    for (const rule of [blockedKpi, blockedBanner, blockedCard]) {
+      expect(rule).toMatch(/border(?:-color)?:[^;]*var\(--dsw-alias-state-warn-primary/u)
+    }
   })
 
   it('uses only harness theme custom properties for colors and geometry', () => {
@@ -509,7 +537,6 @@ describe('styles', () => {
       '--dsh-composer-side-clearance',
       '--dsh-composer-dock-inset',
       '--dsh-composer-card-max-width',
-      '--dsh-sidebar-paint-inset',
     ]))
   })
 })

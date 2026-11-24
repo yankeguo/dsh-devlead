@@ -339,9 +339,11 @@ export const styles = `
   white-space: nowrap;
 }
 
-/* Sidebar Session-row mark: a non-interactive glyph after the row's time
-   label. The seat is inline inside the row's 20px line box, so the icon can
-   never change the row height or the title's ellipsis width. */
+/* Sidebar Session-row marks never change the shell row's border, background,
+   padding, height, or selection/focus treatment. The watched target remains an
+   inline trailing glyph. The active lead uses a small corner badge instead of
+   the old four-side overlay ring, so an unselected lead cannot be mistaken for
+   the selected Session. */
 .devlead-row-mark {
   display: inline-flex;
   flex: none;
@@ -349,34 +351,41 @@ export const styles = `
   color: var(--dsw-alias-label-secondary, GrayText);
 }
 
-/* The active lead row gets the same business accent as the toolbar toggle,
-   painted as an overlay ring so the 32px row box, padding, and title lane never
-   move. Do not color or resize the shell row's border: it has a 3px transparent
-   border-inline (paint inset) but no top/bottom border, and an inset box-shadow
-   is clipped to the padding box, so either would look thicker/deeper on the
-   left/right than on top/bottom. The ::after overlay is positioned against the
-   row's border box (negative inline offsets cancel the transparent paint inset)
-   and draws one 1px border plus a light outer halo on all four sides at the
-   row's own radius. The row owns a stable data-row-key; :has scopes the
-   decoration to exactly the active row. The status hook stays mounted while the
-   shell hides the resting seat on hover, so the overlay survives hover/focus. */
 [data-row-key^="session:"]:has([data-devlead-active-mark="true"]) {
   position: relative;
 }
 
-[data-row-key^="session:"]:has([data-devlead-active-mark="true"])::after {
-  content: '';
+.devlead-row-mark-lead {
   position: absolute;
-  inset: 0 calc(-1 * var(--dsh-sidebar-paint-inset, 3px));
-  border: 1px solid var(--dsw-alias-state-business-primary, #4176e6);
-  border-radius: inherit;
-  box-shadow: 0 0 0 2px var(--dsw-alias-state-business-tertiary, rgba(65, 118, 230, 0.12));
+  z-index: 1;
+  top: 1px;
+  right: 2px;
+  gap: 2px;
+  min-height: 12px;
+  padding: 0 3px;
+  border: 1px solid color-mix(in srgb, var(--dsw-alias-state-business-primary, #4176e6) 68%, transparent);
+  border-radius: 999px;
+  background: var(--dsw-specific-menu, Canvas);
+  color: var(--dsw-alias-state-business-primary, #4176e6);
+  font-size: 7px;
+  font-weight: 700;
+  line-height: 10px;
+  letter-spacing: 0.04em;
   pointer-events: none;
 }
 
-/* A watched row uses a quieter shield than the active lead's mark: secondary
-   ink at reduced opacity stays legible in both palettes without competing with
-   the active ring. */
+.devlead-row-mark-lead > svg {
+  flex: none;
+}
+
+@media (max-width: 480px) {
+  .devlead-row-mark-lead-label {
+    display: none;
+  }
+}
+
+/* A watched row uses a quieter target than the active lead's badge: secondary
+   ink at reduced opacity stays legible without competing with selection. */
 .devlead-row-mark-watched {
   color: var(--dsw-alias-label-secondary, GrayText);
   opacity: 0.62;
@@ -412,9 +421,18 @@ export const styles = `
 /* Read-only board: quiet operational typography, no decorative gradients.
    Container queries follow the actual pane: 1 / 2 / 3 columns as room allows. */
 .devlead-board-open {
+  display: inline-flex;
   flex: none;
+  align-items: center;
+  justify-content: center;
   width: 28px;
-  color: var(--dsw-alias-label-secondary, GrayText);
+  height: 28px;
+  padding: 0;
+  color: var(--dsw-alias-label-primary, CanvasText);
+}
+
+.devlead-board-open > svg {
+  flex: none;
 }
 
 .devlead-board,
@@ -526,7 +544,17 @@ export const styles = `
   line-height: 16px;
 }
 
-.devlead-board-live > span:last-child {
+.devlead-board-live-label {
+  flex: none;
+  color: var(--dsw-alias-label-primary, CanvasText);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.devlead-board-live-status {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -565,8 +593,8 @@ export const styles = `
 .devlead-board-kpis {
   display: flex;
   min-width: 0;
-  gap: 5px;
-  margin: 7px 0 0;
+  gap: 6px;
+  margin: 8px 0 0;
   overflow-x: auto;
   scrollbar-width: none;
 }
@@ -575,42 +603,71 @@ export const styles = `
   display: none;
 }
 
+.devlead-board-kpis:focus-visible {
+  outline: 2px solid var(--dsw-alias-state-business-primary, #4176e6);
+  outline-offset: 2px;
+}
+
+/* One status vocabulary across KPI, banner, and card: active=business blue,
+   blocked=warning amber, paused=neutral, done=success green. Priority never
+   selects these colors. Empty counts retreat to neutral ink; only a non-zero
+   blocked count earns the stronger fill and halo. */
 .devlead-board-kpis > div {
   display: inline-flex;
   flex: 1 0 auto;
   min-width: 0;
-  align-items: baseline;
+  min-height: 28px;
+  align-items: center;
   justify-content: center;
-  gap: 5px;
+  gap: 7px;
   margin: 0;
-  padding: 2px 7px;
+  padding: 3px 9px;
   border: 1px solid var(--dsw-alias-border-l1, rgba(127, 127, 127, 0.24));
   border-radius: 999px;
   background: color-mix(in srgb, var(--dsw-alias-label-primary, CanvasText) 2%, transparent);
 }
 
 .devlead-board-kpis dt {
+  display: inline-flex;
   min-width: 0;
+  align-items: center;
+  gap: 4px;
   overflow: hidden;
   color: var(--dsw-alias-label-secondary, GrayText);
-  font-size: 10px;
-  line-height: 15px;
-  text-overflow: ellipsis;
+  font-size: 11px;
+  line-height: 18px;
   white-space: nowrap;
+}
+
+.devlead-board-kpi-icon {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
 }
 
 .devlead-board-kpis dd {
   flex: none;
   margin: 0;
   color: var(--dsw-alias-label-primary, CanvasText);
-  font-size: 11px;
+  font-size: 14px;
+  line-height: 18px;
   font-variant-numeric: tabular-nums;
   font-weight: 700;
 }
 
+.devlead-board-kpis > div[data-tone="active"] {
+  border-color: color-mix(in srgb, var(--dsw-alias-state-business-primary, #4176e6) 42%, transparent);
+  background: color-mix(in srgb, var(--dsw-alias-state-business-primary, #4176e6) 5%, transparent);
+}
+
+.devlead-board-kpis > div[data-tone="active"] dd,
+.devlead-board-kpis > div[data-tone="active"] .devlead-board-kpi-icon {
+  color: var(--dsw-alias-state-business-primary, #4176e6);
+}
+
 .devlead-board-kpis > div[data-tone="blocked"] {
-  border-color: color-mix(in srgb, var(--dsw-alias-state-warn-primary, #a15c00) 48%, transparent);
-  color: var(--dsw-alias-state-warn-primary, #a15c00);
+  border-color: var(--dsw-alias-state-warn-primary, #a15c00);
+  background: color-mix(in srgb, var(--dsw-alias-state-warn-primary, #a15c00) 6%, transparent);
 }
 
 .devlead-board-kpis > div[data-tone="blocked"] dd,
@@ -618,8 +675,30 @@ export const styles = `
   color: var(--dsw-alias-state-warn-primary, #a15c00);
 }
 
-.devlead-board-kpis > div[data-tone="done"] dd {
+.devlead-board-kpis > div[data-tone="blocked"][data-emphasis="true"] {
+  background: color-mix(in srgb, var(--dsw-alias-state-warn-primary, #a15c00) 12%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--dsw-alias-state-warn-primary, #a15c00) 12%, transparent);
+}
+
+.devlead-board-kpis > div[data-tone="done"] {
+  border-color: color-mix(in srgb, var(--dsw-alias-state-success-primary, #2e7d32) 38%, transparent);
+}
+
+.devlead-board-kpis > div[data-tone="done"] dd,
+.devlead-board-kpis > div[data-tone="done"] .devlead-board-kpi-icon {
   color: var(--dsw-alias-state-success-primary, #2e7d32);
+}
+
+.devlead-board-kpis > div[data-empty="true"] {
+  border-color: var(--dsw-alias-border-l1, rgba(127, 127, 127, 0.24));
+  background: transparent;
+  box-shadow: none;
+}
+
+.devlead-board-kpis > div[data-empty="true"] dt,
+.devlead-board-kpis > div[data-empty="true"] dd,
+.devlead-board-kpis > div[data-empty="true"] .devlead-board-kpi-icon {
+  color: var(--dsw-alias-label-tertiary, GrayText);
 }
 
 .devlead-board-content {
@@ -766,39 +845,36 @@ export const styles = `
   position: relative;
   min-width: 0;
   max-width: 100%;
-  padding: 9px 10px 8px 12px;
+  padding: 9px 10px 8px;
   overflow: hidden;
   border: 1px solid var(--dsw-alias-border-l1, rgba(127, 127, 127, 0.24));
   border-radius: var(--dsw-radius-md, 8px);
   background: var(--dsw-specific-menu, Canvas);
-  transition: border-color 120ms ease, box-shadow 120ms ease;
+  transition: box-shadow 120ms ease;
 }
 
-.devlead-board-card::before {
-  position: absolute;
-  inset: 0 auto 0 0;
-  width: 3px;
-  background: var(--dsw-alias-label-tertiary, GrayText);
-  content: '';
-  pointer-events: none;
-}
-
-.devlead-board-card[data-priority="high"]::before {
-  background: var(--dsw-alias-state-business-primary, #4176e6);
-}
-
-.devlead-board-card[data-priority="medium"]::before {
-  background: var(--dsw-alias-label-tertiary, GrayText);
+/* The complete four-side border and tinted surface belong to status alone.
+   The existing priority Tag is the independent priority cue; no data-priority
+   selector may recolor a card. */
+.devlead-board-card[data-status="active"] {
+  border-color: color-mix(in srgb, var(--dsw-alias-state-business-primary, #4176e6) 62%, transparent);
+  background: color-mix(in srgb, var(--dsw-alias-state-business-primary, #4176e6) 4%, var(--dsw-specific-menu, Canvas));
 }
 
 .devlead-board-card[data-status="blocked"] {
   border-color: var(--dsw-alias-state-warn-primary, #a15c00);
-  background: color-mix(in srgb, var(--dsw-alias-state-warn-primary, #a15c00) 5%, var(--dsw-specific-menu, Canvas));
+  background: color-mix(in srgb, var(--dsw-alias-state-warn-primary, #a15c00) 7%, var(--dsw-specific-menu, Canvas));
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--dsw-alias-state-warn-primary, #a15c00) 12%, transparent);
 }
 
-.devlead-board-card[data-status="blocked"]::before {
-  background: var(--dsw-alias-state-warn-primary, #a15c00);
+.devlead-board-card[data-status="paused"] {
+  border-color: color-mix(in srgb, var(--dsw-alias-label-secondary, GrayText) 46%, transparent);
+  background: color-mix(in srgb, var(--dsw-alias-label-primary, CanvasText) 2%, var(--dsw-specific-menu, Canvas));
+}
+
+.devlead-board-card[data-status="done"] {
+  border-color: color-mix(in srgb, var(--dsw-alias-state-success-primary, #2e7d32) 52%, transparent);
+  background: color-mix(in srgb, var(--dsw-alias-state-success-primary, #2e7d32) 3%, var(--dsw-specific-menu, Canvas));
 }
 
 .devlead-board-card-header {
@@ -1493,7 +1569,7 @@ export const styles = `
 }
 
 .devlead-board-card:focus-within {
-  border-color: color-mix(in srgb, var(--dsw-alias-state-business-primary, #4176e6) 60%, transparent);
+  box-shadow: 0 0 0 2px var(--dsw-alias-state-business-tertiary, rgba(65, 118, 230, 0.12));
 }
 
 .devlead-board-card:focus-visible {
@@ -1511,11 +1587,11 @@ export const styles = `
   }
 
   .devlead-board-card:hover {
-    border-color: color-mix(in srgb, var(--dsw-alias-state-business-primary, #4176e6) 42%, transparent);
+    box-shadow: 0 1px 3px color-mix(in srgb, var(--dsw-alias-label-primary, CanvasText) 10%, transparent);
   }
 
   .devlead-board-card[data-status="blocked"]:hover {
-    border-color: var(--dsw-alias-state-warn-primary, #a15c00);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--dsw-alias-state-warn-primary, #a15c00) 16%, transparent);
   }
 
   .devlead-board summary:hover {

@@ -7,7 +7,7 @@
 **Session**（会话），创建并续写其他会话、读取它们的状态、在状态变化时被唤醒——于是一个
 agent 就能在人可见、可参与的标准界面里统管多个仓库。
 
-当前候选版 **0.4.2-rc.7**（prerelease，npm dist-tag `next`；稳定版 `latest` 仍为 **0.4.1**） ·
+当前候选版 **0.4.2-rc.8**（prerelease，npm dist-tag `next`；稳定版 `latest` 仍为 **0.4.1**） ·
 DSH **0.2.2-rc.1 – 0.2.2-rc.5** · 一条 `dsh plugin` 命令即可装好全部组件。
 
 ## 核心能力
@@ -67,17 +67,18 @@ Web 页面。
 固定到精确版本：
 
 ```sh
-dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.7
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.8
 ```
 
-0.4.2-rc.7 是计划中 0.4.2 补丁版的当前 prerelease 候选，基于已发布的 rc.6。本轮分离 notes 职责：
-devlead 工具负责 create/metadata/delete 与 index CAS，既有 Markdown 正文改用 DSH 原生文件工具编辑返回的
-`absolutePath`；Host read/list 惰性对账文件 bytes/mtime 且不覆盖原生编辑，只读 client 自动跟随正文变化，
-并在选中的 reader 显示 live stat 观察时间。rc.6 的主动 board workflow 保留，policy 与工具描述同步一致。
+0.4.2-rc.8 是计划中 0.4.2 补丁版的当前 prerelease 候选，基于已发布的 rc.7。本轮改进看板入口图标、
+四状态 KPI 与卡片视觉层级，并修复自动读取永不 settle 时 watch/poll 被永久卡住、blocked 项目与 KPI 停留在
+旧快照的问题；KPI、分组和 blocked banner 现在共享同一状态汇总。卡片使用 status 驱动的完整四边边框与轻底色，
+priority 仅保留独立 badge，不再改变卡片主色；active lead 的侧栏整行 ring 也改为独立角标，避免与
+当前选中 Session 混淆。rc.7 的原生 notes 编辑与主动 board workflow 保留，
 board/notes 磁盘 schema 与 DSH 兼容面不变。本候选按发布流程以 npm dist-tag `next` stage，在稳定版 0.4.2
 被 approve 前请按上面的精确版本安装；
 `latest` 仍为 **0.4.1**。旧候选保持历史记录，从未 approve 的 0.4.2-rc.1/rc.4 staged 记录不得 approve。详见
-[0.4.2-rc.7 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.2-rc.7.md)；
+[0.4.2-rc.8 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.2-rc.8.md)；
 上一个稳定补丁的说明见
 [0.4.1 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.1.md)。
 
@@ -91,7 +92,7 @@ board/notes 磁盘 schema 与 DSH 兼容面不变。本候选按发布流程以 
 dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 
 # 或固定到某个版本（prerelease 必须写精确版本）
-dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.7
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.8
 ```
 
 > **从旧版本（低于 0.4.0）升级：** 0.4.0 会直接丢弃旧的 DevLead 会话状态（模式、关注集合、
@@ -424,8 +425,9 @@ worktree 服务时才存在，并且每次派发通过 `isolation` 参数使用�
   通知或汇报（没有时显示帮助提示）。question/blocked/decision chip 使用警告色并展示问题
   生命周期；progress/fyi chip 是弱化的背景上下文。状态条本身不带开关，因此关闭模式时永远
   不会把执行关闭的控件一起藏掉。
-- **侧边栏标记：** active DevLead 行获得品牌强调色 ring；被关注的非 lead 行获得更安静的
-  准星图标。两者都来自 summary projection，因此冷行和重启后也能渲染，无需逐行读取 Host。
+- **侧边栏标记：** active DevLead 行在右上角显示 sparkle + `LEAD` 小角标（本地化 aria-label/title），
+  不使用整行高亮，也不改变 shell 的选中/hover/focus 样式；被关注的非 lead 行获得更安静的准星图标。
+  两者都来自 summary projection，因此冷行和重启后也能渲染，无需逐行读取 Host。
   DSH 0.2.2-rc.1 不对空白（尚未开始 turn）的 Session 行渲染 trailing seat，所以全新 Session
   要等第一轮结束后才显示标记；搜索结果使用独立行表面，不显示标记。
 - **项目看板（仅 lead 可见，默认启用）：** 看板 tab、guide entry 与会话头部按钮只在**当前屏幕上
@@ -434,13 +436,17 @@ worktree 服务时才存在，并且每次派发通过 `isolation` 参数使用�
   只在 lead 持有看板时发布到浏览器。如果页面在 lead 启用之前就已加载，客户端会从该 lead Session
   summary 的 `cwd` 自行派生默认路径；**用配置固定 `boardPath` 的部署在这种 late-enable 场景需要
   刷新页面**，因为只有刷新后的页面才携带 override 路径。关闭模式或切换 lead 会立即重渲染，绝不
-  继续读旧文件。顶部以单行 pill strip 显示 active/blocked/paused/done KPI，并紧凑呈现 revision/updated
-  与 Live 自动状态；blocked 强警示置顶，active 主区响应式 2/3 列（窄栏 1 列），同组按优先级与更新时间
+  继续读旧文件。会话头部与 guide 使用语义明确的仪表盘图标，保留本地化 tooltip/aria-label。顶部以单行
+  pill strip 按 blocked/active/paused/done 显示带状态图标的 KPI，并紧凑呈现 revision/updated 与可见 Live
+  自动状态；零值使用中性色，blocked>0 才启用强 warning 强调，KPI/分组/banner 共享同一汇总。卡片四边边框
+  与轻底色只由 status 决定（active=business、blocked=warning、paused=neutral、done=success），priority 仅由
+  独立 badge 表达。blocked 强警示置顶，active 主区响应式 2/3 列（窄栏 1 列），同组按优先级与更新时间
   排序。卡片不重复显示可见 field label，但保留 focus/next/blockers、任务进度和可展开详情，图标带可访问
   tooltip；paused/done/unlisted 使用次级折叠。文件 change 保留 120ms debounce，
   所有状态都有轮询：ready/loading 默认固定 5s，empty/error 从 5s 起指数退避到 30s 上限。仅 document
   visible 且 focused 时轮询；恢复立即 coalesced read，blur/hidden/unmount/path change 清理 timer，
-  watch/poll/恢复共享 in-flight 读取去重。watch ended 不静默重连，但轮询继续；手动刷新仍可强制重读并
+  watch/poll/恢复共享 in-flight 读取去重；单次 stat/readBytes 有 10s watchdog，Remote 永不 settle 时会 abort
+  旧 generation，后续自动触发仍能恢复，不再永久显示旧 KPI。watch ended 不静默重连，但轮询继续；手动刷新仍可强制重读并
   重连。面板区分文件不存在与读取/解析失败；未在看板中的已注册 workspace 折叠区显示会话数与最近活动
   （清单读取失败时错误优先于「读取中」）。用户只能刷新与展开，不能编辑看板。若 lead 记录的原始
   workspace 根已不存在，Host 保持看板 disabled 且不重建目录；client 侧自愈派生的入口仍可能显示空态/

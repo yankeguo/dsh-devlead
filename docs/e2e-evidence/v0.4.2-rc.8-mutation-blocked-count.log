@@ -1,0 +1,244 @@
+
+ RUN  v4.1.12 /Users/guoyk/Workspace/src/dsh-devlead
+
+ ❯ packages/client-ui/tests/board.spec.ts (70 tests | 1 failed) 21ms
+     ✓ accepts only a complete current absolute-path global 1ms
+     ✓ round-trips a valid board without changing project order in the decoder 1ms
+     ✓ rejects invalid JSON with a parse error 0ms
+     ✓ rejects unknown root fields with a parse error 0ms
+     ✓ rejects wrong schema version with a parse error 0ms
+     ✓ rejects relative workspace with a parse error 0ms
+     ✓ rejects duplicate project ids with a parse error 0ms
+     ✓ rejects duplicate task ids with a parse error 0ms
+     ✓ uses POSIX absolute-path semantics for a POSIX board location 0ms
+     ✓ accepts the Windows absolute path C:\work\one for a Windows board location 1ms
+     ✓ accepts the Windows absolute path C:/work/one for a Windows board location 0ms
+     ✓ accepts the Windows absolute path \\work\one for a Windows board location 0ms
+     ✓ accepts the Windows absolute path \\server\share\one for a Windows board location 0ms
+     ✓ accepts the Windows absolute path /work/one for a Windows board location 0ms
+     ✓ rejects a drive-relative Windows path 0ms
+     ✓ decodes UTF-8 fatally and enforces the 256 KiB bound before decoding 0ms
+     ✓ reads the lead-attributed global and keeps the legacy shape unchanged 0ms
+     ✓ rejects a global whose optional lead fields are present but malformed 0ms
+     ✓ detects the Host path platform from workspace-root syntax 0ms
+     ✓ joins the POSIX default path under /work/project like node:path.posix 0ms
+     ✓ joins the POSIX default path under /work/project/ like node:path.posix 0ms
+     ✓ joins the POSIX default path under / like node:path.posix 0ms
+     ✓ joins the POSIX default path under //weird//path/ like node:path.posix 0ms
+     ✓ joins the POSIX default path under /work/../other like node:path.posix 0ms
+     ✓ joins the Windows default path under C:\work\project like node:path.win32 0ms
+     ✓ joins the Windows default path under C:/work/project like node:path.win32 0ms
+     ✓ joins the Windows default path under C:\ like node:path.win32 0ms
+     ✓ joins the Windows default path under C:/ like node:path.win32 0ms
+     ✓ joins the Windows default path under \\server\share like node:path.win32 0ms
+     ✓ joins the Windows default path under \\server\share\ like node:path.win32 0ms
+     ✓ joins the Windows default path under /work like node:path.win32 0ms
+     ✓ joins the Windows default path under C:\a\..\b like node:path.win32 0ms
+     ✓ lets a Config override win for every lead, matching or not 0ms
+     ✓ uses the global for the lead it names and derives for other leads 0ms
+     ✓ keeps a legacy deployment-wide global authoritative for every lead 0ms
+     ✓ derives the default path without any global 0ms
+     ✓ derives with the Host-published platform when a stale global is present 0ms
+     ✓ refuses to derive from a missing, empty, or relative workspace root 0ms
+     ✓ resolves only top-level Sessions whose summary says DevLead mode is on 0ms
+     ✓ puts blocked first, then active/paused/done, omitting empty groups 0ms
+     × derives KPI counts from the exact groups, including blocked negative controls 7ms
+     ✓ sorts each group by priority, descending updatedAt, then stable id 0ms
+     ✓ summarizes tasks and truncates only long owner ids 0ms
+     ✓ maps statuses to stable tones 0ms
+     ✓ lists only exact-path unlisted workspaces with authoritative session activity 1ms
+     ✓ normalizes Windows separators, case, and trailing slashes without claiming realpath 0ms
+     ✓ buckets relative timestamps without letting future times go negative 0ms
+     ✓ rejects duplicate workspace path exactly like the Host decoder 0ms
+     ✓ rejects duplicate project id exactly like the Host decoder 0ms
+     ✓ rejects duplicate blocker id exactly like the Host decoder 0ms
+     ✓ rejects duplicate task id exactly like the Host decoder 0ms
+     ✓ rejects unknown project field exactly like the Host decoder 0ms
+     ✓ rejects unknown workspace field exactly like the Host decoder 0ms
+     ✓ rejects unknown blocker field exactly like the Host decoder 0ms
+     ✓ rejects unknown task field exactly like the Host decoder 0ms
+     ✓ rejects wrong schema version exactly like the Host decoder 0ms
+     ✓ rejects offset timestamp exactly like the Host decoder 0ms
+     ✓ rejects relative workspace path exactly like the Host decoder 0ms
+     ✓ rejects too many projects exactly like the Host decoder 1ms
+     ✓ rejects too many tasks exactly like the Host decoder 0ms
+     ✓ rejects too many blockers exactly like the Host decoder 0ms
+     ✓ rejects oversized free text exactly like the Host decoder 0ms
+     ✓ rejects oversized id exactly like the Host decoder 0ms
+     ✓ rejects oversized title exactly like the Host decoder 0ms
+     ✓ rejects oversized workspace path exactly like the Host decoder 0ms
+     ✓ rejects a bad project status enum value 0ms
+     ✓ rejects a bad project priority enum value 0ms
+     ✓ rejects a bad task status enum value 0ms
+     ✓ reports the same JSON pointer for a nested violation as the Host validator 0ms
+     ✓ keeps the byte cap and schema version aligned with the shared wire contract 0ms
+ ❯ packages/client-ui/tests/board-render.spec.tsx (34 tests | 6 failed) 65ms
+     ✓ renders nothing for a Session that is not an eligible lead 3ms
+     ✓ opens the board from an icon-only, localized header action 1ms
+     ✓ rerenders the tab-chip title when the locale changes 0ms
+     ✓ renders nothing while disabled 0ms
+     ✓ renders initial loading and file-not-found states distinctly 1ms
+     ✓ keeps automatic polling explicit when the file watch ends 4ms
+     ✓ renders active, paused, and disabled auto-refresh states distinctly 4ms
+     ✓ keeps polling busy text out of the polite live region 2ms
+     ✓ renders parse failure, last success, technical detail, and a working retry 0ms
+     × renders blocked first, project details, native task disclosure, and revision metadata 3ms
+     ✓ removes redundant visible field labels while retaining their accessible semantics 1ms
+     × renders labelled KPI counts for every project status 2ms
+     ✓ counts only status=blocked as blocked, even when another status has blockers 0ms
+     × keeps card status semantics independent from priority 1ms
+     ✓ exposes native task progress with explicit values and accessible copy 1ms
+     ✓ collapses paused, done, and unlisted into native secondary disclosures 3ms
+     ✓ renders a valid empty project list separately from a missing file 0ms
+     ✓ renders real unlisted workspaces, session counts, activity, and no-activity rows 1ms
+     ✓ does not claim no activity while the Session catalog is still pending 1ms
+     ✓ keeps workspace pending/error states honest and supports English copy 2ms
+     ✓ reports a workspace-list failure ahead of pending and unavailable hints 1ms
+     ✓ renders hostile board text literally without mounting markup or event handlers 1ms
+     × pins refresh, live status, error, disclosure, and read-only accessibility semantics 1ms
+     ✓ scopes generated group heading ids to each mounted panel 2ms
+     ✓ shows a compact notes count/latest chip and opens the immersive reader 2ms
+     ✓ uses live stat time only for the selected ready document, never list order or chips 2ms
+     ✓ degrades empty, bad-index, missing-note, and bad-note states without harming the board 1ms
+     ✓ reads the default board path derived from the tab Session root 5ms
+     ✓ never reads a board for a tab Session that is not an eligible lead 1ms
+     ✓ re-reads the new file when the tab Session root changes 2ms
+     × updates blocked KPI, banner, group, and revision together after automatic polling 3ms
+     × recovers blocked KPI and cards after a never-settling automatic stat 3ms
+     ✓ stops reading and renders nothing when the tab Session leaves DevLead mode 3ms
+     ✓ derives notes paths and automatically refreshes both index metadata and the open note 8ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 7 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  packages/client-ui/tests/board-render.spec.tsx > DevLeadBoardPanelView > renders blocked first, project details, native task disclosure, and revision metadata
+Error: No instances found with props: {"className":"devlead-board-blocked-notice"}
+ ❯ expectOne node_modules/.pnpm/react-test-renderer@18.3.1_react@18.3.1/node_modules/react-test-renderer/cjs/react-test-renderer.development.js:18499:9
+ ❯ ReactTestInstance.findByProps node_modules/.pnpm/react-test-renderer@18.3.1_react@18.3.1/node_modules/react-test-renderer/cjs/react-test-renderer.development.js:18395:12
+ ❯ packages/client-ui/tests/board-render.spec.tsx:309:33
+    307|     expect(textOf(renderer.root)).toContain('r42')
+    308|     expect(textOf(renderer.root)).toContain('2 分钟前')
+    309|     expect(textOf(renderer.root.findByProps({ className: 'devlead-boar…
+       |                                 ^
+    310|     const groups = renderer.root.findAll(instance => instance.props['d…
+    311|     expect(groups.map(group => group.props['data-board-group'])).toEqu…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/7]⎯
+
+ FAIL  packages/client-ui/tests/board-render.spec.tsx > DevLeadBoardPanelView > renders labelled KPI counts for every project status
+AssertionError: expected [ '0', '1', '1', '1' ] to deeply equal [ '1', '1', '1', '1' ]
+
+- Expected
++ Received
+
+  [
+-   "1",
++   "0",
+    "1",
+    "1",
+    "1",
+  ]
+
+ ❯ packages/client-ui/tests/board-render.spec.tsx:356:59
+    354|     const kpis = renderer.root.findAll(instance => instance.props['dat…
+    355|     expect(kpis.map(kpi => kpi.props['data-devlead-board-kpi'])).toEqu…
+    356|     expect(kpis.map(kpi => textOf(kpi.findByType('dd')))).toEqual(['1'…
+       |                                                           ^
+    357|     expect(kpis.map(kpi => kpi.props['data-empty'])).toEqual(['false',…
+    358|     expect(kpis.map(kpi => kpi.props['data-emphasis'])).toEqual(['true…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/7]⎯
+
+ FAIL  packages/client-ui/tests/board-render.spec.tsx > DevLeadBoardPanelView > keeps card status semantics independent from priority
+AssertionError: expected 'false' to be 'true' // Object.is equality
+
+Expected: "true"
+Received: "false"
+
+ ❯ packages/client-ui/tests/board-render.spec.tsx:396:103
+    394|     expect(renderer.root.findByProps({ 'data-devlead-board-project': '…
+    395|     expect(renderer.root.findByProps({ 'data-devlead-board-project': '…
+    396|     expect(renderer.root.findByProps({ 'data-devlead-board-kpi': 'bloc…
+       |                                                                                                       ^
+    397|   })
+    398|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/7]⎯
+
+ FAIL  packages/client-ui/tests/board-render.spec.tsx > DevLeadBoardPanelView > pins refresh, live status, error, disclosure, and read-only accessibility semantics
+Error: No instances found with props: {"className":"devlead-board-blocked-notice"}
+ ❯ expectOne node_modules/.pnpm/react-test-renderer@18.3.1_react@18.3.1/node_modules/react-test-renderer/cjs/react-test-renderer.development.js:18499:9
+ ❯ ReactTestInstance.findByProps node_modules/.pnpm/react-test-renderer@18.3.1_react@18.3.1/node_modules/react-test-renderer/cjs/react-test-renderer.development.js:18395:12
+ ❯ packages/client-ui/tests/board-render.spec.tsx:534:26
+    532|     expect(textOf(live)).toContain(zh['board.autoRefresh.active'])
+    533|     expect(live.props['aria-atomic']).toBe('true')
+    534|     expect(renderer.root.findByProps({ className: 'devlead-board-block…
+       |                          ^
+    535|     const groups = renderer.root.findAll(instance => instance.props['d…
+    536|     expect(groups).toHaveLength(4)
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/7]⎯
+
+ FAIL  packages/client-ui/tests/board-render.spec.tsx > DevLeadBoardPanel wiring > updates blocked KPI, banner, group, and revision together after automatic polling
+AssertionError: expected '0' to be '1' // Object.is equality
+
+Expected: "1"
+Received: "0"
+
+ ❯ packages/client-ui/tests/board-render.spec.tsx:835:49
+    833|     await flush()
+    834|     const blockedKpi = renderer.root.findByProps({ 'data-devlead-board…
+    835|     expect(textOf(blockedKpi.findByType('dd'))).toBe('1')
+       |                                                 ^
+    836|     expect(blockedKpi.props['data-emphasis']).toBe('true')
+    837|     expect(renderer.root.findByProps({ 'data-board-group': 'blocked' }…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/7]⎯
+
+ FAIL  packages/client-ui/tests/board-render.spec.tsx > DevLeadBoardPanel wiring > recovers blocked KPI and cards after a never-settling automatic stat
+AssertionError: expected '0' to be '1' // Object.is equality
+
+Expected: "1"
+Received: "0"
+
+ ❯ packages/client-ui/tests/board-render.spec.tsx:871:105
+    869|     const card = renderer.root.findByProps({ 'data-devlead-board-proje…
+    870|     expect(card.props['data-status']).toBe('blocked')
+    871|     expect(textOf(renderer.root.findByProps({ 'data-devlead-board-kpi'…
+       |                                                                                                         ^
+    872|     expect(textOf(renderer.root.findByProps({ className: 'devlead-boar…
+    873|     expect(renderer.root.findByProps({ className: 'devlead-board-block…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/7]⎯
+
+ FAIL  packages/client-ui/tests/board.spec.ts > board grouping and presentation helpers > derives KPI counts from the exact groups, including blocked negative controls
+AssertionError: expected { active: 1, blocked: +0, …(2) } to deeply equal { active: 1, blocked: 2, …(2) }
+
+- Expected
++ Received
+
+  {
+    "active": 1,
+-   "blocked": 2,
++   "blocked": 0,
+    "done": 1,
+    "paused": 0,
+  }
+
+ ❯ packages/client-ui/tests/board.spec.ts:326:28
+    324|       project('done', 'done'),
+    325|     ]))
+    326|     expect(summary.counts).toEqual({ active: 1, blocked: 2, paused: 0,…
+       |                            ^
+    327|     expect(summary.groups.map(group => [group.status, group.projects.l…
+    328|       ['blocked', 2], ['active', 1], ['done', 1],
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[7/7]⎯
+
+
+ Test Files  2 failed (2)
+      Tests  7 failed | 97 passed (104)
+   Start at  11:54:42
+   Duration  266ms (transform 141ms, setup 0ms, import 233ms, tests 85ms, environment 0ms)
+
+MUTATION_TEST_EXIT=1
+RESTORED_MATCH=true

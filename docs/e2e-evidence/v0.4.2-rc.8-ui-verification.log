@@ -1,0 +1,37 @@
+2026-11-24 Asia/Shanghai — isolated DSH 0.2.2-rc.5 / real Chrome / linked rc.8 build
+Profile and home were temporary; desktop profile was not modified. Launch token is intentionally omitted.
+
+DARK wide (board 1148px): body rgb(21,21,23); blocked KPI=1 emphasis=true border rgb(245,158,11).
+All cards have 1px borders on all four sides. active-high and active-low are identical:
+  borders = color(srgb 0.478431 0.666667 1 / 0.62) on all sides
+  background = color(srgb 0.205994 0.221195 0.260001 / 0.653647)
+blocked card = rgb(245,158,11) on all sides; paused=label-secondary mix; done=success mix.
+Header: button 28x28; gauge svg 18x18; aria-label=打开项目看板.
+Lead selected: badge=LEAD, aria/title=当前激活的 DevLead 会话, row boxShadow=none.
+Lead unselected: aria-selected=false, background=rgba(0,0,0,0), boxShadow=none, ::after content=none.
+Ordinary selected Session keeps shell background rgba(255,255,255,0.08).
+
+LIGHT wide: body rgb(255,255,255). active-high/low are identical:
+  borders = color(srgb 0.254902 0.462745 0.901961 / 0.62)
+  background = color(srgb 0.947145 0.962493 0.990805 / 0.713882)
+
+External board edit at 2026-11-24T04:13:33.954Z: r8 -> r9, removed the blocked project without clicking refresh.
+Observed after automatic refresh: revision=r9, blocked KPI=0, data-empty=true, data-emphasis=false,
+blocked banner absent, blocked group absent. This verifies live revision/KPI/group/banner consistency;
+the hung-Remote watchdog itself is covered by fake-timer regression tests, not by a claimed real-Remote fault injection.
+
+Narrow container: board clientWidth=300, scrollWidth=300; page clientWidth=scrollWidth=2552 (no overflow).
+KPI strip clientWidth=284, scrollWidth=331. After the final keyboard fix: tabIndex=0, focus outline
+rgb(65,118,230) solid 2px; five ArrowRight keys moved scrollLeft from 0 to 47.5 and exposed Done.
+The strip remains a read-only dl, with no edit controls or write actions.
+
+Screenshots:
+- v0.4.2-rc.8-ui-dark-wide.jpg
+- v0.4.2-rc.8-ui-light-wide.jpg
+- v0.4.2-rc.8-ui-light-narrow.jpg
+- v0.4.2-rc.8-ui-narrow-keyboard.jpg
+- v0.4.2-rc.8-ui-blocked-zero-light.jpg
+- v0.4.2-rc.8-ui-lead-unselected-dark.jpg
+- v0.4.2-rc.8-ui-header-tooltip.jpg (button/icon geometry; tooltip label verified by DOM/tests)
+
+UI_VERIFICATION_EXIT=0

@@ -43,7 +43,8 @@ vi.mock('@deepseek-ai/dsh-client-ui-primitives', () => {
     <span data-mock-tag={tone}>{children}</span>
   )
   const StateDot = ({ state }: { readonly state: string }) => <span data-mock-state-dot={state} aria-hidden="true" />
-  const Icon = () => <span data-mock-icon="true" aria-hidden="true" />
+  const Icon = ({ size }: { readonly size?: number }) => <span data-mock-icon="true" data-icon-size={size} aria-hidden="true" />
+  const GaugeIcon = ({ size }: { readonly size?: number }) => <span data-mock-icon="gauge" data-icon-size={size} aria-hidden="true" />
   return {
     Button,
     Tooltip,
@@ -53,9 +54,13 @@ vi.mock('@deepseek-ai/dsh-client-ui-primitives', () => {
     IconRefreshOutlineRegular: Icon,
     IconWarningOutlineRegular: Icon,
     IconFlatListOutlineRegular: Icon,
+    IconGaugeOutlineRegular: GaugeIcon,
     IconClockOutlineRegular: Icon,
     IconListPenOutlineRegular: Icon,
     IconPlanOutlineRegular: Icon,
+    IconPlayOutlineRegular: Icon,
+    IconPauseOutlineRegular: Icon,
+    IconCheckCircleOutlineRegular: Icon,
     IconChevronLeftOutlineRegular: Icon,
   }
 })
@@ -203,6 +208,7 @@ describe('DevLeadBoardButton', () => {
     expect(button.props['aria-label']).toBe(zh['board.open'])
     expect(button.props['data-devlead-board-open']).toBe('true')
     expect(renderer.root.findByProps({ 'data-mock-tooltip': zh['board.open'] })).toBeDefined()
+    expect(renderer.root.findByProps({ 'data-mock-icon': 'gauge' }).props['data-icon-size']).toBe(18)
     button.props.onClick()
     expect(onOpen).toHaveBeenCalledTimes(1)
   })
@@ -345,10 +351,50 @@ describe('DevLeadBoardPanelView', () => {
     const overview = renderer.root.findByProps({ className: 'devlead-board-kpis' })
     expect(overview.type).toBe('dl')
     expect(overview.props['aria-label']).toBe(zh['board.kpi.aria'])
+    expect(overview.props.tabIndex).toBe(0)
     const kpis = renderer.root.findAll(instance => instance.props['data-devlead-board-kpi'] !== undefined)
-    expect(kpis.map(kpi => kpi.props['data-devlead-board-kpi'])).toEqual(['active', 'blocked', 'paused', 'done'])
+    expect(kpis.map(kpi => kpi.props['data-devlead-board-kpi'])).toEqual(['blocked', 'active', 'paused', 'done'])
     expect(kpis.map(kpi => textOf(kpi.findByType('dd')))).toEqual(['1', '1', '1', '1'])
-    expect(kpis[0]?.findByType('dd').props['aria-label']).toBe('进行中：1 个项目')
+    expect(kpis.map(kpi => kpi.props['data-empty'])).toEqual(['false', 'false', 'false', 'false'])
+    expect(kpis.map(kpi => kpi.props['data-emphasis'])).toEqual(['true', 'false', 'false', 'false'])
+    expect(kpis.map(kpi => kpi.findByProps({ className: 'devlead-board-kpi-icon' }).props['aria-hidden'])).toEqual(['true', 'true', 'true', 'true'])
+    expect(kpis[1]?.findByType('dd').props['aria-label']).toBe('进行中：1 个项目')
+  })
+
+  it('counts only status=blocked as blocked, even when another status has blockers', async () => {
+    const activeWithBlockers = {
+      ...project('active-blockers', 'active'),
+      blockers: [{ id: 'risk', text: 'A risk that has not blocked the project', since: ISO }],
+    }
+    const renderer = await mount(view({
+      ...READY,
+      board: { ...BOARD, revision: 43, projects: [activeWithBlockers] },
+    }))
+    const blockedKpi = renderer.root.findByProps({ 'data-devlead-board-kpi': 'blocked' })
+    expect(textOf(blockedKpi.findByType('dd'))).toBe('0')
+    expect(blockedKpi.props['data-empty']).toBe('true')
+    expect(blockedKpi.props['data-emphasis']).toBe('false')
+    expect(renderer.root.findAllByProps({ className: 'devlead-board-blocked-notice' })).toHaveLength(0)
+    expect(renderer.root.findAllByProps({ 'data-board-group': 'blocked' })).toHaveLength(0)
+    expect(renderer.root.findByProps({ 'data-devlead-board-project': 'active-blockers' }).props['data-status']).toBe('active')
+  })
+
+  it('keeps card status semantics independent from priority', async () => {
+    const renderer = await mount(view({
+      ...READY,
+      board: {
+        ...BOARD,
+        projects: [project('active-high', 'active', 'high'), project('active-low', 'active', 'low'), project('blocked-high', 'blocked', 'high')],
+      },
+    }))
+    for (const id of ['active-high', 'active-low']) {
+      const card = renderer.root.findByProps({ 'data-devlead-board-project': id })
+      expect(card.props['data-status']).toBe('active')
+      expect(card.props.style).toBeUndefined()
+    }
+    expect(renderer.root.findByProps({ 'data-devlead-board-project': 'active-high' }).props['data-priority']).toBe('high')
+    expect(renderer.root.findByProps({ 'data-devlead-board-project': 'active-low' }).props['data-priority']).toBe('low')
+    expect(renderer.root.findByProps({ 'data-devlead-board-kpi': 'blocked' }).props['data-emphasis']).toBe('true')
   })
 
   it('exposes native task progress with explicit values and accessible copy', async () => {
@@ -664,17 +710,20 @@ interface PanelFilesHarness {
   readonly streams: PanelStream[]
 }
 
-function panelFiles(): PanelFilesHarness {
+function panelFiles(currentBoard: () => DevLeadBoard = () => BOARD): PanelFilesHarness {
   const streams: PanelStream[] = []
-  const encoded = new TextEncoder().encode(JSON.stringify(BOARD))
+  const encoded = (): Uint8Array => new TextEncoder().encode(JSON.stringify(currentBoard()))
   const stat = vi.fn(async (_sessionId: string, path: string) => ({
     ok: true as const,
-    value: { absolutePath: path, version: 'v1', bytes: encoded.byteLength },
+    value: { absolutePath: path, version: 'v1', bytes: encoded().byteLength },
   }))
-  const readBytes = vi.fn(async (_sessionId: string, path: string) => ({
-    ok: true as const,
-    value: { absolutePath: path, version: 'v1', bytes: encoded.byteLength, offset: 0, data: encoded, eof: true },
-  }))
+  const readBytes = vi.fn(async (_sessionId: string, path: string) => {
+    const data = encoded()
+    return {
+      ok: true as const,
+      value: { absolutePath: path, version: 'v1', bytes: data.byteLength, offset: 0, data, eof: true },
+    }
+  })
   const changes = vi.fn((_sessionId: string, _path: string, signal?: AbortSignal) => {
     const stream = new PanelStream()
     signal?.addEventListener('abort', () => { stream.dispose() }, { once: true })
@@ -764,6 +813,65 @@ describe('DevLeadBoardPanel wiring', () => {
     // The previous watch is torn down, so the new root is the only file read.
     expect(staleStream?.disposed).toBe(true)
     expect(harness.streams.length).toBeGreaterThan(1)
+  })
+
+  it('updates blocked KPI, banner, group, and revision together after automatic polling', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(NOW)
+    let current: DevLeadBoard = { ...BOARD, revision: 42, projects: [project('active', 'active')] }
+    const harness = panelFiles(() => current)
+    const renderer = await mount(<DevLeadBoardPanel {...panelProps({ 'session-1': LEAD_ROW }, harness.files)} />)
+    await flush()
+    expect(textOf(renderer.root.findByProps({ 'data-devlead-board-kpi': 'blocked' }).findByType('dd'))).toBe('0')
+    expect(renderer.root.findAllByProps({ 'data-board-group': 'blocked' })).toHaveLength(0)
+
+    current = {
+      ...current,
+      revision: 43,
+      projects: [project('active', 'active'), project('blocked-now', 'blocked'), project('paused', 'paused')],
+    }
+    await act(async () => { await vi.advanceTimersByTimeAsync(5_000) })
+    await flush()
+    const blockedKpi = renderer.root.findByProps({ 'data-devlead-board-kpi': 'blocked' })
+    expect(textOf(blockedKpi.findByType('dd'))).toBe('1')
+    expect(blockedKpi.props['data-emphasis']).toBe('true')
+    expect(renderer.root.findByProps({ 'data-board-group': 'blocked' }).findAllByProps({ 'data-devlead-board-project': 'blocked-now' })).toHaveLength(1)
+    expect(textOf(renderer.root.findByProps({ className: 'devlead-board-blocked-notice' }))).toContain('1 个项目已阻塞')
+    expect(textOf(renderer.root.findByProps({ className: 'devlead-board-revision' }))).toBe('r43')
+  })
+
+  it('recovers blocked KPI and cards after a never-settling automatic stat', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(NOW)
+    let current: DevLeadBoard = { ...BOARD, revision: 42, projects: [project('project', 'active')] }
+    const harness = panelFiles(() => current)
+    let hangBoardStat = false
+    harness.stat.mockImplementation(async (_sessionId: string, path: string) => {
+      if (hangBoardStat && path.endsWith('/board.json')) {
+        hangBoardStat = false
+        return await new Promise(() => {})
+      }
+      const data = new TextEncoder().encode(JSON.stringify(current))
+      return { ok: true as const, value: { absolutePath: path, version: 'v1', bytes: data.byteLength } }
+    })
+    const renderer = await mount(<DevLeadBoardPanel {...panelProps({ 'session-1': LEAD_ROW }, harness.files)} />)
+    await flush()
+    expect(textOf(renderer.root.findByProps({ 'data-devlead-board-kpi': 'blocked' }).findByType('dd'))).toBe('0')
+
+    hangBoardStat = true
+    await act(async () => { await vi.advanceTimersByTimeAsync(5_000) })
+    await flush()
+    current = { ...current, revision: 43, projects: [project('project', 'blocked')] }
+    await act(async () => {
+      harness.streams[0]?.push({ kind: 'change', change: { absolutePath: '/work/project/.dsh/devlead/board.json', version: 'v43' } })
+      await vi.advanceTimersByTimeAsync(30_000)
+    })
+    await flush()
+    const card = renderer.root.findByProps({ 'data-devlead-board-project': 'project' })
+    expect(card.props['data-status']).toBe('blocked')
+    expect(textOf(renderer.root.findByProps({ 'data-devlead-board-kpi': 'blocked' }).findByType('dd'))).toBe('1')
+    expect(textOf(renderer.root.findByProps({ className: 'devlead-board-revision' }))).toBe('r43')
+    expect(renderer.root.findByProps({ className: 'devlead-board-blocked-notice' })).toBeDefined()
   })
 
   it('stops reading and renders nothing when the tab Session leaves DevLead mode', async () => {

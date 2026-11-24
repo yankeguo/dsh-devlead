@@ -48,7 +48,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-session/client'
 // Type-only: pulls the ui-workspace SlotMap merge (the sidebar Session-row seats).
 import type {} from '@deepseek-ai/dsh-client-ui-workspace/client'
 import type { SessionIdOf } from '@deepseek-ai/dsh-client-ui-slots'
-import { IconFlatListOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
+import { IconGaugeOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
 import { DevLeadBar } from './DevLeadBar.tsx'
 import { DevLeadBoardButton, DevLeadBoardTitle } from './DevLeadBoardButton.tsx'
 import { DevLeadBoardPanel } from './DevLeadBoardPanel.tsx'
@@ -221,7 +221,7 @@ export function apply(ctx: ClientContext): void {
           order: 30,
           title: () => t('board.title'),
           description: () => t('board.guide'),
-          icon: IconFlatListOutlineRegular,
+          icon: IconGaugeOutlineRegular,
         }],
       }))
       disposers.push(ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register({

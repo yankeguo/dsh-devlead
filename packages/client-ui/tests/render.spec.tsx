@@ -94,6 +94,7 @@ vi.mock('@deepseek-ai/dsh-client-ui-primitives', () => {
     Button,
     Tooltip,
     IconGoalOutlineRegular: Icon,
+    IconSparkleRegular: Icon,
     IconUsersOutlineRegular: Icon,
   }
 })
@@ -1010,7 +1011,7 @@ describe('DevLeadIconToggle', () => {
 })
 
 describe('DevLeadSessionMark', () => {
-  it('renders only the accessible active status hook, with no trailing glyph', async () => {
+  it('renders an accessible lead corner badge, not a row-selection overlay', async () => {
     const rows: TestRows = {
       'session-1': { projectionValues: { [DEVLEAD_MODE_PROJECTION_KEY]: { enabled: true } } },
     }
@@ -1018,8 +1019,12 @@ describe('DevLeadSessionMark', () => {
     const status = renderer.root.findByProps({ 'data-devlead-active-mark': 'true' })
     expect(status.props['role']).toBe('img')
     expect(status.props['aria-label']).toBe(zh['row.mark.aria'])
-    expect(status.props.className).toContain('devlead-sr-only')
-    expect(renderer.root.findAllByProps({ 'data-mock-icon': 'true' })).toHaveLength(0)
+    expect(status.props.title).toBe(zh['row.mark.aria'])
+    expect(status.props.className).toContain('devlead-row-mark-lead')
+    expect(status.props['data-devlead-row-mark']).toBe('lead')
+    expect(textOf(status)).toBe('LEAD')
+    expect(status.findByProps({ className: 'devlead-row-mark-lead-label' }).props['aria-hidden']).toBe('true')
+    expect(renderer.root.findAllByProps({ 'data-mock-icon': 'true' })).toHaveLength(1)
     expect(renderer.root.findAllByProps({ 'data-devlead-row-mark': 'watched' })).toHaveLength(0)
   })
 
@@ -1056,8 +1061,8 @@ describe('DevLeadSessionMark', () => {
   })
 
   it('adds no layout props to the Session row (no inline border/padding/height)', async () => {
-    // The shell row owns the only layout contract; the marks may paint color
-    // and overlay rings through CSS but must never carry layout props inline.
+    // The shell row owns selection and the only layout contract; the corner
+    // badge is positioned through CSS and carries no inline row overrides.
     const active = await mount(<DevLeadSessionMark {...markProps({
       rows: { 'session-1': { projectionValues: { [DEVLEAD_MODE_PROJECTION_KEY]: { enabled: true } } } },
     })} />)

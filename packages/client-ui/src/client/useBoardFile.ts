@@ -53,6 +53,7 @@ export function useBoardFile({
   debounceMs = 120,
   pollMs = 5_000,
   pollMaxMs = 30_000,
+  readTimeoutMs = 10_000,
   now = Date.now,
 }: {
   readonly sessionId: SessionId
@@ -62,6 +63,7 @@ export function useBoardFile({
   readonly debounceMs?: number
   readonly pollMs?: number
   readonly pollMaxMs?: number
+  readonly readTimeoutMs?: number
   readonly now?: () => number
 }): DevLeadBoardFileResult {
   const fileConfig = useMemo<DevLeadWorkspaceFileConfig<DevLeadBoard> | undefined>(() => config === undefined ? undefined : {
@@ -72,7 +74,7 @@ export function useBoardFile({
     parseError: (message, options) => new DevLeadBoardParseError(message, options),
   }, [config])
   const { value, watch, autoRefresh, refresh, ...state } = useWorkspaceFile({
-    sessionId, config: fileConfig, files, visible, debounceMs, pollMs, pollMaxMs, now,
+    sessionId, config: fileConfig, files, visible, debounceMs, pollMs, pollMaxMs, readTimeoutMs, now,
   })
   return {
     ...state,

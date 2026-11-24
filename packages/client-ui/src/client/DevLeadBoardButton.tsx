@@ -1,5 +1,5 @@
 /** Session-header entry that opens the read-only DevLead board tab. */
-import { Button, IconFlatListOutlineRegular, Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
+import { Button, IconGaugeOutlineRegular, Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { SessionListState } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import {
@@ -47,7 +47,7 @@ export function DevLeadBoardButton({ onOpen, sessionId, useSessions, t }: DevLea
         data-devlead-board-open="true"
         onClick={onOpen}
       >
-        <IconFlatListOutlineRegular size={16} />
+        <IconGaugeOutlineRegular size={18} />
       </Button>
     </Tooltip>
   )

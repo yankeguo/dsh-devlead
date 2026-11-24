@@ -56,8 +56,9 @@
 - 唯一的模式开关是 composer 工具栏的 `DevLeadIconToggle`，top-level Session 的两种状态都
   渲染；关闭模式后开关仍在原位，不能随状态条一起消失。subagent Session 例外：它不可能升格
   为 DevLead，`DevLeadIconToggle` 与 `DevLeadBar` 都不渲染。
-- 侧栏 active lead 行只画 CSS overlay ring，不加行尾图标；watched 行用弱化的准星标记。
-  不要给 Session 行加 border / padding / height（shell 行只有左右 transparent border）。
+- 侧栏 active lead 行只显示右上角小角标（sparkle + `LEAD`，带本地化 aria-label/title），
+  不再画整行 overlay ring；watched 行用弱化的准星标记。不要给 Session 行加 border /
+  padding / height / background，也不要改变 shell 的选中、hover 或 focus 样式。
 - 搜索态结果行和 blank 行没有 trailing seat，因此不显示 active/watched 标记；这是 shell
   限制，不是 bug。
 - 细节与根因见 [docs/DESIGN.md](docs/DESIGN.md) §7。

@@ -414,6 +414,27 @@ export function groupDevLeadBoardProjects(board: DevLeadBoard): DevLeadBoardGrou
   })
 }
 
+export type DevLeadBoardStatusCounts = Readonly<Record<DevLeadBoardProjectStatus, number>>
+
+/** The grouped cards and every status KPI derived from one board revision. */
+export interface DevLeadBoardSummary {
+  readonly groups: readonly DevLeadBoardGroup[]
+  readonly counts: DevLeadBoardStatusCounts
+}
+
+/**
+ * Derive the complete status overview once. KPI counts deliberately read the
+ * same non-empty groups rendered below them, so a blocked project can never be
+ * present in the list while its own KPI/banner uses a different predicate or
+ * board snapshot.
+ */
+export function summarizeDevLeadBoardProjects(board: DevLeadBoard): DevLeadBoardSummary {
+  const groups = groupDevLeadBoardProjects(board)
+  const counts: Record<DevLeadBoardProjectStatus, number> = { active: 0, blocked: 0, paused: 0, done: 0 }
+  for (const group of groups) counts[group.status] = group.projects.length
+  return { groups, counts }
+}
+
 /** Tag palette for one project status. */
 export function projectStatusTone(status: DevLeadBoardProjectStatus): TagTone {
   switch (status) {
