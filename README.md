@@ -8,7 +8,7 @@ upgrades **one ordinary session** into a **DevLead session**: it can operate DSH
 their state changes — so one agent can orchestrate multiple repositories inside a standard
 interface the human can see and interact with.
 
-Current release candidate **0.4.2-rc.5** (prerelease, npm dist-tag `next`; stable `latest` stays
+Current release candidate **0.4.2-rc.6** (prerelease, npm dist-tag `next`; stable `latest` stays
 **0.4.1**) · DSH **0.2.2-rc.1 – 0.2.2-rc.5** · one `dsh plugin` command installs everything.
 
 ## What you get
@@ -70,24 +70,19 @@ page.
 To pin an exact version:
 
 ```sh
-dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.5
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.6
 ```
 
-0.4.2-rc.5 is the current prerelease candidate for the planned 0.4.2 patch release, superseding
-the never-approved rc.4 candidate. It preserves rc.4's lead-only Markdown project notes, compact board cards,
-single-line KPI pill strip, responsive 2/3/1-column layouts, and safe full-pane reader while hardening
-portable note ids/paths, bounding model-facing note reads, eliminating stale metadata and redundant note I/O,
-and separating visual polling activity from screen-reader announcements. The
-0.4.2 line makes the project board **on by default** for the active lead (derived from that Session's
-original workspace root), adds a **lead-only read-only board UI** in the right Sidebar, bounds the
-model-facing board read at 64 KiB, fixes long workspace path/title project references, and degrades
-instead of blocking when the board cannot start. There is no public API break and the DSH compatibility
-surface is unchanged. The release flow stages this prerelease with npm dist-tag `next`, so pin the exact
-version above until the stable 0.4.2 is approved; `latest` remains **0.4.1**. For history, the rc.3 candidate added automatic
-refresh across every board-file state and its visual redesign. The rc.1/rc.2/rc.3 release notes remain
-historical records; this candidate does not retroactively approve any earlier candidate, and the never-approved
-0.4.2-rc.1/rc.4 staged records must not be approved. See the
-[0.4.2-rc.5 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.2-rc.5.md);
+0.4.2-rc.6 is the current prerelease candidate for the planned 0.4.2 patch release, building on the
+published rc.5 candidate. It adds a separate lead-only `devlead:board-policy` system-prompt section and concrete
+`Use when …` guidance on the four board/notes tools so the lead maintains current project state at dispatch/close,
+reads durable notes before resuming or briefing, and records concise plans, decisions, and handoffs. It also defines
+one-time degradation reporting and asks for judgment instead of noisy no-op updates. Board/notes schemas, tool
+semantics, UI, and the DSH compatibility surface are unchanged. The release flow stages this prerelease with npm
+dist-tag `next`, so pin the exact version above until the stable 0.4.2 is approved; `latest` remains **0.4.1**.
+Earlier candidates remain historical records; the never-approved 0.4.2-rc.1/rc.4 staged records must not be
+approved. See the
+[0.4.2-rc.6 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.2-rc.6.md);
 the previous stable patch is documented in the
 [0.4.1 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.1.md).
 
@@ -101,7 +96,7 @@ profile's `cordis.patch.yml` themselves; the bundle is the recommended path.
 dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 
 # or pin a specific version (required for prereleases)
-dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.5
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.6
 ```
 
 > **Upgrading from an older release (below 0.4.0):** 0.4.0 intentionally discards older DevLead

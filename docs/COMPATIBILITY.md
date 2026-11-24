@@ -1,22 +1,17 @@
 # DSH 兼容性矩阵
 
 本仓库的目标兼容面是 **DeepSeek Harness `0.2.2-rc.1` – `0.2.2-rc.5`**；当前候选发布版本是插件版本
-**`0.4.2-rc.5`**（6 个可发布包共用同一版本号；prerelease，CI 以 npm dist-tag `next` stage，维护者
-approve 后公开）。稳定版 `latest` 当前为 **`0.4.1`**（2026-11-22 北京时间经 staged publish +
-人工 approve 公开）；approve `0.4.2-rc.5` 后 `next` 指向本候选、`latest` 仍为 `0.4.1`，直到计划中
-的稳定版 `0.4.2` 发布。`0.4.0`（2026-11-21 公开）与 `0.4.0-rc.1`（同日以 `next` 发布）是历史
-版本。`0.4.2-rc.1`（2026-11-23 已 stage 但**未 approve、从未公开**；其 main `verify` 因一个看板
-读取测试的时序 flake 失败）的 staged 记录不得 approve。`0.4.2-rc.2` 相对 rc.1 只做两个 board I/O
-测试的确定性修复、无产品代码变化；rc.3 相对 rc.2 只重做 client 看板自动刷新与视觉。这些历史事实及
-其 release notes 不改写，也不因当前候选而追认为新的 approve 事实。rc.4 增加两个 notes 主工具、
-Host notes store、安全只读 Markdown reader 与紧凑 2/3/1 列看板，但已 staged **未 approve**，其记录不得
-批准。当前 rc.5 完整保留这些功能，只修复跨平台 notes 身份、读取/UTF-8 边界、client 代际与 I/O/a11y，
-并补恢复文档和真实 tool e2e；Host 原有 board schema 与 DSH 兼容面不变。`0.4.2-rc.5` 只是**插件版本**，
-**不代表 DSH 0.4.2**。6 个可发布包的
+**`0.4.2-rc.6`**（6 个可发布包共用同一版本号；prerelease，CI 以 npm dist-tag `next` stage，维护者
+approve 后公开）。稳定版 `latest` 当前为 **`0.4.1`**，已发布的上一候选 rc.5 使 `next` 指向
+**`0.4.2-rc.5`**；approve `0.4.2-rc.6` 后 `next` 指向本候选、`latest` 仍为 `0.4.1`，直到计划中
+的稳定版 `0.4.2` 发布。`0.4.2-rc.1` 与 rc.4 已 stage 但**未 approve、从未公开**，其历史 staged
+记录不得 approve；其它旧候选的 release notes 保持历史事实。当前 rc.6 只增加 lead-only board/notes
+workflow system prompt 与四个工具的使用场景描述，不改 board/notes schema、工具语义、UI、Host API 或 DSH
+兼容面。`0.4.2-rc.6` 只是**插件版本**，**不代表 DSH 0.4.2**。6 个可发布包的
 `engines.dsh` 均为 `>=0.2.2-rc.1 <0.3.0`（根 `package.json` 是 private 包，不声明
 `engines.dsh`，只声明 `engines.node`），所有
 `@deepseek-ai/dsh-*` peer 使用同一范围；本地 devDependencies 与编译基线仍固定 rc.1，用最旧 API
-做类型检查，本机运行验证使用安装版 rc.5。board/notes 与本轮 client reader 不使用 0.2.3-only API，
+做类型检查，本机运行验证使用安装版 rc.5。新 prompt section 与工具描述不使用任何新 Host API，
 兼容范围保持 `>=0.2.2-rc.1 <0.3.0`。
 
 ## 契约
@@ -520,7 +515,7 @@ lane/deliveryState、blocked/decision action steer、真实 T1 followup / T2 rev
 
 上表 Phase 1e 行即 **Batch 1 最终树**的 pin 实测：installed / patch 完整流各 **221/221**
 （218 PASS + 3 SKIP；phase 1 27 + 1b 12 + 2 23 + 3 128 + 1e 31），`--no-worktree` **198/198**
-（phase 2 skipped）。当前候选发布版本是插件 **`0.4.2-rc.5`**（prerelease，dist-tag `next`；
+（phase 2 skipped）。当前候选发布版本是插件 **`0.4.2-rc.6`**（prerelease，dist-tag `next`；
 stage 本身不改变公开 dist-tag，approve 后 `next` 才指向本候选，`latest` 仍为 `0.4.1`；DSH 兼容面
 仍为 rc.1–rc.5）。
 `0.4.0-rc.1` 候选的三条真实
@@ -589,6 +584,13 @@ patch / installed E2E 各 **244/244**（241 PASS + 3 SKIP），`--no-worktree` *
 三个退出码均为 0；6 包 `next` dry-run 为 **DRY RUN OK**。typecheck/build/三条 E2E 等原始日志、五组 mutation
 及恢复证据见 [v0.4.2-rc.5 release prep](e2e-evidence/v0.4.2-rc.5-release-prep.md)；本轮未新增人工截图或读屏
 PASS 声明，增量人工检查项见 [UI-VERIFICATION](UI-VERIFICATION.md)。
+
+**0.4.2-rc.6 发布轮**只调整模型可见引导：新增独立 `devlead:board-policy`（enabled lead 可见，普通
+Session 为空，400–800 chars 独立预算），四个 board/notes 工具描述各补 `Use when …`；无 schema、UI、
+工具语义或 Host API 变化。主 `DEVLEAD_POLICY_BASE` 文本与尺寸预算不变，board disabled 摘要语义不变。
+最终冻结树门禁、三条真实 E2E 与 6 包 `next` dry-run 证据见
+[v0.4.2-rc.6 release prep](e2e-evidence/v0.4.2-rc.6-release-prep.md)；本发布仍只使用 rc.1 typings 已有
+system prompt API，DSH 兼容范围与 engines/peer range 不变。
 
 每条 flow 有 3 条正向模型选择检查因无 provider 凭据 SKIP（打印真实原因）；负向
 `DEVLEAD_MODEL_UNAVAILABLE`、`devlead_list_models`、preset roster 与 watched-child

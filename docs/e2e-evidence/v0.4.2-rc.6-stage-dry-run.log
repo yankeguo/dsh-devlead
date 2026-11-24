@@ -1,0 +1,22 @@
+stage-release: DRY RUN (no upload) — version 0.4.2-rc.6, dist-tag next
+npm 11.20.0 / pnpm 12.16.1
+provenance: no
+
+Packing and staging 6 packages in workspace-dependency order:
+1. @yankeguo/dsh-devlead-protocol@0.4.2-rc.6
+2. @yankeguo/dsh-client-ui-devlead@0.4.2-rc.6
+3. @yankeguo/dsh-devlead@0.4.2-rc.6
+4. @yankeguo/dsh-command-devlead@0.4.2-rc.6
+5. @yankeguo/dsh-tool-devlead@0.4.2-rc.6
+6. @yankeguo/dsh-devlead-bundle@0.4.2-rc.6
+
+[1/6] dry-run OK @yankeguo/dsh-devlead-protocol@0.4.2-rc.6 (7 files, yankeguo-dsh-devlead-protocol-0.4.2-rc.6.tgz)
+[2/6] dry-run OK @yankeguo/dsh-client-ui-devlead@0.4.2-rc.6 (7 files, yankeguo-dsh-client-ui-devlead-0.4.2-rc.6.tgz)
+[3/6] dry-run OK @yankeguo/dsh-devlead@0.4.2-rc.6 (6 files, yankeguo-dsh-devlead-0.4.2-rc.6.tgz)
+[4/6] dry-run OK @yankeguo/dsh-command-devlead@0.4.2-rc.6 (6 files, yankeguo-dsh-command-devlead-0.4.2-rc.6.tgz)
+[5/6] dry-run OK @yankeguo/dsh-tool-devlead@0.4.2-rc.6 (6 files, yankeguo-dsh-tool-devlead-0.4.2-rc.6.tgz)
+[6/6] dry-run OK @yankeguo/dsh-devlead-bundle@0.4.2-rc.6 (7 files, yankeguo-dsh-devlead-bundle-0.4.2-rc.6.tgz)
+
+DRY RUN OK: packed and preflighted 6 packages; nothing was uploaded and no stage id was created.
+
+STAGE_DRY_RUN_EXIT=0

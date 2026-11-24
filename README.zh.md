@@ -7,7 +7,7 @@
 **Session**（会话），创建并续写其他会话、读取它们的状态、在状态变化时被唤醒——于是一个
 agent 就能在人可见、可参与的标准界面里统管多个仓库。
 
-当前候选版 **0.4.2-rc.5**（prerelease，npm dist-tag `next`；稳定版 `latest` 仍为 **0.4.1**） ·
+当前候选版 **0.4.2-rc.6**（prerelease，npm dist-tag `next`；稳定版 `latest` 仍为 **0.4.1**） ·
 DSH **0.2.2-rc.1 – 0.2.2-rc.5** · 一条 `dsh plugin` 命令即可装好全部组件。
 
 ## 核心能力
@@ -67,20 +67,16 @@ Web 页面。
 固定到精确版本：
 
 ```sh
-dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.5
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.6
 ```
 
-0.4.2-rc.5 是计划中 0.4.2 补丁版的当前 prerelease 候选，取代未 approve 的 rc.4 候选。本轮保留
-rc.4 的 lead-only Markdown notes、紧凑卡片、单行 KPI pill strip、2/3/1 列响应式布局与全栏安全 reader，
-修复跨平台 note id/path 冲突，限制模型侧单 note 读取，消除旧 workspace metadata 闪现与重复 note I/O，
-并把视觉轮询 busy 与读屏播报分离。0.4.2 系列让项目看板对 active lead **默认启用**（由该 Session 的原始 workspace 根
-派生），右侧栏提供 **仅 lead 可见的只读看板 UI**；模型侧看板读取有 64 KiB 上限，修复长 workspace
-path/title 作为 project 引用的误判；看板 start 失败时只降级、不阻塞插件加载。没有公网 API 破坏性
-变更，DSH 兼容面不变。本候选按发布流程以 npm dist-tag `next` stage，在稳定版 0.4.2 被 approve 前请按上面的
-精确版本安装；`latest` 仍为 **0.4.1**。历史上，rc.3 候选为看板加入覆盖所有文件状态的自动刷新
-并重做视觉；rc.1/rc.2/rc.3 release notes 保持为历史记录。本候选不会把任何旧候选追认为已 approve，
-从未 approve 的 0.4.2-rc.1/rc.4 staged 记录不得 approve。详见
-[0.4.2-rc.5 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.2-rc.5.md)；
+0.4.2-rc.6 是计划中 0.4.2 补丁版的当前 prerelease 候选，基于已发布的 rc.5。本轮新增独立 lead-only
+`devlead:board-policy` system prompt section，并给四个 board/notes 工具补充具体 `Use when …` 场景，
+引导 lead 在派发/收口时维护当前项目状态、恢复或派发前读取持久 notes，并记录简短计划、决策与交接；
+同时明确降级只报告一次、没有实质变化不制造噪声。board/notes schema、工具语义、UI 与 DSH 兼容面均不变。
+本候选按发布流程以 npm dist-tag `next` stage，在稳定版 0.4.2 被 approve 前请按上面的精确版本安装；
+`latest` 仍为 **0.4.1**。旧候选保持历史记录，从未 approve 的 0.4.2-rc.1/rc.4 staged 记录不得 approve。详见
+[0.4.2-rc.6 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.2-rc.6.md)；
 上一个稳定补丁的说明见
 [0.4.1 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.1.md)。
 
@@ -94,7 +90,7 @@ path/title 作为 project 引用的误判；看板 start 失败时只降级、�
 dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 
 # 或固定到某个版本（prerelease 必须写精确版本）
-dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.5
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.6
 ```
 
 > **从旧版本（低于 0.4.0）升级：** 0.4.0 会直接丢弃旧的 DevLead 会话状态（模式、关注集合、
