@@ -7,8 +7,7 @@
 **Session**（会话），创建并续写其他会话、读取它们的状态、在状态变化时被唤醒——于是一个
 agent 就能在人可见、可参与的标准界面里统管多个仓库。
 
-当前候选版 **0.4.2-rc.10**（prerelease，npm dist-tag `next`；稳定版 `latest` 仍为 **0.4.1**） ·
-DSH **0.2.2-rc.1 – 0.2.2-rc.5** · 一条 `dsh plugin` 命令即可装好全部组件。
+稳定版 **0.4.2** · DSH **0.2.2-rc.1 – 0.2.2-rc.5** · 一条 `dsh plugin` 命令即可装好全部组件。
 
 ## 核心能力
 
@@ -67,18 +66,17 @@ Web 页面。
 固定到精确版本：
 
 ```sh
-dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.10
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2
 ```
 
-0.4.2-rc.10 是计划中 0.4.2 补丁版的当前 prerelease 候选，基于已发布的 rc.9。本轮只微调项目看板：
-同一视觉行的卡片共享十条内部网格轨道，标题、元信息、focus、next、goal、blockers、任务进度、任务与 footer
-在长短内容混合时仍逐块对齐。priority 从重复文字 badge 改为标题行最右侧的高/中/低图形图标，以双上箭头、
-单上箭头、下单箭头区分形状，并保留本地化 tooltip 与 ARIA。卡片标题左侧旋转状态点移除，LIVE 与刷新反馈
-保持原样。面板 header 不再重复可见 tab 标题和「只读」Tag，LIVE、更新时间/rN 与最右刷新按钮合并为紧凑一行。
-status 四边边框、KPI、blocked 警示、notes、原生 disclosure、board/notes 磁盘 schema 与 DSH 兼容面均不变。
-本候选按发布流程以 npm dist-tag `next` stage，在稳定版 0.4.2 被 approve 前请按上面的精确版本安装；
-`latest` 仍为 **0.4.1**。旧候选保持历史记录，从未 approve 的 rc.1/rc.4/rc.8 staged 记录不得混入本候选批准。详见
-[0.4.2-rc.10 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.2-rc.10.md)；
+0.4.2 是无公网 API 破坏性变更的补丁版，新增**项目看板**（对 active lead 默认启用）与**项目 Markdown notes**：
+看板零配置跟随 lead 的 workspace，在右侧栏提供只读面板，显示项目状态、优先级、focus/next/blockers、任务进度
+与 blocked KPI，并采用紧凑响应式 2/3/1 列布局，通过文件 watch 与随页面可见性暂停的轮询自动刷新。notes 使用
+strict 元数据索引 + 独立 Markdown 正文：lead 工具创建、改元数据、删除索引，正文用 DSH 原生 read/write/edit
+编辑，并在安全的只读 reader 中打开。本版还新增 lead-only 的看板/notes workflow prompt 引导，并修复 blocked
+KPI 与自动刷新可能停住的问题。从 0.4.1 升级无需迁移或 `/devlead reset`；首次启用 lead 会在 workspace 根下
+创建 `.dsh/devlead/board.json` 与 `.dsh/devlead/notes/`。本版发布 dist-tag 为 `latest`。详见
+[0.4.2 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.2.md)；
 上一个稳定补丁的说明见
 [0.4.1 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.1.md)。
 
@@ -91,8 +89,8 @@ status 四边边框、KPI、blocked 警示、notes、原生 disclosure、board/n
 # 把 bundle 升级到最新发布版
 dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 
-# 或固定到某个版本（prerelease 必须写精确版本）
-dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.10
+# 或固定到某个版本
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2
 ```
 
 > **从旧版本（低于 0.4.0）升级：** 0.4.0 会直接丢弃旧的 DevLead 会话状态（模式、关注集合、

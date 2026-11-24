@@ -8,8 +8,8 @@ upgrades **one ordinary session** into a **DevLead session**: it can operate DSH
 their state changes — so one agent can orchestrate multiple repositories inside a standard
 interface the human can see and interact with.
 
-Current release candidate **0.4.2-rc.10** (prerelease, npm dist-tag `next`; stable `latest` stays
-**0.4.1**) · DSH **0.2.2-rc.1 – 0.2.2-rc.5** · one `dsh plugin` command installs everything.
+Stable release **0.4.2** · DSH **0.2.2-rc.1 – 0.2.2-rc.5** · one `dsh plugin` command installs
+everything.
 
 ## What you get
 
@@ -70,21 +70,21 @@ page.
 To pin an exact version:
 
 ```sh
-dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.10
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2
 ```
 
-0.4.2-rc.10 is the current prerelease candidate for the planned 0.4.2 patch release, building on the published rc.9
-candidate. This is a focused project-board refinement: cards in the same visual row share ten internal grid tracks so
-their title, metadata, focus, next, goal, blockers, progress, tasks, and footer align even with mixed content lengths.
-Priority is now a shape-distinct high/medium/low glyph pinned to the title row's right edge with localized tooltip and
-ARIA text, replacing the duplicate text badge. The rotating card-title status dot is gone, while LIVE and refresh
-feedback remain unchanged. The panel header no longer repeats the visible tab title or read-only tag; LIVE, updated
-time/revision, and the rightmost refresh action share one compact row. Status borders, KPIs, blocked warnings, notes,
-native disclosures, and board/notes disk schemas are unchanged, as is the DSH compatibility surface. The release flow
-stages this prerelease with npm dist-tag `next`, so pin the exact version above until stable 0.4.2 is approved;
-`latest` remains **0.4.1**. Earlier candidates remain historical records; never-approved rc.1/rc.4/rc.8 staged records
-must not be mixed into this candidate's approval. See the
-[0.4.2-rc.10 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.2-rc.10.md);
+0.4.2 is a patch release with no breaking public API changes. It adds the lead-only **project board**
+(on by default for the active lead) and **per-project Markdown notes**: the board follows the lead's
+workspace with zero configuration, shows project status, priority, focus, next, blockers, task
+progress and a blocked KPI strip in a compact responsive 2/3/1-column read-only right-Sidebar panel,
+and refreshes automatically from file watch plus visibility-aware polling. Notes use a strict
+metadata index with ordinary Markdown bodies; lead tools create, update metadata and delete index
+entries while the body is edited with DSH's native read/write/edit, and notes open in a safe
+read-only reader. The release also adds lead-only board/notes workflow prompt guidance and fixes a
+blocked-KPI/auto-refresh stall. Upgrading from 0.4.1 needs no migration or `/devlead reset`; the
+first lead run creates `.dsh/devlead/board.json` and `.dsh/devlead/notes/` under the workspace root.
+The release uses npm dist-tag `latest`. See the
+[0.4.2 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.2.md);
 the previous stable patch is documented in the
 [0.4.1 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.1.md).
 
@@ -97,8 +97,8 @@ profile's `cordis.patch.yml` themselves; the bundle is the recommended path.
 # upgrade the bundle to the latest release
 dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 
-# or pin a specific version (required for prereleases)
-dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2-rc.10
+# or pin a specific version
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2
 ```
 
 > **Upgrading from an older release (below 0.4.0):** 0.4.0 intentionally discards older DevLead

@@ -1,17 +1,19 @@
 # DSH 兼容性矩阵
 
-本仓库的目标兼容面是 **DeepSeek Harness `0.2.2-rc.1` – `0.2.2-rc.5`**；当前候选发布版本是插件版本
-**`0.4.2-rc.10`**（6 个可发布包共用同一版本号；prerelease，CI 以 npm dist-tag `next` stage，维护者
-approve 后公开）。稳定版 `latest` 当前为 **`0.4.1`**，已发布并安装的上一候选 rc.9 使 `next` 指向
-**`0.4.2-rc.9`**；approve `0.4.2-rc.10` 后 `next` 指向本候选、`latest` 仍为 `0.4.1`，直到计划中
-的稳定版 `0.4.2` 发布。rc.1、rc.4 与 rc.8 已 stage 但**未 approve、从未公开**，其历史 staged 记录不得
-混入本候选批准；其它旧候选的 release notes 保持历史事实。当前 rc.10 只调整 client-ui 的看板同行内部对齐、
-标题行 priority 图标、卡片标题状态点与紧凑 header，并同步测试、文档和版本号。Host、工具、磁盘 schema、
-Remote、`dsh.client.inject` 与 DSH 兼容面不变。`0.4.2-rc.10` 只是**插件版本**，**不代表 DSH 0.4.2**。
-6 个可发布包的 `engines.dsh` 均为 `>=0.2.2-rc.1 <0.3.0`（根 `package.json` 是 private 包，不声明
-`engines.dsh`，只声明 `engines.node`），所有 `@deepseek-ai/dsh-*` peer 使用同一范围；本地 devDependencies
-与编译基线仍固定 rc.1，用最旧 API 做类型检查，本机运行验证使用安装版 rc.5。本轮只使用既有 React、CSS grid/
-subgrid 与 icon primitives，不使用任何新 Host API，兼容范围保持 `>=0.2.2-rc.1 <0.3.0`。
+本仓库的目标兼容面是 **DeepSeek Harness `0.2.2-rc.1` – `0.2.2-rc.5`**；当前发布版本是插件版本
+**`0.4.2`**（6 个可发布包共用同一版本号；稳定补丁版，CI 以 npm dist-tag `latest` stage，维护者
+approve 后公开；approve 前 `latest` 仍为 `0.4.1`）。上一稳定版 `0.4.1` 已于 2026-11-22 经 staged
+publish + 人工 approve 公开；`0.4.2-rc.10` 是 0.4.2 的最后一个候选，已于 2026-11-24 经 staged publish
++ 人工 approve 以 `next` 发布并安装（`next` 保持指向该候选）。`0.4.2` 相对 `0.4.1` 新增 active lead
+默认启用的项目看板与项目 Markdown notes（board/notes schema v1、看板工具与 notes 索引工具）、看板自动
+刷新/watch、lead-only 只读右栏 UI、看板/notes workflow prompt 引导与 blocked KPI 修复；rc.1/rc.4/rc.8
+的 staged 记录从未 approve，不得混入本次批准，其它旧候选的 release notes 保持历史事实。`0.4.2` 只是
+**插件版本**，**不代表 DSH 0.4.2**。6 个可发布包的 `engines.dsh` 均为 `>=0.2.2-rc.1 <0.3.0`（根
+`package.json` 是 private 包，不声明 `engines.dsh`，只声明 `engines.node`），所有 `@deepseek-ai/dsh-*`
+peer 使用同一范围；本地 devDependencies 与编译基线仍固定 rc.1，用最旧 API 做类型检查，本机运行验证
+使用安装版 rc.5。看板/notes 只使用 rc.1 typings 与安装版 rc.5 共有的既有 Host API
+（`webserver/index-inject`、`sidebarRight*`、Workspace Files Remote、`@deepseek-ai/dsh-atomic-write` 等），
+不引入 0.2.3-only API，兼容范围保持 `>=0.2.2-rc.1 <0.3.0`。
 
 ## 契约
 
@@ -450,11 +452,11 @@ git -C "$REPO" add -f \
   "docs/e2e-evidence/upgrade-$RC-no-worktree.log"
 ```
 
-当前 rc.10 harness 的 pin 来自 `scripts/e2e-smoke.mjs` 的 `EXPECTED_CHECKS`
+当前 rc.5 harness 的 pin 来自 `scripts/e2e-smoke.mjs` 的 `EXPECTED_CHECKS`
 （phase 1=30、1b=18、2=24、**3=141**、1e=31）：patch / installed 完整流目标各为 **244/244**，
 no-worktree 目标为 **220/220**（仅跳过 phase 2）；完整流目标计数为 **241 PASS + 3** 条有真实
-原因的正向模型选择 SKIP，其他检查不得通过删除或放宽断言来凑数。rc.10 冻结树的真实输出、退出码
-与证据详见 [v0.4.2-rc.10 release prep](e2e-evidence/v0.4.2-rc.10-release-prep.md)；未来 pin 变化
+原因的正向模型选择 SKIP，其他检查不得通过删除或放宽断言来凑数。`0.4.2` 稳定版冻结树的真实输出、
+退出码与证据详见 [v0.4.2 release prep](e2e-evidence/v0.4.2-release-prep.md)；未来 pin 变化
 只能先更新 `EXPECTED_CHECKS` 并在证据中解释。
 
 每个 rc 的 typings/build/三条 E2E 日志都必须复制到 `docs/e2e-evidence/`，保留真实 `*_EXIT=`
@@ -514,9 +516,9 @@ lane/deliveryState、blocked/decision action steer、真实 T1 followup / T2 rev
 
 上表 Phase 1e 行即 **Batch 1 最终树**的 pin 实测：installed / patch 完整流各 **221/221**
 （218 PASS + 3 SKIP；phase 1 27 + 1b 12 + 2 23 + 3 128 + 1e 31），`--no-worktree` **198/198**
-（phase 2 skipped）。当前候选发布版本是插件 **`0.4.2-rc.10`**（prerelease，dist-tag `next`；
-stage 本身不改变公开 dist-tag，approve 后 `next` 才指向本候选，`latest` 仍为 `0.4.1`；DSH 兼容面
-仍为 rc.1–rc.5）。
+（phase 2 skipped）。当前发布版本是插件 **`0.4.2`**（稳定补丁版，dist-tag `latest`；stage 本身不改变
+公开 dist-tag，approve 后 `latest` 才指向本版，approve 前 `latest` 仍为 `0.4.1`，`next` 保持
+`0.4.2-rc.10`；DSH 兼容面仍为 rc.1–rc.5）。
 `0.4.0-rc.1` 候选的三条真实
 E2E 重跑（含真实 `*_EXIT=0` 与总计行）记录在
 [`docs/e2e-evidence/batch2-release-prep.md`](e2e-evidence/batch2-release-prep.md)；稳定版 `0.4.0`
@@ -527,9 +529,9 @@ E2E 重跑（含真实 `*_EXIT=0` 与总计行）记录在
 当前 board 加固轮保留上述全部旧检查，并在 phase 3 新增真实 `ctx.devLead.updateBoard` 写入/CAS、
 `webserver/index-inject` board global 与独立磁盘 revision/内容 read-back；Step B 复核修复轮又把
 phase 1 与 1b 改回未配置 `boardPath` 的默认组合并固定当轮目标 pin（phase 1=28、phase 3=132、
-完整流=226、no-worktree=203）。**当前 rc.10 的权威 pin 是 `scripts/e2e-smoke.mjs` 的
+完整流=226、no-worktree=203）。**当前 `0.4.2` 的权威 pin 是 `scripts/e2e-smoke.mjs` 的
 `EXPECTED_CHECKS`：phase 1=30、phase 1b=18、phase 2=24、phase 3=141、phase 1e=31，完整流目标
-244/244（241 PASS + 3 credential-less SKIP），`--no-worktree` 220/220；rc.10 实测与退出码以当轮
+244/244（241 PASS + 3 credential-less SKIP），`--no-worktree` 220/220；`0.4.2` 实测与退出码以当轮
 release-prep 原始日志为准。** 本轮新增/改写的断言
 包括：没有 lead 时不注入 board global、lead 开启后从 `SessionHeader.cwd` 派生默认路径并发布
 `{leadSessionId, override:false}`、预创建父目录、冷 lead 从持久 header 派生、`/devlead off`
@@ -620,6 +622,11 @@ subgrid 对齐同一视觉行的内部轨道，flex/grid-auto-rows 保留非 sub
 header。LIVE 与手动刷新动画、轮询/watch、KPI、blocked、notes 和 status 四边色保持不变。只使用 rc.1 已有的
 icon primitives 与浏览器 CSS，不改 Host、schema、工具、Remote、`dsh.client.inject`、engines 或 peer 范围。
 最终门禁与证据详见 [v0.4.2-rc.10 release prep](e2e-evidence/v0.4.2-rc.10-release-prep.md)。
+
+**0.4.2 稳定版发布轮**相对 `0.4.2-rc.10` 只做版本 bump（根 + 6 包 `0.4.2`）、稳定版 release notes、
+README/COMPATIBILITY/PUBLISHING 当前版本引用同步与冻结树门禁重跑；产品源码与运行时行为逐字相同，不改
+Host、schema、工具、Remote、`dsh.client.inject`、engines 或 peer 范围。冻结树实测与证据详见
+[v0.4.2 release prep](e2e-evidence/v0.4.2-release-prep.md)。
 
 每条 flow 有 3 条正向模型选择检查因无 provider 凭据 SKIP（打印真实原因）；负向
 `DEVLEAD_MODEL_UNAVAILABLE`、`devlead_list_models`、preset roster 与 watched-child
