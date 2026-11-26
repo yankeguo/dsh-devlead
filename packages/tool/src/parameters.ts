@@ -265,13 +265,12 @@ export const TOOL_PARAMETERS = {
     },
     provider: {
       type: 'string',
-      description: 'Optional model provider route for the new Session; requires model. Omit to use workspaceModels/defaultModel, '
-        + 'then the Host default. Call '
-        + 'devlead_list_models first when pinning; validated before the Session is created. Creation-time only.',
+      description: 'Optional model provider route for the new Session; requires model. Omit to use the Host default. '
+        + 'Call devlead_list_models first when pinning; validated before the Session is created. Creation-time only.',
     },
     model: {
       type: 'string',
-      description: 'Optional model id for the new Session; requires provider. Omit for configured routing, then the Host default. Use it '
+      description: 'Optional model id for the new Session; requires provider. Omit to use the Host default. Use it '
         + 'only for explicit cost/capability routing or reproducibility, and call devlead_list_models first. '
         + 'Creation-time only; never changes the Host/profile default.',
     },

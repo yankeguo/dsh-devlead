@@ -399,9 +399,6 @@ profile's `cordis.patch.yml` — DSH replaces a row's whole config):
     maxListedSessions: 200       # max rows per session listing (positive integer)
     wakeColdSession: true        # resume a cold DevLead Session to deliver queued notifications
     defaultAgentPreset: ''       # default Agent preset for created sessions (empty = Host default)
-    # Optional route fallback before the Host default; explicit tool arguments win.
-    # defaultModel: { provider: nanollm, model: kimi-k3.1-pro, reasoningEffort: high }
-    workspaceModels: []          # entries: { workspace, provider, model, reasoningEffort? }
     questionTtlMs: 86400000      # open-question TTL (24h; 0 disables lazy expiry)
     boardPath: ''                # optional: blank derives <active lead workspace>/.dsh/devlead/board.json
 ```
@@ -414,8 +411,6 @@ profile's `cordis.patch.yml` — DSH replaces a row's whole config):
 | `maxListedSessions` | `200` | positive integer; row cap for listing calls. Identity resolution is not limited by it |
 | `wakeColdSession` | `true` | when `true`, a cold lead Session with queued notifications is resumed to deliver them; set `false` to keep the queues in memory until a human opens the lead Session |
 | `defaultAgentPreset` | `''` | default value used when a created session names no `preset`; empty means the Host's effective default. An invalid id fails creation with a structured error |
-| `workspaceModels` | `[]` | ordered route entries `{ workspace, provider, model, reasoningEffort? }`. When `devlead_create_session` omits model arguments, the first entry matching the resolved Workspace id, canonical path, or exact title is validated and applied to that child only. Explicit arguments always win |
-| `defaultModel` | omitted | optional `{ provider, model, reasoningEffort? }` fallback after `workspaceModels` and before the Host default. It is creation-time routing, never a profile-default mutation |
 | `questionTtlMs` | `86400000` | non-negative safe integer; lazy open-question TTL (24h), `0` disables expiry. Answered questions do not retroactively expire |
 | `boardPath` | `''` (derived) | optional absolute override. Trimmed blank derives `<active lead Session header cwd>/.dsh/devlead/board.json` and the board is on by default; a non-blank value must be an absolute project-board JSON path and wins over the derived path. Relative paths are rejected, never resolved against cwd. Existing explicit `boardPath` deployments keep their path and behaviour unchanged. The final path component must not be a symlink (the atomic replace would swap the link itself, not its target); symlinks in the parent directory chain are fine. Only the lead AI writes through tools; humans/browser clients are read-only. See [docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md) |
 

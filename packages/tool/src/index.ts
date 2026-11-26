@@ -151,8 +151,8 @@ const LIST_SESSIONS_DESCRIPTION =
 const CREATE_SESSION_DESCRIPTION =
   'Create an ordinary DSH Session in a Workspace, optionally started with a prompt. Use it to dispatch the owning '
   + 'Workspace\'s work to that Session instead of doing the work yourself; the brief may carry open questions, '
-  + 'because the Session owns the deeper investigation and the implementation. The child inherits workspaceModels/defaultModel, '
-  + 'then the Host default model unless you pin provider/model (plus optional reasoning_effort); preset and agent_teams inherit by default '
+  + 'because the Session owns the deeper investigation and the implementation. The child inherits the Host default '
+  + 'model unless you pin provider/model (plus optional reasoning_effort); preset and agent_teams inherit by default '
   + 'too. These settings are creation-time only; each parameter states its pinning rules. Never change the '
   + 'Host/profile default or reroute a model on your own. It runs independently: after this call end the turn '
   + 'instead of waiting; never sleep or poll the read tools, and never call wait_agent to wait for it. A watched '

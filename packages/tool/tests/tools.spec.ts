@@ -475,7 +475,7 @@ describe('policy', () => {
   it('inherits model defaults and leaves Agent Teams to the lead’s judgment', () => {
     const harness = bootEnabled()
     const text = harness.sectionText()
-    expect(text).toContain('Models inherit workspaceModels/defaultModel, then the Host default')
+    expect(text).toContain('Models inherit the Host default')
     expect(text).toContain('call devlead_list_models first')
     expect(text).toContain('Agent Teams is your judgment')
     expect(text).toContain('complex, multi-step, or parallel work that benefits from subagents may set agent_teams true')
@@ -486,7 +486,7 @@ describe('policy', () => {
     expect(text).toContain('Team availability depends on the Host composition and DSH version')
     expect(text).toContain('continue without Team instead of retrying or blocking')
     const createSession = harness.tool('devlead_create_session').definition
-    expect(createSession.description).toContain('workspaceModels/defaultModel')
+    expect(createSession.description).toContain('inherits the Host default model')
     // The pinning rules live on the parameters, not repeated in the description.
     const parameters = createSession.parameters as {
       properties: {
@@ -495,7 +495,7 @@ describe('policy', () => {
         agent_teams: { description: string }
       }
     }
-    expect(parameters.properties['provider']?.description).toContain('workspaceModels/defaultModel')
+    expect(parameters.properties['provider']?.description).toContain('Omit to use the Host default')
     expect(parameters.properties['model']?.description).toContain('call devlead_list_models first')
     expect(parameters.properties['agent_teams']?.description).toContain('Agent Teams is your judgment')
     expect(parameters.properties['agent_teams']?.description).toContain('Obey an explicit human on/off')
@@ -1067,7 +1067,7 @@ describe('devlead_list_models', () => {
     const createParameters = harness.tool('devlead_create_session').definition.parameters as {
       properties: { provider: { description: string } }
     }
-    expect(createParameters.properties.provider.description).toContain('workspaceModels/defaultModel')
+    expect(createParameters.properties.provider.description).toContain('Omit to use the Host default')
   })
 
   it('translates a missing-controller failure', async () => {
@@ -1556,7 +1556,7 @@ describe('devlead_create_session dispatch settings', () => {
     expect(definition.description).toContain('reasoning_effort')
     expect(definition.description).toContain('agent_teams')
     expect(definition.description).toContain('creation-time only')
-    expect(definition.description).toContain('workspaceModels/defaultModel')
+    expect(definition.description).toContain('inherits the Host default model')
     expect(definition.description).toContain('Never change the Host/profile default')
     const parameters = definition.parameters as {
       properties: Record<string, { type: string; description: string }>

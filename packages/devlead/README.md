@@ -100,9 +100,7 @@ dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 
 The Loader row id `devlead` accepts `notificationBatchMs`, `maxWatchedSessions`,
 `maxListedSessions`, `wakeColdSession` (default `true` since 0.2.0), `defaultAgentPreset`
-(used when a created Session names no preset; an invalid id fails creation), optional `workspaceModels`
-(per-Workspace route entries matched by resolved id/path/title) and `defaultModel` (fallback before the Host default),
-and the optional `boardPath` override. The board is enabled by default: a trimmed-blank / omitted `boardPath` derives
+(used when a created Session names no preset; an invalid id fails creation), and the optional `boardPath` override. The board is enabled by default: a trimmed-blank / omitted `boardPath` derives
 `<active lead Session header cwd>/.dsh/devlead/board.json`; a non-blank value must be absolute and
 wins over the derived path (relative paths are rejected). Existing explicit `boardPath` deployments
 keep their path and behaviour unchanged, and no tool argument can redirect the board file.

@@ -294,8 +294,6 @@ export class DevLeadService extends Service {
     maxListedSessions: z.number().step(1).min(1).default(200),
     wakeColdSession: z.boolean().default(true),                  // 冷 lead 是否 resume 投递（默认 true，见 §4.1）
     defaultAgentPreset: z.string().default(''),                  // 创建会话的默认 preset
-    workspaceModels: z.array(z.object({ workspace: z.string(), provider: z.string(), model: z.string() })).default([]),
-    defaultModel: modelSelectionConfigSchema.default({ provider: '', model: '', reasoningEffort: '' }),
   })
 
   // 模式（仅人类路径调用：命令 / UI 开关）
@@ -451,10 +449,9 @@ default: boolean; broken? }[]; reason? }`；`default` 是 Host 有效默认（`s
   文本），不会静默忽略或替换。`listAgentPresets` 用 `ctx.get('agentPresets')` duck-typing 探测
   可选 roster：服务缺席返回 `available: false` + reason，读取失败返回结构化错误，行按 Host
   `list()` 顺序映射、无 id 行丢弃，`default` 取 Host `defaultId`。
-- **创建时模型与 Agent Teams**：模型路由优先级为显式 `provider`/`model` → 首个匹配已解析
-  Workspace id/path/exact title 的 `workspaceModels` 条目 → `defaultModel` → Host 默认。`provider`/`model`
-  必须成对，`reasoning_effort` 只能与成对模型一起用（否则 `DEVLEAD_INVALID_INPUT`）；继承路由与显式路由
-  都在创建前按与 Session controller 的
+- **创建时模型与 Agent Teams**：省略模型参数时直接继承 Host 默认；lead 可按任务/角色显式传
+  `provider`/`model`（可选 `reasoning_effort`）。`provider`/`model` 必须成对，`reasoning_effort` 只能与成对
+  模型一起用（否则 `DEVLEAD_INVALID_INPUT`）；显式路由在创建前按与 Session controller 的
   `selectModel` 相同的口径校验：provider 已注册、model 在该 provider 当前可用模型列表内、
   `ctx.llm.resolveCallConfig` 接受该 route/effort（失败 `DEVLEAD_MODEL_UNAVAILABLE`，消息含
   provider/model/effort），因此不可用配置**不会**创建出 Session。`agent_teams: true` 要求
@@ -466,8 +463,8 @@ default: boolean; broken? }[]; reason? }`；`default` 是 Host 有效默认（`s
   （durable `team/mode` 事件，内部 flush）。两者都是 **creation-time only**，
   `promptSession` 不会重新指定。应用阶段失败（竞态/持久化）的错误消息必须带出已创建的
   sessionId 并说明 Session 仍存在；按既有"创建后副作用不回滚"契约不做自动归档，也不留下
-  watch（watch 在其后提交，预留槽位由 `finally` 释放）。结果带实际应用（显式或配置继承）的
-  `model` / `agentTeams`；完全回退 Host 默认时省略。模型不可用错误（创建前与创建后）都提示调用
+  watch（watch 在其后提交，预留槽位由 `finally` 释放）。结果只带实际显式应用成功的
+  `model` / `agentTeams`；继承 Host 默认时省略。模型不可用错误（创建前与创建后）都提示调用
   `devlead_list_models` 查看可用 provider/model/effort；Team 是否开启由 lead 按任务判断
   （复杂/多步/并行可开，简单线性省略，人类明确开/关照做）。Team 能力用
   `ctx.get('agentTeams')` duck-typing 探测，**没有**静态 import：DSH 0.2.2-rc.1 的默认组合

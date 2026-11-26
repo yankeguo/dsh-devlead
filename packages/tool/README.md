@@ -88,10 +88,9 @@ preset ids. The `preset` argument is always a Host-defined id; omitted or blank 
 to the plugin `defaultAgentPreset`, then the Host default/selectedDefault, and an invalid or
 unusable id fails creation with a structured error instead of being silently ignored.
 
-`devlead_create_session` resolves an explicit `provider` + `model` (optional `reasoning_effort`) first,
-then the matching `workspaceModels` entry, then `defaultModel`, then the Host default. Call
-`devlead_list_models` first when pinning or configuring a route; every inherited or explicit selection is reported
-in the creation result. Agent
+`devlead_create_session` inherits the Host default model unless `provider` + `model` (optional
+`reasoning_effort`) is explicitly provided for the task. Call `devlead_list_models` first when pinning; an explicit
+selection is validated and reported in the creation result. Agent
 Teams is the lead's judgment for complex, multi-step,
 or parallel work (`agent_teams: true`); simple linear work omits it, and an explicit human on/off
 is obeyed. The model is validated before the Session exists, the selection is recorded on the

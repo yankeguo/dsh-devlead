@@ -1,13 +1,9 @@
-/** Focused acceptance coverage for report excerpts, routing, cancellation, and archive cleanup. */
+/** Focused acceptance coverage for report excerpts, cancellation, and archive unwatch. */
 
 import { afterEach, describe, expect, it } from 'vitest'
-import { SessionId } from '@deepseek-ai/dsh-session'
 import { DEVLEAD_ASSISTANT_EXCERPT_MAX } from '@yankeguo/dsh-devlead-protocol'
 import {
   FakeAgent,
-  FakeAgentDefaultModel,
-  FakeModelValidator,
-  FakeSessionController,
   FakeSessionQuery,
   FakeWorkspaceRegistry,
   appendAssistantMessage,
@@ -118,54 +114,6 @@ describe('lead-requested interrupt classification', () => {
     const externalWake = messageText(harness.lead.steers[0]!)
     expect(externalWake).toContain('[DEV LEAD REVIEW REQUIRED]')
     expect(notificationRecords(harness.leadSession)[1]?.cancelledByLeadInterrupt).toBeUndefined()
-  })
-})
-
-describe('workspace model routing', () => {
-  it('applies explicit > workspaceModels > defaultModel and reports the effective route', async () => {
-    const registry = new FakeWorkspaceRegistry()
-    registry.add({ path: '/tmp/route-space', title: 'RouteSpace' })
-    registry.add({ path: '/tmp/other-space', title: 'OtherSpace' })
-    const controller = new FakeSessionController()
-    const validator = new FakeModelValidator()
-      .withProvider('workspace-provider', ['workspace-model'])
-      .withProvider('default-provider', ['default-model'])
-      .withProvider('explicit-provider', ['explicit-model'])
-    const defaultModel = new FakeAgentDefaultModel()
-    const harness = await bootService({
-      enabled: true,
-      workspaceRegistry: registry,
-      sessionController: controller,
-      llm: validator,
-      agentDefaultModel: defaultModel,
-      config: {
-        workspaceModels: [{
-          workspace: 'RouteSpace', provider: 'workspace-provider', model: 'workspace-model', reasoningEffort: 'high',
-        }],
-        defaultModel: { provider: 'default-provider', model: 'default-model', reasoningEffort: 'medium' },
-      },
-    })
-    let sequence = 0
-    controller.createHandler = () => {
-      sequence += 1
-      const session = harness.ctx.sessions.create(SessionId(`route-child-${String(sequence)}`))
-      harness.agents.add(new FakeAgent(session))
-      return { sessionId: session.id }
-    }
-
-    const workspace = await harness.service.createSession(harness.lead.agent, { workspace: 'RouteSpace' })
-    expect(workspace.model).toEqual({ provider: 'workspace-provider', model: 'workspace-model', reasoningEffort: 'high' })
-    const explicit = await harness.service.createSession(harness.lead.agent, {
-      workspace: 'RouteSpace',
-      model: { provider: 'explicit-provider', model: 'explicit-model', reasoningEffort: 'low' },
-    })
-    expect(explicit.model).toEqual({ provider: 'explicit-provider', model: 'explicit-model', reasoningEffort: 'low' })
-    const fallback = await harness.service.createSession(harness.lead.agent, { workspace: '/tmp/other-space' })
-    expect(fallback.model).toEqual({ provider: 'default-provider', model: 'default-model', reasoningEffort: 'medium' })
-    expect(harness.agents.resolve('route-child-1')?.modelSelections).toEqual([
-      { provider: 'workspace-provider', model: 'workspace-model', reasoningEffort: 'high' },
-    ])
-    expect(defaultModel.saveCalls).toBe(0)
   })
 })
 

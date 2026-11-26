@@ -648,12 +648,6 @@ export interface DevLeadModelSelection {
   readonly reasoningEffort?: string
 }
 
-/** Deployment model route selected by a resolved Workspace id, path, or exact title. */
-export interface DevLeadWorkspaceModelSelection extends DevLeadModelSelection {
-  /** Exact Workspace id, canonical path, or display title to match. */
-  readonly workspace: string
-}
-
 /** One reasoning effort a provider advertises for a model. */
 export interface DevLeadModelEffortView {
   /** Adapter-owned effort id accepted by `reasoning_effort`. */

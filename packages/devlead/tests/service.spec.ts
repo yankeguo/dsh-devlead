@@ -237,7 +237,6 @@ describe('configuration', () => {
       maxListedSessions: 5,
       wakeColdSession: true,
       defaultAgentPreset: 'reviewer',
-      workspaceModels: [],
       questionTtlMs: 0,
     })
   })

@@ -79,7 +79,6 @@ import type {
   DevLeadUnarchivedSession,
   DevLeadUseWorkspaceRequest,
   DevLeadWatchMutation,
-  DevLeadWorkspaceModelSelection,
   DevLeadWorkspaceView,
 } from '@yankeguo/dsh-devlead-protocol'
 import {
@@ -270,10 +269,6 @@ export interface Config {
   wakeColdSession?: boolean
   /** Agent preset used by Sessions this lead creates when the request names none. */
   defaultAgentPreset?: string
-  /** Model routes matched against the resolved Workspace id/path/exact title, in declaration order. */
-  workspaceModels?: DevLeadWorkspaceModelSelection[]
-  /** Fallback model route when no Workspace entry matches; omitted uses the Host default. */
-  defaultModel?: DevLeadModelSelection
   /** Open-question lifetime in milliseconds; default 24h, 0 disables expiry. */
   questionTtlMs?: number
   /**
@@ -644,13 +639,6 @@ class DevLeadInterruptedAdmissionError extends DevLeadError {
   }
 }
 
-/** Shared loader shape of one configured model route. */
-const modelSelectionConfigSchema = z.object({
-  provider: z.string(),
-  model: z.string(),
-  reasoningEffort: z.string().default(''),
-})
-
 /** Loader schema for the DevLead core service. */
 export const Config: z<Config> = z.object({
   notificationBatchMs: z.number().step(1).min(0).max(MAX_TIMER_DELAY_MS).default(400),
@@ -659,13 +647,6 @@ export const Config: z<Config> = z.object({
   maxListedSessions: z.number().step(1).min(1).default(200),
   wakeColdSession: z.boolean().default(true),
   defaultAgentPreset: z.string().default(''),
-  workspaceModels: z.array(z.object({
-    workspace: z.string(),
-    provider: z.string(),
-    model: z.string(),
-    reasoningEffort: z.string().default(''),
-  })).default([]),
-  defaultModel: modelSelectionConfigSchema.default({ provider: '', model: '', reasoningEffort: '' }),
   questionTtlMs: z.number().step(1).min(0).max(Number.MAX_SAFE_INTEGER).default(DEFAULT_QUESTION_TTL_MS),
   boardPath: z.string().default(''),
 })
@@ -687,10 +668,6 @@ export interface DevLeadSettings {
   readonly wakeColdSession: boolean
   /** Agent preset used by created Sessions when the request names none. */
   readonly defaultAgentPreset: string | undefined
-  /** Validated Workspace model routes in declaration order. */
-  readonly workspaceModels: readonly DevLeadWorkspaceModelSelection[]
-  /** Validated fallback model route, when configured. */
-  readonly defaultModel?: DevLeadModelSelection
   /** Open-question lifetime in milliseconds; zero disables expiry. */
   readonly questionTtlMs: number
   /**
@@ -698,23 +675,6 @@ export interface DevLeadSettings {
    * lead-workspace derivation applies.
    */
   readonly boardPath?: string
-}
-
-/** Validate and detach one configured model selection with direct-construction errors. */
-function configuredModel(value: DevLeadModelSelection, label: string): NormalizedModelSelection {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    throw new TypeError(`${label} must be a model selection object`)
-  }
-  if (typeof value.provider !== 'string' || value.provider.trim().length === 0
-    || typeof value.model !== 'string' || value.model.trim().length === 0) {
-    throw new TypeError(`${label} requires non-blank provider and model strings`)
-  }
-  if (value.reasoningEffort !== undefined && typeof value.reasoningEffort !== 'string') {
-    throw new TypeError(`${label} reasoningEffort must be a string when provided`)
-  }
-  const normalized = normalizeModelSelection(value)
-  if (normalized === undefined) throw new TypeError(`${label} requires provider and model`)
-  return normalized
 }
 
 /**
@@ -746,26 +706,6 @@ function resolveConfig(config: Config): DevLeadSettings {
   if (typeof wakeColdSession !== 'boolean') throw new TypeError('wakeColdSession must be a boolean')
   const defaultAgentPreset = config.defaultAgentPreset ?? ''
   if (typeof defaultAgentPreset !== 'string') throw new TypeError('defaultAgentPreset must be a string')
-  const configuredWorkspaces = config.workspaceModels ?? []
-  if (!Array.isArray(configuredWorkspaces)) throw new TypeError('workspaceModels must be an array')
-  const workspaceModels = configuredWorkspaces.map((entry, index) => {
-    const label = `workspaceModels[${String(index)}]`
-    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
-      throw new TypeError(`${label} must be an object`)
-    }
-    if (typeof entry.workspace !== 'string' || entry.workspace.trim().length === 0) {
-      throw new TypeError(`${label}.workspace must be a non-blank string`)
-    }
-    return { workspace: entry.workspace.trim(), ...configuredModel(entry, label) }
-  })
-  const configuredDefault = config.defaultModel
-  const emptyDefault = typeof configuredDefault === 'object' && configuredDefault !== null
-    && !Array.isArray(configuredDefault)
-    && typeof configuredDefault.provider === 'string' && configuredDefault.provider.trim().length === 0
-    && typeof configuredDefault.model === 'string' && configuredDefault.model.trim().length === 0
-  const defaultModel = configuredDefault === undefined || emptyDefault
-    ? undefined
-    : configuredModel(configuredDefault, 'defaultModel')
   const questionTtlMs = config.questionTtlMs ?? DEFAULT_QUESTION_TTL_MS
   if (!Number.isSafeInteger(questionTtlMs) || questionTtlMs < 0) {
     throw new TypeError('questionTtlMs must be a non-negative safe integer')
@@ -783,8 +723,6 @@ function resolveConfig(config: Config): DevLeadSettings {
     maxListedSessions,
     wakeColdSession,
     defaultAgentPreset: defaultAgentPreset.trim().length === 0 ? undefined : defaultAgentPreset.trim(),
-    workspaceModels,
-    ...defaultModel === undefined ? {} : { defaultModel },
     questionTtlMs,
     ...trimmedBoardPath.length === 0 ? {} : { boardPath: trimmedBoardPath },
   }
@@ -3827,14 +3765,7 @@ export class DevLeadService extends Service {
         )
       }
       signal?.throwIfAborted()
-      const workspaceModel = this.resolved.workspaceModels.find(entry => entry.workspace === workspace.id
-        || entry.workspace === workspace.path || entry.workspace === workspace.title)
-      const configuredModel = workspaceModel ?? this.resolved.defaultModel
-      const requestedModel = explicitModel ?? (configuredModel === undefined ? undefined : {
-        provider: configuredModel.provider,
-        model: configuredModel.model,
-        ...configuredModel.reasoningEffort === undefined ? {} : { reasoningEffort: configuredModel.reasoningEffort },
-      })
+      const requestedModel = explicitModel
       if (requestedModel !== undefined) await this.assertModelSelectable(requestedModel, signal)
       signal?.throwIfAborted()
       const preset = request.preset?.trim() ?? this.resolved.defaultAgentPreset

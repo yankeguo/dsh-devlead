@@ -357,9 +357,6 @@ config）：
     maxListedSessions: 200       # 会话列表单次最多行数（正整数）
     wakeColdSession: true        # 恢复冷 DevLead 会话以投递其排队通知
     defaultAgentPreset: ''       # 创建会话时的默认 Agent preset（空 = Host 默认）
-    # 可选路由 fallback（先于 Host 默认）；工具显式参数优先。
-    # defaultModel: { provider: nanollm, model: kimi-k3.1-pro, reasoningEffort: high }
-    workspaceModels: []          # 条目：{ workspace, provider, model, reasoningEffort? }
     questionTtlMs: 86400000      # open question 的 TTL（24 小时；0 = 禁用 lazy 过期）
     boardPath: ''                # 可选：空白 = 由 active lead 的 workspace 派生 <cwd>/.dsh/devlead/board.json
 ```
@@ -372,8 +369,6 @@ config）：
 | `maxListedSessions` | `200` | 正整数；列表类调用的行数上限。身份解析不受此限制 |
 | `wakeColdSession` | `true` | 为 `true` 时，带排队通知的冷 lead Session 会被恢复以完成投递；设为 `false` 可让队列留在内存里，直到人类打开该 lead Session |
 | `defaultAgentPreset` | `''` | 创建会话未指定 `preset` 时使用的默认值；空表示 Host 的实际默认值。无效 id 会让创建失败并返回结构化错误 |
-| `workspaceModels` | `[]` | 有序路由条目 `{ workspace, provider, model, reasoningEffort? }`。`devlead_create_session` 省略模型参数时，使用首个匹配已解析 Workspace id、canonical path 或精确 title 的条目，校验后只应用于该子会话；工具显式参数始终优先 |
-| `defaultModel` | 省略 | 可选 `{ provider, model, reasoningEffort? }`，在 `workspaceModels` 之后、Host 默认之前回退。仅在创建时路由，不改写 profile 默认模型 |
 | `questionTtlMs` | `86400000` | 非负安全整数；open question 的 lazy TTL（24 小时），`0` 禁用过期。已回答的问题不会追溯过期 |
 | `boardPath` | `''`（自动派生） | 可选的绝对路径 override。trim 后为空白时由 active lead Session 的原始 workspace 根自动派生 `<cwd>/.dsh/devlead/board.json`，看板默认启用；非空必须是项目看板 JSON 的绝对路径并优先于派生路径。相对路径直接拒绝，不按 cwd resolve。既有显式配置 `boardPath` 的部署升级后路径与行为不变。路径**最终组件不能是 symlink**（原子替换会换掉链接本身而不是目标文件）；父目录链中的 symlink 可以。只有 lead AI 通过工具写入，人类/浏览器只读。详见 [docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md) |
 
