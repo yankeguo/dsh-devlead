@@ -218,7 +218,7 @@ DSH 的所有读取路径会保留并重放这些记录，但不会把它们投�
 - 时间戳必须是非负安全整数且落在 `Date` 可表示范围内（≤ 8.64e15），turn 必须是正安全整数；
   否则 `formatInstant` 之类的渲染会在 UI 侧抛 `RangeError`。
 - notification 的 `id` 必须等于 `notificationId(sessionId, turn, transition)`；`sessionTitle` /
-  `error` / `summary` 必须是 ≤240 码点的非空字符串；一条 projection 最多保留 64 条通知。这些
+  `error` 必须 ≤240 码点，assistant `summary` 默认 ≤4096 码点并带 `summaryTruncated`；一条 projection 最多保留 64 条通知。这些
   不变量同时由 decoder、state schema 与 wire schema 守卫。
 - report 的 `id` 必须等于 `devLeadReportId(senderSessionId, turn, kind, message)`；`kind` 是
   `progress|blocked|decision|question|fyi`；`message` 1–4000 码点，`summary` 1–200 码点，sender/lead id
@@ -294,6 +294,8 @@ export class DevLeadService extends Service {
     maxListedSessions: z.number().step(1).min(1).default(200),
     wakeColdSession: z.boolean().default(true),                  // 冷 lead 是否 resume 投递（默认 true，见 §4.1）
     defaultAgentPreset: z.string().default(''),                  // 创建会话的默认 preset
+    workspaceModels: z.array(z.object({ workspace: z.string(), provider: z.string(), model: z.string() })).default([]),
+    defaultModel: modelSelectionConfigSchema.default({ provider: '', model: '', reasoningEffort: '' }),
   })
 
   // 模式（仅人类路径调用：命令 / UI 开关）
@@ -311,7 +313,7 @@ export class DevLeadService extends Service {
   listSessions(agent: Agent, options?: { workspace?: string; watchedOnly?: boolean; limit?: number; signal?: AbortSignal }): Promise<DevLeadSessionView[]>
   listModels(agent: Agent, signal?: AbortSignal): Promise<DevLeadModelCatalog>
   listAgentPresets(agent: Agent, signal?: AbortSignal): Promise<DevLeadAgentPresetCatalog>
-  getSession(agent: Agent, sessionId: string, signal?: AbortSignal): Promise<DevLeadSessionView>
+  getSession(agent: Agent, sessionId: string, signal?: AbortSignal, lastAssistantLimit?: number): Promise<DevLeadSessionView>
   createSession(agent: Agent, request: DevLeadCreateSessionRequest, signal?: AbortSignal): Promise<DevLeadCreatedSession>
   promptSession(agent: Agent, sessionId: string, prompt: string, options?: DevLeadPromptSessionOptions): Promise<DevLeadPromptedSession>
   watchSession(agent: Agent, sessionId: string, watching: boolean, signal?: AbortSignal): Promise<DevLeadWatchMutation>
@@ -449,9 +451,10 @@ default: boolean; broken? }[]; reason? }`；`default` 是 Host 有效默认（`s
   文本），不会静默忽略或替换。`listAgentPresets` 用 `ctx.get('agentPresets')` duck-typing 探测
   可选 roster：服务缺席返回 `available: false` + reason，读取失败返回结构化错误，行按 Host
   `list()` 顺序映射、无 id 行丢弃，`default` 取 Host `defaultId`。
-- **创建时模型与 Agent Teams**：默认继承 Host 默认模型；`provider`/`model` 必须成对，
-  `reasoning_effort` 只能与成对模型一起用（否则 `DEVLEAD_INVALID_INPUT`），并且只在人类明确
-  要求或简报需要成本/能力路由、可复现性时才应指定（policy 口径）。创建前按与 Session controller 的
+- **创建时模型与 Agent Teams**：模型路由优先级为显式 `provider`/`model` → 首个匹配已解析
+  Workspace id/path/exact title 的 `workspaceModels` 条目 → `defaultModel` → Host 默认。`provider`/`model`
+  必须成对，`reasoning_effort` 只能与成对模型一起用（否则 `DEVLEAD_INVALID_INPUT`）；继承路由与显式路由
+  都在创建前按与 Session controller 的
   `selectModel` 相同的口径校验：provider 已注册、model 在该 provider 当前可用模型列表内、
   `ctx.llm.resolveCallConfig` 接受该 route/effort（失败 `DEVLEAD_MODEL_UNAVAILABLE`，消息含
   provider/model/effort），因此不可用配置**不会**创建出 Session。`agent_teams: true` 要求
@@ -463,8 +466,8 @@ default: boolean; broken? }[]; reason? }`；`default` 是 Host 有效默认（`s
   （durable `team/mode` 事件，内部 flush）。两者都是 **creation-time only**，
   `promptSession` 不会重新指定。应用阶段失败（竞态/持久化）的错误消息必须带出已创建的
   sessionId 并说明 Session 仍存在；按既有"创建后副作用不回滚"契约不做自动归档，也不留下
-  watch（watch 在其后提交，预留槽位由 `finally` 释放）。结果只带实际请求并成功的
-  `model` / `agentTeams`。模型不可用错误（创建前与创建后）都提示调用
+  watch（watch 在其后提交，预留槽位由 `finally` 释放）。结果带实际应用（显式或配置继承）的
+  `model` / `agentTeams`；完全回退 Host 默认时省略。模型不可用错误（创建前与创建后）都提示调用
   `devlead_list_models` 查看可用 provider/model/effort；Team 是否开启由 lead 按任务判断
   （复杂/多步/并行可开，简单线性省略，人类明确开/关照做）。Team 能力用
   `ctx.get('agentTeams')` duck-typing 探测，**没有**静态 import：DSH 0.2.2-rc.1 的默认组合
@@ -769,7 +772,7 @@ Watched session activity changed outside this conversation. This is a runtime no
 Call devlead_notifications for the retained digest, or devlead_get_session for one session in detail. ...
 ```
 
-通知记录携带 `summary`（turn 结束前最后一条 assistant 文本的 240 字符摘要），
+通知记录携带 `summary`（turn 结束前最后一条 assistant 文本的 4096 码点摘要及截断标记），
 DevLead 无需额外工具调用即可判断是否要介入。
 
 ### 4.1.2 中途汇报（watched child → active lead）
@@ -1262,8 +1265,8 @@ blocked/decision/review 分支＋ `background`（progress/fyi）＋ source metad
 
 | 内部路径 | 模型看到的 header | 用途 |
 | --- | --- | --- |
-| `turn-notice` | `[DEV LEAD NOTIFICATION]` | T1 completed/forked、Q2 兜底 |
-| `action-required`（review） | `[DEV LEAD REVIEW REQUIRED]` | T2 error/aborted/blocked/max-tokens/interrupted |
+| `turn-notice` | `[DEV LEAD NOTIFICATION]` | T1 completed/forked、lead 自己 interrupt 的取消、Q2 兜底 |
+| `action-required`（review） | `[DEV LEAD REVIEW REQUIRED]` | 真正的 T2 error/外部 abort/blocked/max-tokens/外部 interrupt |
 | `action-required`（action） | `[DEV LEAD ACTION REQUIRED]` | P3 blocked、P4 decision |
 | `action-required`（question） | `[DEV LEAD QUESTION]` | Q1 question |
 | `background` | `[DEV LEAD REPORT]` | P1 progress、P2 fyi；标 background / no action required |
@@ -1280,6 +1283,10 @@ blocked/decision/review 分支＋ `background`（progress/fyi）＋ source metad
 | `P4` decision | `steer` | `steer` | resume + `steer` | report | 是 | `[DEV LEAD ACTION REQUIRED]` |
 | `Q1` question | `steer` | `steer` | resume + `steer` | report + answer record | 是，立即调度 flush | `[DEV LEAD QUESTION]`；跳过 400ms 与 queued-turn-notice 避让 |
 | `Q2` natural-language question | `followup` | `followup` | resume + `followup` | notification | 是 | policy 兜底；Phase 2 可加 `possibleQuestion` 标记 |
+
+> lead 经 `devlead_prompt_session(interrupt:true)` 主动停止的 `aborted/interrupted` 仍保留原 transition，
+> 但通知带 `cancelledByLeadInterrupt:true`，统一走 T1 transport/header，并显示 `cancelled by your interrupt`；
+> 该标记随 durable notification 折叠，cold unsaved/retry 不会重新升级成 REVIEW REQUIRED。其他来源的取消仍是 T2。
 
 > cold lead 的唤醒受现有 `wakeColdSession` 控制：`P1`/`P2` 不触发 cold resume/wake，只保留
 > durable receipt/digest；`T1`/`T2`/`P3`/`P4`/`Q1`/`Q2` 在 `wakeColdSession:true` 时 resume
@@ -1799,7 +1806,7 @@ If you need the human, ask them first with ask_user_question, then relay.
 **自然语言提问**
 
 - 无法在工具层拦截 turn 末尾的 prose question；现有 `turn/end` 通知的 `summary` 是最后
-  一条 assistant 文本的 240 字符摘要，lead policy 要求把结尾问题当成待回答问题。
+  一条 assistant 文本的 4096 码点摘要（可用 last_assistant_limit 调整并带截断状态），lead policy 要求把结尾问题当成待回答问题；长报告写 /tmp/*.md 后只回摘要与路径。
 - Phase 2 可选 `possibleQuestion` 标记：如果最后一条 assistant 文本以 `?` 结尾或包含
   问号，通知 view 加 `possibleQuestion:true`，wake 文案提示「This turn may have ended
   with a question; read devlead_get_session」。仍走 `turn-notice`，不自动升级为
@@ -2375,7 +2382,7 @@ DSH peer 依赖。最小可交付闭环是 1b + 1c + 1d：question 快、answer 
 > 内存 deliveryState）与 policy/UI 文案、指标。工具输入 schema 在 1e 未变化。
 > `devlead_report` 的 question `turnEndRequested`（durable 检查 + 结果/policy）已在 Phase 1c 实现。
 
-18 个主工具都带 `when: ({ agent }) => ctx.devLead.isEnabled(agent)`，只在 DevLead 会话可见；
+17 个主工具都带 `when: ({ agent }) => ctx.devLead.isEnabled(agent)`，只在 DevLead 会话可见；
 `devlead_report` 是唯一的反向面：`when` 为 `ctx.devLead.isSupervised(agent)`，只在被唯一 active lead
 关注的非 DevLead 会话可见（见下文「中途汇报工具」）。
 
@@ -2385,21 +2392,20 @@ DSH peer 依赖。最小可交付闭环是 1b + 1c + 1d：question 快、answer 
 | `devlead_list_models` | `{}` | `DevLeadModelCatalog`（default / routableProviders / providers / failures，精简） |
 | `devlead_list_agent_presets` | `{}` | `DevLeadAgentPresetCatalog`（available / presets[id,name?,description?,default,broken?] / reason?） |
 | `devlead_board_read` | `project?`(id / workspace title / 绝对 path), `include_tasks?`, `limit?` | `{ revision, updatedAt, projects, truncated? }` |
-| `devlead_board_update` | `project`, `expected_revision?`, `create?`, `set?`, `blockers?`, `tasks?` | `{ revision, updatedAt, project, changed[] }`；仅 lead AI 可写，详见 [BOARD](BOARD.md) |
-| `devlead_board_note_read` | `project`(看板 id / workspace title / 绝对 path), `note?`；无路径参数 | 省略 note 返回该项目 metadata 列表；指定 note 返回 metadata + Markdown 正文，详见 [BOARD](BOARD.md) |
-| `devlead_board_note_write` | `project`, `operation: create/update-metadata/delete`, `note?`, `title?`, `summary?`、仅 create 的 `content?`, `expected_revision?`；无路径输入 | 仅 active lead AI 可写 index；锁内 fresh read + index revision CAS + 原子替换；返回 absolutePath 供原生文件工具编辑正文，详见 [BOARD](BOARD.md) |
+| `devlead_board_update` | `project`, `expected_revision?`, `create?`, `commit?`, `set?`, `blockers?`, `tasks?` | `{ revision, updatedAt, project, changed[], commitHash?, warning? }`；per-project CAS，仅 lead AI 可写，详见 [BOARD](BOARD.md) |
+| `devlead_board_note_read` | `project`(看板 id / workspace title / 绝对 path), `note?`；无路径参数 | 省略 note 返回该项目 metadata 列表；指定 note 返回单个 metadata，均不含正文，详见 [BOARD](BOARD.md) |
+| `devlead_board_note_write` | `project`, `operation: create/update-metadata/delete`, `note?`, `title?`, `summary?`, `expected_revision?`；无路径或 content 输入 | 仅 active lead AI 可写 index；create 创建空文件；返回 absolutePath 供原生文件工具读写正文，详见 [BOARD](BOARD.md) |
 | `devlead_use_workspace` | `path`(必填，绝对路径), `title?`, `create?`(默认 false；显式 true 才 mkdir) | `{ workspace }` |
 | `devlead_list_sessions` | `workspace?`(id / 注册路径 / 精确 title), `watched_only?`, `limit?` | `{ sessions, watched: string[] }` |
 | `devlead_create_session` | `workspace?`(id / 注册路径 / 精确 title), `prompt?`, `title?`, `watch?`(默认 true), `preset?`(Host 定义 id；空白回退插件默认再 Host 默认), `isolation?`(默认 `none`；`worktree` = 尽力隔离), `provider?`+`model?`(成对；可选 `reasoning_effort?`), `agent_teams?` | `DevLeadCreatedSession`（含 `isolation`；请求时含已应用的 `model`/`agentTeams`） |
-| `devlead_get_session` | `session`(必填) | `{ session, reports?, queuedInputs? }`（读取 lead 自身时携带最近 5 条 retained reports，question report 带 questionStatus/answerStatus，每条 report 带诊断 lane 与内存 deliveryState；目标 live 时携带排队 inbox 输入明细 `DevLeadQueuedInput[]`，DevLead 消息带 intent/questionId/wakeRequested，被跟踪 answer 带 deliveryState） |
+| `devlead_get_session` | `session`(必填), `last_assistant_limit?`(默认4096码点) | `{ session, reports?, queuedInputs? }`（session 带 lastAssistantTruncated）（读取 lead 自身时携带最近 5 条 retained reports，question report 带 questionStatus/answerStatus，每条 report 带诊断 lane 与内存 deliveryState；目标 live 时携带排队 inbox 输入明细 `DevLeadQueuedInput[]`，DevLead 消息带 intent/questionId/wakeRequested，被跟踪 answer 带 deliveryState） |
 | `devlead_prompt_session` | `session`(必填), `prompt`(必填), `intent?`(默认 `instruction`；`answer`/`correction`/`background`), `question_id?`(仅 `answer` 必填), `idempotency_key?`(≤200 码点), `watch?`(默认 true), `interrupt?`(默认 false；true = 先经 `workspace/session-stop` 停止运行中工作再投递；idle/cold no-op；`background` 时非法), `interrupt_inbox?`(默认 `clear-all`；`keep`/`clear-own` 见 §4 inbox 策略，`clear-own` 保留 pending answer) | `DevLeadPromptedSession`（含 `interrupted`、保留策略实际执行时含 `retainedInputs`、必填 `delivery`：`{ primitive, boundary, wakeRequested, messageId, questionId?, idempotencyKey? }`，无内部 lane；幂等重试返回原 receipt） |
 | `devlead_retract_input` | `session`(必填), `input_id`(必填，`queuedInputs` 报告的 Host 消息 id) | `DevLeadRetractedInput`（`{ sessionId, inputId, retracted }`；撤本 lead 自投 instruction/correction relay 与 background notice，**拒绝 answer**，幂等） |
 | `devlead_watch_session` | `session`(必填), `watching`(必填 bool) | `DevLeadWatchMutation` |
 | `devlead_notifications` | `limit?`(默认 20，分别作用于通知与汇报两个 digest) | `{ notifications, reports, watched: string[] }`（notification 行带 wakeSuppressedByReportId/wakeSuppressionReason（被合并唤醒时）；report 行带诊断 lane 与内存 deliveryState（pending/delivered/digest-only，重启后缺省）；question report 带 `questionStatus`/`answerStatus`/`answerMessageId`/`answeredAt`/`presentedAt`；用 `questionStatus === 'open'` 过滤待答问题） |
 | `devlead_report` | `message`(必填，≤4000 码点), `kind?`(默认 progress；progress/blocked/decision/question/fyi), `summary?`(≤200 码点) | `{ report, durable, queued, warning?, turnEndRequested?, questionId?, guidance? }`（仅已关注非 lead 会话可见；`when: isSupervised`；kind 决定 lane：progress/fyi → background inject 不唤醒（冷 lead/预算满 → digest-only），blocked/decision → action-required steer（16/pair 共享 pending 上限，溢出 `DEVLEAD_DELIVERY_RATE_LIMITED`），question → action-required；durable question 设置 `turnEndRequested:true` + `questionId` + `guidance` 并调用 `exec.concludeTurn()`；memory-only question 不请求结束 turn，warning 追加重述提示） |
 | `devlead_remove_workspace` | `workspace`(必填，id / 注册路径 / 精确 title) | `{ workspace, removed }`（注销前快照） |
-| `devlead_archive_session` | `session`(必填), `stop_running?`(默认 false) | `{ sessionId, archived: true, stopped }` |
-| `devlead_unarchive_session` | `session`(必填) | `{ sessionId, archived: false }` |
+| `devlead_archive_session` | `session?` / `sessions?` / `workspace?`+`settled_only:true`（三选一），`archived?`(默认 true；false=恢复), `stop_running?` | `{ sessions:[{ sessionId, archived, stopped?, watched? }] }`；归档成功自动 unwatch，Workspace 批量只选已 settle 且未归档项 |
 
 要点：
 
@@ -2409,7 +2415,7 @@ DSH peer 依赖。最小可交付闭环是 1b + 1c + 1d：question 快、answer 
   `.dsh/devlead/board.json`，`boardPath` 仅作可选绝对路径 override；没有 lead（或既无
   override 又无 workspace 根）时
   `BOARD_DISABLED`、摘要为空。文件写入使用 Host promise 链 + `withFileLock` +
-  `writeFileAtomic`，支持 expectedRevision CAS；坏 JSON 保留最后合法缓存并拒绝覆盖。
+  `writeFileAtomic`，支持目标 project 的 expectedRevision CAS（旧文件 revision 按文件代际回填并写回）；坏 JSON 保留最后合法缓存并拒绝覆盖。
   `devlead_board_read` 结果按 `DEVLEAD_BOARD_READ_MAX_BYTES`（64 KiB）裁剪 tasks → blockers →
   project 行；`devlead_board_update` 的 project 引用（id/title/path）在锁内快照上解析，预检使用
   固定 synthetic project id，长引用不再误报 `BOARD_LIMIT_EXCEEDED`。start/预创建失败只降级看板
@@ -2417,9 +2423,9 @@ DSH peer 依赖。最小可交付闭环是 1b + 1c + 1d：question 快、answer 
   `<sanitized project>/<note-id>.md`，index schema v1 只含 metadata；strict schema 拒绝未知字段、
   重复 id/directory/path 与 traversal，index ≤128 KiB、单 note ≤256 KiB、每项目 ≤100 条，
   `board.json` 不变。index 写入同样走 Host promise 链 + `withFileLock` + `writeFileAtomic`，以
-  `expected_revision` 做 CAS；工具仅 create（可选初始正文）/update-metadata/delete，后续正文用返回的
-  absolutePath 走 DSH 原生 read/write/edit，不走正文 CAS。read/list 串行在锁内读取稳定正文快照，惰性修复
-  bytes/文件 mtime updatedAt，缺失、坏 UTF-8 或超限时结构化报错且不提交修复，也绝不重写正文。已提交 index
+  `expected_revision` 做 CAS；工具仅 create（始终空正文）/update-metadata/delete，所有正文读写都用返回的
+  absolutePath 走 DSH 原生 read/write/edit，工具不接受也不返回 content。read/list 串行在锁内只 stat 稳定正文
+  快照，惰性修复 bytes/文件 mtime updatedAt，缺失或超限时结构化报错且不提交修复，也绝不读取或重写正文。已提交 index
   是 metadata 事实源，orphan Markdown 忽略。摘要为 active 项目追加 `notes:N` 与最近标题，标题先
   折叠为安全单行，整体仍 ≤1536 UTF-8 bytes。完整 schema / lifecycle / store / global / Step B
   衔接见 [BOARD](BOARD.md)。
@@ -2437,17 +2443,18 @@ DSH peer 依赖。最小可交付闭环是 1b + 1c + 1d：question 快、answer 
   `devlead_*` 工具的 `session` 参数描述与 `devlead_get_session` 的工具描述同步此口径。除
   `devlead_list_workspaces` / `devlead_board_read` 外需要调用者身份的工具都要求 live 调用
   者（缺失时 `DEVLEAD_AGENT_NOT_LIVE`）；写工具（`devlead_use_workspace` /
-  `devlead_create_session` / `devlead_prompt_session` / `devlead_watch_session` 与三个关闭
+  `devlead_create_session` / `devlead_prompt_session` / `devlead_watch_session` 与两个关闭
   工具）都在 core 中重新校验 live + 模式。`devlead_use_workspace` 0.2.0 起转发 live lead Agent
   给 core 的 `useWorkspace(agent, request, signal)`，`create` 默认
   `false`，仅当人类明确要求建目录时才传 `create: true`（工具 schema 与 policy 文案同步）。
-- 关闭语义工具（共 3 个；0.2.0 时工具数 8 → 12，后续新增 `devlead_list_agent_presets` 后为 13 个主工具；另增 1 个 `devlead_report`；排队输入能力再增 `devlead_retract_input`，主工具 14；board 两个工具后为 16，rc.4 两个 notes 工具后当前为 **18 个主工具 + 1 个汇报工具**）：`devlead_remove_workspace` 执行 DSH **remove**：
+- 关闭语义工具（共 2 个；当前为 **17 个主工具 + 1 个汇报工具**。unarchive 已折叠进 archive，批量清理不另增工具）：`devlead_remove_workspace` 执行 DSH **remove**：
   只注销 Workspace 记录，目录、文件与 Session 日志保留，其 Session 变未分组；返回注销前快照
   与 `removed`。`devlead_archive_session` 执行 DSH **archive**：日志保留、可恢复；带运行中
   工作（turn / subagent / job / schedule）的 Session 默认报 `DEVLEAD_SESSION_ACTIVE`，
   `stop_running: true` 时先写归档、再由 Host 的 `workspace/session-stop` providers 请求停止
   （不等待 settle），结果 `stopped: true`；已归档是 no-op（不检查活动、不请求停止，结果
-  `stopped: false`）。`devlead_unarchive_session` 幂等恢复。
+  `stopped: false`）。归档成功（含幂等已归档）自动 unwatch；`archived:false` 幂等恢复。显式
+  `sessions` 按顺序处理，`workspace + settled_only:true` 归档该 Workspace 所有已 settle 且未归档项。
   lead 不能归档自己的 Session（`DEVLEAD_INVALID_INPUT`，提示人类在侧边栏操作），subagent
   Session 不在可寻址集合内、自然报 not found。授权口径是**判断式自主**（judgment-based
   autonomy）：合理收尾时模型可自行归档自己创建/派发且已完成的临时 Session、注销明显陈旧/
@@ -2491,7 +2498,7 @@ DSH peer 依赖。最小可交付闭环是 1b + 1c + 1d：question 快、answer 
 - 工具把领域失败翻译成 `HarnessError(message, code)`；需要调用者的工具在 `exec.agent` 缺失
   （条件可见性被绕过）时也走结构化错误 `DEVLEAD_AGENT_NOT_LIVE`，基础设施错误原样重抛。所有异步写调用转发
   `exec.signal`（`create_session` / `prompt_session` / `watch_session` / `remove_workspace` /
-  `archive_session` / `unarchive_session`），读调用同样转发。
+  `archive_session` 的 archived true/false），读调用同样转发。
 - `systemPrompt.section({ name: 'devlead:policy', order: TOOL_SUBAGENT, text: ({ agent }) =>
   ctx.devLead.isEnabled(agent) ? POLICY : '' })` 提供 DevLead 行为指导：依据注册元数据判定
   归属、默认调度而非亲自实现（写入归归属 Workspace 的 Session，本 Workspace 也默认派发；
@@ -2810,7 +2817,7 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   `activeSessionLabel` 与两种 refusal 文案。
 - `tool`：用 fake `ctx.devLead` + fake `ctx.tools`/`ctx.systemPrompt` 捕获工具定义，验证
   `when` gating、参数校验、值渲染、编译期 schema↔protocol 一致性、运行时 output schema
-  校验、错误翻译、18 个主工具 + 1 个汇报工具的 execute 转发与取消信号转发（含两个 notes 工具的
+  校验、错误翻译、17 个主工具 + 1 个汇报工具的 execute 转发与取消信号转发（含两个 notes 工具的
   参数/结果/正文不进 presentation，以及 `listAgentPresets` 的 roster /
   unavailable / 失败投影）、presentCall replay 纯净性，以及
   policy 文案的角色边界契约（默认调度、写入归属、归属未明时先问或注册、无空会话）与派发后的
@@ -2887,7 +2894,7 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   scratch workspace 被初始化成真实 git 仓库（一次 seed commit），因此是真实 Git happy path。
   阶段 3 停实例 → 链接同一个 probe 包并叠加 probe patch 重启（关闭工具不需要实验 bundle，
   因此 `--no-worktree` 也会运行）→ probe 的 `devlead-e2e-inspect` 用真实
-  `ctx.tools.resolve` 报告该 Agent 一步可见的工具集（模式开启时恰好 18 个主 `devlead_*`，已关注子会话恰好 1 个 `devlead_report`，
+  `ctx.tools.resolve` 报告该 Agent 一步可见的工具集（模式开启时恰好 17 个主 `devlead_*`，已关注子会话恰好 1 个 `devlead_report`，
   模式关闭时为 0），用 `ctx.systemPrompt.assemble` 取 `devlead:policy` section（判断式自主
   关闭、安全边界、有限可行性判断/开放问题/深挖交接；关闭时为空文本）；`devlead-e2e-close`
   通过 `ctx.devLead` 归档一个已 prompt 的子会话（durable archive 集合 + archived 视图/列表行、

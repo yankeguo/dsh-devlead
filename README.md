@@ -19,7 +19,7 @@ everything.
 | **A dispatcher, not an implementer** | The DevLead decides which Workspace owns a request from registered metadata, sends a self-contained brief to a Session there, watches it, reviews the delivery, and reports. Deeper investigation and implementation stay in the child Session. |
 | **Real DSH entities** | Workspaces go through `ctx.workspaceRegistry`; children are ordinary Sessions visible in the sidebar that you can open, continue, archive — not hidden subagents. |
 | **Notification loop** | When a watched Session's turn settles, a durable notification wakes the DevLead so it can follow up, dispatch new work, or report. The watch index is rebuilt from durable records after a restart. |
-| **18 lead tools + 1 report tool** | Register/list/remove Workspaces, list Host models and Agent presets, create/read/continue/archive/restore/watch Sessions, inspect and retract queued inbox inputs, read the notification and report digest, and maintain the user-visible project board and per-project Markdown notes that are on by default for the active lead. Watched children get a one-way `devlead_report`. |
+| **17 lead tools + 1 report tool** | Register/list/remove Workspaces, list Host models and Agent presets, create/read/continue/archive/restore/watch Sessions, inspect and retract queued inbox inputs, read the notification and report digest, and maintain the user-visible project board and per-project Markdown notes that are on by default for the active lead. Watched children get a one-way `devlead_report`. |
 | **Human commands** | `/devlead`, `/devlead on\|off`, `/devlead reset`, `/devlead watch\|unwatch <session>` — Sessions are addressable by full id or unique prefix. |
 | **Optional worktree isolation** | When the Host composes DSH's experimental Git worktree service, a dispatched Session can get its own branch and checkout instead of sharing the Workspace checkout. Missing capability degrades to the shared checkout with a reported status. |
 | **Web UI** | A labelled DevLead toggle, a status-only DevLeadBar, active/watched sidebar marks, and a lead-only read-only project board with visibility-aware automatic refresh, a single-line KPI pill strip, compact responsive 2/3/1-column cards with row-aligned sections and title-row priority glyphs, per-project notes chips, and a safe full-pane Markdown notes reader in the right Sidebar. |
@@ -279,10 +279,11 @@ action-required reports per lead/child pair.
 
 ### Close sessions and workspaces
 
-The three closing tools use DSH's own vocabulary and are never destructive:
+The two closing tools use DSH's own vocabulary and are never destructive:
 `devlead_remove_workspace` unregisters the Workspace only (files and Session logs stay; its
-Sessions become ungrouped), `devlead_archive_session` hides a Session but keeps its log, and
-`devlead_unarchive_session` restores it to its recorded Workspace position. A Session with running
+Sessions become ungrouped). `devlead_archive_session` archives with `archived:true` (the default) and restores with
+`archived:false`; successful archives also unwatch. It accepts one `session`, ordered `sessions`, or
+`workspace` + `settled_only:true` to archive every settled, unarchived Session there. A Session with running
 work is refused as `DEVLEAD_SESSION_ACTIVE` unless `stop_running: true` is passed, which archives
 first and then asks the Host to stop that work.
 
@@ -324,7 +325,7 @@ whether the Host could isolate at all.
 
 ## Tool reference
 
-The eighteen lead tools are visible only in a DevLead session; `devlead_report` is visible only in
+The seventeen lead tools are visible only in a DevLead session; `devlead_report` is visible only in
 a watched non-lead Session. All `workspace` arguments accept an id, a registered path, or an exact
 title. All `session` arguments accept a full id, a unique prefix, or the uuid first segment. Board-note
 `project` arguments accept a board project id, workspace title, or absolute workspace path; neither
@@ -336,21 +337,20 @@ notes tool accepts a file path.
 | `devlead_list_models` | compact Host model catalog (default, providers, failures) | — |
 | `devlead_list_agent_presets` | Host Agent preset roster with the effective default | — |
 | `devlead_board_read` | read the user-visible project board (bounded result) | `project?`, `include_tasks?`, `limit?` |
-| `devlead_board_update` | lead-only project status/blocker/task update | `project`, `expected_revision?`, `create?`, `set?`, `blockers?`, `tasks?` |
-| `devlead_board_note_read` | read one project's note metadata or one Markdown note | `project`, `note?` |
-| `devlead_board_note_write` | create a note, update metadata, or delete it with index CAS | `project`, `operation: create/update-metadata/delete`, `note?`, `title?`, `summary?`, create-only `content?`, `expected_revision?` |
+| `devlead_board_update` | lead-only project status/blocker/task update | `project`, `expected_revision?`, `create?`, `commit?`, `set?`, `blockers?`, `tasks?` |
+| `devlead_board_note_read` | read one project's note metadata and native body paths | `project`, `note?` |
+| `devlead_board_note_write` | create an empty note, update metadata, or delete it with index CAS | `project`, `operation: create/update-metadata/delete`, `note?`, `title?`, `summary?`, `expected_revision?` |
 | `devlead_use_workspace` | register a Workspace (idempotent) | `path` (absolute), `title?`, `create?` (default false) |
 | `devlead_list_sessions` | list Sessions | `workspace?`, `watched_only?`, `limit?` |
 | `devlead_create_session` | create + optionally prompt a child Session | `workspace?`, `prompt?`, `title?`, `watch?`, `preset?`, `isolation?`, `provider?`+`model?`, `agent_teams?` |
-| `devlead_get_session` | read one Session (lead read includes newest reports) | `session` |
+| `devlead_get_session` | read one Session (lead read includes newest reports) | `session`, `last_assistant_limit?` (default 4096) |
 | `devlead_prompt_session` | prompt / answer / steer a child | `session`, `prompt`, `intent?`, `question_id?`, `idempotency_key?`, `watch?`, `interrupt?`, `interrupt_inbox?` |
 | `devlead_retract_input` | withdraw one queued inbox input before it runs | `session`, `input_id` |
 | `devlead_watch_session` | add/remove a watch | `session`, `watching` |
 | `devlead_notifications` | notification + report digests | `limit?` |
 | `devlead_report` | one-way mid-turn report (watched child only) | `message`, `kind?`, `summary?` |
 | `devlead_remove_workspace` | unregister a Workspace (files and logs untouched) | `workspace` |
-| `devlead_archive_session` | archive a Session (reversible) | `session`, `stop_running?` |
-| `devlead_unarchive_session` | restore an archived Session | `session` |
+| `devlead_archive_session` | archive/restore Sessions; batch settled Workspace cleanup; archive implies unwatch | `session?`/`sessions?`/`workspace?`+`settled_only`, `archived?`, `stop_running?` |
 
 Domain failures use stable `DEVLEAD_*` / `BOARD_*` error codes (including notes CAS and missing-note
 failures) and are rendered as friendly text. Read state from `lastTurn` / `lastTransition` / `lastError` /
@@ -362,11 +362,15 @@ failures) and are rendered as friendly text. Read state from `lastTurn` / `lastT
   `devlead_create_session` / `devlead_prompt_session` the DevLead must not wait inside the same
   turn (no `sleep`, no polling with the read tools, no Agent Teams `wait_agent`). It ends its turn;
   the settle wake-up starts a new one.
-- **Wake lanes.** Completed/forked turns are coalesced (`notificationBatchMs`, default 400 ms) into
-  a `followup` wake. Failed/interrupted turns and blocked/decision reports steer an immediate
+- **Wake lanes.** Completed/forked turns and cancellations explicitly requested by this lead are coalesced
+  (`notificationBatchMs`, default 400 ms) into a `followup` `[DEV LEAD NOTIFICATION]` wake with the original
+  transition retained. Genuine failures and external interruptions plus blocked/decision reports steer an immediate
   `[DEV LEAD REVIEW REQUIRED]` / `[DEV LEAD ACTION REQUIRED]` wake; question reports steer a
   `[DEV LEAD QUESTION]` wake carrying the full payload; progress/fyi reports inject background
   context with no wake (an idle lead stays idle).
+- **Long reports.** Session detail and wake summaries retain up to 4096 Unicode code points by default and carry
+  explicit truncation state. A child with a longer final report writes `/tmp/*.md` and replies with only a summary
+  and path; this is the supported handoff, not a raw-log workaround.
 - **Cold leads are resumed by default.** After a Host restart or plugin reload the watch index is
   rebuilt from durable records, and a queued notification resumes the cold lead Session unless
   `wakeColdSession` is set to `false`. Resume requires the Host to compose a Session activator;
@@ -395,6 +399,9 @@ profile's `cordis.patch.yml` — DSH replaces a row's whole config):
     maxListedSessions: 200       # max rows per session listing (positive integer)
     wakeColdSession: true        # resume a cold DevLead Session to deliver queued notifications
     defaultAgentPreset: ''       # default Agent preset for created sessions (empty = Host default)
+    # Optional route fallback before the Host default; explicit tool arguments win.
+    # defaultModel: { provider: nanollm, model: kimi-k3.1-pro, reasoningEffort: high }
+    workspaceModels: []          # entries: { workspace, provider, model, reasoningEffort? }
     questionTtlMs: 86400000      # open-question TTL (24h; 0 disables lazy expiry)
     boardPath: ''                # optional: blank derives <active lead workspace>/.dsh/devlead/board.json
 ```
@@ -407,6 +414,8 @@ profile's `cordis.patch.yml` — DSH replaces a row's whole config):
 | `maxListedSessions` | `200` | positive integer; row cap for listing calls. Identity resolution is not limited by it |
 | `wakeColdSession` | `true` | when `true`, a cold lead Session with queued notifications is resumed to deliver them; set `false` to keep the queues in memory until a human opens the lead Session |
 | `defaultAgentPreset` | `''` | default value used when a created session names no `preset`; empty means the Host's effective default. An invalid id fails creation with a structured error |
+| `workspaceModels` | `[]` | ordered route entries `{ workspace, provider, model, reasoningEffort? }`. When `devlead_create_session` omits model arguments, the first entry matching the resolved Workspace id, canonical path, or exact title is validated and applied to that child only. Explicit arguments always win |
+| `defaultModel` | omitted | optional `{ provider, model, reasoningEffort? }` fallback after `workspaceModels` and before the Host default. It is creation-time routing, never a profile-default mutation |
 | `questionTtlMs` | `86400000` | non-negative safe integer; lazy open-question TTL (24h), `0` disables expiry. Answered questions do not retroactively expire |
 | `boardPath` | `''` (derived) | optional absolute override. Trimmed blank derives `<active lead Session header cwd>/.dsh/devlead/board.json` and the board is on by default; a non-blank value must be an absolute project-board JSON path and wins over the derived path. Relative paths are rejected, never resolved against cwd. Existing explicit `boardPath` deployments keep their path and behaviour unchanged. The final path component must not be a symlink (the atomic replace would swap the link itself, not its target); symlinks in the parent directory chain are fine. Only the lead AI writes through tools; humans/browser clients are read-only. See [docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md) |
 
@@ -422,7 +431,9 @@ lead sync/switch resolve it again. A start failure (for example an unwritable di
 board — DevLead keeps loading and the board tools report `BOARD_IO_ERROR`; the next lead sync (even to the
 same path) or path switch retries `start()`.
 
-The board uses locked fresh reads and `expected_revision` CAS. Update results omit tasks; a
+The board uses locked fresh reads and per-project `expected_revision` CAS: each project carries the board generation
+that last changed it, so updates to another project do not cause false conflicts. Legacy missing project revisions are
+backfilled from the file revision and persisted on first Host read. Update results omit tasks; a
 selected-project read includes at most 50 tasks and sets `truncated:true` when more exist. Read results are
 also capped at 64 KiB (`DEVLEAD_BOARD_READ_MAX_BYTES`): tasks, then blockers, then whole project rows are
 trimmed from the tail and the result sets `truncated:true` when anything was removed. I/O failures use
@@ -434,16 +445,14 @@ owned by `@yankeguo/dsh-devlead-protocol` and shared by the Host validator and t
 Project notes live under `dirname(boardPath)/notes/`: a strict schema-v1 `index.json` contains metadata only,
 and each Markdown body is `<sanitized project>/<note-id>.md`. The index is capped at 128 KiB, each note at
 256 KiB, and each project at 100 notes; `board.json` itself is unchanged. The lead uses
-`devlead_board_note_write` only to create (with optional initial content), update title/summary, or delete;
-`expected_revision` protects index metadata writes. Later body edits use DSH-native `read`/`write`/`edit` on
-the returned `absolutePath`, never a second tool body-write path or direct `notes/index.json` edits. Humans and
-browser clients remain read-only. Host note reads/lists lazily reconcile `bytes` and file `updatedAt` under the
-index lock, without rewriting the body; missing files, invalid UTF-8, or a body over 256 KiB return structured
-errors and leave the index untouched. The browser derives the notes root from the already-resolved board path
-and uses only the existing Workspace Files Remote; it never accepts an arbitrary path or exposes a write API.
-Note ids and paths collide case-insensitively and Windows reserved device names are rejected. A selected-note
-tool result is capped at 64 KiB of serialized JSON and uses a Unicode-safe prefix plus `truncated:true`; the
-256 KiB stored body and browser read remain complete.
+`devlead_board_note_write` only to create an empty note, update title/summary, or delete; `expected_revision`
+protects index metadata writes. **Note tools never accept or return Markdown bodies.** All body reads/edits use
+DSH-native `read`/`write`/`edit` on the returned `absolutePath`, never direct `notes/index.json` edits. Humans and
+browser clients remain read-only. Host note reads/lists stat bodies to reconcile `bytes` and file `updatedAt` under
+the index lock, without reading or rewriting them; missing files or a body over 256 KiB return structured errors
+and leave the index untouched. The browser derives the notes root from the already-resolved board path and uses
+only the existing Workspace Files Remote; it never accepts an arbitrary path or exposes a write API. Note ids and
+paths collide case-insensitively and Windows reserved device names are rejected.
 See [docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md) for the complete index schema,
 error codes, malformed-index recovery, orphan/GC cleanup after board rebuilds, and durability boundary.
 

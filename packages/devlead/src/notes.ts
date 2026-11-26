@@ -3,9 +3,9 @@
  *
  * The notes root is always `dirname(boardPath)/notes`; callers resolve a board
  * project but never supply a filesystem path. The tool owns index metadata and
- * lifecycle only: create may seed a body, while later Markdown edits use DSH's
- * native file tools directly. Reads reconcile file size/mtime back into the
- * index under its cross-process writer lock without writing the body.
+ * lifecycle only: create makes an empty body, while every Markdown read/edit
+ * uses DSH's native file tools directly. Reads reconcile file size/mtime back
+ * into the index under its cross-process writer lock without reading the body.
  *
  * @module @yankeguo/dsh-devlead
  */
@@ -66,7 +66,7 @@ const notesIndexSchema = createDevLeadNotesIndexSchema()
 const EMPTY_TIMESTAMP = new Date(0).toISOString()
 const READ_ATTEMPTS = 4
 
-/** One project-note read. Omit `note` for metadata listing, or select its full Markdown body. */
+/** One project-note metadata read. Omit `note` for the complete metadata listing. */
 export interface DevLeadBoardNoteReadFilter {
   readonly project: string
   readonly note?: string
@@ -83,20 +83,13 @@ export interface DevLeadBoardNoteMetadata extends DevLeadNoteMetadata {
   readonly absolutePath: string
 }
 
-/** One selected note with UTF-8 Markdown content bounded for a model result. */
-export interface DevLeadBoardNoteDocument extends DevLeadBoardNoteMetadata {
-  readonly content: string
-}
-
-/** Metadata listing or bounded single-note read of one board project's notes. */
+/** Metadata listing or one selected metadata row; Markdown bodies never enter this result. */
 export interface DevLeadBoardNoteReadResult {
   readonly revision: number
   readonly updatedAt: string
   readonly project: DevLeadBoardNoteProjectView
   readonly notes?: DevLeadBoardNoteMetadata[]
-  readonly note?: DevLeadBoardNoteDocument
-  /** True when a single-note result was cut to the 64 KiB model-read budget. */
-  readonly truncated?: boolean
+  readonly note?: DevLeadBoardNoteMetadata
 }
 
 /** Logical note mutation. No field can redirect the notes root or a note path. */
@@ -106,8 +99,6 @@ export interface DevLeadBoardNoteWrite {
   readonly note?: string
   readonly title?: string
   readonly summary?: string
-  /** Optional initial Markdown for create only; later body edits use native file tools. */
-  readonly content?: string
   readonly expectedRevision?: number
 }
 
@@ -132,9 +123,8 @@ interface FileFingerprint {
   readonly ino: number
 }
 
-interface ExistingNoteBody {
-  readonly buffer: Buffer
-  readonly content: string
+interface ExistingNoteSnapshot {
+  readonly size: number
   readonly updatedAt: string
 }
 
@@ -221,49 +211,13 @@ function validateNonNegativeInteger(value: number | undefined, field: string): v
   }
 }
 
-function validateContentSize(content: string, pointer = '/content'): void {
-  const bytes = Buffer.byteLength(content, 'utf8')
-  if (bytes > DEVLEAD_NOTES_NOTE_MAX_BYTES) {
-    throw limit(`note content exceeds ${DEVLEAD_NOTES_NOTE_MAX_BYTES} UTF-8 bytes (${bytes})`, pointer)
-  }
-}
-
-/** Match the browser's fail-closed UTF-8 contract for both index and body. */
+/** Match the browser's fail-closed UTF-8 contract for the index. */
 function decodeUtf8(bytes: Uint8Array, label: string): string {
   try {
     return new TextDecoder('utf-8', { fatal: true }).decode(bytes)
   } catch (error) {
     throw invalid(`${label} is not valid UTF-8: ${errorMessage(error)}`, '')
   }
-}
-
-function serializedBytes(value: unknown): number {
-  return Buffer.byteLength(JSON.stringify(value), 'utf8')
-}
-
-/** Keep the complete model-facing JSON result within the board's 64 KiB budget. */
-function boundNoteRead(result: DevLeadBoardNoteReadResult): DevLeadBoardNoteReadResult {
-  if (result.note === undefined || serializedBytes(result) <= DEVLEAD_NOTES_READ_MAX_BYTES) return result
-  const characters = Array.from(result.note.content)
-  let low = 0
-  let high = characters.length
-  let content = ''
-  while (low <= high) {
-    const middle = Math.floor((low + high) / 2)
-    const candidate = characters.slice(0, middle).join('')
-    const bounded: DevLeadBoardNoteReadResult = {
-      ...result,
-      note: { ...result.note, content: candidate },
-      truncated: true,
-    }
-    if (serializedBytes(bounded) <= DEVLEAD_NOTES_READ_MAX_BYTES) {
-      content = candidate
-      low = middle + 1
-    } else {
-      high = middle - 1
-    }
-  }
-  return { ...result, note: { ...result.note, content }, truncated: true }
 }
 
 /** Validate fields that do not depend on the locked current index/body. */
@@ -275,17 +229,17 @@ function validateWriteShape(patch: DevLeadBoardNoteWrite): void {
   if (patch.operation !== 'create' && patch.note === undefined) {
     throw invalid(`note is required for ${patch.operation}`, '/note')
   }
+  if ('content' in patch) {
+    throw invalid('content is not accepted; use native read/write/edit on the returned absolutePath', '/content')
+  }
   if (patch.operation === 'create') {
     if (patch.title === undefined || patch.title.trim().length === 0) {
       throw invalid('create requires a non-empty title', '/title')
     }
-  } else if (patch.content !== undefined) {
-    throw invalid(`${patch.operation} does not accept content; edit the returned Markdown path with native file tools`, '/content')
   }
   if (patch.operation === 'delete' && (patch.title !== undefined || patch.summary !== undefined)) {
     throw invalid('delete does not accept title or summary', '/operation')
   }
-  if (patch.content !== undefined) validateContentSize(patch.content)
   const id = patch.note ?? '00000000-0000-4000-8000-000000000000'
   const directory = 'project-0123456789ab'
   parseIndex({
@@ -468,7 +422,7 @@ export class DevLeadBoardNotesStore {
     return this.cache ?? emptyIndex()
   }
 
-  /** Read one project's metadata list, or one note body bounded for the model result. */
+  /** Read one project's metadata list or one selected metadata row, never its body. */
   async read(filter: DevLeadBoardNoteReadFilter): Promise<DevLeadBoardNoteReadResult> {
     this.requireRoot()
     const operation = this.writeTail.then(() => this.readReconciled(filter))
@@ -498,22 +452,22 @@ export class DevLeadBoardNotesStore {
           }
           selected = [metadata]
         }
-        const bodies = new Map<string, ExistingNoteBody>()
+        const snapshots = new Map<string, ExistingNoteSnapshot>()
         if (currentProject !== undefined) {
-          for (const metadata of selected) bodies.set(metadata.id, await this.readBody(currentProject, metadata))
+          for (const metadata of selected) snapshots.set(metadata.id, await this.statBody(currentProject, metadata))
         }
         let index = current
         if (currentProject !== undefined && selected.some(metadata => {
-          const body = bodies.get(metadata.id)!
-          return metadata.bytes !== body.buffer.length || metadata.updatedAt !== body.updatedAt
+          const snapshot = snapshots.get(metadata.id)!
+          return metadata.bytes !== snapshot.size || metadata.updatedAt !== snapshot.updatedAt
         })) {
           const next = structuredClone(current)
           const project = next.projects.find(candidate => candidate.id === boardProject.id)!
           for (const metadata of project.notes) {
-            const body = bodies.get(metadata.id)
-            if (body === undefined) continue
-            metadata.bytes = body.buffer.length
-            metadata.updatedAt = body.updatedAt
+            const snapshot = snapshots.get(metadata.id)
+            if (snapshot === undefined) continue
+            metadata.bytes = snapshot.size
+            metadata.updatedAt = snapshot.updatedAt
           }
           next.revision = current.revision + 1
           next.updatedAt = new Date(this.now()).toISOString()
@@ -531,15 +485,12 @@ export class DevLeadBoardNotesStore {
           }
         }
         const metadata = project!.notes.find(note => note.id === filter.note)!
-        return boundNoteRead({
+        return {
           revision: index.revision,
           updatedAt: index.updatedAt,
           project: view,
-          note: {
-            ...this.publicMetadata(root, project!, metadata),
-            content: bodies.get(metadata.id)!.content,
-          },
-        })
+          note: this.publicMetadata(root, project!, metadata),
+        }
       })
     } catch (error) {
       if (isDevLeadBoardError(error)) throw error
@@ -648,13 +599,13 @@ export class DevLeadBoardNotesStore {
     if (project.notes.length >= DEVLEAD_NOTES_MAX_PER_PROJECT) {
       throw limit(`project "${project.id}" already has ${DEVLEAD_NOTES_MAX_PER_PROJECT} notes`, '/notes')
     }
-    const content = patch.content ?? ''
+    const content = ''
     const metadata: DevLeadNoteMetadata = {
       id,
       title: patch.title!.trim(),
       summary: patch.summary ?? '',
       updatedAt: timestamp,
-      bytes: Buffer.byteLength(content, 'utf8'),
+      bytes: 0,
       path: `${project.directory}/${id}.md`,
     }
     project.notes.push(metadata)
@@ -794,8 +745,8 @@ export class DevLeadBoardNotesStore {
     this.lastError = undefined
   }
 
-  /** Read a stable native-edited body; reconciliation, never body rewriting, handles stale metadata. */
-  private async readBody(project: DevLeadNotesProject, metadata: DevLeadNoteMetadata): Promise<ExistingNoteBody> {
+  /** Stat a stable native-edited body without reading or decoding its Markdown. */
+  private async statBody(project: DevLeadNotesProject, metadata: DevLeadNoteMetadata): Promise<ExistingNoteSnapshot> {
     const root = this.requireRoot()
     const path = noteFilePath(root, project, metadata)
     try {
@@ -804,17 +755,11 @@ export class DevLeadBoardNotesStore {
         if (before.size > DEVLEAD_NOTES_NOTE_MAX_BYTES) {
           throw limit(`note "${metadata.id}" exceeds ${DEVLEAD_NOTES_NOTE_MAX_BYTES} bytes (${before.size})`, '/note')
         }
-        const buffer = await readFile(path)
         const after = await stat(path)
-        if (before.mtimeMs !== after.mtimeMs || before.size !== after.size || before.ino !== after.ino
-          || buffer.length !== after.size) continue
-        return {
-          buffer,
-          content: decodeUtf8(buffer, `note "${metadata.id}"`),
-          updatedAt: after.mtime.toISOString(),
-        }
+        if (!sameFingerprint(before, after)) continue
+        return { size: after.size, updatedAt: after.mtime.toISOString() }
       }
-      throw ioError('read stable note', path, new Error('file changed repeatedly; retry'))
+      throw ioError('stat stable note', path, new Error('file changed repeatedly; retry'))
     } catch (error) {
       if (isDevLeadBoardError(error)) throw error
       if (errorCode(error) === 'ENOENT') {
@@ -823,7 +768,7 @@ export class DevLeadBoardNotesStore {
           'BOARD_NOTE_NOT_FOUND',
         )
       }
-      if (isWriteIoError(error)) throw ioError('read note', path, error)
+      if (isWriteIoError(error)) throw ioError('stat note', path, error)
       throw error
     }
   }

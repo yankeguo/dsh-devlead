@@ -65,6 +65,12 @@ canonicalization。
 `0600` 原子替换。是否把 `.dsh/devlead/` 加入仓库的 `.gitignore` 由用户/仓库所有者决定；
 插件不修改 `.gitignore`，也不要求看板进入 Git。
 
+`devlead_board_update` 的可选 `commit:true` 只在实际变更后执行：在 lead 原始 workspace 中依次运行
+`git add -- .dsh/devlead` 与 `git commit --only ... -- .dsh/devlead`，因此提交只含看板与 notes 目录，
+不会带入此前 staged 的无关文件，也不会 push。成功返回 `commitHash`；非 Git、override 不是默认路径、
+无变更或 Git 失败时不伪造提交，分别不执行或返回非致命 `warning`，已写入的 board 不回滚。批量字段更新后
+每个 dispatch/close 最多提交一次，不要逐字段制造 commit。
+
 **start 失败不阻塞 DevLead（P2-2）**：父目录预创建或 `start()` 失败时，Host 只记录一条 warning
 并把看板标记为 degraded；`DevLeadService`、`devlead_*` 工具、`/devlead` 命令与浏览器 UI 照常
 加载。此时 board 相关工具与摘要按真实故障返回 `BOARD_IO_ERROR`（或保持空摘要），其余 DevLead
@@ -94,6 +100,7 @@ offset 的时间拒绝。`updatedBy` 是最后写入的 lead Session id/title；
   "updatedBy": { "sessionId": "session-...", "title": "DevLead" },
   "projects": [{
     "id": "example-project",
+    "revision": 42,
     "workspace": { "path": "/path/to/workbox", "title": "example-project" },
     "status": "active",
     "priority": "high",
@@ -114,9 +121,13 @@ offset 的时间拒绝。`updatedBy` 是最后写入的 lead Session id/title；
   `ownerSessionId` 可省略。
 - 限制：文件最大 **256 KiB**，最多 **50 projects**，每项目最多 **200 tasks**、**50 blockers**；
   id 128、project/updatedBy title 200、path 4096、长自由文本 4000 个 UTF-16 code units。
-- 每次实际写入 `revision + 1` 并更新 `updatedAt` / `updatedBy`；无变化 patch 不写文件、不增加
-  revision。auto 字段（running、lastActivity、lastError 等）**不落盘**，由读取侧从现有
-  sessions/workspaces 推导。
+- 每次实际写入顶层 `revision + 1`，同时把目标 project 的 `revision` 设为该新值并更新 `updatedAt` /
+  `updatedBy`；其他 project 的 revision 不变。无变化 patch 不写文件、不增加 revision。auto 字段
+  （running、lastActivity、lastError 等）**不落盘**，由读取侧从现有 sessions/workspaces 推导。
+- **旧文件迁移（additive）**：旧 schema-v1 文件允许 project 缺少 `revision`。Host/浏览器解析时以当时的
+  顶层 revision 回填；Host 首次读取会在同一个 writer lock 内 fresh-read 后把回填结果原子写回，顶层
+  revision 不因此增加。显式 `revision:0` 保留。迁移后的文件含新字段，旧版 strict reader 会拒绝它，
+  回滚版本前需先备份；schemaVersion 保持 1。
 
 ## 数据层与故障语义
 
@@ -126,20 +137,21 @@ Host 通过 `ctx.devLead.board` 暴露**当前 active lead 的 store**（没有 
 - `path` / `enabled`：当前 store 状态；无 lead/workspace 根时为 undefined / false；
 - `read(filter?)`：返回 `{ revision, updatedAt, projects, truncated? }`；
 - `update(patch, expectedRevision?, signal?)`：返回 `{ revision, updatedAt, project, changed }`，
-  其中 project 省略 tasks；
+  其中 project 省略 tasks 但包含自己的 `revision`；service 的可选 commit 结果另含 `commitHash?/warning?`；
 - `summary()`：从最后合法内存缓存同步渲染摘要；禁用或空 projects 时为空串。
 
 `ctx.devLead.boardLeadSessionId` / `boardPathOverride` / `boardStartError` /
 `boardDisabledReason` 暴露当前 store 归属的 lead Session、路径是否来自 Config override、最近一次
 start 失败（degraded 时非空），以及看板当前被禁用的原因（`no-workspace` /
 `relative-workspace` / `invalid-override` / `missing-workspace`；有活动 store 时 undefined）。
-`ctx.devLead.updateBoard(agent, patch, expectedRevision?, signal?)` 额外补上 lead 身份；调用者
+`ctx.devLead.updateBoard(agent, patch, expectedRevision?, signal?, options?)` 额外补上 lead 身份；调用者
 必须是当前 active lead，否则 `BOARD_DISABLED`。`read()` / `update()` 在没有 board 或
-`expectedRevision` 不是非负安全整数时返回 rejected Promise；revision 不一致返回
-`BOARD_REVISION_CONFLICT`。
+`expectedRevision` 不是非负安全整数时返回 rejected Promise；它与**目标 project 的 revision** 比较，
+不一致才返回 `BOARD_REVISION_CONFLICT`。其他 project 的写入只推进顶层 revision，不再造成本项目的伪冲突；
+创建缺失 project 时其当前 revision 视为 0。
 
 写入使用 Host 内单条 promise 链，再在 `withFileLock` 跨进程锁内 fresh read、read-modify-write，
-以磁盘 revision 做 CAS，最后 `writeFileAtomic` 替换。`refresh(true)` 会先等待已有 in-flight
+以锁内目标 project revision 做逻辑 CAS、顶层 revision 做文件代际，最后 `writeFileAtomic` 替换。`refresh(true)` 会先等待已有 in-flight
 load，再自己执行一次 fresh read，绝不把另一个调用尚未完成的快照当作锁内真值。外部非法 JSON、
 schema 错误、未知字段或超限文件会产生带 RFC 6901 JSON pointer 的结构化错误，同时保留最后合法
 缓存供摘要使用；读取和更新都报错，**绝不以缓存覆盖坏文件**。
@@ -232,36 +244,35 @@ index 的完整形状如下（正文**绝不**进入 index）：
 `DevLeadBoardNotesStore`。`start()` 只在已解析 board path 下预创建 notes root 并 fresh read；start 失败与
 board 一样只记 warning / `boardStartError`，不阻塞 DevLead 加载。notes store 自己不留 watcher/timer；
 每次操作 fresh read，最多 4 次比较 `mtimeMs/size/ino` 与实际字节，持续变化映射为 `BOARD_IO_ERROR`。
-index 与正文都使用 fatal `TextDecoder('utf-8', {fatal:true})`，因此即使字节数与 metadata 一致，非法 UTF-8
-仍是 `BOARD_INVALID`，不会被替换字符静默吞掉。index 不存在等价于空
-revision-0 index，不是错误；坏 UTF-8/JSON/schema/超限保留最后合法 cache 供摘要使用，但读写失败，绝不拿旧
-cache 覆盖坏 index。
+index 使用 fatal `TextDecoder('utf-8', {fatal:true})`；notes 工具**绝不读取或解码 Markdown 正文**，正文内容与
+UTF-8 校验由 DSH 原生文件工具负责。index 不存在等价于空 revision-0 index，不是错误；坏
+UTF-8/JSON/schema/超限保留最后合法 cache 供摘要使用，但读写失败，绝不拿旧 cache 覆盖坏 index。
 
-**职责分离**：`write` 只负责 `create`（可选 initial content，默认空）、`update-metadata`（title/summary）
-与 `delete`。工具面已移除 `update` / `append` 与 `expected_bytes`，正文不做 CAS；单活 lead 使用 DSH 原生
-read/write/edit 修改工具结果返回的 `absolutePath`，接受 last-write-wins。`absolutePath` 由 Host 从已验证的
+**职责分离**：`write` 只负责 `create`（始终创建空正文）、`update-metadata`（title/summary）与 `delete`。
+工具面没有 `content`、`update` / `append` 或 `expected_bytes`，正文不做 CAS；单活 lead 使用 DSH 原生
+read/write/edit 读写工具结果返回的 `absolutePath`，接受 last-write-wins。`absolutePath` 由 Host 从已验证的
 project directory + note id 派生，只出现在工具结果，不进入 strict index schema。
 
 - `read({project,note?})`：先在当前合法 board 快照上按精确 id、workspace title 或绝对 workspace path
-  解析 project（title 歧义仍为 `BOARD_PROJECT_AMBIGUOUS`），再读 index。省略 note 对该项目**全部** notes
-  做列表与对账；指定 note 只对选中 note 对账并返回有界 Markdown `content`，完整结果超过 64 KiB 时截断并标
-  `truncated:true`。list/read 结果的每条 metadata 都同时带 root-relative `path` 与 Host `absolutePath`。
+  解析 project（title 歧义仍为 `BOARD_PROJECT_AMBIGUOUS`），再读 index。省略 note 返回该项目**全部** notes
+  metadata；指定 note 只返回选中 metadata。两种结果都同时带 root-relative `path` 与 Host `absolutePath`，
+  **没有 `content` 或 `truncated`**；正文只能用原生 read 读取 absolutePath。
 - **惰性对账**：read/list 与 write 共用 Host 内 promise 链，并进入 **index 文件的 `withFileLock`**。
-  锁内 fresh read 后逐条读取稳定正文快照，比较实际 bytes 与文件 `mtime`（ISO `updatedAt`）。若选中范围内有
-  变化，先基于同一份 fresh index 构造完整 next、strict-validate，再一次性原子提交：index `revision + 1`、
-  index `updatedAt` 推进，相关 note 只修 `bytes/updatedAt`，title/summary/path 不变。并发 read/list 串行后
-  只提交一次实际修复。对账绝不调用正文写 API，因此不会用旧 cache 或旧正文覆盖原生编辑。
-- **失败不破坏 index**：所有选中正文先验证成功才允许提交。文件缺失为 `BOARD_NOTE_NOT_FOUND`；超过
-  256 KiB 为 `BOARD_LIMIT_EXCEEDED`；非法 UTF-8 为 `BOARD_INVALID`。任一项失败时整个 read/list 返回结构化
-  错误、旧 index bytes 保持不变；summary 只按既有 cache-safe 规则降级。修复 index 本身失败也不会回滚或覆盖
-  原生正文。下一次 read/list 会再次从磁盘 fresh read 并对账。
+  锁内 fresh read 后逐条 `stat` 稳定正文快照（不 readFile），比较实际 bytes 与文件 `mtime`（ISO `updatedAt`）。
+  若选中范围内有变化，先基于同一份 fresh index 构造完整 next、strict-validate，再一次性原子提交：index
+  `revision + 1`、index `updatedAt` 推进，相关 note 只修 `bytes/updatedAt`，title/summary/path 不变。并发
+  read/list 串行后只提交一次实际修复。对账绝不读取或写正文，因此不会用旧 cache 覆盖原生编辑。
+- **失败不破坏 index**：所有选中正文先 stat 成功才允许提交。文件缺失为 `BOARD_NOTE_NOT_FOUND`；超过
+  256 KiB 为 `BOARD_LIMIT_EXCEEDED`。任一项失败时整个 read/list 返回结构化错误、旧 index bytes 保持不变；
+  summary 只按既有 cache-safe 规则降级。修复 index 本身失败也不会回滚或覆盖原生正文。下一次 read/list
+  会再次从磁盘 fresh read 并对账。
 - `write(patch,signal?)`：同样在 Host promise 链 + index 文件锁内 fresh read、校验 CAS、构造并
   strict-validate 完整 next index，最后原子写 index。`expected_revision` 是可选的**全 index CAS**，适用于
   create/update-metadata/delete；锁内 revision 不同即 `BOARD_REVISION_CONFLICT`，任何文件都尚未修改。
   取消按标准 `AbortError`，不伪装成领域错误。
-- create 的顺序是**初始正文原子写 → index 原子提交**。index 是提交事实：正文先存在但未被 index 引用只是
+- create 的顺序是**空正文原子写 → index 原子提交**。index 是提交事实：正文先存在但未被 index 引用只是
   ignored orphan；index 提交失败会 best-effort 删除新正文，绝不把 orphan 当已提交 note。create/update/delete
-  的 index 与初始正文文件为 `0600`、目录 `0700`。update-metadata 只改 title/summary，保留正文 live mtime；
+  的 index 与空正文文件为 `0600`、目录 `0700`。update-metadata 只改 title/summary，保留正文 live mtime；
   无实际变化不写文件、不 bump revision，返回 `changed:false`，也不要求正文存在。
 - delete 先提交移除 metadata 的 index，再 best-effort 删除正文；删不掉的正文成为 ignored orphan，不回滚
   已提交删除。delete 不读取正文，可以修复“有 metadata、正文已缺失/非法”的 stale index。删除项目最后一条
@@ -298,35 +309,31 @@ lead。**四个 board/notes 工具都没有文件路径参数**；`project` 只�
 { revision, updatedAt, project: { id, directory }, notes: Array<DevLeadNoteMetadata & { absolutePath: string }> }
 ```
 
-项目尚无 notes 或 index 不存在时 `notes: []`。指定 note 时省略 `notes`，返回：
+项目尚无 notes 或 index 不存在时 `notes: []`。指定 note 时省略 `notes`，返回同一个 metadata 形状：
 
 ```ts
-{ revision, updatedAt, project: { id, directory }, note: DevLeadNoteMetadata & { absolutePath: string, content: string }, truncated?: true }
+{ revision, updatedAt, project: { id, directory }, note: DevLeadNoteMetadata & { absolutePath: string } }
 ```
 
-**单 note 模型读取上限 64 KiB**：上限与 `devlead_board_read` 相同，按**完整 JSON 结果的 UTF-8 字节数**
-计算（含 metadata 与 `truncated` 字段），不是只截正文到 64 KiB。超限时 `content` 保留原文前缀，按 Unicode
-码点边界截断并返回 `truncated:true`，不会切出半个 surrogate pair；`note.bytes` 仍是磁盘完整正文字节数。
-磁盘上限 256 KiB 与浏览器 reader 的完整读取不变。当前没有 offset/limit 分页参数，需要后半段时应由 Host
-文件维护者拆分 note；不要把截断结果误当全文覆盖写回。模型需要修改正文时，应对结果里的 `absolutePath`
-使用 DSH 原生 read/write/edit，不要手改 `notes/index.json`，并保持文件 ≤256 KiB 且为合法 UTF-8。未知
-metadata id 或 indexed body 缺失为 `BOARD_NOTE_NOT_FOUND`；list 遇到缺失、坏 UTF-8 或超限同样失败并保留
-旧 index。完成态卡片只显示项目、revision 与 note 数/标题/截断标记，不重复 Markdown 正文。
+**工具永不返回 Markdown 正文，也没有 `content`/`truncated` 或正文分页参数。** 模型读取或修改正文时，必须对
+结果里的 `absolutePath` 使用 DSH 原生 read/write/edit，不要手改 `notes/index.json`，并保持文件 ≤256 KiB
+且为合法 UTF-8。未知 metadata id 或 indexed body 缺失为 `BOARD_NOTE_NOT_FOUND`；list 遇到缺失或超限
+同样失败并保留旧 index。完成态卡片只显示项目、revision 与 note 数/标题，不重复路径或正文。
 
 #### `devlead_board_note_write`
 
-参数：`project`、`operation: create|update-metadata|delete`、`note?`、`title?`、`summary?`、仅 create 的
-`content?`、`expected_revision?`。各 operation 的字段约束：
+参数：`project`、`operation: create|update-metadata|delete`、`note?`、`title?`、`summary?`、
+`expected_revision?`。**任何 operation 都不接受 `content`**；未知参数在 tool 层直接拒绝。各 operation 的约束：
 
 | operation | 字段与行为 |
 | --- | --- |
-| `create` | 非空 `title` 必填；`note` 可省略以生成 UUID；`summary` 默认空、可选 initial `content` 默认空。忽略大小写的重复 note id 拒绝 |
-| `update-metadata` | `note` 必填；只替换实际提供的 `title/summary`，省略字段保持不变；title trim 后不能为空；不接受 content |
-| `delete` | `note` 必填；不接受 title/summary/content；按上述 index-first 语义删除 |
+| `create` | 非空 `title` 必填；`note` 可省略以生成 UUID；`summary` 默认空；始终创建空文件并返回 absolutePath。忽略大小写的重复 note id 拒绝 |
+| `update-metadata` | `note` 必填；只替换实际提供的 `title/summary`，省略字段保持不变；title trim 后不能为空 |
+| `delete` | `note` 必填；不接受 title/summary；按上述 index-first 语义删除 |
 
 返回 `{revision,updatedAt,project:{id,directory},note,operation,changed,deleted?}`，其中 note 是结果或
-被删除的 metadata + `absolutePath`，**不回传正文**。后续正文只能经原生文件工具编辑该路径；工具没有
-update/append 或 expected_bytes。稳定 notes 相关错误码复用 `BOARD_DISABLED`、`BOARD_NOT_FOUND`、
+被删除的 metadata + `absolutePath`，**不接受也不回传正文**。所有正文读写只能经原生文件工具作用于该路径；
+工具没有 update/append 或 expected_bytes。稳定 notes 相关错误码复用 `BOARD_DISABLED`、`BOARD_NOT_FOUND`、
 `BOARD_INVALID`、`BOARD_PROJECT_NOT_FOUND`、`BOARD_PROJECT_AMBIGUOUS`、`BOARD_REVISION_CONFLICT`、
 `BOARD_LIMIT_EXCEEDED`、`BOARD_IO_ERROR` 与 `BOARD_NOTE_NOT_FOUND`；工具层映射为同 code 的 `HarnessError`。
 
@@ -334,10 +341,11 @@ update/append 或 expected_bytes。稳定 notes 相关错误码复用 `BOARD_DIS
 
 `tool` 包另注册独立的 `devlead:board-policy` system prompt section，仅对 `ctx.devLead.isEnabled(agent)` 的 lead
 可见，普通 Session 与无 Agent 的组装均为空；它不占用 `DEVLEAD_POLICY_BASE` 的尺寸预算。引导把每轮注入的
-board summary 视为跨项目状态事实源：派发/收口或 focus、next、blockers、tasks 有实质变化时批量更新看板；
-恢复项目或写派发简报前优先用 `devlead_board_note_read` list/read；计划、设计、决策与交接先通过
-`devlead_board_note_write` create/update-metadata/delete 维护索引，再用 DSH 原生 read/write/edit 编辑返回的
-absolutePath 正文，需要时再用工具更新 title/summary，绝不手改 notes/index.json。向用户汇报前先对齐过期状态。
+board summary 视为跨项目状态事实源：派发/收口或 focus、next、blockers、tasks 有实质变化时批量更新看板，
+每个 dispatch/close 最多 `commit:true` 一次。`paused` 只表示阶段完成且可续，`done` 才表示真正结项；长程
+多阶段任务用一个 note 逐阶段记录。恢复项目或写派发简报前用 `devlead_board_note_read` 查 metadata；计划、
+设计、决策与交接通过 `devlead_board_note_write` create/update-metadata/delete 维护索引，再用 DSH 原生
+read/write/edit 读写返回的 absolutePath 正文，绝不手改 notes/index.json。向用户汇报前先对齐过期状态。
 内容应简短可读、合法 UTF-8 且 ≤256 KiB，不整段复制聊天、日志或工具输出；`BOARD_DISABLED` / `BOARD_IO_ERROR`
 时继续主任务、只报告一次降级且不反复重试；没有实质变化时不为“勤更新”制造噪声。base policy 与两个 notes
 工具描述也同步这套职责分离。
@@ -362,8 +370,9 @@ revision/updatedAt 与靠前的项目永远保留（project 行最多裁到只�
 
 ### `devlead_board_update`
 
-参数：`project`、`expected_revision?`、`create?`、`set?`、`blockers?`、`tasks?`。
-创建必须显式 `create:true` 并提供 `set.workspace.path`；此时 `project` 是新 id。
+参数：`project`、`expected_revision?`、`create?`、`commit?`、`set?`、`blockers?`、`tasks?`。
+创建必须显式 `create:true` 并提供 `set.workspace.path`；此时 `project` 是新 id。`expected_revision`
+来自目标 project 的 `revision` 而不是结果顶层 revision；`commit:true` 的提交范围与降级语义见上文。
 
 **project 引用在锁内快照上解析（P2-1）**：`project` 参数允许 workspace title / 绝对 workspace
 path，两者都可能远超 id 的 128 单位上限。写入预检因此针对固定的 synthetic project id
@@ -378,7 +387,7 @@ workspace path/title 不再误报 `BOARD_LIMIT_EXCEEDED`。引用是否存在、
   原 `since`，省略 `session_id` 时保留原值；重复 add 若完全无变化，不写文件也不 bump revision。
 - `tasks`: `remove` → `upsert`；upsert 项为
   `{id,title?,status?,owner_session_id?}`，新 task 必须有非空 title。
-- 返回 `{revision,updatedAt,project,changed[]}`，只返回省略 tasks 的目标项目，不回传整个 board；
+- 返回 `{revision,updatedAt,project,changed[],commitHash?,warning?}`，只返回省略 tasks 的目标项目，不回传整个 board；
   工具层还会防御性剥离 tasks，避免旧 core 或异常结果泄漏完整任务清单。
 
 稳定错误码包括 `BOARD_DISABLED`、`BOARD_NOT_FOUND`、`BOARD_INVALID`、

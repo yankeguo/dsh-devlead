@@ -376,7 +376,6 @@ const DEVLEAD_TOOL_NAMES = [
   'devlead_prompt_session',
   'devlead_remove_workspace',
   'devlead_retract_input',
-  'devlead_unarchive_session',
   'devlead_use_workspace',
   'devlead_watch_session',
 ]
@@ -1684,10 +1683,13 @@ async function runCloseChecks(client, paths, dshVersion) {
     'phase 3 real board create + CAS + path/title refs + Host read-back succeed',
     board.execution?.result?.kind === 'success'
       && board.report?.created?.revision === 1
-      && board.report?.updated?.revision === 2
-      && board.report?.byPath?.revision === 3
-      && board.report?.byTitle?.revision === 4
-      && board.report?.detail?.revision === 4
+      && board.report?.other?.revision === 2
+      && board.report?.updated?.revision === 3
+      && board.report?.byPath?.revision === 4
+      && board.report?.byTitle?.revision === 5
+      && board.report?.detail?.revision === 5
+      && board.report?.created?.project?.revision === 1
+      && board.report?.updated?.project?.revision === 3
       && board.report?.created?.project?.tasks === undefined
       && board.report?.updated?.project?.tasks === undefined
       && board.report?.byTitle?.project?.next === 'updated through the workspace title'
@@ -1719,8 +1721,10 @@ async function runCloseChecks(client, paths, dshVersion) {
     ? JSON.parse(readFileSync(derivedBoard, 'utf8'))
     : undefined
   checks.expect(
-    'phase 3 board disk bytes carry revision 4, the CAS focus, the ref updates, and the task',
-    persistedBoard?.revision === 4
+    'phase 3 board disk bytes carry revision 5, per-project CAS, the ref updates, and the task',
+    persistedBoard?.revision === 5
+      && persistedBoard?.projects?.[0]?.revision === 5
+      && persistedBoard?.projects?.[1]?.revision === 2
       && persistedBoard?.projects?.[0]?.focus === 'CAS committed through the real Host'
       && persistedBoard?.projects?.[0]?.next === 'updated through the workspace title'
       && persistedBoard?.projects?.[0]?.tasks?.[0]?.id === 'task-1',
@@ -1733,15 +1737,15 @@ async function runCloseChecks(client, paths, dshVersion) {
       && board.report?.noteListing?.revision === 2
       && board.report?.noteListing?.notes?.[0]?.bytes === board.report?.nativeNoteBytes
       && board.report?.noteListing?.notes?.[0]?.absolutePath === board.report?.nativeNotePath
-      && board.text.includes('verify automatic refresh')
+      && board.report?.noteCreated?.note?.bytes === 0
       && String(board.report?.boardSummary ?? '').includes('E2E implementation plan'),
     board.text.slice(-900),
   )
   checks.expect(
-    'phase 3 real devlead_board_note_read tool reaches the service and returns committed markdown',
+    'phase 3 real devlead_board_note_read tool reaches the service and returns metadata only',
     board.report?.noteToolRead?.isError === false
       && board.report?.noteToolRead?.value?.note?.id === 'e2e-plan'
-      && board.report?.noteToolRead?.value?.note?.content?.includes('Read-only in the browser.')
+      && board.report?.noteToolRead?.value?.note?.content === undefined
       && board.report?.noteToolRead?.value?.note?.absolutePath === board.report?.nativeNotePath
       && board.report?.noteToolRead?.value?.note?.bytes === board.report?.nativeNoteBytes
       && board.report?.noteToolRead?.value?.truncated === undefined,
@@ -1834,13 +1838,13 @@ async function runCloseChecks(client, paths, dshVersion) {
   )
   const devleadTools = inspectOn.report?.devleadTools ?? []
   checks.expect(
-    'phase 3 enabled exposes exactly the eighteen devlead tools',
+    'phase 3 enabled exposes exactly the seventeen devlead tools',
     JSON.stringify(devleadTools) === JSON.stringify(DEVLEAD_TOOL_NAMES),
     JSON.stringify(devleadTools),
   )
   checks.expect(
     'phase 3 enabled exposes the remove and archive tools',
-    ['devlead_remove_workspace', 'devlead_archive_session', 'devlead_unarchive_session']
+    ['devlead_remove_workspace', 'devlead_archive_session']
       .every(name => devleadTools.includes(name)),
     JSON.stringify(devleadTools),
   )

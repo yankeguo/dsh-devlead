@@ -90,7 +90,7 @@ describe('DevLeadBoardNotesStore I/O surface', () => {
     async code => {
       const { notes } = await boot()
       writeFailure = { kind: 'index', code }
-      await expect(notes.write({ project: 'alpha', operation: 'create', note: 'n1', title: 'N', content: 'body' }))
+      await expect(notes.write({ project: 'alpha', operation: 'create', note: 'n1', title: 'N' }))
         .rejects.toMatchObject({ code: 'BOARD_IO_ERROR' })
       expect(existsSync(notes.indexPath!)).toBe(false)
       const listing = await notes.read({ project: 'alpha' })
@@ -101,7 +101,8 @@ describe('DevLeadBoardNotesStore I/O surface', () => {
 
   it('leaves a native body untouched when a metadata index commit fails', async () => {
     const { notes } = await boot()
-    const created = await notes.write({ project: 'alpha', operation: 'create', note: 'n1', title: 'N', content: 'old' })
+    const created = await notes.write({ project: 'alpha', operation: 'create', note: 'n1', title: 'N' })
+    await writeFile(created.note.absolutePath, 'old', 'utf8')
     const beforeIndex = await readFile(notes.indexPath!, 'utf8')
     writeFailure = { kind: 'index', code: 'ENOSPC' }
     await expect(notes.write({ project: 'alpha', operation: 'update-metadata', note: 'n1', title: 'new title' }))
@@ -113,7 +114,7 @@ describe('DevLeadBoardNotesStore I/O surface', () => {
   it('does not create an index when the initial body write fails', async () => {
     const { notes } = await boot()
     writeFailure = { kind: 'body', code: 'EACCES' }
-    await expect(notes.write({ project: 'alpha', operation: 'create', note: 'n1', title: 'N', content: 'new' }))
+    await expect(notes.write({ project: 'alpha', operation: 'create', note: 'n1', title: 'N' }))
       .rejects.toMatchObject({ code: 'BOARD_IO_ERROR' })
     expect(existsSync(notes.indexPath!)).toBe(false)
     expect((await notes.read({ project: 'alpha' })).notes).toEqual([])
@@ -121,7 +122,7 @@ describe('DevLeadBoardNotesStore I/O surface', () => {
 
   it('does not roll back a native body when reconciliation cannot commit the index', async () => {
     const { notes } = await boot()
-    const created = await notes.write({ project: 'alpha', operation: 'create', note: 'n1', title: 'N', content: 'old' })
+    const created = await notes.write({ project: 'alpha', operation: 'create', note: 'n1', title: 'N' })
     const beforeIndex = await readFile(notes.indexPath!, 'utf8')
     await writeFile(created.note.absolutePath, 'native edit', 'utf8')
     writeFailure = { kind: 'index', code: 'ENOSPC' }
@@ -132,9 +133,10 @@ describe('DevLeadBoardNotesStore I/O surface', () => {
 
   it('maps lock acquisition failures without changing either file', async () => {
     const { notes } = await boot()
-    const created = await notes.write({ project: 'alpha', operation: 'create', note: 'n1', title: 'N', content: 'old' })
-    const beforeIndex = await readFile(notes.indexPath!, 'utf8')
+    const created = await notes.write({ project: 'alpha', operation: 'create', note: 'n1', title: 'N' })
     const bodyPath = join(notes.path!, created.note.path)
+    await writeFile(bodyPath, 'old', 'utf8')
+    const beforeIndex = await readFile(notes.indexPath!, 'utf8')
     lockFailureCode = 'EACCES'
     await expect(notes.write({ project: 'alpha', operation: 'delete', note: 'n1' }))
       .rejects.toMatchObject({ code: 'BOARD_IO_ERROR' })
@@ -144,7 +146,7 @@ describe('DevLeadBoardNotesStore I/O surface', () => {
 
   it('commits deletion before best-effort body cleanup and leaves only an ignored orphan on cleanup failure', async () => {
     const { notes } = await boot()
-    const created = await notes.write({ project: 'alpha', operation: 'create', note: 'n1', title: 'N', content: 'old' })
+    const created = await notes.write({ project: 'alpha', operation: 'create', note: 'n1', title: 'N' })
     const bodyPath = join(notes.path!, created.note.path)
     orphanCleanupFailure = true
     const deleted = await notes.write({ project: 'alpha', operation: 'delete', note: 'n1' })

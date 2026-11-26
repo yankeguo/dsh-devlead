@@ -17,7 +17,7 @@ agent 就能在人可见、可参与的标准界面里统管多个仓库。
 | **调度者，而非实现者** | DevLead 依据已注册的元数据判定请求归哪个 Workspace，向那里的 Session 发送一份自包含简报，关注它、审阅交付并汇报。更深的调查与实现留在子会话里。 |
 | **真实的 DSH 实体** | Workspace 走 `ctx.workspaceRegistry`；子会话是侧边栏里可见的普通 Session，你可以打开、继续、归档——不是隐藏的 subagent。 |
 | **通知回路** | 被关注 Session 的 turn 结束时，一条持久通知会唤醒 DevLead，让它跟进、派发新工作或汇报。重启后关注索引会从持久记录重建。 |
-| **18 个主工具 + 1 个汇报工具** | 注册/列出/移除 Workspace，列出 Host 模型与 Agent preset，创建/读取/续写/归档/恢复/关注 Session，查看并撤回排队的 inbox 输入，读取通知与汇报摘要，并维护对 active lead 默认启用的用户可见项目看板与项目 Markdown notes。被关注的子会话另有单向的 `devlead_report`。 |
+| **17 个主工具 + 1 个汇报工具** | 注册/列出/移除 Workspace，列出 Host 模型与 Agent preset，创建/读取/续写/归档/恢复/关注 Session，查看并撤回排队的 inbox 输入，读取通知与汇报摘要，并维护对 active lead 默认启用的用户可见项目看板与项目 Markdown notes。被关注的子会话另有单向的 `devlead_report`。 |
 | **人类命令** | `/devlead`、`/devlead on\|off`、`/devlead reset`、`/devlead watch\|unwatch <session>`——会话可用完整 id 或唯一前缀寻址。 |
 | **可选的 worktree 隔离** | 当 Host 组合了 DSH 的实验性 Git worktree 服务时，被派发的 Session 可以拥有自己的分支和检出，而不必共享 Workspace checkout。缺少该能力时退化为共享 checkout，并在结果里如实上报状态。 |
 | **Web 界面** | composer 工具条里的带文本 DevLead 开关（两态都在）、开启后的只读 DevLeadBar、侧边栏 active/watched 标记，以及仅 lead 可见的右侧栏只读项目看板；看板支持随页面可见性/焦点自动刷新、单行 KPI pill strip、内部区块同行对齐且 priority 图标置于标题行右侧的紧凑 2/3/1 列响应式卡片、项目 notes chip 与安全的全栏 Markdown notes reader。 |
@@ -255,11 +255,12 @@ turn 最多 4 条不同的非 question 汇报（`question` 汇报不计入），
 
 ### 关闭会话与工作区
 
-三个关闭类工具沿用 DSH 自己的术语，且从不具破坏性：`devlead_remove_workspace` 只注销
-Workspace（文件与 Session 日志都保留；它的 Session 变为未分组），
-`devlead_archive_session` 隐藏 Session 但保留日志，`devlead_unarchive_session` 把它恢复到
-原来的 Workspace 位置。带运行中工作的 Session 会被拒绝并返回 `DEVLEAD_SESSION_ACTIVE`，
-除非传入 `stop_running: true`——那会先归档，再请 Host 停止该工作。
+两个关闭类工具沿用 DSH 自己的术语，且从不具破坏性：`devlead_remove_workspace` 只注销
+Workspace（文件与 Session 日志都保留；它的 Session 变为未分组）。`devlead_archive_session`
+默认以 `archived:true` 归档并自动取消关注，以 `archived:false` 恢复；支持单个 `session`、有序
+`sessions`，或 `workspace` + `settled_only:true` 批量归档该 Workspace 已 settle 且未归档的 Session。
+带运行中工作的 Session 会被拒绝并返回 `DEVLEAD_SESSION_ACTIVE`，除非传入 `stop_running: true`——那会先归档，
+再请 Host 停止该工作。
 
 关闭是**判断式**的：模型可以在没有逐条指令的情况下，归档自己创建或派发、已完成收尾的
 Session，或移除自己创建的明显陈旧、重复或空的 Workspace 注册。护栏是：绝不关闭人类正在
@@ -292,7 +293,7 @@ worktree** 能力时，`devlead_create_session` 接受 `isolation: "worktree"`�
 
 ## 工具参考
 
-18 个主工具只在 DevLead 会话中可见；`devlead_report` 只在被关注的非 lead Session 中可见。
+17 个主工具只在 DevLead 会话中可见；`devlead_report` 只在被关注的非 lead Session 中可见。
 所有 `workspace` 参数都接受 id、注册路径或精确标题；所有 `session` 参数都接受完整 id、
 唯一前缀或 uuid 第一段。notes 工具的 `project` 接受看板项目 id、workspace title 或绝对 workspace
 path；两个 notes 工具都不接受文件路径参数。
@@ -303,21 +304,20 @@ path；两个 notes 工具都不接受文件路径参数。
 | `devlead_list_models` | 精简的 Host 模型目录（default、providers、failures） | — |
 | `devlead_list_agent_presets` | Host 的 Agent preset roster 及实际生效的默认值 | — |
 | `devlead_board_read` | 读取用户可见项目看板（结果有界） | `project?`、`include_tasks?`、`limit?` |
-| `devlead_board_update` | 仅 lead AI 可写的项目状态/阻塞/任务更新 | `project`、`expected_revision?`、`create?`、`set?`、`blockers?`、`tasks?` |
-| `devlead_board_note_read` | 读取项目 note metadata 列表或单条 Markdown 正文 | `project`、`note?` |
-| `devlead_board_note_write` | 以 index CAS 创建 note、更新元数据或删除 | `project`、`operation: create/update-metadata/delete`、`note?`、`title?`、`summary?`、仅 create 的 `content?`、`expected_revision?` |
+| `devlead_board_update` | 仅 lead AI 可写的项目状态/阻塞/任务更新 | `project`、`expected_revision?`、`create?`、`commit?`、`set?`、`blockers?`、`tasks?` |
+| `devlead_board_note_read` | 读取项目 note metadata 与原生正文路径 | `project`、`note?` |
+| `devlead_board_note_write` | 以 index CAS 创建空 note、更新元数据或删除 | `project`、`operation: create/update-metadata/delete`、`note?`、`title?`、`summary?`、`expected_revision?` |
 | `devlead_use_workspace` | 注册 Workspace（幂等） | `path`（绝对路径）、`title?`、`create?`（默认 false） |
 | `devlead_list_sessions` | 列出 Session | `workspace?`、`watched_only?`、`limit?` |
 | `devlead_create_session` | 创建（并可选 prompt）子会话 | `workspace?`、`prompt?`、`title?`、`watch?`、`preset?`、`isolation?`、`provider?`+`model?`、`agent_teams?` |
-| `devlead_get_session` | 读取单个 Session（lead 读取时还带最新汇报） | `session` |
+| `devlead_get_session` | 读取单个 Session（lead 读取时还带最新汇报） | `session`、`last_assistant_limit?`（默认 4096） |
 | `devlead_prompt_session` | prompt / 回答 / 引导子会话 | `session`、`prompt`、`intent?`、`question_id?`、`idempotency_key?`、`watch?`、`interrupt?`、`interrupt_inbox?` |
 | `devlead_retract_input` | 在执行前撤回一条排队的 inbox 输入 | `session`、`input_id` |
 | `devlead_watch_session` | 添加/移除关注 | `session`、`watching` |
 | `devlead_notifications` | 通知与汇报 digest | `limit?` |
 | `devlead_report` | 单向的 turn 中途汇报（仅被关注的子会话） | `message`、`kind?`、`summary?` |
 | `devlead_remove_workspace` | 注销 Workspace（文件与日志不受影响） | `workspace` |
-| `devlead_archive_session` | 归档 Session（可逆） | `session`、`stop_running?` |
-| `devlead_unarchive_session` | 恢复已归档的 Session | `session` |
+| `devlead_archive_session` | 归档/恢复 Session、批量清理已 settle 的 Workspace；归档即取消关注 | `session?`/`sessions?`/`workspace?`+`settled_only`、`archived?`、`stop_running?` |
 
 领域错误使用稳定的 `DEVLEAD_*` / `BOARD_*` 错误码，并渲染成友好文本。读取状态请以 `lastTurn` /
 `lastTransition` / `lastError` / `lastAssistant` 为准，不要靠猜。
@@ -327,11 +327,12 @@ path；两个 notes 工具都不接受文件路径参数。
 - **结束本轮，而不是等待。** 派发是异步的：调用 `devlead_create_session` /
   `devlead_prompt_session` 之后，DevLead 不能在同一个 turn 内等待（不要 `sleep`、不要用读
   工具轮询、不要用 Agent Teams 的 `wait_agent`）。它结束本轮；settle 唤醒会开启新一轮。
-- **唤醒 lane。** completed/forked 的 turn 会按 `notificationBatchMs`（默认 400 ms）合并成
-  一次 `followup` 唤醒。failed/interrupted 的 turn 与 blocked/decision 汇报会触发即时的
-  `[DEV LEAD REVIEW REQUIRED]` / `[DEV LEAD ACTION REQUIRED]` 唤醒；question 汇报触发携带
-  完整 payload 的 `[DEV LEAD QUESTION]` 唤醒；progress/fyi 汇报注入背景上下文且不唤醒
-  （空闲的 lead 保持空闲）。
+- **唤醒 lane。** completed/forked 以及本 lead 主动 interrupt 造成的取消会按 `notificationBatchMs`
+  （默认 400 ms）合并成 `followup` 的 `[DEV LEAD NOTIFICATION]`，原始 transition 保留。真正的失败、
+  外部中断与 blocked/decision 汇报触发即时 `[DEV LEAD REVIEW REQUIRED]` / `[DEV LEAD ACTION REQUIRED]`；
+  question 汇报触发携带完整 payload 的 `[DEV LEAD QUESTION]`；progress/fyi 注入背景上下文且不唤醒。
+- **长报告。** Session 详情与唤醒摘要默认最多保留 4096 个 Unicode 码点，并显式报告截断状态。更长的
+  最终报告由子 Session 写入 `/tmp/*.md`，回复只给摘要与路径；这是正式交接路径，不读取压缩原始日志。
 - **冷 lead 默认会被恢复。** Host 重启或插件重载后，关注索引会从持久记录重建；除非
   `wakeColdSession` 设为 `false`，排队的通知会恢复冷 lead Session 来投递。恢复需要 Host
   组合 Session activator；否则记录保持持久，等会话被打开时再投递。
@@ -357,6 +358,9 @@ config）：
     maxListedSessions: 200       # 会话列表单次最多行数（正整数）
     wakeColdSession: true        # 恢复冷 DevLead 会话以投递其排队通知
     defaultAgentPreset: ''       # 创建会话时的默认 Agent preset（空 = Host 默认）
+    # 可选路由 fallback（先于 Host 默认）；工具显式参数优先。
+    # defaultModel: { provider: nanollm, model: kimi-k3.1-pro, reasoningEffort: high }
+    workspaceModels: []          # 条目：{ workspace, provider, model, reasoningEffort? }
     questionTtlMs: 86400000      # open question 的 TTL（24 小时；0 = 禁用 lazy 过期）
     boardPath: ''                # 可选：空白 = 由 active lead 的 workspace 派生 <cwd>/.dsh/devlead/board.json
 ```
@@ -369,6 +373,8 @@ config）：
 | `maxListedSessions` | `200` | 正整数；列表类调用的行数上限。身份解析不受此限制 |
 | `wakeColdSession` | `true` | 为 `true` 时，带排队通知的冷 lead Session 会被恢复以完成投递；设为 `false` 可让队列留在内存里，直到人类打开该 lead Session |
 | `defaultAgentPreset` | `''` | 创建会话未指定 `preset` 时使用的默认值；空表示 Host 的实际默认值。无效 id 会让创建失败并返回结构化错误 |
+| `workspaceModels` | `[]` | 有序路由条目 `{ workspace, provider, model, reasoningEffort? }`。`devlead_create_session` 省略模型参数时，使用首个匹配已解析 Workspace id、canonical path 或精确 title 的条目，校验后只应用于该子会话；工具显式参数始终优先 |
+| `defaultModel` | 省略 | 可选 `{ provider, model, reasoningEffort? }`，在 `workspaceModels` 之后、Host 默认之前回退。仅在创建时路由，不改写 profile 默认模型 |
 | `questionTtlMs` | `86400000` | 非负安全整数；open question 的 lazy TTL（24 小时），`0` 禁用过期。已回答的问题不会追溯过期 |
 | `boardPath` | `''`（自动派生） | 可选的绝对路径 override。trim 后为空白时由 active lead Session 的原始 workspace 根自动派生 `<cwd>/.dsh/devlead/board.json`，看板默认启用；非空必须是项目看板 JSON 的绝对路径并优先于派生路径。相对路径直接拒绝，不按 cwd resolve。既有显式配置 `boardPath` 的部署升级后路径与行为不变。路径**最终组件不能是 symlink**（原子替换会换掉链接本身而不是目标文件）；父目录链中的 symlink 可以。只有 lead AI 通过工具写入，人类/浏览器只读。详见 [docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md) |
 
@@ -381,7 +387,9 @@ warning，**绝不为了放 `.dsh/devlead` 重建 workspace**；workspace 恢复
 lead 同步/切换会重新解析。start 失败（例如目录不可写）只降级看板——DevLead 照常加载，看板
 工具返回 `BOARD_IO_ERROR`；下一次 lead 同步（同一路径也会重试）或路径切换会重试 `start()`。
 
-看板在锁内 fresh read，并支持 `expected_revision` CAS。update 返回的 project 省略 tasks；
+看板在锁内 fresh read，并支持 per-project `expected_revision` CAS：每个 project 记录最后修改它的看板代际，
+其他项目的更新不再造成伪冲突。旧文件缺少 project revision 时按文件 revision 回填，并在 Host 首次读取时写回。
+update 返回的 project 省略 tasks；
 单项目 read 最多返回 50 条 tasks，超出时标记 `truncated:true`。读取结果另有 64 KiB 上限
 （`DEVLEAD_BOARD_READ_MAX_BYTES`）：超限时依次从尾部裁剪 tasks、blockers、整个 project 行，
 并标记 `truncated:true`。I/O 故障使用 `BOARD_IO_ERROR`；
@@ -391,15 +399,14 @@ lead 同步/切换会重新解析。start 失败（例如目录不可写）只�
 
 项目 notes 位于 `dirname(boardPath)/notes/`：严格 schema v1 的 `index.json` 只存 metadata，Markdown
 正文分别在 `<sanitized project>/<note-id>.md`。index 上限 128 KiB、单 note 上限 256 KiB、每项目最多
-100 条，`board.json` 本身不变。lead 只用 `devlead_board_note_write` 创建（可选初始正文）、更新
-title/summary 或删除，`expected_revision` 保护 index 元数据写入。后续正文通过 DSH 原生
-`read`/`write`/`edit` 编辑工具返回的 `absolutePath`，不再提供第二条工具正文写入路径，也不要手改
-`notes/index.json`。人类与浏览器只读。Host 的 note read/list 在 index 锁内惰性对账 `bytes` 与文件
-`updatedAt`，绝不重写正文；文件缺失、非法 UTF-8 或超过 256 KiB 会返回结构化错误并保持 index 不变。
+100 条，`board.json` 本身不变。lead 只用 `devlead_board_note_write` 创建空 note、更新
+title/summary 或删除，`expected_revision` 保护 index 元数据写入。**notes 工具不接收也不返回 Markdown
+正文**；所有正文读写都通过 DSH 原生 `read`/`write`/`edit` 作用于工具返回的 `absolutePath`，不要手改
+`notes/index.json`。人类与浏览器只读。Host 的 note read/list 在 index 锁内只 stat 正文以惰性对账 `bytes`
+与文件 `updatedAt`，不读取或重写正文；文件缺失或超过 256 KiB 会返回结构化错误并保持 index 不变。
 浏览器从已解析的 board path 派生 notes 根目录，只通过既有 Workspace Files Remote 读取，既不接受任意
-路径，也不暴露写 API。note id/path 按忽略大小写判重并拒绝 Windows 保留设备名。单 note 工具结果按完整
-JSON 限制为 64 KiB，超限时按 Unicode 边界保留前缀并标 `truncated:true`；磁盘 256 KiB 正文与浏览器完整
-读取不变。完整 index schema、错误码、坏 index 恢复、board 重建后的
+路径，也不暴露写 API。note id/path 按忽略大小写判重并拒绝 Windows 保留设备名。完整 index schema、
+错误码、坏 index 恢复、board 重建后的
 orphan/GC 清理与持久性边界见 [docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md)。
 
 enabled lead 另有独立的 `devlead:board-policy` system prompt section，引导它在派发/收口和项目状态实质变化时

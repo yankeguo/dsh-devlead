@@ -17,13 +17,13 @@ import type { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { SessionId as toSessionId } from '@deepseek-ai/dsh-session'
 import type { SessionHeader, SessionEvent } from '@deepseek-ai/dsh-session'
 import type { Workspace } from '@deepseek-ai/dsh-workspace'
-import { isDevLeadTransition } from '@yankeguo/dsh-devlead-protocol'
+import { DEVLEAD_ASSISTANT_EXCERPT_MAX, isDevLeadTransition } from '@yankeguo/dsh-devlead-protocol'
 import type {
   DevLeadSessionView,
   DevLeadTransition,
   DevLeadWorkspaceView,
 } from '@yankeguo/dsh-devlead-protocol'
-import { assistantExcerpt, failureExcerpt } from './domain.ts'
+import { assistantExcerptResult, failureExcerpt } from './domain.ts'
 import { DevLeadError, thrownMessage } from './error.ts'
 
 /** Read-side services, limits, and cancellation shared by every view builder. */
@@ -38,6 +38,8 @@ export interface DevLeadViewDeps {
   readonly watchedSessions: readonly string[]
   /** Cancellation checked between reads and rows, and threaded into query reads. */
   readonly signal?: AbortSignal
+  /** Latest-assistant budget in Unicode code points for detail views. */
+  readonly lastAssistantLimit?: number
 }
 
 /** One resolved Session reference and whether an Agent is currently live. */
@@ -334,14 +336,17 @@ export function rankSessionIds(
  * @param events - complete raw Session events.
  * @returns the excerpt, or undefined when no assistant text was recorded.
  */
-function lastAssistantExcerpt(events: readonly SessionEvent[]): string | undefined {
+function lastAssistantExcerpt(
+  events: readonly SessionEvent[],
+  limit: number,
+): { readonly text: string | undefined; readonly truncated: boolean } {
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index]
     if (event === undefined || event.type !== 'assistant/message') continue
-    const excerpt = assistantExcerpt(event.data.message.content)
-    if (excerpt !== undefined) return excerpt
+    const excerpt = assistantExcerptResult(event.data.message.content, limit)
+    if (excerpt.text !== undefined) return excerpt
   }
-  return undefined
+  return { text: undefined, truncated: false }
 }
 
 /** Folded log facts of one Session, read only for single-Session detail views. */
@@ -350,6 +355,7 @@ interface LogFacts {
   readonly lastTransition?: DevLeadTransition
   readonly lastError?: string
   readonly lastAssistant?: string
+  readonly lastAssistantTruncated?: boolean
   readonly updatedAt?: number
 }
 
@@ -391,13 +397,16 @@ async function sessionLogFacts(deps: DevLeadViewDeps, sessionId: string): Promis
       lastError = kind === 'error' ? failureExcerpt(event.data.reason.error) : undefined
     }
   }
-  const lastAssistant = lastAssistantExcerpt(events)
+  const lastAssistant = lastAssistantExcerpt(events, deps.lastAssistantLimit ?? DEVLEAD_ASSISTANT_EXCERPT_MAX)
   return {
     ...(lastTurn === undefined ? {} : { lastTurn }),
     ...(lastTransition === undefined ? {} : { lastTransition }),
     ...(lastError === undefined ? {} : { lastError }),
     ...(last === undefined ? {} : { updatedAt: last.time }),
-    ...(lastAssistant === undefined ? {} : { lastAssistant }),
+    ...(lastAssistant.text === undefined ? {} : {
+      lastAssistant: lastAssistant.text,
+      lastAssistantTruncated: lastAssistant.truncated,
+    }),
   }
 }
 

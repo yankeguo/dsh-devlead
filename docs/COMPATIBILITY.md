@@ -174,7 +174,7 @@ rc.5 的 `dsh-web` 在未配置 `web.searchProvider` 时按模型路由选择：
 
 | 能力 | rc.1 | rc.2 | rc.3 | rc.4 | rc.5 |
 | --- | --- | --- | --- | --- | --- |
-| 插件加载、18 个主工具（含 2 个 notes 工具）+ `devlead_report`、`/devlead`、Web UI | 支持 | 支持 | 支持 | 支持 | 支持 |
+| 插件加载、17 个主工具（含 2 个 notes 工具；unarchive 已并入 archive）+ `devlead_report`、`/devlead`、Web UI | 支持 | 支持 | 支持 | 支持 | 支持 |
 | `devlead_list_agent_presets` / 真实 roster | 支持 | 支持 | 支持 | 支持 | 支持 |
 | 派发模型选择 + `reasoning_effort` | 支持 | 支持 | 支持 | 支持 | 支持 |
 | `devlead_list_models` | 支持 | 支持 | 支持 | 支持 | 支持 |

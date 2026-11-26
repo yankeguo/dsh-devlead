@@ -6,6 +6,7 @@
  */
 
 import {
+  DEVLEAD_ASSISTANT_EXCERPT_MAX,
   DEVLEAD_ERROR_EXCERPT_MAX,
   DEVLEAD_REPORT_KINDS,
   type DevLeadNotification,
@@ -142,9 +143,15 @@ export function notificationLine(notification: DevLeadNotification): string {
   // Only a real excerpt wins over the assistant summary: a blank failure text
   // must fall through instead of suppressing the recorded summary.
   const error = presentLine(notification.error)
-  const detail = error ?? presentLine(notification.summary)
+  const summary = typeof notification.summary === 'string'
+    ? excerptLine(notification.summary, DEVLEAD_ASSISTANT_EXCERPT_MAX)
+    : undefined
+  const detail = error ?? (summary === undefined
+    ? undefined
+    : `${summary}${notification.summaryTruncated === true ? ' [truncated]' : ''}`)
   const suffix = detail === undefined ? '' : `: ${detail}`
-  return `${who} — turn ${notification.turn} ${transitionLabel(notification.transition)}${suffix}`
+  const interrupt = notification.cancelledByLeadInterrupt === true ? ' (cancelled by your interrupt)' : ''
+  return `${who} — turn ${notification.turn} ${transitionLabel(notification.transition)}${interrupt}${suffix}`
 }
 
 /**

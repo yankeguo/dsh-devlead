@@ -495,7 +495,7 @@ async function executeInspect(ctx, invocation) {
   }
 }
 
-/** Write four real board revisions (CAS + long path/title refs) and read them back. */
+/** Write five real board revisions (per-project CAS + long path/title refs) and read them back. */
 async function executeBoard(ctx, invocation) {
   const agent = invocation.agent
   const workspacePath = agent.session.header.cwd
@@ -511,10 +511,15 @@ async function executeBoard(ctx, invocation) {
     },
     tasks: { upsert: [{ id: 'task-1', title: 'persist the board', status: 'doing' }] },
   })
+  const other = await ctx.devLead.updateBoard(agent, {
+    project: 'e2e-other',
+    create: true,
+    set: { workspace: { path: `${workspacePath}/other`, title: 'E2E Other' } },
+  })
   const updated = await ctx.devLead.updateBoard(agent, {
     project: 'e2e-board',
     set: { focus: 'CAS committed through the real Host' },
-  }, created.revision)
+  }, created.project.revision)
   // Path/title references are resolved against the locked board; the values are
   // longer than the id limit in real deployments, so this also proves the
   // preflight no longer confuses a reference with a synthetic project id.
@@ -536,13 +541,12 @@ async function executeBoard(ctx, invocation) {
     note: 'e2e-plan',
     title: 'E2E implementation plan',
     summary: 'A persisted plan shared by the lead and the read-only board UI',
-    content: '# E2E implementation plan\n\n## Context\n\nThe lead and the human read the same project note.\n\n- persist markdown outside `board.json`\n- render **safe** project context\n\n> Read-only in the browser.\n',
     expectedRevision: 0,
   })
   // Native file edits deliberately bypass the notes tool. Append through the
   // returned absolute Markdown path, then prove read/list reconciliation fixes
   // the index without rewriting that external body.
-  const nativeMarkdown = `${readFileSync(noteCreated.note.absolutePath, 'utf8')}\n## Next\n\n- [ ] verify automatic refresh\n`
+  const nativeMarkdown = '# E2E implementation plan\n\n## Context\n\nThe lead and the human read the same project note.\n\n- persist markdown outside `board.json`\n- render **safe** project context\n\n> Read-only in the browser.\n\n## Next\n\n- [ ] verify automatic refresh\n'
   writeFileSync(noteCreated.note.absolutePath, nativeMarkdown, 'utf8')
   const noteListing = await ctx.devLead.readBoardNote(agent, { project: 'E2E Board' })
   // Exercise the actual registered tool -> argument translation -> active-lead
@@ -559,6 +563,7 @@ async function executeBoard(ctx, invocation) {
       boardLeadSessionId: ctx.devLead.boardLeadSessionId ?? null,
       boardOverride: ctx.devLead.boardPathOverride,
       created,
+      other,
       updated,
       byPath,
       byTitle,
@@ -2360,7 +2365,7 @@ export function apply(ctx) {
   ctx.commands.register({
     definitionId: CommandDefinitionId(`${DEFINITION_ID}#board`),
     name: BOARD_COMMAND_NAME,
-    description: 'E2E probe: write four board revisions through the real Host (CAS + path/title refs).',
+    description: 'E2E probe: write five board revisions through the real Host (per-project CAS + path/title refs).',
     handler: guarded(BOARD_COMMAND_NAME, invocation => executeBoard(ctx, invocation)),
   })
   ctx.commands.register({

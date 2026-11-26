@@ -45,6 +45,7 @@ function project(
 ): DevLeadBoardProject {
   return {
     id,
+    revision: 7,
     workspace: { path: `/work/${id}`, title: id },
     status,
     priority,

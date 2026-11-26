@@ -31,7 +31,8 @@ import type {
 import type {
   DevLeadAgentPresetCatalog,
   DevLeadArchivedSession,
-  DevLeadArchiveSessionOptions,
+  DevLeadArchiveSessionResult,
+  DevLeadArchiveSessionsRequest,
   DevLeadCreatedSession,
   DevLeadModelCatalog,
   DevLeadNotification,
@@ -83,6 +84,7 @@ export const SESSION: DevLeadSessionView = {
   pendingInputs: 0,
   lastTransition: 'completed',
   lastAssistant: 'refactored the parser',
+  lastAssistantTruncated: false,
   updatedAt: 1_700_000_000_000,
   createdAt: 1_699_000_000_000,
 }
@@ -138,6 +140,7 @@ export const MODEL_CATALOG: DevLeadModelCatalog = {
 /** One board project fixture shared by read/update results. */
 export const BOARD_PROJECT = {
   id: 'webapp',
+  revision: 7,
   workspace: { path: '/tmp/webapp', title: 'webapp' },
   status: 'active' as const,
   priority: 'high' as const,
@@ -271,7 +274,7 @@ export class FakeDevLead {
   removed: DevLeadRemovedWorkspace = { workspace: WORKSPACE, removed: true }
 
   /** Result returned by {@link archiveSession}. */
-  archived: DevLeadArchivedSession = { sessionId: 'session-1', archived: true, stopped: false }
+  archived: DevLeadArchivedSession = { sessionId: 'session-1', archived: true, stopped: false, watched: false }
 
   /** Result returned by {@link unarchiveSession}. */
   unarchived: DevLeadUnarchivedSession = { sessionId: 'session-1', archived: false }
@@ -345,8 +348,9 @@ export class FakeDevLead {
     request: Omit<DevLeadBoardUpdate, 'updatedBy'>,
     expectedRevision?: number,
     signal?: AbortSignal,
+    options?: { commit?: boolean },
   ): Promise<DevLeadBoardUpdateResult> {
-    this.enter('updateBoard', agent, request, expectedRevision, signal)
+    this.enter('updateBoard', agent, request, expectedRevision, signal, options)
     return this.boardUpdated
   }
 
@@ -460,8 +464,13 @@ export class FakeDevLead {
     return this.sessions
   }
 
-  async getSession(agent: Agent, sessionId: string, signal?: AbortSignal): Promise<DevLeadSessionView> {
-    this.enter('getSession', agent, sessionId, signal)
+  async getSession(
+    agent: Agent,
+    sessionId: string,
+    signal?: AbortSignal,
+    lastAssistantLimit?: number,
+  ): Promise<DevLeadSessionView> {
+    this.enter('getSession', agent, sessionId, signal, lastAssistantLimit)
     return this.session
   }
 
@@ -547,13 +556,17 @@ export class FakeDevLead {
     return this.removed
   }
 
-  async archiveSession(
+  async archiveSessions(
     agent: Agent,
-    sessionId: string,
-    options: DevLeadArchiveSessionOptions = {},
-  ): Promise<DevLeadArchivedSession> {
-    this.enter('archiveSession', agent, sessionId, options)
-    return this.archived
+    request: DevLeadArchiveSessionsRequest,
+  ): Promise<DevLeadArchiveSessionResult[]> {
+    this.enter('archiveSessions', agent, request)
+    if (request.archived === false) {
+      const ids = request.sessions ?? [request.session ?? 'session-1']
+      return ids.map(sessionId => ({ sessionId, archived: false }))
+    }
+    const ids = request.sessions ?? [request.session ?? 'session-1']
+    return ids.map(sessionId => ({ ...this.archived, sessionId }))
   }
 
   async unarchiveSession(agent: Agent, sessionId: string, signal?: AbortSignal): Promise<DevLeadUnarchivedSession> {

@@ -16,7 +16,6 @@ import {
   DEVLEAD_NOTES_INDEX_MAX_BYTES,
   DEVLEAD_NOTES_MAX_PER_PROJECT,
   DEVLEAD_NOTES_NOTE_MAX_BYTES,
-  DEVLEAD_NOTES_READ_MAX_BYTES,
   DevLeadBoardNotesStore,
   type DevLeadBoardNoteWrite,
 } from '../src/notes.ts'
@@ -94,20 +93,21 @@ describe('DevLeadBoardNotesStore', () => {
   it('creates an indexed path, natively edits the body, updates metadata, and deletes', async () => {
     const fixture = await boot()
     const created = await fixture.notes.write(write({
-      project: 'Alpha project', operation: 'create', title: ' Release plan ', summary: 'checklist', content: '# Plan\n',
+      project: 'Alpha project', operation: 'create', title: ' Release plan ', summary: 'checklist',
     }))
     expect(created).toMatchObject({
       revision: 1, changed: true, operation: 'create',
-      project: { id: 'alpha' }, note: { title: 'Release plan', bytes: 7 },
+      project: { id: 'alpha' }, note: { title: 'Release plan', bytes: 0 },
     })
+    expect(created.note).not.toHaveProperty('content')
+    expect(created).not.toHaveProperty('truncated')
     const id = created.note.id
     const bodyPath = join(fixture.notes.path!, created.note.path)
     expect(created.note.absolutePath).toBe(bodyPath)
-    expect(await readFile(bodyPath, 'utf8')).toBe('# Plan\n')
+    expect(await readFile(bodyPath, 'utf8')).toBe('')
     let index = await persistedIndex(fixture)
     expect(index.projects).toHaveLength(1)
     expect(index.projects[0]?.notes[0]?.path).toBe(`${created.project.directory}/${id}.md`)
-    expect(JSON.stringify(index)).not.toContain('# Plan')
     expect(JSON.stringify(index)).not.toContain('absolutePath')
 
     const nativeContent = '# Native\nnext🙂\n'
@@ -116,15 +116,19 @@ describe('DevLeadBoardNotesStore', () => {
     await utimes(bodyPath, nativeMtime, nativeMtime)
     const read = await fixture.notes.read({ project: 'alpha', note: id })
     expect(read).toMatchObject({ revision: 2, note: {
-      id, absolutePath: bodyPath, content: nativeContent,
+      id, absolutePath: bodyPath,
       bytes: Buffer.byteLength(nativeContent), updatedAt: nativeMtime.toISOString(),
     } })
-    expect(read.truncated).toBeUndefined()
+    expect(read.note).not.toHaveProperty('content')
+    expect(read).not.toHaveProperty('truncated')
     expect(await readFile(bodyPath, 'utf8')).toBe(nativeContent)
+    index = await persistedIndex(fixture)
+    expect(JSON.stringify(index)).not.toContain('# Native')
 
     const listed = await fixture.notes.read({ project: '/tmp/alpha' })
-    const { content: _content, ...readMetadata } = read.note!
-    expect(listed.notes).toEqual([readMetadata])
+    expect(listed.notes).toEqual([read.note])
+    expect(listed.notes?.[0]).not.toHaveProperty('content')
+    expect(listed).not.toHaveProperty('truncated')
     expect(listed.note).toBeUndefined()
     const updated = await fixture.notes.write(write({
       project: 'alpha', operation: 'update-metadata', note: id,
@@ -150,9 +154,10 @@ describe('DevLeadBoardNotesStore', () => {
 
   it('keeps index-revision CAS for metadata without changing the native body', async () => {
     const fixture = await boot()
-    const created = await fixture.notes.write(write({ project: 'alpha', operation: 'create', title: 'CAS', content: '🙂' }))
+    const created = await fixture.notes.write(write({ project: 'alpha', operation: 'create', title: 'CAS' }))
     const beforeIndex = await readFile(fixture.notes.indexPath!, 'utf8')
     const bodyPath = created.note.absolutePath
+    await writeFile(bodyPath, 'native body', 'utf8')
     const beforeBody = await readFile(bodyPath, 'utf8')
     await expect(fixture.notes.write(write({
       project: 'alpha', operation: 'update-metadata', note: created.note.id, title: 'lost', expectedRevision: 0,
@@ -161,40 +166,23 @@ describe('DevLeadBoardNotesStore', () => {
     expect(await readFile(bodyPath, 'utf8')).toBe(beforeBody)
     await expect(fixture.notes.write(write({
       project: 'alpha', operation: 'update-metadata', note: created.note.id, content: 'not a tool body write',
-    }))).rejects.toMatchObject({ code: 'BOARD_INVALID' })
+    } as unknown as DevLeadBoardNoteWrite))).rejects.toMatchObject({ code: 'BOARD_INVALID' })
   })
 
   it('rejects case-only create collisions without touching the index or any body', async () => {
     const fixture = await boot()
     const created = await fixture.notes.write(write({
-      project: 'alpha', operation: 'create', note: 'CaseNote', title: 'Original', content: 'original body',
+      project: 'alpha', operation: 'create', note: 'CaseNote', title: 'Original',
     }))
     const bodyPath = join(fixture.notes.path!, created.note.path)
+    await writeFile(bodyPath, 'original body', 'utf8')
     const beforeIndex = await readFile(fixture.notes.indexPath!, 'utf8')
     await expect(fixture.notes.write(write({
-      project: 'alpha', operation: 'create', note: 'casenote', title: 'Collision', content: 'lost body',
+      project: 'alpha', operation: 'create', note: 'casenote', title: 'Collision',
     }))).rejects.toMatchObject({ code: 'BOARD_INVALID' })
     expect(await readFile(fixture.notes.indexPath!, 'utf8')).toBe(beforeIndex)
     expect(await readFile(bodyPath, 'utf8')).toBe('original body')
     expect(await readdir(dirname(bodyPath))).toEqual(['CaseNote.md'])
-  })
-
-  it('bounds a single-note model read to 64 KiB at a Unicode boundary', async () => {
-    const fixture = await boot()
-    const content = '🙂'.repeat(DEVLEAD_NOTES_NOTE_MAX_BYTES / 4)
-    const created = await fixture.notes.write(write({
-      project: 'alpha', operation: 'create', note: 'large', title: 'Large', content,
-    }))
-    const result = await fixture.notes.read({ project: 'alpha', note: created.note.id })
-    expect(result.truncated).toBe(true)
-    expect(result.note?.bytes).toBe(DEVLEAD_NOTES_NOTE_MAX_BYTES)
-    expect(result.note?.content.length).toBeGreaterThan(0)
-    expect(result.note?.content.length).toBeLessThan(content.length)
-    expect(content.startsWith(result.note!.content)).toBe(true)
-    expect(result.note?.content).not.toContain('�')
-    expect(Buffer.byteLength(JSON.stringify(result), 'utf8')).toBeLessThanOrEqual(DEVLEAD_NOTES_READ_MAX_BYTES)
-    // The storage/client limit remains 256 KiB; only the model result is cut.
-    expect(await readFile(join(fixture.notes.path!, created.note.path), 'utf8')).toBe(content)
   })
 
   it('serializes two store instances through the index lock without lost notes', async () => {
@@ -206,7 +194,7 @@ describe('DevLeadBoardNotesStore', () => {
     await second.start()
     await Promise.all(Array.from({ length: 12 }, (_, position) =>
       (position % 2 === 0 ? fixture.notes : second).write(write({
-        project: 'alpha', operation: 'create', note: `note-${position}`, title: `Note ${position}`, content: String(position),
+        project: 'alpha', operation: 'create', note: `note-${position}`, title: `Note ${position}`,
       }))))
     const index = await persistedIndex(fixture)
     expect(index.revision).toBe(12)
@@ -218,7 +206,7 @@ describe('DevLeadBoardNotesStore', () => {
 
   it('serializes concurrent read/list reconciliation into one index repair', async () => {
     const fixture = await boot()
-    const created = await fixture.notes.write(write({ project: 'alpha', operation: 'create', title: 'Concurrent', content: 'old' }))
+    const created = await fixture.notes.write(write({ project: 'alpha', operation: 'create', title: 'Concurrent' }))
     const nativeMtime = new Date('2026-11-24T02:03:04.000Z')
     await writeFile(created.note.absolutePath, 'external native edit', 'utf8')
     await utimes(created.note.absolutePath, nativeMtime, nativeMtime)
@@ -238,14 +226,17 @@ describe('DevLeadBoardNotesStore', () => {
     const fixture = await boot()
     for (const id of ['../escape', '/absolute', 'a/b', 'a\\b', '.hidden', '-leading', 'white space', 'CON', 'com1.txt', 'LPT9.']) {
       await expect(fixture.notes.write(write({
-        project: 'alpha', operation: 'create', note: id, title: 'unsafe', content: 'no',
+        project: 'alpha', operation: 'create', note: id, title: 'unsafe',
       }))).rejects.toMatchObject({ code: 'BOARD_INVALID' })
     }
     await expect(fixture.notes.write(write({ project: 'alpha', operation: 'create', title: ' ' })))
       .rejects.toMatchObject({ code: 'BOARD_INVALID' })
-    await expect(fixture.notes.write(write({ project: 'alpha', operation: 'update-metadata', note: 'missing', content: 'x' })))
+    await expect(fixture.notes.write(write({
+      project: 'alpha', operation: 'create', title: 'body', content: 'not accepted',
+    } as unknown as DevLeadBoardNoteWrite))).rejects.toMatchObject({ code: 'BOARD_INVALID' })
+    await expect(fixture.notes.write(write({ project: 'alpha', operation: 'update-metadata', note: 'missing', title: ' ' })))
       .rejects.toMatchObject({ code: 'BOARD_INVALID' })
-    await expect(fixture.notes.write(write({ project: 'alpha', operation: 'update', note: 'missing', content: 'x' } as unknown as DevLeadBoardNoteWrite)))
+    await expect(fixture.notes.write(write({ project: 'alpha', operation: 'update', note: 'missing' } as unknown as DevLeadBoardNoteWrite)))
       .rejects.toMatchObject({ code: 'BOARD_INVALID' })
     expect((await fixture.notes.read({ project: 'alpha' })).revision).toBe(0)
     expect(existsSync(fixture.notes.indexPath!)).toBe(false)
@@ -277,33 +268,17 @@ describe('DevLeadBoardNotesStore', () => {
     await expect(fixture.notes.read({ project: 'alpha' })).rejects.toMatchObject({ code: 'BOARD_LIMIT_EXCEEDED' })
   })
 
-  it('rejects invalid UTF-8 even when byte counts still match', async () => {
+  it('rejects invalid UTF-8 in the index without overwriting it', async () => {
     const fixture = await boot()
     const invalidIndex = Buffer.from([0x7b, 0xff, 0x7d])
     await writeFile(fixture.notes.indexPath!, invalidIndex)
     await expect(fixture.notes.read({ project: 'alpha' })).rejects.toMatchObject({ code: 'BOARD_INVALID' })
     expect(await readFile(fixture.notes.indexPath!)).toEqual(invalidIndex)
-
-    await rm(fixture.notes.indexPath!)
-    const created = await fixture.notes.write(write({
-      project: 'alpha', operation: 'create', note: 'utf8', title: 'UTF-8', content: 'abc',
-    }))
-    const bodyPath = join(fixture.notes.path!, created.note.path)
-    const beforeIndex = await readFile(fixture.notes.indexPath!, 'utf8')
-    await writeFile(bodyPath, Buffer.from([0x61, 0xff, 0x62]))
-    await expect(fixture.notes.read({ project: 'alpha', note: 'utf8' }))
-      .rejects.toMatchObject({ code: 'BOARD_INVALID' })
-    await expect(fixture.notes.read({ project: 'alpha' }))
-      .rejects.toMatchObject({ code: 'BOARD_INVALID' })
-    expect(await readFile(fixture.notes.indexPath!, 'utf8')).toBe(beforeIndex)
-    expect((await readFile(bodyPath)).length).toBe(created.note.bytes)
-    const deleted = await fixture.notes.write(write({ project: 'alpha', operation: 'delete', note: 'utf8' }))
-    expect(deleted.deleted).toBe(true)
   })
 
-  it('repairs stale byte metadata, maps missing/oversized bodies, and lets delete repair absence', async () => {
+  it('repairs stale size/mtime metadata, maps missing/oversized bodies, and lets delete repair absence', async () => {
     const fixture = await boot()
-    const created = await fixture.notes.write(write({ project: 'alpha', operation: 'create', title: 'Body', content: 'abc' }))
+    const created = await fixture.notes.write(write({ project: 'alpha', operation: 'create', title: 'Body' }))
     const bodyPath = created.note.absolutePath
     await rm(bodyPath)
     await expect(fixture.notes.read({ project: 'alpha', note: created.note.id }))
@@ -314,11 +289,17 @@ describe('DevLeadBoardNotesStore', () => {
     expect(repaired.deleted).toBe(true)
     expect((await persistedIndex(fixture)).projects).toEqual([])
 
-    const second = await fixture.notes.write(write({ project: 'alpha', operation: 'create', title: 'Body 2', content: 'abc' }))
+    const second = await fixture.notes.write(write({ project: 'alpha', operation: 'create', title: 'Body 2' }))
     const secondPath = second.note.absolutePath
+    const nativeMtime = new Date('2026-11-24T03:04:05.000Z')
     await writeFile(secondPath, 'different bytes', 'utf8')
+    await utimes(secondPath, nativeMtime, nativeMtime)
     const reconciled = await fixture.notes.read({ project: 'alpha', note: second.note.id })
-    expect(reconciled.note).toMatchObject({ content: 'different bytes', bytes: Buffer.byteLength('different bytes') })
+    expect(reconciled.note).toMatchObject({
+      bytes: Buffer.byteLength('different bytes'), updatedAt: nativeMtime.toISOString(),
+    })
+    expect(reconciled.note).not.toHaveProperty('content')
+    expect(reconciled).not.toHaveProperty('truncated')
     expect(await readFile(secondPath, 'utf8')).toBe('different bytes')
     const beforeOversize = await readFile(fixture.notes.indexPath!, 'utf8')
     await writeFile(secondPath, Buffer.alloc(DEVLEAD_NOTES_NOTE_MAX_BYTES + 1, 32))
@@ -329,11 +310,8 @@ describe('DevLeadBoardNotesStore', () => {
     expect(await readFile(fixture.notes.indexPath!, 'utf8')).toBe(beforeOversize)
   })
 
-  it('enforces note size and per-project count limits and ignores orphan bodies', async () => {
+  it('enforces per-project count limits and ignores orphan bodies', async () => {
     const fixture = await boot()
-    await expect(fixture.notes.write(write({
-      project: 'alpha', operation: 'create', title: 'too large', content: 'x'.repeat(DEVLEAD_NOTES_NOTE_MAX_BYTES + 1),
-    }))).rejects.toMatchObject({ code: 'BOARD_LIMIT_EXCEEDED' })
     const listed = await fixture.notes.read({ project: 'alpha' })
     const orphan = join(fixture.notes.path!, listed.project.directory, 'orphan.md')
     await mkdir(dirname(orphan), { recursive: true })
@@ -353,8 +331,8 @@ describe('DevLeadBoardNotesStore', () => {
 
   it('merges active-project counts/latest titles into a UTF-8-bounded cached summary', async () => {
     const fixture = await boot()
-    await fixture.notes.write(write({ project: 'alpha', operation: 'create', note: 'old', title: 'Old title', content: 'x' }))
-    await fixture.notes.write(write({ project: 'alpha', operation: 'create', note: 'new', title: 'Latest🙂 title', content: 'y' }))
+    await fixture.notes.write(write({ project: 'alpha', operation: 'create', note: 'old', title: 'Old title' }))
+    await fixture.notes.write(write({ project: 'alpha', operation: 'create', note: 'new', title: 'Latest🙂 title' }))
     const board = JSON.parse(await readFile(fixture.boardPath, 'utf8')) as DevLeadBoard
     const summary = renderDevLeadBoardSummary(board, fixture.notes.summaryIndex())
     expect(summary).toContain('notes:2')
@@ -414,12 +392,18 @@ describe('DevLeadBoardNotesStore', () => {
         project: 'alpha', create: true, set: { workspace: { path: '/tmp/alpha', title: 'alpha' } },
       })
       const created = await harness.service.writeBoardNote(harness.lead.agent, {
-        project: 'alpha', operation: 'create', title: 'Lead note', content: 'body',
+        project: 'alpha', operation: 'create', title: 'Lead note',
       })
-      expect(created.note.bytes).toBe(4)
-      expect((await harness.service.readBoardNote(harness.lead.agent, {
+      expect(created.note.bytes).toBe(0)
+      expect(created.note.absolutePath).toBeTruthy()
+      expect(await readFile(created.note.absolutePath, 'utf8')).toBe('')
+      await writeFile(created.note.absolutePath, 'body', 'utf8')
+      const read = await harness.service.readBoardNote(harness.lead.agent, {
         project: 'alpha', note: created.note.id,
-      })).note?.content).toBe('body')
+      })
+      expect(read.note?.bytes).toBe(4)
+      expect(read.note).not.toHaveProperty('content')
+      expect(read).not.toHaveProperty('truncated')
       expect(harness.service.boardSummaryFor(harness.lead.agent)).toContain('notes:1 latest:"Lead note"')
       await harness.service.setEnabled(harness.lead.agent, false)
       expect(harness.service.notes.enabled).toBe(false)

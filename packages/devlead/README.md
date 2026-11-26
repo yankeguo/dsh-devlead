@@ -16,18 +16,18 @@ lead-AI-writable and human/browser-read-only.
 The same Host-owned board service also owns `ctx.devLead.notes`, a `DevLeadBoardNotesStore` rooted at
 `dirname(boardPath)/notes/` and swapped/closed with the board lifecycle. Tool-facing service methods are
 `readBoardNote(agent, { project, note? })` and
-`writeBoardNote(agent, { project, operation, note?, title?, summary?, content?, expectedRevision? }, signal?)`;
-both recheck the active lead and accept no filesystem path input. Results derive an `absolutePath` for native
-DSH `read`/`write`/`edit` body editing; it is never persisted in the index. Operations are `create` (optional
-initial content), `update-metadata`, and `delete`; there is no tool body-update/append or body-byte CAS. The store
+`writeBoardNote(agent, { project, operation, note?, title?, summary?, expectedRevision? }, signal?)`;
+both recheck the active lead and accept no filesystem path input. Results contain metadata only and derive an
+`absolutePath` for all native DSH `read`/`write`/`edit` body work; it is never persisted in the index. Operations are
+`create` (always an empty body), `update-metadata`, and `delete`; neither operation accepts or returns body content.
+The store
 exposes `path` / `indexPath` / `enabled`, `start()` / `close()`, cache-only `summaryIndex()`, and logical `read()` /
 `write()`. Its strict schema-v1 `index.json` is the committed source of truth and contains only project/note
 metadata; Markdown bodies live at `<sanitized project>/<note-id>.md`, and orphan files are ignored. Every index
 mutation resolves the board project by id/title/absolute workspace path, fresh-reads under the cross-process file
 lock, checks `expected_revision`, validates the complete next index, and atomically replaces it. Reads/lists also
-serialize through that lock, validate stable UTF-8 body snapshots within 256 KiB, and lazily repair `bytes` and
-file-mtime `updatedAt` without writing bodies; any invalid/missing body aborts the repair and preserves the old
-index. The index is capped at 128 KiB and each project at 100 notes. A bad index is never overwritten from a stale
+serialize through that lock, stat stable body snapshots within 256 KiB without reading them, and lazily repair `bytes`
+and file-mtime `updatedAt`; any missing/oversized body aborts the repair and preserves the old index. The index is capped at 128 KiB and each project at 100 notes. A bad index is never overwritten from a stale
 cache and does not block the board or DevLead; notes operations still require a valid board project. The synchronous board summary
 reads the valid board + notes caches and adds
 active-project note counts/latest titles within its existing 1536-byte cap. Humans and browsers stay
@@ -100,8 +100,9 @@ dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 
 The Loader row id `devlead` accepts `notificationBatchMs`, `maxWatchedSessions`,
 `maxListedSessions`, `wakeColdSession` (default `true` since 0.2.0), `defaultAgentPreset`
-(used when a created Session names no preset; an invalid id fails creation), and the optional
-`boardPath` override. The board is enabled by default: a trimmed-blank / omitted `boardPath` derives
+(used when a created Session names no preset; an invalid id fails creation), optional `workspaceModels`
+(per-Workspace route entries matched by resolved id/path/title) and `defaultModel` (fallback before the Host default),
+and the optional `boardPath` override. The board is enabled by default: a trimmed-blank / omitted `boardPath` derives
 `<active lead Session header cwd>/.dsh/devlead/board.json`; a non-blank value must be absolute and
 wins over the derived path (relative paths are rejected). Existing explicit `boardPath` deployments
 keep their path and behaviour unchanged, and no tool argument can redirect the board file.
@@ -129,13 +130,13 @@ lead off/切换会释放旧 store/watcher，start/预创建失败只记 warning 
 切换/关闭的 `ctx.devLead.notes`（`DevLeadBoardNotesStore`，root 固定
 `dirname(boardPath)/notes/`）。工具侧 service 方法是 `readBoardNote(agent,{project,note?})` 与
 `writeBoardNote(agent,patch,signal?)`，patch 含 create/update-metadata/delete operation、可选
-note/title/summary/create-only content 与 expectedRevision，均不接受文件路径输入；返回的 absolutePath 供
-DSH 原生 read/write/edit 编辑正文，不写入 index，也不再提供工具 update/append 或正文 bytes CAS。store
+note/title/summary 与 expectedRevision，均不接受文件路径或正文 content；create 始终创建空文件。返回的
+absolutePath 供 DSH 原生 read/write/edit 读写正文，不写入 index，工具不接收也不返回正文。store
 暴露 path/indexPath/enabled、start/close、summaryIndex 与逻辑 read/write。严格 schema-v1 `index.json`
 是提交事实、只存 metadata，正文位于 `<sanitized project>/<note-id>.md`，orphan 忽略。每次 index 修改在
 跨进程文件锁内 fresh read，校验 `expected_revision`，验证完整 next index 后原子替换；read/list 也串行
-进入该锁，验证稳定、≤256 KiB 的合法 UTF-8 正文快照并惰性修复 bytes/文件 mtime updatedAt，绝不重写正文；
-缺失/非法正文会中止修复并保留旧 index。index ≤128 KiB、每项目 ≤100 条。坏 index 不会用旧缓存覆盖，也不阻塞 board/DevLead；
+进入该锁，只 stat 稳定、≤256 KiB 的正文快照（不读取正文）并惰性修复 bytes/文件 mtime updatedAt，绝不重写正文；
+缺失/超限正文会中止修复并保留旧 index。index ≤128 KiB、每项目 ≤100 条。坏 index 不会用旧缓存覆盖，也不阻塞 board/DevLead；
 notes 操作仍要求能解析合法 board project。同步 board summary 从合法缓存为 active 项目附加 note 数/
 最近标题，整体仍 ≤1536 bytes。人类与浏览器
 只读。

@@ -17,6 +17,7 @@ import { z as zod } from 'zod'
 import type { ZodType } from 'zod'
 import {
   DEVLEAD_ANSWER_RETENTION,
+  DEVLEAD_ASSISTANT_EXCERPT_MAX,
   DEVLEAD_DEFAULT_NOTIFICATION_RETENTION,
   DEVLEAD_ERROR_EXCERPT_MAX,
   DEVLEAD_IDEMPOTENCY_KEY_MAX,
@@ -126,6 +127,13 @@ const excerptSchema = zod.string().min(1).refine(
   { message: `excerpt must be at most ${DEVLEAD_ERROR_EXCERPT_MAX} code points` },
 )
 
+/** Latest-assistant summaries have a larger budget than errors and titles. */
+const assistantSummarySchema = zod.string().min(1).refine(
+  value => value.length <= DEVLEAD_ASSISTANT_EXCERPT_MAX * 2
+    && Array.from(value).length <= DEVLEAD_ASSISTANT_EXCERPT_MAX,
+  { message: `assistant summary must be at most ${DEVLEAD_ASSISTANT_EXCERPT_MAX} code points` },
+)
+
 /** Wire schema validating one retained notification before it leaves the Host. */
 const notificationSchema: ZodType<DevLeadNotification> = zod.object({
   id: zod.string().min(1),
@@ -137,10 +145,19 @@ const notificationSchema: ZodType<DevLeadNotification> = zod.object({
   turn: zod.number().int().positive(),
   at: zod.number().int().nonnegative().max(DEVLEAD_MAX_INSTANT),
   error: excerptSchema.optional(),
-  summary: excerptSchema.optional(),
+  summary: assistantSummarySchema.optional(),
+  summaryTruncated: zod.boolean().optional(),
+  cancelledByLeadInterrupt: zod.boolean().optional(),
   wakeSuppressedByReportId: zod.string().min(1).optional(),
   wakeSuppressionReason: zod.enum(['merged-into-pending-wake', 'included-in-sent-wake']).optional(),
 }).strict().refine(
+  notification => notification.summaryTruncated === undefined || notification.summary !== undefined,
+  { message: 'summaryTruncated requires summary' },
+).refine(
+  notification => notification.cancelledByLeadInterrupt !== true
+    || notification.transition === 'interrupted' || notification.transition === 'aborted',
+  { message: 'cancelledByLeadInterrupt is only valid for interrupted or aborted turns' },
+).refine(
   notification => (notification.wakeSuppressedByReportId === undefined)
     === (notification.wakeSuppressionReason === undefined),
   { message: 'wakeSuppressedByReportId and wakeSuppressionReason must appear together' },
@@ -426,6 +443,8 @@ function sameNotificationPayload(left: DevLeadNotification, right: DevLeadNotifi
     && left.at === right.at
     && left.error === right.error
     && left.summary === right.summary
+    && left.summaryTruncated === right.summaryTruncated
+    && left.cancelledByLeadInterrupt === right.cancelledByLeadInterrupt
 }
 
 /**

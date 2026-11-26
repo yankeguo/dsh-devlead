@@ -88,6 +88,8 @@ export interface DevLeadBoardTask {
 /** One durable project. */
 export interface DevLeadBoardProject {
   id: string
+  /** Project-local CAS revision; legacy files are backfilled from the file revision on read. */
+  revision: number
   workspace: { path: string; title: string }
   status: DevLeadBoardProjectStatus
   priority: DevLeadBoardPriority
@@ -187,6 +189,9 @@ export function createDevLeadBoardSchema(
 ): ZodType<DevLeadBoard> {
   const projectSchema = zod.object({
     id: idSchema,
+    // Optional only at the durable decode boundary so schema-v1 files written
+    // before project-local CAS remain readable; the Host backfills and persists it.
+    revision: zod.number().int().nonnegative().safe().optional(),
     workspace: zod.object({
       path: zod.string().min(1).max(DEVLEAD_BOARD_PATH_MAX).refine(isAbsolutePath, {
         message: 'workspace path must be absolute',
@@ -243,7 +248,10 @@ export function createDevLeadBoardSchema(
         })
       }
     })
-  })
+  }).transform(board => ({
+    ...board,
+    projects: board.projects.map(project => ({ ...project, revision: project.revision ?? board.revision })),
+  }))
   // The zod-inferred output spells optional keys as `T | undefined`, which is
   // not assignable to the documented interfaces under `exactOptionalPropertyTypes`;
   // the runtime shape is identical, so the public schema type is asserted once

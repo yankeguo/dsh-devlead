@@ -82,8 +82,11 @@ export const DEVLEAD_DEFAULT_MAX_WATCHED = 64
 /** Deployment default of the retained notification digest length. */
 export const DEVLEAD_DEFAULT_NOTIFICATION_RETENTION = 64
 
-/** Longest single-line error/excerpt field stored on one notification. */
+/** Longest single-line error/title field stored on one notification. */
 export const DEVLEAD_ERROR_EXCERPT_MAX = 240
+
+/** Default latest-assistant excerpt budget, in Unicode code points. */
+export const DEVLEAD_ASSISTANT_EXCERPT_MAX = 4_096
 
 /** Longest report message accepted from a watched Session, in Unicode code points. */
 export const DEVLEAD_REPORT_MESSAGE_MAX = 4_000
@@ -167,8 +170,12 @@ export interface DevLeadNotification {
   readonly at: number
   /** Compact single-line failure excerpt, recorded by the Host for `error` transitions. */
   readonly error?: string
-  /** Compact single-line excerpt of the latest assistant message before the turn settled. */
+  /** Single-line latest-assistant excerpt, bounded independently of error/title fields. */
   readonly summary?: string
+  /** Whether `summary` was truncated; absent on legacy records. */
+  readonly summaryTruncated?: boolean
+  /** Whether this lead's own interrupt caused an `interrupted`/`aborted` transition. */
+  readonly cancelledByLeadInterrupt?: boolean
   /** Action-required report whose wake made a separate turn-notification wake unnecessary. */
   readonly wakeSuppressedByReportId?: string
   /** Whether that report was still pending or had already included this transition in its sent wake. */
@@ -562,8 +569,10 @@ export interface DevLeadSessionView {
   readonly lastTransition?: DevLeadTransition
   /** Compact error excerpt of the latest failed turn, when one was recorded. */
   readonly lastError?: string
-  /** Compact excerpt of the latest assistant message, when the log was observed. */
+  /** Excerpt of the latest assistant message, when the log was observed. */
   readonly lastAssistant?: string
+  /** Whether `lastAssistant` was truncated; present whenever `lastAssistant` is present. */
+  readonly lastAssistantTruncated?: boolean
   /** Epoch milliseconds of the latest durable activity, when known. */
   readonly updatedAt?: number
   /** Epoch milliseconds of Session creation, when known. */
@@ -637,6 +646,12 @@ export interface DevLeadModelSelection {
    * provider/model pair; omitted follows the adapter default.
    */
   readonly reasoningEffort?: string
+}
+
+/** Deployment model route selected by a resolved Workspace id, path, or exact title. */
+export interface DevLeadWorkspaceModelSelection extends DevLeadModelSelection {
+  /** Exact Workspace id, canonical path, or display title to match. */
+  readonly workspace: string
 }
 
 /** One reasoning effort a provider advertises for a model. */
@@ -917,6 +932,8 @@ export interface DevLeadArchivedSession {
    * activity check runs and no stop request is issued.
    */
   readonly stopped: boolean
+  /** Always `false` after the automatic post-archive unwatch succeeds. */
+  readonly watched: boolean
 }
 
 /** Result of one Session restoration. */
@@ -926,6 +943,27 @@ export interface DevLeadUnarchivedSession {
   /** Always `false`: the Session is no longer archived after this call. */
   readonly archived: false
 }
+
+/** One explicit-target or settled-Workspace archive/unarchive batch request. */
+export interface DevLeadArchiveSessionsRequest {
+  /** One Session reference; mutually exclusive with the other target forms. */
+  readonly session?: string
+  /** Explicit Session references, processed in order after trimming/deduplication. */
+  readonly sessions?: readonly string[]
+  /** Workspace whose settled, unarchived Sessions should be archived. */
+  readonly workspace?: string
+  /** Required `true` for Workspace cleanup; rejected for explicit targets. */
+  readonly settledOnly?: boolean
+  /** Archive when true (default), restore explicit targets when false. */
+  readonly archived?: boolean
+  /** Archive first, then ask the Host to stop remaining activity. */
+  readonly stopRunning?: boolean
+  /** Cancellation checked between target mutations. */
+  readonly signal?: AbortSignal
+}
+
+/** One item of an archive/unarchive batch result. */
+export type DevLeadArchiveSessionResult = DevLeadArchivedSession | DevLeadUnarchivedSession
 
 /**
  * Options of one prompt admission through the core service.

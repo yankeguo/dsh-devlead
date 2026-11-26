@@ -63,6 +63,7 @@ function project(
 ): DevLeadBoardProject {
   return {
     id,
+    revision: 7,
     workspace: { path: workspacePath, title: `Project ${id}` },
     status: 'active',
     priority: 'medium',
@@ -133,6 +134,17 @@ describe('shared board wire acceptance', () => {
     expect(posixSchema.parse(minimal)).toEqual(minimal)
   })
 
+  it('normalizes legacy missing project revisions and preserves explicit zero', () => {
+    const value = board([project('alpha'), project('beta')])
+    const legacy = structuredClone(value) as unknown as { projects: Array<Record<string, unknown>> }
+    delete legacy.projects[0]!.revision
+    legacy.projects[1]!.revision = 0
+    for (const schema of [hostSchema, posixSchema, win32Schema]) {
+      const parsed = schema.parse(legacy)
+      expect(parsed.projects.map(project => project.revision)).toEqual([7, 0])
+    }
+  })
+
   it('accepts the same blocker and task ids in different projects', () => {
     const value = board([project('alpha'), project('beta')])
     expect(posixSchema.safeParse(value).success).toBe(true)
@@ -189,6 +201,15 @@ describe('shared board wire rejection', () => {
     ['string', '7'],
   ])('rejects a %s revision', (_label, revision) => {
     expect(pointersOf({ ...board(), revision })).toContain('/revision')
+  })
+
+  it.each([
+    ['negative', -1],
+    ['fractional', 1.5],
+    ['unsafe', Number.MAX_SAFE_INTEGER + 1],
+    ['string', '7'],
+  ])('rejects a %s project revision', (_label, revision) => {
+    expect(pointersOf(board([{ ...project(), revision: revision as number }]))).toContain('/projects/0/revision')
   })
 
   it.each([

@@ -34,35 +34,26 @@ const BOARD_READ_DESCRIPTION =
   + 'BOARD_DISABLED. Use when reconciling current cross-project state before dispatching, resuming, closing, or reporting.'
 
 const BOARD_UPDATE_DESCRIPTION =
-  'Update one project on the user-visible DevLead board; the human is read-only and only the enabled lead AI may '
-  + 'write through this tool. Create requires create:true and set.workspace.path. Supports scalar status/priority/'
-  + 'goal/focus/next updates, blocker clear/remove/add, and task remove/upsert. Use expected_revision from '
-  + 'devlead_board_read for compare-and-swap when a lost update would matter. Returns only the changed project without '
-  + 'task rows and the changed lanes, never the whole board. The file belongs to the active lead Session workspace and '
-  + 'no argument can redirect it. Use when dispatching or closing work, or when project focus/next/blockers/tasks '
-  + 'materially change; batch related changes.'
+  'Update one project on the active lead\'s user-visible board. Create requires create:true and set.workspace.path. '
+  + 'Supports scalar fields, blockers, and tasks; returns only the changed project without task rows. expected_revision '
+  + 'is CAS against that project\'s revision, not the board file revision, so other projects do not cause conflicts. '
+  + 'commit:true commits an actual change with only .dsh/devlead under the original lead workspace and returns '
+  + 'commitHash; non-Git/failure degrades to warning, and no-ops never commit. Batch related changes when dispatching '
+  + 'or closing work, or when project focus/next/blockers/tasks materially change.'
 
 const BOARD_NOTE_READ_DESCRIPTION =
-  'Read Markdown notes attached to one existing DevLead board project. project is required and resolves exactly as '
-  + 'in the other board tools. Omit note for the project\'s bounded metadata listing (id, title, summary, updatedAt, '
-  + 'bytes, root-relative path, and Host-derived absolutePath); provide its id for Markdown content plus metadata. '
-  + 'Prefer this list/read interface over direct filesystem reads for board notes. A single-note JSON result is '
-  + 'capped at 64 KiB and longer content is cut at a Unicode boundary with truncated:true. To edit a body, use '
-  + 'DSH-native read/write/edit on the returned absolutePath; never edit notes/index.json directly. A missing notes '
-  + 'index reads as an empty revision-0 project listing. Only the active lead can use this tool, and no argument '
-  + 'accepts or redirects a Host filesystem path. Use when resuming a project or preparing a dispatch brief so prior '
-  + 'plans, decisions, and handoffs inform the work.'
+  'Read only the notes index for one board project: revision/updatedAt/project and note metadata (id, title, summary, '
+  + 'updatedAt, bytes, path, absolutePath). This tool never returns Markdown bodies. Omit note to list; supply its id '
+  + 'for one metadata row. Read or edit bodies only with DSH-native read/write/edit on absolutePath; do not use this '
+  + 'tool to read or paste note bodies, and never edit notes/index.json directly. project is an id/title/workspace '
+  + 'path, never a notes file path.'
 
 const BOARD_NOTE_WRITE_DESCRIPTION =
-  'Maintain only the notes index, note metadata, or deletion for one existing project of the active lead\'s DevLead '
-  + 'board. create requires title, accepts optional summary/content (the initial body defaults to empty), and may '
-  + 'omit note to generate a UUID; update-metadata requires note and changes only supplied title/summary; delete '
-  + 'requires note. This tool never updates or appends to an existing Markdown body. Use expected_revision for '
-  + 'notes-index CAS when a lost update would matter. Returns resulting or deleted metadata including absolutePath, '
-  + 'revision, and changed state without returning the body. After create, use DSH-native read/write/edit on '
-  + 'absolutePath for body edits; never edit notes/index.json directly. Note content stays out of the index. The Host '
-  + 'owns all locations; write arguments contain no file path. Use when a plan, design, decision, or handoff should '
-  + 'survive across turns; keep it concise instead of copying transcripts or logs.'
+  'Maintain only a board project\'s notes index: create makes an empty Markdown file and returns its absolutePath; '
+  + 'update-metadata changes only title/summary; delete removes the index entry and body. This tool never returns or '
+  + 'accepts Markdown bodies; use DSH-native read/write/edit on absolutePath for all body work, never this tool or '
+  + 'direct notes/index.json edits. create requires title and accepts optional summary/note id; the other operations '
+  + 'require note. expected_revision is optional notes-index CAS.'
 
 const BLOCKER_SCHEMA = {
   type: 'object',
@@ -92,6 +83,7 @@ const PROJECT_SCHEMA = {
   additionalProperties: false,
   properties: {
     id: { type: 'string', required: true },
+    revision: { type: 'integer', required: true },
     workspace: {
       type: 'object',
       required: true,
@@ -140,6 +132,8 @@ export const BOARD_UPDATE_OUTPUT = jsonOutput({
     updatedAt: { type: 'string', required: true },
     project: { ...PROJECT_SCHEMA, required: true },
     changed: { type: 'array', required: true, items: { type: 'string' } },
+    commitHash: { type: 'string' },
+    warning: { type: 'string' },
   },
 } as const)
 
@@ -166,16 +160,7 @@ const NOTE_METADATA_SCHEMA = {
   },
 } as const
 
-const NOTE_DOCUMENT_SCHEMA = {
-  type: 'object',
-  additionalProperties: false,
-  properties: {
-    ...NOTE_METADATA_SCHEMA.properties,
-    content: { type: 'string', required: true },
-  },
-} as const
-
-/** Canonical metadata-listing or full-body output of `devlead_board_note_read`. */
+/** Canonical metadata-only output of `devlead_board_note_read`. */
 export const BOARD_NOTE_READ_OUTPUT = jsonOutput({
   type: 'object',
   additionalProperties: false,
@@ -184,8 +169,7 @@ export const BOARD_NOTE_READ_OUTPUT = jsonOutput({
     updatedAt: { type: 'string', required: true },
     project: { ...NOTE_PROJECT_SCHEMA, required: true },
     notes: { type: 'array', items: NOTE_METADATA_SCHEMA },
-    note: NOTE_DOCUMENT_SCHEMA,
-    truncated: { type: 'boolean' },
+    note: NOTE_METADATA_SCHEMA,
   },
 } as const)
 
@@ -267,7 +251,6 @@ export function boardNoteWriteRequest(args: BoardNoteWriteArgs): DevLeadBoardNot
     ...note === undefined ? {} : { note },
     ...args.title === undefined ? {} : { title: args.title },
     ...args.summary === undefined ? {} : { summary: args.summary },
-    ...args.content === undefined ? {} : { content: args.content },
     ...expectedRevision === undefined ? {} : { expectedRevision },
   }
 }
@@ -329,7 +312,7 @@ export function presentBoardNoteResult(_args: unknown, result: ToolResult): Gene
     const note = typeof value.note === 'object' && value.note !== null
       ? value.note as Record<string, unknown>
       : undefined
-    detail = `${typeof note?.title === 'string' ? note.title : 'note content'}${value.truncated === true ? ' (truncated)' : ''}`
+    detail = typeof note?.title === 'string' ? note.title : 'note metadata'
   }
   return {
     card: 'generic',
@@ -378,7 +361,13 @@ export function registerDevLeadBoardTools(ctx: Context): void {
         assertKnownArguments(args, TOOL_ARGUMENT_KEYS.devlead_board_update)
         const agent = requireAgent(exec.agent, 'devlead_board_update')
         const expectedRevision = optionalNonNegativeInteger(args.expected_revision, 'expected_revision')
-        const result = await ctx.devLead.updateBoard(agent, boardUpdateRequest(args), expectedRevision, exec.signal)
+        const result = await ctx.devLead.updateBoard(
+          agent,
+          boardUpdateRequest(args),
+          expectedRevision,
+          exec.signal,
+          { commit: args.commit === true },
+        )
         const { tasks: _tasks, ...project } = result.project
         return { ...result, project }
       })

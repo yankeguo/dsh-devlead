@@ -16,7 +16,7 @@ import type { InferValue, ValueSchemaSpec } from '@deepseek-ai/dsh-tools'
 import { DEVLEAD_REPORT_KINDS, DEVLEAD_TRANSITIONS } from '@yankeguo/dsh-devlead-protocol'
 import type {
   DevLeadAgentPresetCatalog,
-  DevLeadArchivedSession,
+  DevLeadArchiveSessionResult,
   DevLeadCreatedSession,
   DevLeadIsolation,
   DevLeadIsolationMode,
@@ -30,7 +30,6 @@ import type {
   DevLeadRemovedWorkspace,
   DevLeadReport,
   DevLeadSessionView,
-  DevLeadUnarchivedSession,
   DevLeadWatchMutation,
   DevLeadWorkspaceView,
 } from '@yankeguo/dsh-devlead-protocol'
@@ -119,7 +118,11 @@ export const SESSION_VIEW_SCHEMA = {
       description: 'How the latest recorded turn ended, when the log was observed.',
     },
     lastError: { type: 'string', description: 'Compact error excerpt of the latest failed turn, when recorded.' },
-    lastAssistant: { type: 'string', description: 'Compact excerpt of the latest assistant message, when observed.' },
+    lastAssistant: { type: 'string', description: 'Excerpt of the latest assistant message, when observed.' },
+    lastAssistantTruncated: {
+      type: 'boolean',
+      description: 'Whether lastAssistant was truncated; present whenever lastAssistant is present.',
+    },
     updatedAt: { type: 'integer', description: 'Epoch milliseconds of the latest durable activity, when known.' },
     createdAt: { type: 'integer', description: 'Epoch milliseconds of Session creation, when known.' },
   },
@@ -216,7 +219,12 @@ export const NOTIFICATION_SCHEMA = {
     turn: { type: 'integer', required: true, description: '1-based turn number that settled.' },
     at: { type: 'integer', required: true, description: 'Epoch milliseconds when the Host observed the transition.' },
     error: { type: 'string', description: 'Compact single-line failure excerpt when the settled turn failed.' },
-    summary: { type: 'string', description: 'Compact excerpt of the latest assistant message before the turn settled.' },
+    summary: { type: 'string', description: 'Latest-assistant excerpt before the turn settled.' },
+    summaryTruncated: { type: 'boolean', description: 'Whether summary was truncated; absent on legacy records.' },
+    cancelledByLeadInterrupt: {
+      type: 'boolean',
+      description: 'True when this lead intentionally cancelled the interrupted/aborted turn.',
+    },
     wakeSuppressedByReportId: {
       type: 'string',
       description: 'Action-required report whose wake carried this turn-end instead of a separate wake. The transition still happened and is retained; only the duplicate wake was merged.',
@@ -365,7 +373,10 @@ export function sessionValue(view: DevLeadSessionView): SessionValue {
     ...view.pendingInputs === undefined ? {} : { pendingInputs: view.pendingInputs },
     ...view.lastTransition === undefined ? {} : { lastTransition: view.lastTransition },
     ...view.lastError === undefined ? {} : { lastError: view.lastError },
-    ...view.lastAssistant === undefined ? {} : { lastAssistant: view.lastAssistant },
+    ...view.lastAssistant === undefined ? {} : {
+      lastAssistant: view.lastAssistant,
+      lastAssistantTruncated: view.lastAssistantTruncated ?? false,
+    },
     ...view.updatedAt === undefined ? {} : { updatedAt: view.updatedAt },
     ...view.createdAt === undefined ? {} : { createdAt: view.createdAt },
   }
@@ -405,6 +416,8 @@ export function notificationValue(notification: DevLeadNotification): Notificati
     ...notification.sessionTitle === undefined ? {} : { sessionTitle: notification.sessionTitle },
     ...notification.error === undefined ? {} : { error: notification.error },
     ...notification.summary === undefined ? {} : { summary: notification.summary },
+    ...notification.summaryTruncated === undefined ? {} : { summaryTruncated: notification.summaryTruncated },
+    ...notification.cancelledByLeadInterrupt === undefined ? {} : { cancelledByLeadInterrupt: notification.cancelledByLeadInterrupt },
     ...notification.wakeSuppressedByReportId === undefined ? {} : { wakeSuppressedByReportId: notification.wakeSuppressedByReportId },
     ...notification.wakeSuppressionReason === undefined ? {} : { wakeSuppressionReason: notification.wakeSuppressionReason },
   }
@@ -832,33 +845,24 @@ export const REMOVE_WORKSPACE_OUTPUT = jsonOutput({
   },
 } as const)
 
-/** Canonical value of `devlead_archive_session`. */
+/** One archive/restore item; stopped/watched apply to archive mutations. */
+export const ARCHIVE_SESSION_ITEM_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    sessionId: { type: 'string', required: true },
+    archived: { type: 'boolean', required: true },
+    stopped: { type: 'boolean', description: 'Whether the Host was asked to stop running work (archive only).' },
+    watched: { type: 'boolean', description: 'False after the automatic post-archive unwatch (archive only).' },
+  },
+} as const
+
+/** Canonical value of the folded archive/unarchive tool: every target in order. */
 export const ARCHIVE_SESSION_OUTPUT = jsonOutput({
   type: 'object',
   additionalProperties: false,
   properties: {
-    sessionId: { type: 'string', required: true, description: 'Archived Session identity.' },
-    archived: { type: 'boolean', required: true, const: true, description: 'Always true: the Session is archived.' },
-    stopped: {
-      type: 'boolean',
-      required: true,
-      description: 'Whether the Host was asked to stop the Session\'s running work.',
-    },
-  },
-} as const)
-
-/** Canonical value of `devlead_unarchive_session`. */
-export const UNARCHIVE_SESSION_OUTPUT = jsonOutput({
-  type: 'object',
-  additionalProperties: false,
-  properties: {
-    sessionId: { type: 'string', required: true, description: 'Restored Session identity.' },
-    archived: {
-      type: 'boolean',
-      required: true,
-      const: false,
-      description: 'Always false: the Session is no longer archived.',
-    },
+    sessions: required({ type: 'array', items: ARCHIVE_SESSION_ITEM_SCHEMA }),
   },
 } as const)
 
@@ -972,23 +976,15 @@ export function removedWorkspaceValue(
   }
 }
 
-/** Project one Session archival result onto the canonical value. */
-export function archivedSessionValue(
-  archived: DevLeadArchivedSession,
+/** Project ordered archive/restore results onto the canonical batch value. */
+export function archiveSessionsValue(
+  results: readonly DevLeadArchiveSessionResult[],
 ): InferValue<typeof ARCHIVE_SESSION_OUTPUT.schema> {
   return {
-    sessionId: archived.sessionId,
-    archived: archived.archived,
-    stopped: archived.stopped,
-  }
-}
-
-/** Project one Session restoration result onto the canonical value. */
-export function unarchivedSessionValue(
-  unarchived: DevLeadUnarchivedSession,
-): InferValue<typeof UNARCHIVE_SESSION_OUTPUT.schema> {
-  return {
-    sessionId: unarchived.sessionId,
-    archived: unarchived.archived,
+    sessions: results.map(result => ({
+      sessionId: result.sessionId,
+      archived: result.archived,
+      ...result.archived ? { stopped: result.stopped, watched: result.watched } : {},
+    })),
   }
 }

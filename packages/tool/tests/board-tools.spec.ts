@@ -23,7 +23,9 @@ describe('devlead board tools', () => {
     const update = harness.tool('devlead_board_update').definition.description
     expect(read).toContain('Use when reconciling current cross-project state before dispatching, resuming, closing, or reporting.')
     expect(read).toContain('BOARD_DISABLED')
-    expect(update).toContain('Use when dispatching or closing work, or when project focus/next/blockers/tasks materially change')
+    expect(update).toContain('when dispatching or closing work, or when project focus/next/blockers/tasks materially change')
+    expect(update).toContain("that project's revision, not the board file revision")
+    expect(update).toContain('only .dsh/devlead')
     expect(update).toContain('Create requires create:true and set.workspace.path')
     expect(update).toContain('expected_revision')
   })
@@ -82,6 +84,7 @@ describe('devlead board tools', () => {
       project: ' webapp ',
       expected_revision: 7,
       create: true,
+      commit: true,
       set: {
         status: 'blocked', priority: 'high', goal: 'goal', focus: 'focus', next: 'next',
         workspace: { path: '/tmp/webapp', title: 'Web app' },
@@ -120,6 +123,7 @@ describe('devlead board tools', () => {
     })
     expect(call?.[2]).toBe(7)
     expect(call?.[3]).toBe(exec.signal)
+    expect(call?.[4]).toEqual({ commit: true })
     expect(validateJsonSchemaValue(harness.tool('devlead_board_update').definition.output.schema, result)).toEqual([])
   })
 
@@ -139,6 +143,7 @@ describe('devlead board tools', () => {
     }
     expect(JSON.stringify(harness.devLead.boardUpdated).length).toBeGreaterThan(200_000)
     const result = await harness.call('devlead_board_update', { project: 'webapp' })
+    expect(harness.devLead.callsOf('updateBoard')[0]?.[4]).toEqual({ commit: false })
     expect(result).not.toHaveProperty('project.tasks')
     expect(result).toMatchObject({
       revision: 8,

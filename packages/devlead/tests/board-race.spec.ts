@@ -99,6 +99,7 @@ function initialBoard(): DevLeadBoard {
     updatedBy: actor,
     projects: [{
       id: 'alpha',
+      revision: 1,
       workspace: { path: '/tmp/alpha', title: 'alpha' },
       status: 'active',
       priority: 'medium',

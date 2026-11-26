@@ -42,6 +42,7 @@ import { SessionId as toSessionId } from '@deepseek-ai/dsh-session'
 import { appendRecordOrThrow, readRecord } from './record-api.ts'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import {
+  DEVLEAD_ASSISTANT_EXCERPT_MAX,
   DEVLEAD_DEFAULT_NOTIFICATION_RETENTION,
   DEVLEAD_MESSAGE_KIND,
   DEVLEAD_MODE_RECORD_TYPE,
@@ -61,7 +62,7 @@ import type {
   DevLeadReportKind,
 } from '@yankeguo/dsh-devlead-protocol'
 import {
-  assistantExcerpt,
+  assistantExcerptResult,
   createDevLeadNoticeMessage,
   DEVLEAD_RESET_RECORD_TYPE,
   devLeadNotification,
@@ -194,6 +195,9 @@ export const DEVLEAD_BACKGROUND_PENDING_MAX = 16
 /** Maximum remembered report delivery observations per lead (FIFO eviction). */
 const DELIVERY_STATE_RETENTION = 256
 
+/** Maximum delayed lead-cancel attributions awaiting their exact turn/end. */
+const EXPECTED_CANCEL_RETENTION = 256
+
 /**
  * Retry delay after a failed wake-up delivery, or before re-checking a lead
  * whose inbox already carries an undelivered notice. A failed `followup` is
@@ -228,8 +232,14 @@ function isActionReportKind(kind: DevLeadReportKind): boolean {
   return kind === 'question' || kind === 'blocked' || kind === 'decision'
 }
 
+/** A lead-requested cancellation is ordinary activity; every other T2 outcome needs review. */
+function requiresReview(notification: DevLeadNotification): boolean {
+  return childTurnCategory(notification.transition) === 'T2' && notification.cancelledByLeadInterrupt !== true
+}
+
 /**
- * Render the turn-notice wake-up digest text (T1 completed/forked).
+ * Render the turn-notice wake-up digest text (ordinary activity, including a
+ * cancellation explicitly requested by this lead).
  * @param notifications - notifications delivered in this batch, oldest first.
  * @param total - total undelivered notifications at batch time.
  * @returns the model-facing notice text.
@@ -242,13 +252,13 @@ export function renderDevLeadNotice(
   const omitted = total - shown.length
   const lines = shown.map(notification => `- ${notificationLine(notification)}`)
   if (omitted > 0) lines.unshift(`- (${omitted} earlier notification(s) omitted; call devlead_notifications for the digest)`)
-  return [
+  return boundWake([
     '[DEV LEAD NOTIFICATION]',
     'Watched session activity changed outside this conversation. This is a runtime notice, not a human instruction.',
     ...lines,
     'Call devlead_notifications for the retained digest, or devlead_get_session for one session in detail. '
     + 'Decide what the Dev Lead should do next: continue an existing conversation, dispatch new work, or report to the human.',
-  ].join('\n')
+  ].join('\n'), '\n… Wake payload truncated; call devlead_notifications / devlead_get_session for the full report excerpt.')
 }
 
 /**
@@ -434,7 +444,9 @@ export class DevLeadNotificationHub {
   /** Lead Sessions with an in-flight cold resume. */
   private readonly resuming = new Set<string>()
   /** Latest assistant excerpt observed per watched Session, bounded and pruned with the index. */
-  private readonly lastAssistant = new Map<string, string>()
+  private readonly lastAssistant = new Map<string, { readonly text: string; readonly truncated: boolean }>()
+  /** One-shot expected cancellations, keyed by lead+child+turn and bounded FIFO. */
+  private readonly expectedCancels = new Map<string, { readonly leadId: string; readonly sessionId: string; readonly turn: number }>()
   /** Sessions whose replay failure has already been reported, so a corrupt log warns once per Host process. */
   private readonly warnedFailures = new Set<string>()
   /** Leads whose persisted watch set named themselves; warn once per live indexing. */
@@ -487,6 +499,7 @@ export class DevLeadNotificationHub {
         this.stopping = true
         for (const leadId of [...this.leads.keys()]) this.removeLead(leadId)
         this.resuming.clear()
+        this.expectedCancels.clear()
       }
     }.bind(this), 'devlead: notification hub')
   }
@@ -538,6 +551,28 @@ export class DevLeadNotificationHub {
     const watchers = this.watchers.get(sessionId)
     if (watchers === undefined) return []
     return [...watchers].filter(leadId => this.leads.has(leadId))
+  }
+
+  /**
+   * Expect one exact child turn to settle from this lead's interrupt. The mark
+   * survives the fire-and-forget stop window until its matching turn/end; the
+   * disposer clears it when the stop itself failed.
+   */
+  markLeadInterrupt(leadSessionId: string, sessionId: string, turn: number): () => void {
+    const key = `${leadSessionId}\u0000${sessionId}\u0000${String(turn)}`
+    this.expectedCancels.delete(key)
+    this.expectedCancels.set(key, { leadId: leadSessionId, sessionId, turn })
+    while (this.expectedCancels.size > EXPECTED_CANCEL_RETENTION) {
+      const oldest = this.expectedCancels.keys().next().value
+      if (oldest === undefined) break
+      this.expectedCancels.delete(oldest)
+    }
+    let active = true
+    return () => {
+      if (!active) return
+      active = false
+      this.expectedCancels.delete(key)
+    }
   }
 
   /**
@@ -968,10 +1003,11 @@ export class DevLeadNotificationHub {
   /** Count one turn-notification delivery outcome (kind is the T1/T2 category). */
   private countNotification(notification: DevLeadNotification, outcome: DevLeadDeliveryOutcome): void {
     const category = childTurnCategory(notification.transition)
+    const review = requiresReview(notification)
     countDelivery(this.metrics, {
       direction: 'child-to-lead',
-      lane: category === 'T1' ? 'turn-notice' : 'action-required',
-      primitive: category === 'T1' ? 'followup' : 'steer',
+      lane: review ? 'action-required' : 'turn-notice',
+      primitive: review ? 'steer' : 'followup',
       kind: category,
       outcome,
     })
@@ -1203,6 +1239,9 @@ export class DevLeadNotificationHub {
     for (const sender of [...runtime.backgroundCounts.keys()]) {
       if (!next.has(sender)) runtime.backgroundCounts.delete(sender)
     }
+    for (const [key, expected] of this.expectedCancels) {
+      if (expected.leadId === runtime.sessionId && !next.has(expected.sessionId)) this.expectedCancels.delete(key)
+    }
     for (const [reportId, notifications] of runtime.actionTurnEnds) {
       const retained = notifications.filter(notification => next.has(notification.sessionId))
       if (retained.length === 0) runtime.actionTurnEnds.delete(reportId)
@@ -1252,6 +1291,9 @@ export class DevLeadNotificationHub {
       runtime.deliveryStates.clear()
       this.leads.delete(leadId)
     }
+    for (const [key, expected] of this.expectedCancels) {
+      if (expected.leadId === leadId) this.expectedCancels.delete(key)
+    }
     this.resuming.delete(leadId)
     this.warnedSelfWatch.delete(leadId)
   }
@@ -1292,7 +1334,7 @@ export class DevLeadNotificationHub {
   private hasOrdinaryWork(runtime: LeadRuntime): boolean {
     return runtime.pending.some(notification => notification.wakeSuppressedByReportId === undefined)
       || runtime.unsaved.some(notification => notification.wakeSuppressedByReportId === undefined
-        && childTurnCategory(notification.transition) === 'T1')
+        && !requiresReview(notification))
   }
 
   /** Whether the independent action-required lane has anything to persist or deliver. */
@@ -1301,7 +1343,7 @@ export class DevLeadNotificationHub {
       || runtime.pendingReviews.length > 0
       || runtime.unsavedReports.some(report => isActionReportKind(report.kind))
       || runtime.unsaved.some(notification => notification.wakeSuppressedByReportId !== undefined
-        || childTurnCategory(notification.transition) === 'T2')
+        || requiresReview(notification))
   }
 
   /**
@@ -1367,8 +1409,8 @@ export class DevLeadNotificationHub {
    * @param blocks - assistant message content blocks.
    */
   private rememberAssistant(sessionId: string, blocks: readonly unknown[]): void {
-    const excerpt = assistantExcerpt(blocks)
-    if (excerpt !== undefined) this.lastAssistant.set(sessionId, excerpt)
+    const excerpt = assistantExcerptResult(blocks, DEVLEAD_ASSISTANT_EXCERPT_MAX)
+    if (excerpt.text !== undefined) this.lastAssistant.set(sessionId, { text: excerpt.text, truncated: excerpt.truncated })
   }
 
   /**
@@ -1397,7 +1439,8 @@ export class DevLeadNotificationHub {
       turn,
       representableInstant(event.time, Date.now()),
       error,
-      summary,
+      summary?.text,
+      summary?.truncated ?? false,
     )
   }
 
@@ -1426,6 +1469,11 @@ export class DevLeadNotificationHub {
     if (notification.sessionId === leadId) return
     const runtime = this.leads.get(leadId)
     if (runtime === undefined) return
+    const expectedCancelKey = `${leadId}\u0000${notification.sessionId}\u0000${String(notification.turn)}`
+    if (this.expectedCancels.delete(expectedCancelKey)
+      && (notification.transition === 'interrupted' || notification.transition === 'aborted')) {
+      notification = { ...notification, cancelledByLeadInterrupt: true }
+    }
     const session = this.ctx.sessions.get(toSessionId(leadId))
 
     // Suppression is keyed to one exact notification.id and one unambiguous
@@ -1477,7 +1525,7 @@ export class DevLeadNotificationHub {
       this.countNotification(effective, 'duplicate')
       return
     }
-    const review = childTurnCategory(effective.transition) === 'T2'
+    const review = requiresReview(effective)
     if (!persisted) {
       // A cold log cannot append, and a failed append leaves the durable digest
       // without this row. Queue it as unsaved so resume/flush retries the
@@ -1592,7 +1640,7 @@ export class DevLeadNotificationHub {
         if (notification.wakeSuppressionReason === 'merged-into-pending-wake') {
           this.rememberActionTurnEnd(notification.wakeSuppressedByReportId, notification, runtime)
         }
-      } else if (childTurnCategory(notification.transition) === 'T2') {
+      } else if (requiresReview(notification)) {
         runtime.pendingReviews = [...runtime.pendingReviews, notification].slice(-DEVLEAD_DEFAULT_NOTIFICATION_RETENTION)
       } else {
         runtime.pending = [...runtime.pending, notification].slice(-DEVLEAD_DEFAULT_NOTIFICATION_RETENTION)
@@ -1646,12 +1694,12 @@ export class DevLeadNotificationHub {
     runtime.unsavedReports = remainingReports
     if (appended) void this.checkpoint(session, runtime.sessionId)
     if (remaining.some(notification => notification.wakeSuppressedByReportId !== undefined
-      || childTurnCategory(notification.transition) === 'T2')
+      || requiresReview(notification))
       || remainingReports.some(report => isActionReportKind(report.kind))) {
       this.scheduleActionRetry(runtime)
     }
     if (remaining.some(notification => notification.wakeSuppressedByReportId === undefined
-      && childTurnCategory(notification.transition) === 'T1')) {
+      && !requiresReview(notification))) {
       this.scheduleRetry(runtime)
     }
     if (this.hasBackgroundReportWork(runtime)) {
@@ -1807,7 +1855,7 @@ export class DevLeadNotificationHub {
     }
     if (this.hasOrdinaryWork(runtime) && this.leads.get(runtime.sessionId) === runtime) {
       if (failed || runtime.unsaved.some(notification => notification.wakeSuppressedByReportId === undefined
-        && childTurnCategory(notification.transition) === 'T1')) {
+        && !requiresReview(notification))) {
         this.scheduleRetry(runtime)
       } else {
         this.scheduleFlush(runtime)
@@ -2025,7 +2073,7 @@ export class DevLeadNotificationHub {
     }
     if (this.hasActionWork(runtime) && this.leads.get(runtime.sessionId) === runtime) {
       if (failed || runtime.unsaved.some(notification => notification.wakeSuppressedByReportId !== undefined
-        || childTurnCategory(notification.transition) === 'T2')
+        || requiresReview(notification))
         || runtime.unsavedReports.some(report => isActionReportKind(report.kind))) {
         this.scheduleActionRetry(runtime)
       } else {

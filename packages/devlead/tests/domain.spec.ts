@@ -8,6 +8,7 @@
 
 import { describe, expect, it } from 'vitest'
 import {
+  DEVLEAD_ASSISTANT_EXCERPT_MAX,
   DEVLEAD_ERROR_EXCERPT_MAX,
   DEVLEAD_MODE_RECORD_TYPE,
   DEVLEAD_NOTIFICATION_RECORD_TYPE,
@@ -280,14 +281,17 @@ describe('strict decoders', () => {
 
   it('rejects persisted excerpts longer than the writer contract', () => {
     const oversized = 'x'.repeat(DEVLEAD_ERROR_EXCERPT_MAX + 1)
-    for (const field of ['sessionTitle', 'error', 'summary']) {
+    for (const field of ['sessionTitle', 'error']) {
       expect(() => decodeNotification({ ...notificationValue(), [field]: oversized })).toThrow(/at most 240/)
     }
-    // The exact writer budget is accepted.
+    expect(() => decodeNotification({
+      ...notificationValue(), summary: 'x'.repeat(DEVLEAD_ASSISTANT_EXCERPT_MAX + 1),
+    })).toThrow(/at most 4096/)
     expect(decodeNotification({
       ...notificationValue(),
-      summary: 'y'.repeat(DEVLEAD_ERROR_EXCERPT_MAX),
-    }).summary).toHaveLength(DEVLEAD_ERROR_EXCERPT_MAX)
+      summary: 'y'.repeat(DEVLEAD_ASSISTANT_EXCERPT_MAX),
+      summaryTruncated: true,
+    })).toMatchObject({ summaryTruncated: true })
   })
 
   it('rejects unknown and missing fields on every payload', () => {

@@ -117,6 +117,8 @@ export interface NotificationOverrides {
   at?: number
   error?: string
   summary?: string
+  summaryTruncated?: boolean
+  cancelledByLeadInterrupt?: boolean
   wakeSuppressedByReportId?: string
   wakeSuppressionReason?: DevLeadWakeSuppressionReason
 }
@@ -136,6 +138,8 @@ export function notification(overrides: NotificationOverrides = {}): DevLeadNoti
       overrides.at ?? T0,
       overrides.error,
       overrides.summary,
+      overrides.summaryTruncated,
+      overrides.cancelledByLeadInterrupt,
     ),
     ...overrides.wakeSuppressedByReportId === undefined ? {} : {
       wakeSuppressedByReportId: overrides.wakeSuppressedByReportId,

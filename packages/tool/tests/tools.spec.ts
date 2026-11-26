@@ -1,5 +1,5 @@
 /**
- * Behavior of the seventeen `devlead_*` tools: registration and gating, per-tool
+ * Behavior of the eighteen `devlead_*` tools: registration and gating, per-tool
  * forwarding into `ctx.devLead`, input validation, canonical value projection,
  * error translation, and pure presentation.
  */
@@ -11,7 +11,7 @@ import type { GenericCallView, InferValue } from '@deepseek-ai/dsh-tools'
 import { validateJsonSchemaValue, valueSchemaSpecToJsonSchema } from '@deepseek-ai/dsh-tools'
 import type {
   DevLeadAgentPresetCatalog,
-  DevLeadArchivedSession,
+  DevLeadArchiveSessionResult,
   DevLeadCreatedSession,
   DevLeadIsolation,
   DevLeadIsolationMode,
@@ -26,7 +26,6 @@ import type {
   DevLeadReportKind,
   DevLeadRetractedInput,
   DevLeadSessionView,
-  DevLeadUnarchivedSession,
   DevLeadWakeSuppressionReason,
   DevLeadWatchMutation,
   DevLeadWorkspaceView,
@@ -45,7 +44,7 @@ import {
   isHumanDirectedTurn,
 } from '../src/question-routing.ts'
 import {
-  ARCHIVE_SESSION_OUTPUT,
+  ARCHIVE_SESSION_ITEM_SCHEMA,
   CREATE_SESSION_OUTPUT,
   DEVLEAD_ISOLATION_MODES,
   DEVLEAD_ISOLATION_STATUSES,
@@ -57,7 +56,6 @@ import {
   REMOVE_WORKSPACE_OUTPUT,
   REPORT_SCHEMA,
   RETRACT_INPUT_OUTPUT,
-  UNARCHIVE_SESSION_OUTPUT,
   WATCH_SESSION_OUTPUT,
   notificationValue,
   reportValue,
@@ -111,10 +109,7 @@ type SchemaRemovedConforms = Assert<
   InferValue<typeof REMOVE_WORKSPACE_OUTPUT.schema> extends DevLeadRemovedWorkspace ? true : false
 >
 type SchemaArchivedConforms = Assert<
-  InferValue<typeof ARCHIVE_SESSION_OUTPUT.schema> extends DevLeadArchivedSession ? true : false
->
-type SchemaUnarchivedConforms = Assert<
-  InferValue<typeof UNARCHIVE_SESSION_OUTPUT.schema> extends DevLeadUnarchivedSession ? true : false
+  DevLeadArchiveSessionResult extends InferValue<typeof ARCHIVE_SESSION_ITEM_SCHEMA> ? true : false
 >
 type SchemaModelCatalogConforms = Assert<
   InferValue<typeof LIST_MODELS_OUTPUT.schema> extends DevLeadModelCatalog ? true : false
@@ -144,7 +139,6 @@ const TOOL_NAMES = [
   'devlead_report',
   'devlead_remove_workspace',
   'devlead_archive_session',
-  'devlead_unarchive_session',
 ] as const
 
 /** Smallest argument object each tool's schema accepts. */
@@ -167,7 +161,6 @@ const MINIMAL_ARGS: Record<(typeof TOOL_NAMES)[number], Record<string, unknown>>
   devlead_report: { message: 'progress update' },
   devlead_remove_workspace: { workspace: 'ws-1' },
   devlead_archive_session: { session: 'session-1' },
-  devlead_unarchive_session: { session: 'session-1' },
 }
 
 /** Tools whose body requires the calling Agent carried by the Step. */
@@ -186,7 +179,6 @@ const CALLER_TOOLS = [
   'devlead_report',
   'devlead_remove_workspace',
   'devlead_archive_session',
-  'devlead_unarchive_session',
 ] as const
 
 /**
@@ -221,13 +213,21 @@ function expectValidOutput(harness: Harness, toolName: string, value: unknown): 
 }
 
 describe('registration', () => {
-  it('registers exactly the nineteen documented tools', () => {
+  it('registers exactly the eighteen documented tools', () => {
     const harness = boot()
     expect([...harness.tools.keys()].sort()).toEqual([...TOOL_NAMES].sort())
-    expect(TOOL_NAMES).toHaveLength(19)
+    expect(TOOL_NAMES).toHaveLength(18)
     for (const name of TOOL_NAMES) {
       expect(harness.tool(name).definition.description.length).toBeGreaterThan(0)
     }
+  })
+
+  it('keeps the tool surface and resident descriptions below the pre-consolidation budget', () => {
+    const harness = boot()
+    const descriptions = [...harness.tools.values()].map(tool => tool.definition.description)
+    expect(harness.tools.size).toBe(18)
+    expect(descriptions.reduce((total, text) => total + text.length, 0)).toBeLessThan(15_028)
+    expect(descriptions.reduce((total, text) => total + Buffer.byteLength(text, 'utf8'), 0)).toBeLessThan(15_038)
   })
 
   it('derives TOOL_ARGUMENT_KEYS from the parameter schemas defineTool receives', () => {
@@ -254,8 +254,7 @@ describe('registration', () => {
       'devlead_retract_input',
       'devlead_watch_session',
       'devlead_archive_session',
-      'devlead_unarchive_session',
-    ] as const) {
+        ] as const) {
       const parameters = harness.tool(name).definition.parameters as {
         properties: { session: { description: string } }
       }
@@ -288,8 +287,7 @@ describe('registration', () => {
         'devlead_retract_input',
         'devlead_watch_session',
         'devlead_archive_session',
-        'devlead_unarchive_session',
-      ],
+            ],
       'session',
       SESSION_ARGUMENT_DESCRIPTION,
       true,
@@ -362,12 +360,14 @@ describe('registration', () => {
     expect(text).toBe(DEVLEAD_BOARD_POLICY)
     expect(text).toContain('proactively maintain the per-turn board summary')
     expect(text).toContain('cross-project source of truth')
-    expect(text).toContain('when dispatching/closing work')
+    expect(text).toContain('Update on dispatch/close or material changes')
     expect(text).toContain('batch related edits')
-    expect(text).toContain('Prefer devlead_board_note_read list/read before resuming or briefing')
-    expect(text).toContain('devlead_board_note_write creates (optional initial content), updates metadata, or deletes')
-    expect(text).toContain('edit bodies with native read/write/edit at returned absolutePath')
-    expect(text).toContain('then update title/summary as needed; never edit notes/index.json')
+    expect(text).toContain('commit:true once per dispatch/close, never per field')
+    expect(text).toContain('paused=resumable phase; done=truly closed')
+    expect(text).toContain('update one board note every phase')
+    expect(text).toContain('Note tools maintain only index/metadata/delete, never bodies')
+    expect(text).toContain('native read/write/edit at returned absolutePath')
+    expect(text).toContain('never edit notes/index.json')
     expect(text).toContain('Reconcile stale state before reporting')
     expect(text).toContain('valid UTF-8, ≤256 KiB')
     expect(text).toContain('no log dumps')
@@ -398,6 +398,8 @@ describe('registration', () => {
     expect(text).toContain('end your turn')
     // Reports are long-task mid-turn milestones, not a re-broadcast of what the
     // settled-turn notification already carries.
+    expect(text).toContain('For a long final report, write the full text to /tmp/*.md')
+    expect(text).toContain('reply with only a summary and path')
     expect(text).toContain('Your settled turn already notifies the lead')
     expect(text).toContain('do not use devlead_report to re-broadcast routine progress or your final summary')
     expect(text).toContain("a long-running task's mid-turn milestones")
@@ -479,7 +481,7 @@ describe('policy', () => {
   it('inherits model defaults and leaves Agent Teams to the lead’s judgment', () => {
     const harness = bootEnabled()
     const text = harness.sectionText()
-    expect(text).toContain('Models inherit the Host default')
+    expect(text).toContain('Models inherit workspaceModels/defaultModel, then the Host default')
     expect(text).toContain('call devlead_list_models first')
     expect(text).toContain('Agent Teams is your judgment')
     expect(text).toContain('complex, multi-step, or parallel work that benefits from subagents may set agent_teams true')
@@ -490,7 +492,7 @@ describe('policy', () => {
     expect(text).toContain('Team availability depends on the Host composition and DSH version')
     expect(text).toContain('continue without Team instead of retrying or blocking')
     const createSession = harness.tool('devlead_create_session').definition
-    expect(createSession.description).toContain('inherits the Host default model')
+    expect(createSession.description).toContain('workspaceModels/defaultModel')
     // The pinning rules live on the parameters, not repeated in the description.
     const parameters = createSession.parameters as {
       properties: {
@@ -499,7 +501,7 @@ describe('policy', () => {
         agent_teams: { description: string }
       }
     }
-    expect(parameters.properties['provider']?.description).toContain('Omit to inherit the Host default')
+    expect(parameters.properties['provider']?.description).toContain('workspaceModels/defaultModel')
     expect(parameters.properties['model']?.description).toContain('call devlead_list_models first')
     expect(parameters.properties['agent_teams']?.description).toContain('Agent Teams is your judgment')
     expect(parameters.properties['agent_teams']?.description).toContain('Obey an explicit human on/off')
@@ -604,8 +606,10 @@ describe('policy', () => {
     expect(text).toContain('devlead_remove_workspace performs the DSH remove action')
     expect(text).toContain('its directory, files, and every Session log stay untouched')
     expect(text).toContain('become ungrouped')
-    expect(text).toContain('devlead_archive_session performs the DSH archive action')
-    expect(text).toContain('devlead_unarchive_session restores it')
+    expect(text).toContain('devlead_archive_session hides a Session')
+    expect(text).toContain('automatically unwatches it')
+    expect(text).toContain('archived:false restores it')
+    expect(text).toContain('workspace+settled_only:true')
     expect(text).toContain('When tidying up, archive finished Sessions and keep the Workspace registration')
     // The conservative boundaries survive autonomy.
     expect(text).toContain('never close a Session or Workspace the human is using or talking to now')
@@ -683,9 +687,10 @@ describe('policy', () => {
 
   it('routes note indexes and metadata through tools but bodies through native absolute-path edits', () => {
     const line = DEVLEAD_POLICY_BASE.split('\n').find(entry => entry.startsWith('- Board:'))
-    expect(line).toContain('devlead_board_note_read/devlead_board_note_write=read/index/metadata/delete')
+    expect(line).toContain('devlead_board_note_read=metadata+absolutePath only')
+    expect(line).toContain('devlead_board_note_write=index/metadata/delete only')
     expect(line).toContain('native read/write/edit=body@absolutePath')
-    expect(line).toContain('not notes/index.json')
+    expect(line).toContain('never devlead tools or notes/index.json for bodies')
     expect(DEVLEAD_BOARD_POLICY).toContain('valid UTF-8, ≤256 KiB')
     expect(line).not.toContain('Markdown CRUD/CAS')
     expect(line).not.toContain('expected_bytes')
@@ -956,10 +961,9 @@ describe('canonical values', () => {
       SchemaWatchedConforms,
       SchemaRemovedConforms,
       SchemaArchivedConforms,
-      SchemaUnarchivedConforms,
       SchemaModelCatalogConforms,
       SchemaAgentPresetCatalogConforms,
-    ] = [true, true, true, true, true, true, true, true, true, true, true, true, true, true, true]
+    ] = [true, true, true, true, true, true, true, true, true, true, true, true, true, true]
     expect(conformance.every(value => value)).toBe(true)
   })
 
@@ -1068,7 +1072,7 @@ describe('devlead_list_models', () => {
     const createParameters = harness.tool('devlead_create_session').definition.parameters as {
       properties: { provider: { description: string } }
     }
-    expect(createParameters.properties.provider.description).toContain('Omit to inherit the Host default')
+    expect(createParameters.properties.provider.description).toContain('workspaceModels/defaultModel')
   })
 
   it('translates a missing-controller failure', async () => {
@@ -1557,7 +1561,7 @@ describe('devlead_create_session dispatch settings', () => {
     expect(definition.description).toContain('reasoning_effort')
     expect(definition.description).toContain('agent_teams')
     expect(definition.description).toContain('creation-time only')
-    expect(definition.description).toContain('inherits the Host default model')
+    expect(definition.description).toContain('workspaceModels/defaultModel')
     expect(definition.description).toContain('Never change the Host/profile default')
     const parameters = definition.parameters as {
       properties: Record<string, { type: string; description: string }>
@@ -1621,6 +1625,21 @@ describe('devlead_get_session', () => {
     expect(sessionId).toBe('sess')
     expect(signal).toBe(harness.exec.signal)
     expect(value).toEqual({ session: SESSION })
+  })
+
+  it('forwards a custom Unicode assistant budget and rejects a non-positive limit', async () => {
+    const harness = boot()
+    await harness.call('devlead_get_session', { session: 'session-1', last_assistant_limit: 7 })
+    expect(harness.devLead.callsOf('getSession')[0]).toEqual([
+      harness.agent, 'session-1', harness.exec.signal, 7,
+    ])
+    await harness.call('devlead_get_session', { session: 'session-1' })
+    expect(harness.devLead.callsOf('getSession')[1]?.[3]).toBe(4_096)
+    const error = await failureOf(harness.call('devlead_get_session', {
+      session: 'session-1', last_assistant_limit: 0,
+    }))
+    expect(error.code).toBe('DEVLEAD_INVALID_INPUT')
+    expect(harness.devLead.callsOf('getSession')).toHaveLength(2)
   })
 
   it('includes the lead report digest when reading the lead itself', async () => {
@@ -2590,102 +2609,89 @@ describe('devlead_remove_workspace', () => {
 })
 
 describe('devlead_archive_session', () => {
-  it('archives without stopping by default and returns the canonical value', async () => {
+  it('keeps the single-target form and returns an ordered result list', async () => {
     const harness = boot()
     const value = await harness.call('devlead_archive_session', { session: ' session-1 ' })
-    const [agent, sessionId, options] = harness.devLead.callsOf('archiveSession')[0] ?? []
+    const [agent, request] = harness.devLead.callsOf('archiveSessions')[0] ?? []
     expect(agent).toBe(harness.agent)
-    expect(sessionId).toBe('session-1')
-    expect(options).toEqual({ stopRunning: false, signal: harness.exec.signal })
-    expect(value).toEqual({ sessionId: 'session-1', archived: true, stopped: false })
+    expect(request).toEqual({
+      session: 'session-1', archived: true, stopRunning: false, signal: harness.exec.signal,
+    })
+    expect(value).toEqual({
+      sessions: [{ sessionId: 'session-1', archived: true, stopped: false, watched: false }],
+    })
     expectValidOutput(harness, 'devlead_archive_session', value)
   })
 
-  it('forwards stop_running true and reports a requested stop', async () => {
+  it('forwards stop_running and automatic-unwatch output', async () => {
     const harness = boot()
-    harness.devLead.archived = { sessionId: 'session-1', archived: true, stopped: true }
+    harness.devLead.archived = { sessionId: 'session-1', archived: true, stopped: true, watched: false }
     const value = await harness.call('devlead_archive_session', { session: 'session-1', stop_running: true })
-    const [, , options] = harness.devLead.callsOf('archiveSession')[0] ?? []
-    expect(options).toEqual({ stopRunning: true, signal: harness.exec.signal })
-    expect(value).toEqual({ sessionId: 'session-1', archived: true, stopped: true })
+    const [, request] = harness.devLead.callsOf('archiveSessions')[0] ?? []
+    expect(request).toMatchObject({ stopRunning: true, signal: harness.exec.signal })
+    expect(value).toEqual({
+      sessions: [{ sessionId: 'session-1', archived: true, stopped: true, watched: false }],
+    })
     expectValidOutput(harness, 'devlead_archive_session', value)
   })
 
-  it('advertises the archive semantics, autonomy, and the safety boundaries', () => {
+  it('deduplicates explicit batches and folds restoration into archived:false', async () => {
     const harness = boot()
-    const definition = harness.tool('devlead_archive_session').definition
-    expect(definition.description).toContain('archive')
-    expect(definition.description).toContain('restores it')
-    expect(definition.description).toContain('idempotent and reversible')
-    expect(definition.description).toContain('Use your judgment to archive')
-    expect(definition.description).toContain('an already archived Session is a no-op and reports stopped false')
-    expect(definition.description).toContain('archive finished Sessions and keep the Workspace registration')
-    expect(definition.description).toContain('Do not archive a Session the human is using or talking to now')
-    expect(definition.description).toContain('never use closing to hide a failure')
-    expect(definition.description).toContain('DEVLEAD_SESSION_ACTIVE')
-    expect(definition.description).toContain('cannot archive itself')
-    expect(definition.description).toContain('Report what you archived and why')
-    const parameters = definition.parameters as {
-      properties: { stop_running: { type: string; description: string } }
-    }
-    expect(parameters.properties.stop_running.type).toBe('boolean')
-    expect(parameters.properties.stop_running.description).toContain('Defaults to false')
+    await harness.call('devlead_archive_session', { sessions: [' session-1 ', 'session-1', 'session-2'] })
+    expect(harness.devLead.callsOf('archiveSessions')[0]?.[1]).toMatchObject({
+      sessions: ['session-1', 'session-2'], archived: true,
+    })
+    const restored = await harness.call('devlead_archive_session', {
+      sessions: ['session-1', 'session-2'], archived: false,
+    })
+    expect(harness.devLead.callsOf('archiveSessions')[1]?.[1]).toMatchObject({
+      sessions: ['session-1', 'session-2'], archived: false,
+    })
+    expect(restored).toEqual({
+      sessions: [{ sessionId: 'session-1', archived: false }, { sessionId: 'session-2', archived: false }],
+    })
+    expectValidOutput(harness, 'devlead_archive_session', restored)
   })
 
-  it('rejects a blank or omitted Session reference before calling the core', async () => {
+  it('forwards settled Workspace cleanup and validates unsafe combinations', async () => {
+    const harness = boot()
+    await harness.call('devlead_archive_session', { workspace: ' ws-1 ', settled_only: true })
+    expect(harness.devLead.callsOf('archiveSessions')[0]?.[1]).toMatchObject({
+      workspace: 'ws-1', settledOnly: true, archived: true,
+    })
+    for (const args of [
+      {},
+      { workspace: 'ws-1' },
+      { session: 'session-1', sessions: ['session-2'] },
+      { session: 'session-1', settled_only: true },
+      { workspace: 'ws-1', settled_only: true, archived: false },
+      { session: 'session-1', archived: false, stop_running: true },
+    ]) {
+      const error = await failureOf(harness.call('devlead_archive_session', args))
+      expect(error.code).toBe('DEVLEAD_INVALID_INPUT')
+    }
+    expect(harness.devLead.callsOf('archiveSessions')).toHaveLength(1)
+  })
+
+  it('documents automatic unwatch, batch semantics, and cancellation safety', () => {
+    const harness = boot()
+    const description = harness.tool('devlead_archive_session').definition.description
+    expect(description).toContain('automatically unwatch')
+    expect(description).toContain('workspace+settled_only:true')
+    expect(description).toContain('not rolled back')
+    expect(description).toContain('never hide a failure')
+    expect(description).toContain('DEVLEAD_SESSION_ACTIVE')
+    expect(description).toContain('cannot archive itself')
+  })
+
+  it('rejects blank targets and translates core failures', async () => {
     const harness = boot()
     const blank = await failureOf(harness.call('devlead_archive_session', { session: '  ' }))
     expect(blank.code).toBe('DEVLEAD_INVALID_INPUT')
-    const missing = await failureOf(harness.call('devlead_archive_session'))
-    expect(missing.code).toBe('INVALID_ARGS')
-    expect(harness.devLead.callsOf('archiveSession')).toHaveLength(0)
-  })
-
-  it('translates the active-session refusal and the unknown-session failure', async () => {
-    const harness = boot()
-    harness.devLead.failures.set('archiveSession', devLeadFailure('DEVLEAD_SESSION_ACTIVE'))
+    expect(harness.devLead.callsOf('archiveSessions')).toHaveLength(0)
+    harness.devLead.failures.set('archiveSessions', devLeadFailure('DEVLEAD_SESSION_ACTIVE'))
     const active = await failureOf(harness.call('devlead_archive_session', { session: 'session-1' }))
     expect(active.code).toBe('DEVLEAD_SESSION_ACTIVE')
-    harness.devLead.failures.set('archiveSession', devLeadFailure('DEVLEAD_SESSION_NOT_FOUND'))
-    const missing = await failureOf(harness.call('devlead_archive_session', { session: 'session-1' }))
-    expect(missing.code).toBe('DEVLEAD_SESSION_NOT_FOUND')
-  })
-})
-
-describe('devlead_unarchive_session', () => {
-  it('restores one Session and returns the canonical value', async () => {
-    const harness = boot()
-    const value = await harness.call('devlead_unarchive_session', { session: '  session-1  ' })
-    const [agent, sessionId, signal] = harness.devLead.callsOf('unarchiveSession')[0] ?? []
-    expect(agent).toBe(harness.agent)
-    expect(sessionId).toBe('session-1')
-    expect(signal).toBe(harness.exec.signal)
-    expect(value).toEqual({ sessionId: 'session-1', archived: false })
-    expectValidOutput(harness, 'devlead_unarchive_session', value)
-  })
-
-  it('advertises the restore semantics and autonomous reversal', () => {
-    const harness = boot()
-    const description = harness.tool('devlead_unarchive_session').definition.description
-    expect(description).toContain('idempotent')
-    expect(description).toContain('reverse an archive you made while wrapping up')
-    expect(description).toContain('report the restored Session')
-  })
-
-  it('rejects a blank or omitted Session reference before calling the core', async () => {
-    const harness = boot()
-    const blank = await failureOf(harness.call('devlead_unarchive_session', { session: '  ' }))
-    expect(blank.code).toBe('DEVLEAD_INVALID_INPUT')
-    const missing = await failureOf(harness.call('devlead_unarchive_session'))
-    expect(missing.code).toBe('INVALID_ARGS')
-    expect(harness.devLead.callsOf('unarchiveSession')).toHaveLength(0)
-  })
-
-  it('translates an unknown-session failure', async () => {
-    const harness = boot()
-    harness.devLead.failures.set('unarchiveSession', devLeadFailure('DEVLEAD_SESSION_NOT_FOUND'))
-    const error = await failureOf(harness.call('devlead_unarchive_session', { session: 'session-1' }))
-    expect(error.code).toBe('DEVLEAD_SESSION_NOT_FOUND')
   })
 })
 
@@ -2737,8 +2743,7 @@ describe('presentation', () => {
     expect((archive?.({ session: 'session-1' }) as GenericCallView).title).toBe('Archive DevLead session')
     expect((archive?.({ session: 'session-1', stop_running: true }) as GenericCallView).title)
       .toBe('Archive DevLead session (stop running work)')
-    const unarchive = harness.tool('devlead_unarchive_session').definition.presentCall
-    expect(unarchive?.({ session: ' session-1 ' })).toMatchObject({
+    expect(archive?.({ session: ' session-1 ', archived: false })).toMatchObject({
       title: 'Restore DevLead session',
       rawInput: 'session-1',
     })
@@ -2773,7 +2778,6 @@ describe('presentation', () => {
     expect(harness.tool('devlead_remove_workspace').definition.presentCall?.({})).toBeUndefined()
     expect(harness.tool('devlead_archive_session').definition.presentCall?.({ session: 's', stop_running: 'yes' }))
       .toBeUndefined()
-    expect(harness.tool('devlead_unarchive_session').definition.presentCall?.({})).toBeUndefined()
   })
 
   it('renders a Session value as lossless JSON', async () => {
@@ -3269,6 +3273,6 @@ describe('message lanes and delivery diagnostics (Phase 1e)', () => {
     // no input parameter was added for it (DESIGN §4.4).
     expect(keysOf('devlead_report')).toEqual(['message', 'kind', 'summary'])
     expect(keysOf('devlead_notifications')).toEqual(['limit'])
-    expect(keysOf('devlead_get_session')).toEqual(['session'])
+    expect(keysOf('devlead_get_session')).toEqual(['session', 'last_assistant_limit'])
   })
 })

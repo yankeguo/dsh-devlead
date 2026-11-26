@@ -10,7 +10,7 @@
  */
 
 import { mkdir, stat } from 'node:fs/promises'
-import { isAbsolute } from 'node:path'
+import { isAbsolute, join } from 'node:path'
 import { Service } from '@deepseek-ai/cordis'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
@@ -33,6 +33,7 @@ import type {} from '@deepseek-ai/dsh-session-title'
 import type {} from '@deepseek-ai/dsh-workspace'
 import type { SessionActivity, Workspace, WorkspaceRegistry } from '@deepseek-ai/dsh-workspace'
 import {
+  DEVLEAD_ASSISTANT_EXCERPT_MAX,
   DEVLEAD_DEFAULT_MAX_WATCHED,
   DEVLEAD_ERROR_EXCERPT_MAX,
   DEVLEAD_IDEMPOTENCY_KEY_MAX,
@@ -51,6 +52,8 @@ import type {
   DevLeadAgentPresetCatalog,
   DevLeadArchivedSession,
   DevLeadArchiveSessionOptions,
+  DevLeadArchiveSessionResult,
+  DevLeadArchiveSessionsRequest,
   DevLeadCreatedSession,
   DevLeadCreateSessionRequest,
   DevLeadInterruptInboxPolicy,
@@ -78,6 +81,7 @@ import type {
   DevLeadUnarchivedSession,
   DevLeadUseWorkspaceRequest,
   DevLeadWatchMutation,
+  DevLeadWorkspaceModelSelection,
   DevLeadWorkspaceView,
 } from '@yankeguo/dsh-devlead-protocol'
 import {
@@ -165,7 +169,15 @@ import {
   type DevLeadActiveSession,
 } from './active.ts'
 import { worktreeCapabilityOf, worktreeCheckoutOf } from './isolation.ts'
-import { DevLeadBoardError, DevLeadBoardStore, isDevLeadBoardError, resolveDevLeadBoardPath } from './board.ts'
+import {
+  DEVLEAD_BOARD_DIR_SEGMENTS,
+  DEVLEAD_BOARD_FILE_NAME,
+  DevLeadBoardError,
+  DevLeadBoardStore,
+  isDevLeadBoardError,
+  resolveDevLeadBoardPath,
+} from './board.ts'
+import { commitDevLeadBoard } from './board-commit.ts'
 import type {
   DevLeadBoardDisabledReason,
   DevLeadBoardReadFilter,
@@ -268,6 +280,10 @@ export interface Config {
   wakeColdSession?: boolean
   /** Agent preset used by Sessions this lead creates when the request names none. */
   defaultAgentPreset?: string
+  /** Model routes matched against the resolved Workspace id/path/exact title, in declaration order. */
+  workspaceModels?: DevLeadWorkspaceModelSelection[]
+  /** Fallback model route when no Workspace entry matches; omitted uses the Host default. */
+  defaultModel?: DevLeadModelSelection
   /** Open-question lifetime in milliseconds; default 24h, 0 disables expiry. */
   questionTtlMs?: number
   /**
@@ -638,6 +654,13 @@ class DevLeadInterruptedAdmissionError extends DevLeadError {
   }
 }
 
+/** Shared loader shape of one configured model route. */
+const modelSelectionConfigSchema = z.object({
+  provider: z.string(),
+  model: z.string(),
+  reasoningEffort: z.string().default(''),
+})
+
 /** Loader schema for the DevLead core service. */
 export const Config: z<Config> = z.object({
   notificationBatchMs: z.number().step(1).min(0).max(MAX_TIMER_DELAY_MS).default(400),
@@ -646,6 +669,13 @@ export const Config: z<Config> = z.object({
   maxListedSessions: z.number().step(1).min(1).default(200),
   wakeColdSession: z.boolean().default(true),
   defaultAgentPreset: z.string().default(''),
+  workspaceModels: z.array(z.object({
+    workspace: z.string(),
+    provider: z.string(),
+    model: z.string(),
+    reasoningEffort: z.string().default(''),
+  })).default([]),
+  defaultModel: modelSelectionConfigSchema.default({ provider: '', model: '', reasoningEffort: '' }),
   questionTtlMs: z.number().step(1).min(0).max(Number.MAX_SAFE_INTEGER).default(DEFAULT_QUESTION_TTL_MS),
   boardPath: z.string().default(''),
 })
@@ -667,6 +697,10 @@ export interface DevLeadSettings {
   readonly wakeColdSession: boolean
   /** Agent preset used by created Sessions when the request names none. */
   readonly defaultAgentPreset: string | undefined
+  /** Validated Workspace model routes in declaration order. */
+  readonly workspaceModels: readonly DevLeadWorkspaceModelSelection[]
+  /** Validated fallback model route, when configured. */
+  readonly defaultModel?: DevLeadModelSelection
   /** Open-question lifetime in milliseconds; zero disables expiry. */
   readonly questionTtlMs: number
   /**
@@ -674,6 +708,23 @@ export interface DevLeadSettings {
    * lead-workspace derivation applies.
    */
   readonly boardPath?: string
+}
+
+/** Validate and detach one configured model selection with direct-construction errors. */
+function configuredModel(value: DevLeadModelSelection, label: string): NormalizedModelSelection {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new TypeError(`${label} must be a model selection object`)
+  }
+  if (typeof value.provider !== 'string' || value.provider.trim().length === 0
+    || typeof value.model !== 'string' || value.model.trim().length === 0) {
+    throw new TypeError(`${label} requires non-blank provider and model strings`)
+  }
+  if (value.reasoningEffort !== undefined && typeof value.reasoningEffort !== 'string') {
+    throw new TypeError(`${label} reasoningEffort must be a string when provided`)
+  }
+  const normalized = normalizeModelSelection(value)
+  if (normalized === undefined) throw new TypeError(`${label} requires provider and model`)
+  return normalized
 }
 
 /**
@@ -705,6 +756,26 @@ function resolveConfig(config: Config): DevLeadSettings {
   if (typeof wakeColdSession !== 'boolean') throw new TypeError('wakeColdSession must be a boolean')
   const defaultAgentPreset = config.defaultAgentPreset ?? ''
   if (typeof defaultAgentPreset !== 'string') throw new TypeError('defaultAgentPreset must be a string')
+  const configuredWorkspaces = config.workspaceModels ?? []
+  if (!Array.isArray(configuredWorkspaces)) throw new TypeError('workspaceModels must be an array')
+  const workspaceModels = configuredWorkspaces.map((entry, index) => {
+    const label = `workspaceModels[${String(index)}]`
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+      throw new TypeError(`${label} must be an object`)
+    }
+    if (typeof entry.workspace !== 'string' || entry.workspace.trim().length === 0) {
+      throw new TypeError(`${label}.workspace must be a non-blank string`)
+    }
+    return { workspace: entry.workspace.trim(), ...configuredModel(entry, label) }
+  })
+  const configuredDefault = config.defaultModel
+  const emptyDefault = typeof configuredDefault === 'object' && configuredDefault !== null
+    && !Array.isArray(configuredDefault)
+    && typeof configuredDefault.provider === 'string' && configuredDefault.provider.trim().length === 0
+    && typeof configuredDefault.model === 'string' && configuredDefault.model.trim().length === 0
+  const defaultModel = configuredDefault === undefined || emptyDefault
+    ? undefined
+    : configuredModel(configuredDefault, 'defaultModel')
   const questionTtlMs = config.questionTtlMs ?? DEFAULT_QUESTION_TTL_MS
   if (!Number.isSafeInteger(questionTtlMs) || questionTtlMs < 0) {
     throw new TypeError('questionTtlMs must be a non-negative safe integer')
@@ -722,6 +793,8 @@ function resolveConfig(config: Config): DevLeadSettings {
     maxListedSessions,
     wakeColdSession,
     defaultAgentPreset: defaultAgentPreset.trim().length === 0 ? undefined : defaultAgentPreset.trim(),
+    workspaceModels,
+    ...defaultModel === undefined ? {} : { defaultModel },
     questionTtlMs,
     ...trimmedBoardPath.length === 0 ? {} : { boardPath: trimmedBoardPath },
   }
@@ -2817,7 +2890,7 @@ export class DevLeadService extends Service {
     return this.boardStore.summary(this.notesStore.summaryIndex())
   }
 
-  /** Read one active-lead project's note metadata or one complete Markdown note. */
+  /** Read one active-lead project's note metadata; bodies stay with native file tools. */
   async readBoardNote(
     agent: Agent,
     filter: DevLeadBoardNoteReadFilter,
@@ -3069,16 +3142,33 @@ export class DevLeadService extends Service {
     patch: Omit<DevLeadBoardUpdate, 'updatedBy'>,
     expectedRevision?: number,
     signal?: AbortSignal,
+    options: { readonly commit?: boolean } = {},
   ): Promise<DevLeadBoardUpdateResult> {
     if (!this.isEnabled(agent)) {
       throw new DevLeadError('DevLead mode is not enabled for the calling Agent', 'DEVLEAD_NOT_ENABLED')
     }
     this.requireActiveBoardLead(agent)
+    // Capture the store and its matching original workspace before awaiting the
+    // writer lock; a later lead switch must not redirect the optional Git work.
+    const store = this.boardStore
+    const boardPath = store.path
+    const workspaceRoot = this.leadWorkspaceRootOf(String(agent.id))
+    const defaultBoardPath = workspaceRoot === undefined
+      ? undefined
+      : join(workspaceRoot, ...DEVLEAD_BOARD_DIR_SEGMENTS, DEVLEAD_BOARD_FILE_NAME)
     const title = this.ctx.get('sessionTitle')?.get(agent.session)?.title ?? 'DevLead'
-    return this.boardStore.update({
+    const result = await store.update({
       ...patch,
       updatedBy: { sessionId: String(agent.id), title },
     }, expectedRevision, signal)
+    if (options.commit !== true || result.changed.length === 0) return result
+    if (workspaceRoot === undefined || boardPath === undefined || boardPath !== defaultBoardPath) {
+      return {
+        ...result,
+        warning: 'board was written but not committed: commit:true requires the default board path in the lead workspace',
+      }
+    }
+    return { ...result, ...await commitDevLeadBoard(workspaceRoot, signal) }
   }
 
   // ---------------------------------------------------------------------------
@@ -3572,9 +3662,17 @@ export class DevLeadService extends Service {
    * @returns the detached Session view.
    * @throws {@link DevLeadError} when the reference is missing or ambiguous.
    */
-  async getSession(agent: Agent, sessionId: string, signal?: AbortSignal): Promise<DevLeadSessionView> {
+  async getSession(
+    agent: Agent,
+    sessionId: string,
+    signal?: AbortSignal,
+    lastAssistantLimit = DEVLEAD_ASSISTANT_EXCERPT_MAX,
+  ): Promise<DevLeadSessionView> {
     this.assertLive(agent)
-    const deps = this.viewDeps(agent, signal)
+    if (!Number.isSafeInteger(lastAssistantLimit) || lastAssistantLimit < 1) {
+      throw new DevLeadError('last_assistant_limit must be a positive safe integer', 'DEVLEAD_INVALID_INPUT')
+    }
+    const deps = { ...this.viewDeps(agent, signal), lastAssistantLimit }
     const resolved = await resolveSessionReference(deps, sessionId)
     signal?.throwIfAborted()
     return await devLeadSessionView(deps, String(resolved.sessionId), true)
@@ -3716,7 +3814,7 @@ export class DevLeadService extends Service {
     this.assertReady(agent)
     signal?.throwIfAborted()
     // Request shape is validated before any Host capability or side effect.
-    const requestedModel = normalizeModelSelection(request.model)
+    const explicitModel = normalizeModelSelection(request.model)
     const requestedTeams = request.agentTeams
     const controller = this.ctx.get('sessionController')
     if (controller === undefined) {
@@ -3737,7 +3835,6 @@ export class DevLeadService extends Service {
         'DEVLEAD_TEAM_UNAVAILABLE',
       )
     }
-    if (requestedModel !== undefined) await this.assertModelSelectable(requestedModel, signal)
     const watch = request.watch ?? true
     // Reserve the watch slot synchronously before the first await: a rejected
     // watch after creation would leave an orphan Session the caller was told
@@ -3756,6 +3853,16 @@ export class DevLeadService extends Service {
           'DEVLEAD_DIRECTORY_MISSING',
         )
       }
+      signal?.throwIfAborted()
+      const workspaceModel = this.resolved.workspaceModels.find(entry => entry.workspace === workspace.id
+        || entry.workspace === workspace.path || entry.workspace === workspace.title)
+      const configuredModel = workspaceModel ?? this.resolved.defaultModel
+      const requestedModel = explicitModel ?? (configuredModel === undefined ? undefined : {
+        provider: configuredModel.provider,
+        model: configuredModel.model,
+        ...configuredModel.reasoningEffort === undefined ? {} : { reasoningEffort: configuredModel.reasoningEffort },
+      })
+      if (requestedModel !== undefined) await this.assertModelSelectable(requestedModel, signal)
       signal?.throwIfAborted()
       const preset = request.preset?.trim() ?? this.resolved.defaultAgentPreset
       let created: SessionCreateValue
@@ -4224,9 +4331,9 @@ export class DevLeadService extends Service {
     }
     const registry = this.requireWorkspaceRegistry()
     if (registry.archivedSessionIds.includes(resolved.sessionId)) {
-      // Already archived: the Host's archive is a no-op too, but reporting a
-      // stop it never requested would be a lie.
-      return { sessionId: id, archived: true, stopped: false }
+      // The archive is already durable; still converge this lead's watch set.
+      const mutation = await this.setWatching(agent, resolved.sessionId, false, signal)
+      return { sessionId: id, archived: true, stopped: false, watched: mutation.watched }
     }
     const stopRunning = options.stopRunning ?? false
     try {
@@ -4234,7 +4341,88 @@ export class DevLeadService extends Service {
     } catch (error: unknown) {
       throw this.archiveFailure(id, error) ?? error
     }
-    return { sessionId: id, archived: true, stopped: stopRunning }
+    // Archive is committed first. An unwatch/flush failure is surfaced without
+    // rolling the registry mutation back, and uses the normal watch record path.
+    const mutation = await this.setWatching(agent, resolved.sessionId, false, signal)
+    return { sessionId: id, archived: true, stopped: stopRunning, watched: mutation.watched }
+  }
+
+  /**
+   * Archive/restore explicit Session targets in order, or archive every settled
+   * unarchived Session accounted to one Workspace. Successful earlier mutations
+   * are never rolled back when a later item fails.
+   */
+  async archiveSessions(
+    agent: Agent,
+    request: DevLeadArchiveSessionsRequest,
+  ): Promise<DevLeadArchiveSessionResult[]> {
+    this.assertReady(agent)
+    const signal = request.signal
+    signal?.throwIfAborted()
+    const archived = request.archived ?? true
+    const stopRunning = request.stopRunning ?? false
+    if (typeof archived !== 'boolean' || typeof stopRunning !== 'boolean') {
+      throw new DevLeadError('archived and stop_running must be booleans', 'DEVLEAD_INVALID_INPUT')
+    }
+    if (request.settledOnly !== undefined && typeof request.settledOnly !== 'boolean') {
+      throw new DevLeadError('settled_only must be a boolean', 'DEVLEAD_INVALID_INPUT')
+    }
+    const targetForms = Number(request.session !== undefined)
+      + Number(request.sessions !== undefined) + Number(request.workspace !== undefined)
+    if (targetForms !== 1) {
+      throw new DevLeadError(
+        'provide exactly one of session, sessions, or workspace with settled_only:true',
+        'DEVLEAD_INVALID_INPUT',
+      )
+    }
+    if (request.workspace !== undefined && request.settledOnly !== true) {
+      throw new DevLeadError('workspace cleanup requires settled_only:true', 'DEVLEAD_INVALID_INPUT')
+    }
+    if (request.settledOnly !== undefined && (request.workspace === undefined || request.settledOnly !== true)) {
+      throw new DevLeadError('settled_only:true is only valid with workspace cleanup', 'DEVLEAD_INVALID_INPUT')
+    }
+    if (!archived && (request.workspace !== undefined || request.settledOnly !== undefined || stopRunning)) {
+      throw new DevLeadError(
+        'archived:false accepts only explicit session/sessions targets and no stop_running/workspace cleanup',
+        'DEVLEAD_INVALID_INPUT',
+      )
+    }
+    let targets: string[]
+    if (request.workspace !== undefined) {
+      const workspace = await resolveWorkspaceReference(this.ctx, request.workspace, signal)
+      const deps = this.viewDeps(agent, signal)
+      const ids = await collectSessionIds(deps, workspace, true)
+      const facts = await readSessionFacts(deps, ids)
+      const views = await devLeadSessionViews(deps, ids, true, facts)
+      targets = views
+        .filter(view => !view.archived && !view.running && view.lastTransition !== undefined)
+        .map(view => view.sessionId)
+    } else {
+      const supplied = request.sessions ?? [request.session as string]
+      if (!Array.isArray(supplied) || supplied.some(value => typeof value !== 'string')) {
+        throw new DevLeadError('sessions must be an array of Session reference strings', 'DEVLEAD_INVALID_INPUT')
+      }
+      targets = [...new Set(supplied.map(value => value.trim()))]
+    }
+    const results: DevLeadArchiveSessionResult[] = []
+    for (const target of targets) {
+      signal?.throwIfAborted()
+      if (!archived) {
+        results.push(await this.unarchiveSession(agent, target, signal))
+        continue
+      }
+      try {
+        results.push(await this.archiveSession(agent, target, { stopRunning, ...(signal === undefined ? {} : { signal }) }))
+      } catch (error) {
+        // Workspace cleanup means *settled only*: Host activity providers know
+        // about jobs/schedules beyond Agent.running, so an ACTIVE refusal is a
+        // filter result, not a failure of the whole batch. Explicit targets and
+        // every other error retain their normal failure semantics.
+        if (request.workspace !== undefined && isDevLeadError(error) && error.code === 'DEVLEAD_SESSION_ACTIVE') continue
+        throw error
+      }
+    }
+    return results
   }
 
   /**
@@ -6352,8 +6540,11 @@ export class DevLeadService extends Service {
       // answer is not reopened by the Host's clear-time discard events.
       const kept = keptInputsOf(target, leadId, options.interruptInbox)
       this.interrupting.add(targetId)
+      const interruptedTurn = Math.max(1, this.ctx.agents.turnBoundaryOf(target.session).lastTurn)
+      const clearLeadInterrupt = this.hub.markLeadInterrupt(leadId, targetId, interruptedTurn)
       try {
-        await this.stopSessionActivity(sessionId)
+        const stopped = await this.stopSessionActivity(sessionId)
+        if (!stopped) clearLeadInterrupt()
         if (options.interruptInbox !== 'clear-all') {
           try {
             retainedInputs = restoreInputs(target, kept)
@@ -6367,6 +6558,9 @@ export class DevLeadService extends Service {
             )
           }
         }
+      } catch (error: unknown) {
+        clearLeadInterrupt()
+        throw error
       } finally {
         this.interrupting.delete(targetId)
       }
@@ -8195,9 +8389,10 @@ export class DevLeadService extends Service {
    * the stopped work to settle.
    * @param sessionId - Session whose running work should stop.
    */
-  private async stopSessionActivity(sessionId: ReturnType<typeof toSessionId>): Promise<void> {
+  private async stopSessionActivity(sessionId: ReturnType<typeof toSessionId>): Promise<boolean> {
     try {
       await this.ctx.parallel('workspace/session-stop', { sessionId })
+      return true
     } catch (error: unknown) {
       const failures = error instanceof AggregateError ? error.errors : [error]
       for (const failure of failures) {
@@ -8205,6 +8400,7 @@ export class DevLeadService extends Service {
           `devlead: stopping Session "${String(sessionId)}" for prompt interrupt failed: ${thrownMessage(failure)}`,
         )
       }
+      return false
     }
   }
 

@@ -89,6 +89,7 @@ const ISO = '2026-11-23T07:58:00.000Z'
 function project(id: string, status: DevLeadBoardProject['status'], priority: DevLeadBoardProject['priority'] = 'medium'): DevLeadBoardProject {
   return {
     id,
+    revision: 42,
     workspace: { path: `/work/${id}`, title: `Project ${id}` },
     status,
     priority,

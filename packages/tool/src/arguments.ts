@@ -13,6 +13,7 @@ import { isAbsolute } from 'node:path'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { HarnessError } from '@deepseek-ai/dsh-llm'
 import type {
+  DevLeadArchiveSessionsRequest,
   DevLeadCreateSessionRequest,
   DevLeadInterruptInboxPolicy,
   DevLeadIsolationMode,
@@ -95,6 +96,7 @@ export interface BoardUpdateArgs {
   readonly project: string
   readonly expected_revision?: number
   readonly create?: boolean
+  readonly commit?: boolean
   readonly set?: {
     readonly status?: 'active' | 'blocked' | 'paused' | 'done'
     readonly priority?: 'low' | 'medium' | 'high'
@@ -132,7 +134,6 @@ export interface BoardNoteWriteArgs {
   readonly note?: string
   readonly title?: string
   readonly summary?: string
-  readonly content?: string
   readonly expected_revision?: number
 }
 
@@ -176,6 +177,7 @@ export interface CreateSessionArgs {
 /** Arguments of `devlead_get_session`. */
 export interface GetSessionArgs {
   readonly session: string
+  readonly last_assistant_limit?: number
 }
 
 /** Arguments of `devlead_prompt_session`. */
@@ -229,15 +231,14 @@ export interface RemoveWorkspaceArgs {
   readonly workspace: string
 }
 
-/** Arguments of `devlead_archive_session`. */
+/** Arguments of the folded `devlead_archive_session` mutation. */
 export interface ArchiveSessionArgs {
-  readonly session: string
+  readonly session?: string
+  readonly sessions?: readonly string[]
+  readonly workspace?: string
+  readonly settled_only?: boolean
+  readonly archived?: boolean
   readonly stop_running?: boolean
-}
-
-/** Arguments of `devlead_unarchive_session`. */
-export interface UnarchiveSessionArgs {
-  readonly session: string
 }
 
 /**
@@ -510,5 +511,43 @@ export function createSessionRequest(args: CreateSessionArgs): DevLeadCreateSess
     ...model === undefined ? {} : { model },
     ...args.agent_teams === undefined ? {} : { agentTeams: args.agent_teams },
     watch: args.watch ?? true,
+  }
+}
+
+/** Validate and assemble the folded archive/unarchive batch request. */
+export function archiveSessionRequest(args: ArchiveSessionArgs): DevLeadArchiveSessionsRequest {
+  const archived = args.archived ?? true
+  const stopRunning = args.stop_running ?? false
+  const targetForms = Number(args.session !== undefined)
+    + Number(args.sessions !== undefined) + Number(args.workspace !== undefined)
+  if (targetForms !== 1) {
+    throw new DevLeadToolInputError('provide exactly one of session, sessions, or workspace with settled_only:true')
+  }
+  if (args.workspace !== undefined && args.settled_only !== true) {
+    throw new DevLeadToolInputError('workspace cleanup requires settled_only:true')
+  }
+  if (args.settled_only !== undefined && (args.workspace === undefined || args.settled_only !== true)) {
+    throw new DevLeadToolInputError('settled_only:true is only valid with workspace cleanup')
+  }
+  if (!archived && (args.workspace !== undefined || args.settled_only !== undefined || stopRunning)) {
+    throw new DevLeadToolInputError(
+      'archived:false accepts only explicit session/sessions targets and no stop_running/workspace cleanup',
+    )
+  }
+  if (args.session !== undefined) {
+    return { session: requireSessionRef(args.session), archived, stopRunning }
+  }
+  if (args.sessions !== undefined) {
+    if (!Array.isArray(args.sessions) || args.sessions.some(value => typeof value !== 'string')) {
+      throw new DevLeadToolInputError('sessions must be an array of Session reference strings')
+    }
+    const sessions = [...new Set(args.sessions.map(requireSessionRef))]
+    return { sessions, archived, stopRunning }
+  }
+  return {
+    workspace: optionalWorkspaceRef(args.workspace) as string,
+    settledOnly: true,
+    archived: true,
+    stopRunning,
   }
 }

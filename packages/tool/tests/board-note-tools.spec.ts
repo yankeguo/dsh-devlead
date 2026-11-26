@@ -17,34 +17,34 @@ async function failureOf(promise: Promise<unknown>): Promise<HarnessError> {
 }
 
 describe('devlead board note tools', () => {
-  it('describes absolute-path reads, native body edits, and index-only mutations', () => {
+  it('describes metadata-only reads, native body access, and index-only mutations', () => {
     const harness = boot()
     const read = harness.tool('devlead_board_note_read').definition.description
     const write = harness.tool('devlead_board_note_write').definition.description
-    expect(read).toContain('Use when resuming a project or preparing a dispatch brief')
-    expect(read).toContain('capped at 64 KiB')
+    expect(read).toContain('Read only the notes index')
+    expect(read).toContain('never returns Markdown bodies')
     expect(read).toContain('absolutePath')
-    expect(read).toContain('Prefer this list/read interface over direct filesystem reads')
     expect(read).toContain('DSH-native read/write/edit')
     expect(read).toContain('never edit notes/index.json directly')
-    expect(write).toContain('Use when a plan, design, decision, or handoff should survive across turns')
-    expect(write).toContain('keep it concise instead of copying transcripts or logs')
-    expect(write).toContain('update-metadata requires note and changes only supplied title/summary')
-    expect(write).toContain('initial body defaults to empty')
-    expect(write).toContain('never updates or appends to an existing Markdown body')
+    expect(read).not.toContain('Prefer this list/read interface over direct filesystem reads')
+    expect(read).not.toContain('capped at 64 KiB')
+    expect(read).not.toContain('truncated')
+    expect(write).toContain('create makes an empty Markdown file and returns its absolutePath')
+    expect(write).toContain('update-metadata changes only title/summary')
+    expect(write).toContain('never returns or accepts Markdown bodies')
+    expect(write).toContain('DSH-native read/write/edit')
     expect(write).toContain('expected_revision')
     expect(write).not.toContain('expected_bytes')
   })
 
-  it('exposes only create/update-metadata/delete and create-only initial content in parameters', () => {
+  it('exposes only create/update-metadata/delete and no body content parameter', () => {
     const harness = boot()
     const parameters = harness.tool('devlead_board_note_write').definition.parameters as {
       properties: Record<string, { enum?: readonly string[]; description?: string }>
     }
     expect(parameters.properties.operation?.enum).toEqual(['create', 'update-metadata', 'delete'])
     expect(parameters.properties).not.toHaveProperty('expected_bytes')
-    expect(parameters.properties.content?.description).toContain('create only')
-    expect(parameters.properties.content?.description).toContain('defaults to empty')
+    expect(parameters.properties).not.toHaveProperty('content')
     expect(parameters.properties.title?.description).toContain('update-metadata')
     expect(parameters.properties.summary?.description).toContain('update-metadata')
   })
@@ -60,20 +60,25 @@ describe('devlead board note tools', () => {
     expect(validateJsonSchemaValue(harness.tool('devlead_board_note_read').definition.output.schema, result)).toEqual([])
   })
 
-  it('forwards full-note reads and validates the content-bearing output', async () => {
+  it('forwards single-note metadata reads without content or truncation fields', async () => {
     const harness = boot()
     const metadata = harness.devLead.boardNoteRead.notes![0]!
     harness.devLead.boardNoteRead = {
       revision: 3,
       updatedAt: metadata.updatedAt,
       project: harness.devLead.boardNoteRead.project,
-      note: { ...metadata, content: '# Plan\n\nShip it.\n' },
-      truncated: true,
+      note: metadata,
     }
     const result = await harness.call('devlead_board_note_read', { project: 'webapp', note: ' note-1 ' })
     expect(result).toEqual(harness.devLead.boardNoteRead)
+    expect(result).not.toHaveProperty('note.content')
+    expect(result).not.toHaveProperty('truncated')
     expect(harness.devLead.callsOf('readBoardNote')[0]?.[1]).toEqual({ project: 'webapp', note: 'note-1' })
-    expect(validateJsonSchemaValue(harness.tool('devlead_board_note_read').definition.output.schema, result)).toEqual([])
+    const schema = harness.tool('devlead_board_note_read').definition.output.schema
+    expect(validateJsonSchemaValue(schema, result)).toEqual([])
+    expect(validateJsonSchemaValue(schema, {
+      ...harness.devLead.boardNoteRead, truncated: true, note: { ...metadata, content: '# Plan\n\nShip it.\n' },
+    })).not.toEqual([])
   })
 
   it('maps metadata-only updates, index CAS, caller, and signal', async () => {
@@ -95,13 +100,15 @@ describe('devlead board note tools', () => {
     expect(validateJsonSchemaValue(harness.tool('devlead_board_note_write').definition.output.schema, result)).toEqual([])
   })
 
-  it('supports generated-id create with optional initial content, empty default, and delete', async () => {
+  it('supports generated-id create with an empty-body contract and delete', async () => {
     const harness = boot()
     harness.devLead.boardNoteWritten = { ...harness.devLead.boardNoteWritten, operation: 'create' }
     const created = await harness.call('devlead_board_note_write', {
-      project: 'webapp', operation: 'create', title: 'Plan', summary: 'handoff', content: '# Plan',
+      project: 'webapp', operation: 'create', title: 'Plan', summary: 'handoff',
     })
     expect(created).toMatchObject({ operation: 'create', note: { absolutePath: expect.any(String) } })
+    expect(created).not.toHaveProperty('note.content')
+    expect(created).not.toHaveProperty('truncated')
     expect(validateJsonSchemaValue(harness.tool('devlead_board_note_write').definition.output.schema, created)).toEqual([])
     await harness.call('devlead_board_note_write', {
       project: 'webapp', operation: 'create', title: 'Empty note',
@@ -111,7 +118,7 @@ describe('devlead board note tools', () => {
       project: 'webapp', operation: 'delete', note: 'note-1', expected_revision: 3,
     })
     expect(harness.devLead.callsOf('writeBoardNote').map(call => call[1])).toEqual([
-      { project: 'webapp', operation: 'create', title: 'Plan', summary: 'handoff', content: '# Plan' },
+      { project: 'webapp', operation: 'create', title: 'Plan', summary: 'handoff' },
       { project: 'webapp', operation: 'create', title: 'Empty note' },
       { project: 'webapp', operation: 'delete', note: 'note-1', expectedRevision: 3 },
     ])
@@ -119,12 +126,15 @@ describe('devlead board note tools', () => {
     expect(validateJsonSchemaValue(harness.tool('devlead_board_note_write').definition.output.schema, deleted)).toEqual([])
   })
 
-  it('rejects blanks, invalid CAS, removed expected_bytes, paths, and missing Agents before service calls', async () => {
+  it('rejects blanks, invalid CAS, removed body fields, paths, and missing Agents before service calls', async () => {
     const harness = boot()
     for (const args of [
       { project: ' ', operation: 'create', title: 'x' },
       { project: 'webapp', operation: 'update-metadata', note: ' ' },
       { project: 'webapp', operation: 'create', title: 'x', expected_revision: -1 },
+      { project: 'webapp', operation: 'create', title: 'x', content: '# Plan' },
+      { project: 'webapp', operation: 'update-metadata', note: 'n', content: 'replacement' },
+      { project: 'webapp', operation: 'delete', note: 'n', content: '' },
       { project: 'webapp', operation: 'update-metadata', note: 'n', expected_bytes: 7 },
       { project: 'webapp', operation: 'delete', note: 'n', expected_bytes: -1 },
       { project: 'webapp', operation: 'create', title: 'x', path: '/tmp/note.md' },
@@ -159,7 +169,7 @@ describe('devlead board note tools', () => {
 
   it('presents concise cards without leaking Markdown content or Host paths', async () => {
     const harness = boot()
-    harness.devLead.boardNoteRead = {
+    const legacyReadResult = {
       revision: 3,
       updatedAt: '2026-01-02T00:00:00.000Z',
       project: { id: 'webapp', directory: 'webapp-0123456789ab' },
@@ -171,7 +181,7 @@ describe('devlead board note tools', () => {
     }
     const read = harness.tool('devlead_board_note_read').definition.presentResult?.({ project: 'webapp' }, {
       isError: false,
-      content: [{ type: 'text', text: JSON.stringify(harness.devLead.boardNoteRead) }],
+      content: [{ type: 'text', text: JSON.stringify(legacyReadResult) }],
     })
     expect(JSON.stringify(read)).toContain('Release plan')
     expect(JSON.stringify(read)).not.toContain('secret body')

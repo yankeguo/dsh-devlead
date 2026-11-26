@@ -1,8 +1,8 @@
 # @yankeguo/dsh-tool-devlead
 
-The eighteen model-facing lead tools, one watched-Session report tool, and the conditional DevLead system-prompt sections/context.
+The seventeen model-facing lead tools, one watched-Session report tool, and the conditional DevLead system-prompt sections/context.
 
-The eighteen lead tools are registered with `when: ({ agent }) => ctx.devLead.isEnabled(agent)`,
+The seventeen lead tools are registered with `when: ({ agent }) => ctx.devLead.isEnabled(agent)`,
 so an ordinary Session never sees them. They become visible only after a human enables DevLead mode
 with `/devlead on` or the composer-toolbar toggle (shown in both states). `devlead_report` is the
 inverse condition: `ctx.devLead.isSupervised(agent)` — a non-DevLead Session watched by the unique
@@ -15,21 +15,20 @@ active lead.
 - `devlead_list_agent_presets` (Host Agent preset roster: id, name/description, default marker, broken reason)
 - `devlead_board_read` (user-visible project board, on by default for the active lead; id/title/workspace-path selection and bounded listings)
 - `devlead_board_update` (lead-only project create/set, blockers, tasks, and expected-revision CAS)
-- `devlead_board_note_read` (`project`, optional `note`; project note metadata or one Markdown body, with Host-derived `absolutePath` in every metadata result)
-- `devlead_board_note_write` (`project`, `operation: create|update-metadata|delete`, optional `note`, `title`, `summary`, create-only `content`, and `expected_revision` CAS; existing bodies use DSH-native file tools)
+- `devlead_board_note_read` (`project`, optional `note`; metadata only, with Host-derived `absolutePath` for native body reads)
+- `devlead_board_note_write` (`project`, `operation: create|update-metadata|delete`, optional `note`, `title`, `summary`, and `expected_revision` CAS; create is empty and no operation accepts a body)
 - `devlead_use_workspace`
 - `devlead_list_sessions`
 - `devlead_create_session` (optional `isolation: "none" | "worktree"`; creation-time
   `provider`/`model`/`reasoning_effort` and `agent_teams`)
-- `devlead_get_session` (when reading the lead itself, includes its 5 newest retained mid-turn reports; while the target is live, `queuedInputs` lists its pending inbox inputs: id, boundary, source kind/form/sender, text excerpt, enqueue time)
+- `devlead_get_session` (`last_assistant_limit` defaults to 4096 with truncation state; lead read includes its 5 newest reports; live targets include `queuedInputs`)
 - `devlead_prompt_session` (`interrupt?` defaults to false: queue behind the running turn; true stops the running work and replaces it with this prompt; `interrupt_inbox?` defaults to `clear-all`, `keep`/`clear-own` restore pending inputs after the stop)
 - `devlead_retract_input` (withdraw one queued inbox input by id before it runs; only this lead's own relay prompts; idempotent)
 - `devlead_watch_session`
 - `devlead_notifications` (notification digest + mid-turn report digest; `limit` applies to each digest separately, default 20)
 - `devlead_report` (watched child only: one-way `message`, `kind?`, `summary?`)
 - `devlead_remove_workspace` (DSH remove: unregister only, Sessions become ungrouped)
-- `devlead_archive_session` (DSH archive; `stop_running` asks the Host to stop running work)
-- `devlead_unarchive_session` (restore to the recorded Workspace position)
+- `devlead_archive_session` (archive by default, restore with `archived:false`; single/ordered batch/`workspace` + `settled_only`; successful archive implies unwatch)
 
 Every lead tool requires an enabled DevLead mode; `devlead_report` requires the inverse watched state. Mutations and Host-identity reads require a live calling Agent (`exec.agent`); `devlead_list_workspaces` does not inspect its identity. The two board tools are **lead-only**: the caller must be the current active lead that owns the board file, otherwise they fail with `BOARD_DISABLED` (no active lead, no absolute workspace root, a recorded workspace root that no longer exists, or a different Session than the active lead). Since 0.2.0 `devlead_use_workspace` forwards the live Agent to the core
 `useWorkspace(agent, { path, title?, create? }, signal)`; `create` defaults to `false` (a missing
@@ -50,7 +49,9 @@ accept a board file path argument — the path is derived by the Host or set by 
 capped at 64 KiB (`DEVLEAD_BOARD_READ_MAX_BYTES`): tasks, then blockers, then whole project rows are
 trimmed from the tail and `truncated:true` is set when anything was removed.
 `devlead_board_update` requires explicit `create:true` plus `set.workspace.path` for a new project,
-supports blocker/task patches and CAS, and returns only the changed project without tasks. Project
+supports blocker/task patches and per-project CAS (other projects do not advance the expected revision), and returns
+only the changed project without tasks. Optional `commit:true` commits only `.dsh/devlead`, returning `commitHash`
+or a non-fatal `warning`. Project
 references (id, workspace title, absolute workspace path) are resolved against the locked disk
 snapshot and the write preflight validates against a fixed synthetic project id, so a long
 workspace path/title used as the reference no longer false-fails with `BOARD_LIMIT_EXCEEDED`; unknown
@@ -68,9 +69,10 @@ The two notes tools use the same active-lead gate and board-project id/title/abs
 but never accept a notes file path argument. They read and manage only `dirname(boardPath)/notes/`: the strict
 schema-v1 `index.json` contains `{ revision, updatedAt, projects:[{ id, directory, notes[] }] }` and
 metadata only, while each body is `<directory>/<note-id>.md`. Every read/create/update-metadata/delete result adds a
-Host-derived `absolutePath` to returned note metadata; it is not persisted in the disk index. `create` accepts an
-optional initial body (default empty), `update-metadata` changes only title/summary, and `delete` removes the note.
-Later body edits use DSH-native `read`/`write`/`edit` on `absolutePath`, never direct edits to `notes/index.json`.
+Host-derived `absolutePath` to returned note metadata; it is not persisted in the disk index. `create` makes an
+empty body, `update-metadata` changes only title/summary, and `delete` removes the note. These tools never accept
+or return Markdown bodies: all body reads/edits use DSH-native `read`/`write`/`edit` on `absolutePath`, never direct
+edits to `notes/index.json`.
 Tool-managed index/metadata/deletion writes use a cross-process file lock, atomic replacement, and index
 `expected_revision` CAS. The index is limited to 128 KiB, each note to 256 KiB of valid UTF-8, and each project to
 100 notes. The committed index is the source of truth; unindexed/orphan Markdown files are ignored. See
@@ -87,9 +89,10 @@ preset ids. The `preset` argument is always a Host-defined id; omitted or blank 
 to the plugin `defaultAgentPreset`, then the Host default/selectedDefault, and an invalid or
 unusable id fails creation with a structured error instead of being silently ignored.
 
-`devlead_create_session` inherits the Host default model unless the human explicitly asked for a
-route or the brief needs cost/capability routing or reproducibility; when pinning, call
-`devlead_list_models` first and pass `provider` + `model` (optional `reasoning_effort`). Agent
+`devlead_create_session` resolves an explicit `provider` + `model` (optional `reasoning_effort`) first,
+then the matching `workspaceModels` entry, then `defaultModel`, then the Host default. Call
+`devlead_list_models` first when pinning or configuring a route; every inherited or explicit selection is reported
+in the creation result. Agent
 Teams is the lead's judgment for complex, multi-step,
 or parallel work (`agent_teams: true`); simple linear work omits it, and an explicit human on/off
 is obeyed. The model is validated before the Session exists, the selection is recorded on the
@@ -105,10 +108,11 @@ clearly stale/duplicate/empty or self-created Workspace registrations, or a huma
 while forbidding closing a Session or Workspace the human is using, hiding a failure, or starting
 an unrelated large cleanup; every autonomous close is reported with its rationale and impact.
 `devlead_remove_workspace` returns the pre-removal Workspace snapshot plus `removed`;
-`devlead_archive_session` reports `{ sessionId, archived: true, stopped }` and refuses a Session
-with running work as `DEVLEAD_SESSION_ACTIVE` unless `stop_running` is true;
-`devlead_unarchive_session` reports `{ sessionId, archived: false }`. A lead Session cannot archive
-itself (`DEVLEAD_INVALID_INPUT`).
+`devlead_archive_session` returns ordered `{ sessions:[{ sessionId, archived, stopped?, watched? }] }` rows and
+refuses running work as `DEVLEAD_SESSION_ACTIVE` unless `stop_running` is true. Successful archives unwatch;
+`archived:false` restores explicit targets. `workspace` + `settled_only:true` archives all settled, unarchived
+Sessions in that Workspace without a separate cleanup tool. A lead Session cannot archive itself
+(`DEVLEAD_INVALID_INPUT`).
 
 `devlead_report` sends a one-way mid-turn update from a watched, non-DevLead Session to the
 single active lead that watches it. Its result is `{ report, durable, queued, warning? }`: `durable`
@@ -180,7 +184,7 @@ supported platform.
 
 ## 中文
 
-`@yankeguo/dsh-tool-devlead` 提供 18 个主工具 + 1 个 `devlead_report` 与条件 system prompt/context。主工具只在 DevLead 模式开启时可见；`devlead_report` 只在非 DevLead、被唯一 active lead 关注的会话可见。写操作与需要调用者身份的读取要求 live Agent（`exec.agent`）；`devlead_list_workspaces` 不读取其身份。两个看板工具是 **lead-only**：调用者必须是持有看板文件的当前 active lead，否则返回 `BOARD_DISABLED`（没有 active lead、没有绝对 workspace 根、记录的 workspace 根已不存在，或调用者不是 active lead）。0.2.0 起
+`@yankeguo/dsh-tool-devlead` 提供 17 个主工具 + 1 个 `devlead_report` 与条件 system prompt/context。主工具只在 DevLead 模式开启时可见；`devlead_report` 只在非 DevLead、被唯一 active lead 关注的会话可见。写操作与需要调用者身份的读取要求 live Agent（`exec.agent`）；`devlead_list_workspaces` 不读取其身份。两个看板工具是 **lead-only**：调用者必须是持有看板文件的当前 active lead，否则返回 `BOARD_DISABLED`（没有 active lead、没有绝对 workspace 根、记录的 workspace 根已不存在，或调用者不是 active lead）。0.2.0 起
 `devlead_use_workspace` 把 live Agent 转发给 core 的 `useWorkspace(agent, request, signal)`，
 `create` 默认 `false`（缺目录报 `DEVLEAD_DIRECTORY_MISSING`，只有人类明确要求建目录时才传
 `true`）。`devlead_create_session` 还支持创建时指定 `provider`+`model`（可选
@@ -194,7 +198,8 @@ Host 默认/selectedDefault；无效 id 在创建阶段返回结构化错误，�
 用户可见项目看板：默认启用，由唯一 active lead 的 `SessionHeader.cwd` 派生
 `<cwd>/.dsh/devlead/board.json`，`boardPath` 仅作可选绝对路径 override；没有 lead 时返回
 `BOARD_DISABLED`。工具从不接受看板文件路径参数。读取结果按 64 KiB 上限（tasks → blockers →
-project 行从尾部裁剪，`truncated:true`）；update 的 project 引用在锁内快照上解析，长
+project 行从尾部裁剪，`truncated:true`）；update 使用 per-project revision CAS，可选 `commit:true`
+只提交 `.dsh/devlead` 并返回 `commitHash` 或非致命 warning；project 引用在锁内快照上解析，长
 workspace path/title 不再误报 `BOARD_LIMIT_EXCEEDED`，未知引用仍是
 `BOARD_PROJECT_NOT_FOUND`/`BOARD_PROJECT_AMBIGUOUS`。start 失败只降级看板（`BOARD_IO_ERROR`），
 不阻塞 DevLead。用户只读，只有 enabled lead AI 可通过工具写入。
@@ -202,12 +207,12 @@ workspace path/title 不再误报 `BOARD_LIMIT_EXCEEDED`，未知引用仍是
 项目行在有数据时附带 note 数与最近标题。独立 lead-only `devlead:board-policy` 引导模型主动维护看板，在派发/收口和
 实质变化时批量更新，恢复/派发前优先用工具 list/read notes，用工具 create/更新 metadata/delete 后以原生文件工具
 编辑正文，汇报前对齐过期状态，看板降级只报告一次而不反复重试；普通 Session 看不到该文案或看板工具。
-`devlead_board_note_read(project,note?)` 读取项目 notes metadata 或单条 Markdown 正文；
+`devlead_board_note_read(project,note?)` 只读取项目 notes metadata，不返回 Markdown 正文；
 `devlead_board_note_write` 接收 `project`、`operation`（create/update-metadata/delete）、可选
-`note/title/summary/content` 与 `expected_revision` CAS。create 的 content 是可选初始正文（默认空），
-update-metadata 只改 title/summary；既有正文只能由原生文件工具修改。read/create/update-metadata/delete
-返回的每个 note metadata 都增加 Host 派生的 `absolutePath`（不写入磁盘 index），后续用 DSH 原生
-`read`/`write`/`edit` 编辑该绝对路径，不要手改 `notes/index.json`。project 仍按看板 id/title/绝对 path 解析，
+`note/title/summary` 与 `expected_revision` CAS，任何 operation 都不接受 content。create 始终创建空文件，
+update-metadata 只改 title/summary。read/create/update-metadata/delete 返回的每个 note metadata 都增加
+Host 派生的 `absolutePath`（不写入磁盘 index），所有正文读写都用 DSH 原生 `read`/`write`/`edit` 作用于
+该绝对路径，不要手改 `notes/index.json`。project 仍按看板 id/title/绝对 path 解析，
 两个工具都不接受文件路径参数。notes 根目录固定为 `dirname(boardPath)/notes/`，index 只含 metadata，正文路径固定为
 `<directory>/<note-id>.md`；工具管理的 index/metadata/删除写入使用跨进程文件锁、原子替换与
 `expected_revision` CAS，index 是提交事实、orphan Markdown 忽略。index ≤128 KiB、单 note ≤256 KiB 合法 UTF-8、
@@ -240,10 +245,10 @@ turn 之后；true：先停止运行中工作再投递替换 prompt）。
 保留实现为「停止前快照 → 照常 stop → 以原 id/原 boundary 恢复」，恢复消息按原队列顺序排在替换
 prompt 之前；策略实际执行时结果含 `retainedInputs`；无 interrupt 或 idle/cold 目标时忽略。不新增
 错误码。
-关闭类工具（remove / archive / unarchive）
-都不是破坏性操作，且采用判断式自主：合理收尾时可自行关闭自己创建/派发且已完成的 Session、
-明显陈旧/重复/空置或由自己创建的 Workspace 注册；但不得关闭人类正在使用/对话的 Session 或
-Workspace、不得用关闭掩盖失败，并且每次自主关闭都要汇报原因与影响面。remove 只注销 Workspace、
-其 Session 变为未分组；archive 保留日志、可恢复，运行中工作默认报 `DEVLEAD_SESSION_ACTIVE`，
-传 `stop_running` 才会先归档再请求停止；lead 不能归档自己的 Session。完整中文文档见[根 README.zh.md](https://github.com/yankeguo/dsh-devlead/blob/main/README.zh.md)与
+关闭类工具（remove / archive）都不是破坏性操作，且采用判断式自主：合理收尾时可自行关闭自己创建/派发
+且已完成的 Session、明显陈旧/重复/空置或由自己创建的 Workspace 注册；但不得关闭人类正在使用/对话的
+Session 或 Workspace、不得用关闭掩盖失败，并且每次自主关闭都要汇报原因与影响面。remove 只注销 Workspace、
+其 Session 变为未分组；archive 保留日志、成功后自动 unwatch，可用 `archived:false` 恢复，支持显式批量
+或 `workspace` + `settled_only:true` 清理。运行中工作默认报 `DEVLEAD_SESSION_ACTIVE`，传 `stop_running`
+才会先归档再请求停止；lead 不能归档自己的 Session。完整中文文档见[根 README.zh.md](https://github.com/yankeguo/dsh-devlead/blob/main/README.zh.md)与
 [设计说明](https://github.com/yankeguo/dsh-devlead/blob/main/docs/DESIGN.md)。

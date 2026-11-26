@@ -22,6 +22,7 @@ import type { SessionId } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-session/types'
 import { createHash } from 'node:crypto'
 import {
+  DEVLEAD_ASSISTANT_EXCERPT_MAX,
   DEVLEAD_ERROR_EXCERPT_MAX,
   DEVLEAD_IDEMPOTENCY_KEY_MAX,
   DEVLEAD_MAX_INSTANT,
@@ -67,6 +68,7 @@ import type {
 import { thrownMessage } from './error.ts'
 
 export {
+  DEVLEAD_ASSISTANT_EXCERPT_MAX,
   DEVLEAD_ERROR_EXCERPT_MAX,
   DEVLEAD_IDEMPOTENCY_KEY_MAX,
   DEVLEAD_MAX_INSTANT,
@@ -322,6 +324,8 @@ export function devLeadNotification(
   at: number,
   error?: string,
   summary?: string,
+  summaryTruncated = false,
+  cancelledByLeadInterrupt = false,
 ): DevLeadNotification {
   // The title is record data too, and it is rendered into a model-facing digest
   // line: store the same bounded single-line form the renderer accepts, so a
@@ -338,7 +342,10 @@ export function devLeadNotification(
     turn,
     at,
     ...(error === undefined ? {} : { error }),
-    ...(summary === undefined ? {} : { summary }),
+    ...(summary === undefined ? {} : { summary, ...summaryTruncated ? { summaryTruncated: true } : {} }),
+    ...(cancelledByLeadInterrupt && (transition === 'interrupted' || transition === 'aborted')
+      ? { cancelledByLeadInterrupt: true }
+      : {}),
   }
 }
 
@@ -947,6 +954,8 @@ export function decodeNotification(value: unknown): DevLeadNotification {
     'sessionTitle',
     'error',
     'summary',
+    'summaryTruncated',
+    'cancelledByLeadInterrupt',
     'wakeSuppressedByReportId',
     'wakeSuppressionReason',
   ])
@@ -964,7 +973,22 @@ export function decodeNotification(value: unknown): DevLeadNotification {
   }
   const turn = decodeTurn(record.turn, `${label} turn`)
   const error = record.error === undefined ? undefined : decodeExcerpt(record.error, `${label} error`)
-  const summary = record.summary === undefined ? undefined : decodeExcerpt(record.summary, `${label} summary`)
+  const summary = record.summary === undefined
+    ? undefined
+    : decodeExcerptWithMax(record.summary, `${label} summary`, DEVLEAD_ASSISTANT_EXCERPT_MAX)
+  if (record.summaryTruncated !== undefined && typeof record.summaryTruncated !== 'boolean') {
+    throw new Error(`${label} summaryTruncated must be a boolean when present`)
+  }
+  if (record.summaryTruncated !== undefined && summary === undefined) {
+    throw new Error(`${label} summaryTruncated requires summary`)
+  }
+  if (record.cancelledByLeadInterrupt !== undefined && typeof record.cancelledByLeadInterrupt !== 'boolean') {
+    throw new Error(`${label} cancelledByLeadInterrupt must be a boolean when present`)
+  }
+  if (record.cancelledByLeadInterrupt === true
+    && record.transition !== 'interrupted' && record.transition !== 'aborted') {
+    throw new Error(`${label} cancelledByLeadInterrupt is only valid for interrupted or aborted turns`)
+  }
   const wakeSuppressedByReportId = record.wakeSuppressedByReportId
   const wakeSuppressionReason = record.wakeSuppressionReason
   if ((wakeSuppressedByReportId === undefined) !== (wakeSuppressionReason === undefined)) {
@@ -990,6 +1014,8 @@ export function decodeNotification(value: unknown): DevLeadNotification {
     at: decodeInstant(record.at, `${label} at`),
     ...(error === undefined ? {} : { error }),
     ...(summary === undefined ? {} : { summary }),
+    ...(record.summaryTruncated === undefined ? {} : { summaryTruncated: record.summaryTruncated }),
+    ...(record.cancelledByLeadInterrupt === undefined ? {} : { cancelledByLeadInterrupt: record.cancelledByLeadInterrupt }),
     ...(wakeSuppressedByReportId === undefined ? {} : { wakeSuppressedByReportId }),
     ...(wakeSuppressionReason === undefined ? {} : { wakeSuppressionReason }),
   }
@@ -1064,20 +1090,37 @@ export function failureExcerpt(error: unknown): string | undefined {
   return excerptLine(thrownMessage(error), DEVLEAD_ERROR_EXCERPT_MAX)
 }
 
+/** Latest-assistant text plus its explicit truncation fact. */
+export interface DevLeadAssistantExcerpt {
+  readonly text: string | undefined
+  readonly truncated: boolean
+}
+
 /**
- * Collapse the text blocks of one assistant message into the bounded
- * single-line excerpt stored on notifications and Session detail views. The
- * excerpt rule exists here once, so the notification hub and the read-side
- * views can never disagree about it.
- * @param blocks - assistant message content blocks.
- * @returns the excerpt, or undefined when the message carries no text.
+ * Collapse assistant text blocks and retain at most `max` Unicode code points.
+ * Error/title fields keep their separate 240-point budget; this helper serves
+ * the independent assistant budget used by detail views and wake summaries.
  */
-export function assistantExcerpt(blocks: readonly unknown[]): string | undefined {
+export function assistantExcerptResult(
+  blocks: readonly unknown[],
+  max = DEVLEAD_ASSISTANT_EXCERPT_MAX,
+): DevLeadAssistantExcerpt {
   const text = blocks
     .filter((block): block is { type: 'text'; text: string } => typeof block === 'object' && block !== null
       && (block as { type?: unknown }).type === 'text'
       && typeof (block as { text?: unknown }).text === 'string')
     .map(block => block.text)
     .join(' ')
-  return excerptLine(text, DEVLEAD_ERROR_EXCERPT_MAX)
+  const full = excerptLine(text, Number.POSITIVE_INFINITY)
+  if (full === undefined) return { text: undefined, truncated: false }
+  const excerpt = excerptLine(full, max)
+  return { text: excerpt, truncated: excerpt !== undefined && excerpt !== full }
+}
+
+/** Backward-compatible assistant excerpt projection (default 240 code points). */
+export function assistantExcerpt(
+  blocks: readonly unknown[],
+  max = DEVLEAD_ERROR_EXCERPT_MAX,
+): string | undefined {
+  return assistantExcerptResult(blocks, max).text
 }

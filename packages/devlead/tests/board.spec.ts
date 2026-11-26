@@ -59,6 +59,7 @@ const actor = { sessionId: 'session-lead', title: 'DevLead' }
 function project(id = 'alpha', path = '/tmp/alpha'): DevLeadBoardProject {
   return {
     id,
+    revision: 1,
     workspace: { path, title: id },
     status: 'active',
     priority: 'medium',
@@ -160,6 +161,24 @@ describe('DevLeadBoardStore', () => {
     expect(persisted.updatedBy).toEqual(actor)
     expect(persisted.projects[0]?.workspace).toEqual({ path: '/tmp/alpha', title: 'alpha' })
     expect((await store.read()).projects[0]?.tasks).toBeUndefined()
+  })
+
+  it('backfills and persists legacy project revisions from the file revision on read', async () => {
+    const { store, file } = await boot()
+    const legacy = JSON.parse(JSON.stringify(board([project()]))) as {
+      revision: number
+      projects: Array<Record<string, unknown>>
+    }
+    legacy.revision = 7
+    delete legacy.projects[0]!.revision
+    await mkdir(dirname(file), { recursive: true })
+    await writeFile(file, JSON.stringify(legacy), 'utf8')
+    const result = await store.read({ project: 'alpha' })
+    expect(result.revision).toBe(7)
+    expect(result.projects[0]?.revision).toBe(7)
+    const persisted = JSON.parse(await readFile(file, 'utf8')) as DevLeadBoard
+    expect(persisted.revision).toBe(7)
+    expect(persisted.projects[0]?.revision).toBe(7)
   })
 
   it('creates its own parent when the first update runs without start', async () => {
@@ -420,7 +439,7 @@ describe('DevLeadBoardStore', () => {
     expect(devLeadBoardSchema.safeParse(relativePath).success).toBe(false)
   })
 
-  it('reports ambiguous titles and accepts a matching CAS revision', async () => {
+  it('scopes CAS to the selected project and still reports ambiguous titles', async () => {
     const { store, file } = await boot()
     await store.update({
       ...patch('alpha', '/tmp/alpha'), updatedBy: actor, set: { workspace: { path: '/tmp/alpha', title: 'same' } },
@@ -429,12 +448,17 @@ describe('DevLeadBoardStore', () => {
       ...patch('beta', '/tmp/beta'), updatedBy: actor, set: { workspace: { path: '/tmp/beta', title: 'same' } },
     })
     expect((await failureOf(store.read({ project: 'same' }))).code).toBe('BOARD_PROJECT_AMBIGUOUS')
+    // Beta advanced the file to r2, but alpha is still at its own r1.
+    const alpha = await store.update({ project: 'alpha', updatedBy: actor, set: { focus: 'fresh' } }, 1)
+    expect(alpha.revision).toBe(3)
+    expect(alpha.project.revision).toBe(3)
+    const beta = await store.update({ project: 'beta', updatedBy: actor, set: { focus: 'independent' } }, 2)
+    expect(beta.revision).toBe(4)
+    expect(beta.project.revision).toBe(4)
     const before = await readFile(file, 'utf8')
     expect((await failureOf(store.update({ project: 'alpha', updatedBy: actor, set: { focus: 'lost' } }, 1))).code)
       .toBe('BOARD_REVISION_CONFLICT')
     expect(await readFile(file, 'utf8')).toBe(before)
-    const result = await store.update({ project: 'alpha', updatedBy: actor, set: { focus: 'fresh' } }, 2)
-    expect(result.revision).toBe(3)
     expect((await store.read({ project: 'alpha' })).projects[0]?.focus).toBe('fresh')
   })
 

@@ -237,6 +237,7 @@ describe('configuration', () => {
       maxListedSessions: 5,
       wakeColdSession: true,
       defaultAgentPreset: 'reviewer',
+      workspaceModels: [],
       questionTtlMs: 0,
     })
   })
@@ -3280,7 +3281,7 @@ describe('session archival', () => {
   it('archives one Session, marks it archived in the view, and reports no stop', async () => {
     const { harness, registry } = await bootArchive()
     const result = await harness.service.archiveSession(harness.lead.agent, 'session-child')
-    expect(result).toEqual({ sessionId: 'session-child', archived: true, stopped: false })
+    expect(result).toEqual({ sessionId: 'session-child', archived: true, stopped: false, watched: false })
     expect(registry.archiveCalls).toEqual([{ sessionId: 'session-child', stopActivity: false }])
     expect(registry.archived).toEqual(['session-child'])
     expect(registry.stopCalls).toEqual([])
@@ -3297,6 +3298,7 @@ describe('session archival', () => {
       sessionId: fullId,
       archived: true,
       stopped: false,
+      watched: false,
     })
     expect(registry.archived).toEqual([fullId])
   })
@@ -3308,11 +3310,12 @@ describe('session archival', () => {
       sessionId: 'session-child',
       archived: true,
       stopped: false,
+      watched: false,
     })
     // A stop must not be reported for an archive the Host turned into a no-op.
     await expect(
       harness.service.archiveSession(harness.lead.agent, 'session-child', { stopRunning: true }),
-    ).resolves.toEqual({ sessionId: 'session-child', archived: true, stopped: false })
+    ).resolves.toEqual({ sessionId: 'session-child', archived: true, stopped: false, watched: false })
     expect(registry.archiveCalls).toEqual([])
     expect(registry.stopCalls).toEqual([])
   })
@@ -3349,7 +3352,7 @@ describe('session archival', () => {
     const result = await harness.service.archiveSession(harness.lead.agent, 'session-child', {
       stopRunning: true,
     })
-    expect(result).toEqual({ sessionId: 'session-child', archived: true, stopped: true })
+    expect(result).toEqual({ sessionId: 'session-child', archived: true, stopped: true, watched: false })
     expect(registry.archiveCalls).toEqual([{ sessionId: 'session-child', stopActivity: true }])
     expect(registry.archived).toEqual(['session-child'])
     expect(registry.stopCalls).toEqual(['session-child'])

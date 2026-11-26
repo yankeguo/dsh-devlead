@@ -18,6 +18,7 @@ import { childReportLane } from '@yankeguo/dsh-devlead'
 import type { DevLeadReport } from '@yankeguo/dsh-devlead-protocol'
 import {
   TOOL_ARGUMENT_KEYS,
+  archiveSessionRequest,
   assertKnownArguments,
   createSessionRequest,
   defaultedLimit,
@@ -35,7 +36,7 @@ import {
 } from './arguments.ts'
 import { runTool } from './errors.ts'
 import { registerDevLeadBoardTools } from './board-tools.ts'
-import { DEFAULT_NOTIFICATIONS_LIMIT, TOOL_PARAMETERS } from './parameters.ts'
+import { DEFAULT_LAST_ASSISTANT_LIMIT, DEFAULT_NOTIFICATIONS_LIMIT, TOOL_PARAMETERS } from './parameters.ts'
 import { DEVLEAD_BOARD_POLICY, DEVLEAD_REPORT_POLICY, devLeadPolicy } from './policy.ts'
 import { registerQuestionRouting } from './question-routing.ts'
 import {
@@ -51,7 +52,6 @@ import {
   presentReportCall,
   presentRemoveWorkspaceCall,
   presentRetractInputCall,
-  presentUnarchiveSessionCall,
   presentUseWorkspaceCall,
   presentWatchSessionCall,
 } from './presentation.ts'
@@ -68,11 +68,10 @@ import {
   REPORT_OUTPUT,
   REMOVE_WORKSPACE_OUTPUT,
   RETRACT_INPUT_OUTPUT,
-  UNARCHIVE_SESSION_OUTPUT,
   USE_WORKSPACE_OUTPUT,
   WATCH_SESSION_OUTPUT,
   agentPresetCatalogValue,
-  archivedSessionValue,
+  archiveSessionsValue,
   createdSessionValue,
   modelCatalogValue,
   notificationValue,
@@ -80,7 +79,6 @@ import {
   reportValue,
   removedWorkspaceValue,
   sessionValue,
-  unarchivedSessionValue,
   watchMutationValue,
   watchedIds,
   workspaceValue,
@@ -153,8 +151,8 @@ const LIST_SESSIONS_DESCRIPTION =
 const CREATE_SESSION_DESCRIPTION =
   'Create an ordinary DSH Session in a Workspace, optionally started with a prompt. Use it to dispatch the owning '
   + 'Workspace\'s work to that Session instead of doing the work yourself; the brief may carry open questions, '
-  + 'because the Session owns the deeper investigation and the implementation. The child inherits the Host default '
-  + 'model unless you pin provider/model (plus optional reasoning_effort); preset and agent_teams inherit by default '
+  + 'because the Session owns the deeper investigation and the implementation. The child inherits workspaceModels/defaultModel, '
+  + 'then the Host default model unless you pin provider/model (plus optional reasoning_effort); preset and agent_teams inherit by default '
   + 'too. These settings are creation-time only; each parameter states its pinning rules. Never change the '
   + 'Host/profile default or reroute a model on your own. It runs independently: after this call end the turn '
   + 'instead of waiting; never sleep or poll the read tools, and never call wait_agent to wait for it. A watched '
@@ -261,23 +259,16 @@ const REMOVE_WORKSPACE_DESCRIPTION =
   + 'ids that just became ungrouped.'
 
 const ARCHIVE_SESSION_DESCRIPTION =
-  'Close (archive) one DSH Session: it disappears from sidebar grouping while its log is kept, and '
-  + 'devlead_unarchive_session restores it to its recorded Workspace position. Archiving is idempotent and '
-  + 'reversible; an already archived Session is a no-op and reports stopped false. Use your judgment to archive '
-  + 'Sessions you created or dispatched for a task once they are done, or when the human asks to wrap up or clean '
-  + 'up. When tidying up, archive finished Sessions and keep the Workspace registration. Do not archive a Session '
-  + 'the human is using or talking to now, and never use closing to hide a failure. By default a Session with '
-  + 'running work is refused with DEVLEAD_SESSION_ACTIVE; set stop_running true only when you mean to cancel that '
-  + 'work (see stop_running for archive-then-stop). This lead Session cannot archive itself: ask the human to close '
-  + 'it from the sidebar. Report what you archived and why.'
-
-const UNARCHIVE_SESSION_DESCRIPTION =
-  'Restore (unarchive) one archived DSH Session, returning it to its recorded Workspace position. Unarchiving is '
-  + 'idempotent, and the Session log was kept while it was archived. Use it to reverse an archive you made while '
-  + 'wrapping up, or when the human asks to restore a Session; report the restored Session.'
+  'Archive or restore DSH Sessions without deleting logs. Use session for one, sessions for an ordered explicit '
+  + 'batch, or workspace+settled_only:true for every settled unarchived Session in that Workspace. archived:false '
+  + 'restores explicit targets only. Successful archives automatically unwatch the target; earlier successful '
+  + 'mutations are not rolled back if a later item fails. Archive finished work you own or when the human asks; '
+  + 'never hide a failure or archive a Session the human is using. Running work fails with DEVLEAD_SESSION_ACTIVE '
+  + 'unless stop_running:true intentionally archives first and requests cancellation. A lead cannot archive itself. '
+  + 'Results list every processed item in order.'
 
 /**
- * Register the eighteen lead tools, the watched-Session report tool, and
+ * Register the seventeen lead tools, the watched-Session report tool, and
  * their shared policy sections.
  *
  * The tools and the policy text follow the same condition: DevLead mode is
@@ -458,7 +449,13 @@ export function apply(ctx: Context): void {
       return runTool(async () => {
         assertKnownArguments(args, TOOL_ARGUMENT_KEYS.devlead_get_session)
         const agent = requireAgent(exec.agent, 'devlead_get_session')
-        const session = await ctx.devLead.getSession(agent, requireSessionRef(args.session), exec.signal)
+        const lastAssistantLimit = defaultedLimit(args.last_assistant_limit, 'last_assistant_limit', DEFAULT_LAST_ASSISTANT_LIMIT)
+        const session = await ctx.devLead.getSession(
+          agent,
+          requireSessionRef(args.session),
+          exec.signal,
+          lastAssistantLimit,
+        )
         const reports = String(session.sessionId) === String(agent.id)
           ? ctx.devLead.reports(agent, { limit: SELF_REPORTS_LIMIT }).map(report => reportValue(
             report,
@@ -653,32 +650,11 @@ export function apply(ctx: Context): void {
       return runTool(async () => {
         assertKnownArguments(args, TOOL_ARGUMENT_KEYS.devlead_archive_session)
         const agent = requireAgent(exec.agent, 'devlead_archive_session')
-        const archived = await ctx.devLead.archiveSession(
-          agent,
-          requireSessionRef(args.session),
-          { stopRunning: args.stop_running ?? false, signal: exec.signal },
-        )
-        return archivedSessionValue(archived)
-      })
-    },
-  }), { when: ({ agent }) => ctx.devLead.isEnabled(agent) })
-
-  ctx.tools.register(defineTool({
-    name: 'devlead_unarchive_session',
-    description: UNARCHIVE_SESSION_DESCRIPTION,
-    parameters: TOOL_PARAMETERS.devlead_unarchive_session,
-    output: UNARCHIVE_SESSION_OUTPUT,
-    presentCall: presentUnarchiveSessionCall,
-    execute(args, exec) {
-      return runTool(async () => {
-        assertKnownArguments(args, TOOL_ARGUMENT_KEYS.devlead_unarchive_session)
-        const agent = requireAgent(exec.agent, 'devlead_unarchive_session')
-        const unarchived = await ctx.devLead.unarchiveSession(
-          agent,
-          requireSessionRef(args.session),
-          exec.signal,
-        )
-        return unarchivedSessionValue(unarchived)
+        const results = await ctx.devLead.archiveSessions(agent, {
+          ...archiveSessionRequest(args),
+          signal: exec.signal,
+        })
+        return archiveSessionsValue(results)
       })
     },
   }), { when: ({ agent }) => ctx.devLead.isEnabled(agent) })

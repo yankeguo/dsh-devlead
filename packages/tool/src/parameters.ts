@@ -11,6 +11,7 @@
 
 import type { ParameterSchemaSpec } from '@deepseek-ai/dsh-tools'
 import {
+  DEVLEAD_ASSISTANT_EXCERPT_MAX,
   DEVLEAD_REPORT_KINDS,
   DEVLEAD_REPORT_MESSAGE_MAX,
   DEVLEAD_REPORT_SUMMARY_MAX,
@@ -35,6 +36,9 @@ export const WORKSPACE_ARGUMENT_DESCRIPTION =
 
 /** Default size of the notification digest `devlead_notifications` reads. */
 export const DEFAULT_NOTIFICATIONS_LIMIT = 20
+
+/** Default latest-assistant detail budget in Unicode code points. */
+export const DEFAULT_LAST_ASSISTANT_LIMIT = DEVLEAD_ASSISTANT_EXCERPT_MAX
 
 /**
  * Exact parameter schema of every tool, keyed by registered tool name.
@@ -70,13 +74,19 @@ export const TOOL_PARAMETERS = {
     },
     expected_revision: {
       type: 'integer',
-      description: 'Optional non-negative compare-and-swap revision. The update fails with BOARD_REVISION_CONFLICT '
-        + 'when the file advanced since devlead_board_read.',
+      description: 'Optional non-negative CAS revision of this project (not the board file). The update fails with '
+        + 'BOARD_REVISION_CONFLICT only when the selected project advanced since devlead_board_read.',
     },
     create: {
       type: 'boolean',
       default: false,
       description: 'Set true to create a missing project; creation requires set.workspace.path. Defaults to false.',
+    },
+    commit: {
+      type: 'boolean',
+      default: false,
+      description: 'After an actual update, commit only .dsh/devlead in the original lead workspace. Returns commitHash '
+        + 'or a non-fatal warning. Defaults to false; no-ops never commit.',
     },
     set: {
       type: 'object',
@@ -151,8 +161,8 @@ export const TOOL_PARAMETERS = {
     },
     note: {
       type: 'string',
-      description: 'Optional note id from a prior create/read result. Omit to list this project\'s note metadata; '
-        + 'provide it to return the complete Markdown content. This is an id, never a file path.',
+      description: 'Optional note id from a prior create/read result. Omit to list metadata; provide it for one '
+        + 'metadata row. Markdown bodies are never returned; use native read on absolutePath. This is an id, never a path.',
     },
   },
   devlead_board_note_write: {
@@ -166,9 +176,8 @@ export const TOOL_PARAMETERS = {
       type: 'string',
       required: true,
       enum: ['create', 'update-metadata', 'delete'],
-      description: 'create makes a new index entry and an optionally non-empty initial body; update-metadata changes '
-        + 'only title/summary; delete removes the note from the index and its body when possible. Existing bodies '
-        + 'are edited with DSH-native file tools, never through this tool.',
+      description: 'create makes an index entry and empty body; update-metadata changes only title/summary; delete '
+        + 'removes the index entry and body when possible. All body reads/edits use DSH-native tools on absolutePath.',
     },
     note: {
       type: 'string',
@@ -184,12 +193,6 @@ export const TOOL_PARAMETERS = {
       type: 'string',
       description: 'Optional short metadata summary for create/update-metadata; defaults to empty on create and '
         + 'remains unchanged when omitted on update-metadata. Maximum 500 UTF-16 code units. Not accepted for delete.',
-    },
-    content: {
-      type: 'string',
-      description: 'Optional initial Markdown body for create only; defaults to empty. Not accepted for '
-        + 'update-metadata/delete. The resulting note is limited to 256 KiB of valid UTF-8 and content is never '
-        + 'duplicated into the index. Use the returned absolutePath with DSH-native file tools for later body edits.',
     },
     expected_revision: {
       type: 'integer',
@@ -268,13 +271,13 @@ export const TOOL_PARAMETERS = {
     },
     provider: {
       type: 'string',
-      description: 'Optional model provider route for the new Session; requires model. Omit to inherit the Host '
-        + 'default (recommended unless the human asked or the brief requires a specific route). Call '
+      description: 'Optional model provider route for the new Session; requires model. Omit to use workspaceModels/defaultModel, '
+        + 'then the Host default. Call '
         + 'devlead_list_models first when pinning; validated before the Session is created. Creation-time only.',
     },
     model: {
       type: 'string',
-      description: 'Optional model id for the new Session; requires provider. Omit to inherit the Host default. Use it '
+      description: 'Optional model id for the new Session; requires provider. Omit for configured routing, then the Host default. Use it '
         + 'only for explicit cost/capability routing or reproducibility, and call devlead_list_models first. '
         + 'Creation-time only; never changes the Host/profile default.',
     },
@@ -298,6 +301,11 @@ export const TOOL_PARAMETERS = {
       type: 'string',
       required: true,
       description: SESSION_ARGUMENT_DESCRIPTION,
+    },
+    last_assistant_limit: {
+      type: 'integer',
+      default: DEVLEAD_ASSISTANT_EXCERPT_MAX,
+      description: `Latest-assistant excerpt budget in Unicode code points (default ${DEVLEAD_ASSISTANT_EXCERPT_MAX}); the result reports truncation.`,
     },
   },
   devlead_prompt_session: {
@@ -430,22 +438,30 @@ export const TOOL_PARAMETERS = {
   devlead_archive_session: {
     session: {
       type: 'string',
-      required: true,
       description: SESSION_ARGUMENT_DESCRIPTION,
+    },
+    sessions: {
+      type: 'array',
+      items: { type: 'string' },
+      description: 'Explicit Session references to process in order; blank entries are rejected and duplicates coalesce.',
+    },
+    workspace: {
+      type: 'string',
+      description: `With settled_only:true, archive every settled unarchived Session in this Workspace. ${WORKSPACE_ARGUMENT_DESCRIPTION}`,
+    },
+    settled_only: {
+      type: 'boolean',
+      description: 'Required true with workspace: select only non-running, unarchived Sessions with a settled turn.',
+    },
+    archived: {
+      type: 'boolean',
+      default: true,
+      description: 'True archives (default); false restores explicit session/sessions targets and forbids workspace cleanup and stop_running.',
     },
     stop_running: {
       type: 'boolean',
       default: false,
-      description: 'Defaults to false. Set true only when you mean to cancel that Session\'s running work: '
-        + 'the Session is archived first and the Host is then asked to stop its running turn, subagents, jobs, and '
-        + 'schedules, without waiting for them to settle. The safety boundaries are on the tool description.',
-    },
-  },
-  devlead_unarchive_session: {
-    session: {
-      type: 'string',
-      required: true,
-      description: SESSION_ARGUMENT_DESCRIPTION,
+      description: 'Archive first, then ask the Host to stop running work without awaiting settlement; true only for intentional cancellation.',
     },
   },
 } as const satisfies Record<string, ParameterSchemaSpec>
