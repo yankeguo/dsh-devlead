@@ -197,10 +197,6 @@ export interface DevLeadBoardUpdateResult {
   readonly updatedAt: string
   readonly project: DevLeadBoardProjectView
   readonly changed: string[]
-  /** Hash of the optional `.dsh/devlead`-only commit. */
-  readonly commitHash?: string
-  /** Non-fatal post-write Git degradation; the board write remains durable. */
-  readonly warning?: string
 }
 
 interface BoardLogger {

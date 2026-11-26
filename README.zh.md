@@ -304,7 +304,7 @@ path；两个 notes 工具都不接受文件路径参数。
 | `devlead_list_models` | 精简的 Host 模型目录（default、providers、failures） | — |
 | `devlead_list_agent_presets` | Host 的 Agent preset roster 及实际生效的默认值 | — |
 | `devlead_board_read` | 读取用户可见项目看板（结果有界） | `project?`、`include_tasks?`、`limit?` |
-| `devlead_board_update` | 仅 lead AI 可写的项目状态/阻塞/任务更新 | `project`、`expected_revision?`、`create?`、`commit?`、`set?`、`blockers?`、`tasks?` |
+| `devlead_board_update` | 仅 lead AI 可写的项目状态/阻塞/任务更新 | `project`、`expected_revision?`、`create?`、`set?`、`blockers?`、`tasks?` |
 | `devlead_board_note_read` | 读取项目 note metadata 与原生正文路径 | `project`、`note?` |
 | `devlead_board_note_write` | 以 index CAS 创建空 note、更新元数据或删除 | `project`、`operation: create/update-metadata/delete`、`note?`、`title?`、`summary?`、`expected_revision?` |
 | `devlead_use_workspace` | 注册 Workspace（幂等） | `path`（绝对路径）、`title?`、`create?`（默认 false） |

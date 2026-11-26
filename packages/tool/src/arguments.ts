@@ -96,7 +96,6 @@ export interface BoardUpdateArgs {
   readonly project: string
   readonly expected_revision?: number
   readonly create?: boolean
-  readonly commit?: boolean
   readonly set?: {
     readonly status?: 'active' | 'blocked' | 'paused' | 'done'
     readonly priority?: 'low' | 'medium' | 'high'

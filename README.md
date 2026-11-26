@@ -337,7 +337,7 @@ notes tool accepts a file path.
 | `devlead_list_models` | compact Host model catalog (default, providers, failures) | — |
 | `devlead_list_agent_presets` | Host Agent preset roster with the effective default | — |
 | `devlead_board_read` | read the user-visible project board (bounded result) | `project?`, `include_tasks?`, `limit?` |
-| `devlead_board_update` | lead-only project status/blocker/task update | `project`, `expected_revision?`, `create?`, `commit?`, `set?`, `blockers?`, `tasks?` |
+| `devlead_board_update` | lead-only project status/blocker/task update | `project`, `expected_revision?`, `create?`, `set?`, `blockers?`, `tasks?` |
 | `devlead_board_note_read` | read one project's note metadata and native body paths | `project`, `note?` |
 | `devlead_board_note_write` | create an empty note, update metadata, or delete it with index CAS | `project`, `operation: create/update-metadata/delete`, `note?`, `title?`, `summary?`, `expected_revision?` |
 | `devlead_use_workspace` | register a Workspace (idempotent) | `path` (absolute), `title?`, `create?` (default false) |

@@ -82,12 +82,6 @@ export const TOOL_PARAMETERS = {
       default: false,
       description: 'Set true to create a missing project; creation requires set.workspace.path. Defaults to false.',
     },
-    commit: {
-      type: 'boolean',
-      default: false,
-      description: 'After an actual update, commit only .dsh/devlead in the original lead workspace. Returns commitHash '
-        + 'or a non-fatal warning. Defaults to false; no-ops never commit.',
-    },
     set: {
       type: 'object',
       additionalProperties: false,

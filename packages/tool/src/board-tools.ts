@@ -37,9 +37,8 @@ const BOARD_UPDATE_DESCRIPTION =
   'Update one project on the active lead\'s user-visible board. Create requires create:true and set.workspace.path. '
   + 'Supports scalar fields, blockers, and tasks; returns only the changed project without task rows. expected_revision '
   + 'is CAS against that project\'s revision, not the board file revision, so other projects do not cause conflicts. '
-  + 'commit:true commits an actual change with only .dsh/devlead under the original lead workspace and returns '
-  + 'commitHash; non-Git/failure degrades to warning, and no-ops never commit. Batch related changes when dispatching '
-  + 'or closing work, or when project focus/next/blockers/tasks materially change.'
+  + 'The plugin writes files only; whether to commit them is the owning repository\'s decision. Batch related changes '
+  + 'when dispatching or closing work, or when project focus/next/blockers/tasks materially change.'
 
 const BOARD_NOTE_READ_DESCRIPTION =
   'Read only the notes index for one board project: revision/updatedAt/project and note metadata (id, title, summary, '
@@ -132,8 +131,6 @@ export const BOARD_UPDATE_OUTPUT = jsonOutput({
     updatedAt: { type: 'string', required: true },
     project: { ...PROJECT_SCHEMA, required: true },
     changed: { type: 'array', required: true, items: { type: 'string' } },
-    commitHash: { type: 'string' },
-    warning: { type: 'string' },
   },
 } as const)
 
@@ -361,13 +358,7 @@ export function registerDevLeadBoardTools(ctx: Context): void {
         assertKnownArguments(args, TOOL_ARGUMENT_KEYS.devlead_board_update)
         const agent = requireAgent(exec.agent, 'devlead_board_update')
         const expectedRevision = optionalNonNegativeInteger(args.expected_revision, 'expected_revision')
-        const result = await ctx.devLead.updateBoard(
-          agent,
-          boardUpdateRequest(args),
-          expectedRevision,
-          exec.signal,
-          { commit: args.commit === true },
-        )
+        const result = await ctx.devLead.updateBoard(agent, boardUpdateRequest(args), expectedRevision, exec.signal)
         const { tasks: _tasks, ...project } = result.project
         return { ...result, project }
       })

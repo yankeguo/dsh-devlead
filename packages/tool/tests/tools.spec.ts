@@ -362,7 +362,6 @@ describe('registration', () => {
     expect(text).toContain('cross-project source of truth')
     expect(text).toContain('Update on dispatch/close or material changes')
     expect(text).toContain('batch related edits')
-    expect(text).toContain('commit:true once per dispatch/close, never per field')
     expect(text).toContain('paused=resumable phase; done=truly closed')
     expect(text).toContain('update one board note every phase')
     expect(text).toContain('Note tools maintain only index/metadata/delete, never bodies')

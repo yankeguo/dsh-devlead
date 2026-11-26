@@ -2392,7 +2392,7 @@ DSH peer 依赖。最小可交付闭环是 1b + 1c + 1d：question 快、answer 
 | `devlead_list_models` | `{}` | `DevLeadModelCatalog`（default / routableProviders / providers / failures，精简） |
 | `devlead_list_agent_presets` | `{}` | `DevLeadAgentPresetCatalog`（available / presets[id,name?,description?,default,broken?] / reason?） |
 | `devlead_board_read` | `project?`(id / workspace title / 绝对 path), `include_tasks?`, `limit?` | `{ revision, updatedAt, projects, truncated? }` |
-| `devlead_board_update` | `project`, `expected_revision?`, `create?`, `commit?`, `set?`, `blockers?`, `tasks?` | `{ revision, updatedAt, project, changed[], commitHash?, warning? }`；per-project CAS，仅 lead AI 可写，详见 [BOARD](BOARD.md) |
+| `devlead_board_update` | `project`, `expected_revision?`, `create?`, `set?`, `blockers?`, `tasks?` | `{ revision, updatedAt, project, changed[] }`；per-project CAS，仅 lead AI 可写，详见 [BOARD](BOARD.md) |
 | `devlead_board_note_read` | `project`(看板 id / workspace title / 绝对 path), `note?`；无路径参数 | 省略 note 返回该项目 metadata 列表；指定 note 返回单个 metadata，均不含正文，详见 [BOARD](BOARD.md) |
 | `devlead_board_note_write` | `project`, `operation: create/update-metadata/delete`, `note?`, `title?`, `summary?`, `expected_revision?`；无路径或 content 输入 | 仅 active lead AI 可写 index；create 创建空文件；返回 absolutePath 供原生文件工具读写正文，详见 [BOARD](BOARD.md) |
 | `devlead_use_workspace` | `path`(必填，绝对路径), `title?`, `create?`(默认 false；显式 true 才 mkdir) | `{ workspace }` |

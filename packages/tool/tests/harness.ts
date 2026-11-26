@@ -348,9 +348,8 @@ export class FakeDevLead {
     request: Omit<DevLeadBoardUpdate, 'updatedBy'>,
     expectedRevision?: number,
     signal?: AbortSignal,
-    options?: { commit?: boolean },
   ): Promise<DevLeadBoardUpdateResult> {
-    this.enter('updateBoard', agent, request, expectedRevision, signal, options)
+    this.enter('updateBoard', agent, request, expectedRevision, signal)
     return this.boardUpdated
   }
 

@@ -50,8 +50,7 @@ capped at 64 KiB (`DEVLEAD_BOARD_READ_MAX_BYTES`): tasks, then blockers, then wh
 trimmed from the tail and `truncated:true` is set when anything was removed.
 `devlead_board_update` requires explicit `create:true` plus `set.workspace.path` for a new project,
 supports blocker/task patches and per-project CAS (other projects do not advance the expected revision), and returns
-only the changed project without tasks. Optional `commit:true` commits only `.dsh/devlead`, returning `commitHash`
-or a non-fatal `warning`. Project
+only the changed project without tasks. The plugin writes files only; each repository decides whether to commit them. Project
 references (id, workspace title, absolute workspace path) are resolved against the locked disk
 snapshot and the write preflight validates against a fixed synthetic project id, so a long
 workspace path/title used as the reference no longer false-fails with `BOARD_LIMIT_EXCEEDED`; unknown
@@ -198,8 +197,8 @@ Host 默认/selectedDefault；无效 id 在创建阶段返回结构化错误，�
 用户可见项目看板：默认启用，由唯一 active lead 的 `SessionHeader.cwd` 派生
 `<cwd>/.dsh/devlead/board.json`，`boardPath` 仅作可选绝对路径 override；没有 lead 时返回
 `BOARD_DISABLED`。工具从不接受看板文件路径参数。读取结果按 64 KiB 上限（tasks → blockers →
-project 行从尾部裁剪，`truncated:true`）；update 使用 per-project revision CAS，可选 `commit:true`
-只提交 `.dsh/devlead` 并返回 `commitHash` 或非致命 warning；project 引用在锁内快照上解析，长
+project 行从尾部裁剪，`truncated:true`）；update 使用 per-project revision CAS；插件只写文件，是否提交由各仓库
+自行决定；project 引用在锁内快照上解析，长
 workspace path/title 不再误报 `BOARD_LIMIT_EXCEEDED`，未知引用仍是
 `BOARD_PROJECT_NOT_FOUND`/`BOARD_PROJECT_AMBIGUOUS`。start 失败只降级看板（`BOARD_IO_ERROR`），
 不阻塞 DevLead。用户只读，只有 enabled lead AI 可通过工具写入。

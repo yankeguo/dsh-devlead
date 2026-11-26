@@ -65,11 +65,7 @@ canonicalization。
 `0600` 原子替换。是否把 `.dsh/devlead/` 加入仓库的 `.gitignore` 由用户/仓库所有者决定；
 插件不修改 `.gitignore`，也不要求看板进入 Git。
 
-`devlead_board_update` 的可选 `commit:true` 只在实际变更后执行：在 lead 原始 workspace 中依次运行
-`git add -- .dsh/devlead` 与 `git commit --only ... -- .dsh/devlead`，因此提交只含看板与 notes 目录，
-不会带入此前 staged 的无关文件，也不会 push。成功返回 `commitHash`；非 Git、override 不是默认路径、
-无变更或 Git 失败时不伪造提交，分别不执行或返回非致命 `warning`，已写入的 board 不回滚。批量字段更新后
-每个 dispatch/close 最多提交一次，不要逐字段制造 commit。
+插件只负责写入看板与 notes 文件，不调用 Git；是否以及何时提交这些文件由使用方仓库自己的约定决定。
 
 **start 失败不阻塞 DevLead（P2-2）**：父目录预创建或 `start()` 失败时，Host 只记录一条 warning
 并把看板标记为 degraded；`DevLeadService`、`devlead_*` 工具、`/devlead` 命令与浏览器 UI 照常
@@ -137,14 +133,14 @@ Host 通过 `ctx.devLead.board` 暴露**当前 active lead 的 store**（没有 
 - `path` / `enabled`：当前 store 状态；无 lead/workspace 根时为 undefined / false；
 - `read(filter?)`：返回 `{ revision, updatedAt, projects, truncated? }`；
 - `update(patch, expectedRevision?, signal?)`：返回 `{ revision, updatedAt, project, changed }`，
-  其中 project 省略 tasks 但包含自己的 `revision`；service 的可选 commit 结果另含 `commitHash?/warning?`；
+  其中 project 省略 tasks 但包含自己的 `revision`；
 - `summary()`：从最后合法内存缓存同步渲染摘要；禁用或空 projects 时为空串。
 
 `ctx.devLead.boardLeadSessionId` / `boardPathOverride` / `boardStartError` /
 `boardDisabledReason` 暴露当前 store 归属的 lead Session、路径是否来自 Config override、最近一次
 start 失败（degraded 时非空），以及看板当前被禁用的原因（`no-workspace` /
 `relative-workspace` / `invalid-override` / `missing-workspace`；有活动 store 时 undefined）。
-`ctx.devLead.updateBoard(agent, patch, expectedRevision?, signal?, options?)` 额外补上 lead 身份；调用者
+`ctx.devLead.updateBoard(agent, patch, expectedRevision?, signal?)` 额外补上 lead 身份；调用者
 必须是当前 active lead，否则 `BOARD_DISABLED`。`read()` / `update()` 在没有 board 或
 `expectedRevision` 不是非负安全整数时返回 rejected Promise；它与**目标 project 的 revision** 比较，
 不一致才返回 `BOARD_REVISION_CONFLICT`。其他 project 的写入只推进顶层 revision，不再造成本项目的伪冲突；
@@ -341,8 +337,8 @@ lead。**四个 board/notes 工具都没有文件路径参数**；`project` 只�
 
 `tool` 包另注册独立的 `devlead:board-policy` system prompt section，仅对 `ctx.devLead.isEnabled(agent)` 的 lead
 可见，普通 Session 与无 Agent 的组装均为空；它不占用 `DEVLEAD_POLICY_BASE` 的尺寸预算。引导把每轮注入的
-board summary 视为跨项目状态事实源：派发/收口或 focus、next、blockers、tasks 有实质变化时批量更新看板，
-每个 dispatch/close 最多 `commit:true` 一次。`paused` 只表示阶段完成且可续，`done` 才表示真正结项；长程
+board summary 视为跨项目状态事实源：派发/收口或 focus、next、blockers、tasks 有实质变化时批量更新看板。
+`paused` 只表示阶段完成且可续，`done` 才表示真正结项；长程
 多阶段任务用一个 note 逐阶段记录。恢复项目或写派发简报前用 `devlead_board_note_read` 查 metadata；计划、
 设计、决策与交接通过 `devlead_board_note_write` create/update-metadata/delete 维护索引，再用 DSH 原生
 read/write/edit 读写返回的 absolutePath 正文，绝不手改 notes/index.json。向用户汇报前先对齐过期状态。
@@ -370,9 +366,9 @@ revision/updatedAt 与靠前的项目永远保留（project 行最多裁到只�
 
 ### `devlead_board_update`
 
-参数：`project`、`expected_revision?`、`create?`、`commit?`、`set?`、`blockers?`、`tasks?`。
+参数：`project`、`expected_revision?`、`create?`、`set?`、`blockers?`、`tasks?`。
 创建必须显式 `create:true` 并提供 `set.workspace.path`；此时 `project` 是新 id。`expected_revision`
-来自目标 project 的 `revision` 而不是结果顶层 revision；`commit:true` 的提交范围与降级语义见上文。
+来自目标 project 的 `revision` 而不是结果顶层 revision。
 
 **project 引用在锁内快照上解析（P2-1）**：`project` 参数允许 workspace title / 绝对 workspace
 path，两者都可能远超 id 的 128 单位上限。写入预检因此针对固定的 synthetic project id
@@ -387,7 +383,7 @@ workspace path/title 不再误报 `BOARD_LIMIT_EXCEEDED`。引用是否存在、
   原 `since`，省略 `session_id` 时保留原值；重复 add 若完全无变化，不写文件也不 bump revision。
 - `tasks`: `remove` → `upsert`；upsert 项为
   `{id,title?,status?,owner_session_id?}`，新 task 必须有非空 title。
-- 返回 `{revision,updatedAt,project,changed[],commitHash?,warning?}`，只返回省略 tasks 的目标项目，不回传整个 board；
+- 返回 `{revision,updatedAt,project,changed[]}`，只返回省略 tasks 的目标项目，不回传整个 board；
   工具层还会防御性剥离 tasks，避免旧 core 或异常结果泄漏完整任务清单。
 
 稳定错误码包括 `BOARD_DISABLED`、`BOARD_NOT_FOUND`、`BOARD_INVALID`、

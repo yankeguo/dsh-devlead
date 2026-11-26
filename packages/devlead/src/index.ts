@@ -10,7 +10,7 @@
  */
 
 import { mkdir, stat } from 'node:fs/promises'
-import { isAbsolute, join } from 'node:path'
+import { isAbsolute } from 'node:path'
 import { Service } from '@deepseek-ai/cordis'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
@@ -169,15 +169,7 @@ import {
   type DevLeadActiveSession,
 } from './active.ts'
 import { worktreeCapabilityOf, worktreeCheckoutOf } from './isolation.ts'
-import {
-  DEVLEAD_BOARD_DIR_SEGMENTS,
-  DEVLEAD_BOARD_FILE_NAME,
-  DevLeadBoardError,
-  DevLeadBoardStore,
-  isDevLeadBoardError,
-  resolveDevLeadBoardPath,
-} from './board.ts'
-import { commitDevLeadBoard } from './board-commit.ts'
+import { DevLeadBoardError, DevLeadBoardStore, isDevLeadBoardError, resolveDevLeadBoardPath } from './board.ts'
 import type {
   DevLeadBoardDisabledReason,
   DevLeadBoardReadFilter,
@@ -3142,33 +3134,16 @@ export class DevLeadService extends Service {
     patch: Omit<DevLeadBoardUpdate, 'updatedBy'>,
     expectedRevision?: number,
     signal?: AbortSignal,
-    options: { readonly commit?: boolean } = {},
   ): Promise<DevLeadBoardUpdateResult> {
     if (!this.isEnabled(agent)) {
       throw new DevLeadError('DevLead mode is not enabled for the calling Agent', 'DEVLEAD_NOT_ENABLED')
     }
     this.requireActiveBoardLead(agent)
-    // Capture the store and its matching original workspace before awaiting the
-    // writer lock; a later lead switch must not redirect the optional Git work.
-    const store = this.boardStore
-    const boardPath = store.path
-    const workspaceRoot = this.leadWorkspaceRootOf(String(agent.id))
-    const defaultBoardPath = workspaceRoot === undefined
-      ? undefined
-      : join(workspaceRoot, ...DEVLEAD_BOARD_DIR_SEGMENTS, DEVLEAD_BOARD_FILE_NAME)
     const title = this.ctx.get('sessionTitle')?.get(agent.session)?.title ?? 'DevLead'
-    const result = await store.update({
+    return this.boardStore.update({
       ...patch,
       updatedBy: { sessionId: String(agent.id), title },
     }, expectedRevision, signal)
-    if (options.commit !== true || result.changed.length === 0) return result
-    if (workspaceRoot === undefined || boardPath === undefined || boardPath !== defaultBoardPath) {
-      return {
-        ...result,
-        warning: 'board was written but not committed: commit:true requires the default board path in the lead workspace',
-      }
-    }
-    return { ...result, ...await commitDevLeadBoard(workspaceRoot, signal) }
   }
 
   // ---------------------------------------------------------------------------
