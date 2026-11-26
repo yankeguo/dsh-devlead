@@ -52,8 +52,6 @@ import type {
   DevLeadAgentPresetCatalog,
   DevLeadArchivedSession,
   DevLeadArchiveSessionOptions,
-  DevLeadArchiveSessionResult,
-  DevLeadArchiveSessionsRequest,
   DevLeadCreatedSession,
   DevLeadCreateSessionRequest,
   DevLeadInterruptInboxPolicy,
@@ -4320,84 +4318,6 @@ export class DevLeadService extends Service {
     // rolling the registry mutation back, and uses the normal watch record path.
     const mutation = await this.setWatching(agent, resolved.sessionId, false, signal)
     return { sessionId: id, archived: true, stopped: stopRunning, watched: mutation.watched }
-  }
-
-  /**
-   * Archive/restore explicit Session targets in order, or archive every settled
-   * unarchived Session accounted to one Workspace. Successful earlier mutations
-   * are never rolled back when a later item fails.
-   */
-  async archiveSessions(
-    agent: Agent,
-    request: DevLeadArchiveSessionsRequest,
-  ): Promise<DevLeadArchiveSessionResult[]> {
-    this.assertReady(agent)
-    const signal = request.signal
-    signal?.throwIfAborted()
-    const archived = request.archived ?? true
-    const stopRunning = request.stopRunning ?? false
-    if (typeof archived !== 'boolean' || typeof stopRunning !== 'boolean') {
-      throw new DevLeadError('archived and stop_running must be booleans', 'DEVLEAD_INVALID_INPUT')
-    }
-    if (request.settledOnly !== undefined && typeof request.settledOnly !== 'boolean') {
-      throw new DevLeadError('settled_only must be a boolean', 'DEVLEAD_INVALID_INPUT')
-    }
-    const targetForms = Number(request.session !== undefined)
-      + Number(request.sessions !== undefined) + Number(request.workspace !== undefined)
-    if (targetForms !== 1) {
-      throw new DevLeadError(
-        'provide exactly one of session, sessions, or workspace with settled_only:true',
-        'DEVLEAD_INVALID_INPUT',
-      )
-    }
-    if (request.workspace !== undefined && request.settledOnly !== true) {
-      throw new DevLeadError('workspace cleanup requires settled_only:true', 'DEVLEAD_INVALID_INPUT')
-    }
-    if (request.settledOnly !== undefined && (request.workspace === undefined || request.settledOnly !== true)) {
-      throw new DevLeadError('settled_only:true is only valid with workspace cleanup', 'DEVLEAD_INVALID_INPUT')
-    }
-    if (!archived && (request.workspace !== undefined || request.settledOnly !== undefined || stopRunning)) {
-      throw new DevLeadError(
-        'archived:false accepts only explicit session/sessions targets and no stop_running/workspace cleanup',
-        'DEVLEAD_INVALID_INPUT',
-      )
-    }
-    let targets: string[]
-    if (request.workspace !== undefined) {
-      const workspace = await resolveWorkspaceReference(this.ctx, request.workspace, signal)
-      const deps = this.viewDeps(agent, signal)
-      const ids = await collectSessionIds(deps, workspace, true)
-      const facts = await readSessionFacts(deps, ids)
-      const views = await devLeadSessionViews(deps, ids, true, facts)
-      targets = views
-        .filter(view => !view.archived && !view.running && view.lastTransition !== undefined)
-        .map(view => view.sessionId)
-    } else {
-      const supplied = request.sessions ?? [request.session as string]
-      if (!Array.isArray(supplied) || supplied.some(value => typeof value !== 'string')) {
-        throw new DevLeadError('sessions must be an array of Session reference strings', 'DEVLEAD_INVALID_INPUT')
-      }
-      targets = [...new Set(supplied.map(value => value.trim()))]
-    }
-    const results: DevLeadArchiveSessionResult[] = []
-    for (const target of targets) {
-      signal?.throwIfAborted()
-      if (!archived) {
-        results.push(await this.unarchiveSession(agent, target, signal))
-        continue
-      }
-      try {
-        results.push(await this.archiveSession(agent, target, { stopRunning, ...(signal === undefined ? {} : { signal }) }))
-      } catch (error) {
-        // Workspace cleanup means *settled only*: Host activity providers know
-        // about jobs/schedules beyond Agent.running, so an ACTIVE refusal is a
-        // filter result, not a failure of the whole batch. Explicit targets and
-        // every other error retain their normal failure semantics.
-        if (request.workspace !== undefined && isDevLeadError(error) && error.code === 'DEVLEAD_SESSION_ACTIVE') continue
-        throw error
-      }
-    }
-    return results
   }
 
   /**

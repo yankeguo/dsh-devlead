@@ -169,7 +169,7 @@ describe('workspace model routing', () => {
   })
 })
 
-describe('archive unwatch and settled Workspace cleanup', () => {
+describe('archive unwatch', () => {
   it('unwatches successful archives but preserves the watch after an active refusal', async () => {
     const registry = new FakeWorkspaceRegistry()
     registry.add({ path: '/tmp/archive', sessionIds: ['target', 'active'] })
@@ -188,36 +188,4 @@ describe('archive unwatch and settled Workspace cleanup', () => {
     expect(harness.service.view(harness.lead.agent).sessions).toEqual(['active'])
   })
 
-  it('archives only settled, unarchived Workspace Sessions and unwatches exactly those', async () => {
-    const ids = ['settled-a', 'settled-b', 'running-c', 'jobs-c', 'never-run', 'archived-c']
-    const registry = new FakeWorkspaceRegistry()
-    registry.add({ path: '/tmp/cleanup', sessionIds: ids })
-    registry.knownSessions.push(...ids)
-    registry.archived = ['archived-c']
-    registry.activity.set('jobs-c', [{ kind: 'job', items: [{ id: 'job-1', label: 'still running' }] }])
-    const query = new FakeSessionQuery()
-    for (const id of ['settled-a', 'settled-b', 'running-c', 'jobs-c', 'archived-c']) {
-      query.seed(id, [sessionEvent(0, 'turn/end', { turn: 1, reason: { kind: 'completed' } })])
-    }
-    const harness = await bootService({
-      enabled: true,
-      sessionIds: ids,
-      watched: ids,
-      workspaceRegistry: registry,
-      sessionQuery: query,
-      extraAgents: (agents, sessions) => {
-        const running = new FakeAgent(sessions['running-c']!)
-        running.setRunning(true)
-        agents.add(running)
-      },
-    })
-    const results = await harness.service.archiveSessions(harness.lead.agent, {
-      workspace: '/tmp/cleanup', settledOnly: true,
-    })
-    expect(results.map(result => result.sessionId)).toEqual(['settled-a', 'settled-b'])
-    expect(results.every(result => result.archived && !result.watched)).toBe(true)
-    expect(registry.archiveCalls.map(call => call.sessionId)).toEqual(['settled-a', 'settled-b', 'jobs-c'])
-    expect(registry.archived).toEqual(['archived-c', 'settled-a', 'settled-b'])
-    expect(harness.service.view(harness.lead.agent).sessions).toEqual(['running-c', 'jobs-c', 'never-run', 'archived-c'])
-  })
 })

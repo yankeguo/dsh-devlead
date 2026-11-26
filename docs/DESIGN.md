@@ -2405,7 +2405,7 @@ DSH peer 依赖。最小可交付闭环是 1b + 1c + 1d：question 快、answer 
 | `devlead_notifications` | `limit?`(默认 20，分别作用于通知与汇报两个 digest) | `{ notifications, reports, watched: string[] }`（notification 行带 wakeSuppressedByReportId/wakeSuppressionReason（被合并唤醒时）；report 行带诊断 lane 与内存 deliveryState（pending/delivered/digest-only，重启后缺省）；question report 带 `questionStatus`/`answerStatus`/`answerMessageId`/`answeredAt`/`presentedAt`；用 `questionStatus === 'open'` 过滤待答问题） |
 | `devlead_report` | `message`(必填，≤4000 码点), `kind?`(默认 progress；progress/blocked/decision/question/fyi), `summary?`(≤200 码点) | `{ report, durable, queued, warning?, turnEndRequested?, questionId?, guidance? }`（仅已关注非 lead 会话可见；`when: isSupervised`；kind 决定 lane：progress/fyi → background inject 不唤醒（冷 lead/预算满 → digest-only），blocked/decision → action-required steer（16/pair 共享 pending 上限，溢出 `DEVLEAD_DELIVERY_RATE_LIMITED`），question → action-required；durable question 设置 `turnEndRequested:true` + `questionId` + `guidance` 并调用 `exec.concludeTurn()`；memory-only question 不请求结束 turn，warning 追加重述提示） |
 | `devlead_remove_workspace` | `workspace`(必填，id / 注册路径 / 精确 title) | `{ workspace, removed }`（注销前快照） |
-| `devlead_archive_session` | `session?` / `sessions?` / `workspace?`+`settled_only:true`（三选一），`archived?`(默认 true；false=恢复), `stop_running?` | `{ sessions:[{ sessionId, archived, stopped?, watched? }] }`；归档成功自动 unwatch，Workspace 批量只选已 settle 且未归档项 |
+| `devlead_archive_session` | `session`(必填，单 Session)，`archived?`(默认 true；false=恢复), `stop_running?` | `{ sessionId, archived, stopped?, watched? }`；归档成功自动 unwatch，每次调用只执行一个原子状态转换 |
 
 要点：
 
@@ -2447,14 +2447,14 @@ DSH peer 依赖。最小可交付闭环是 1b + 1c + 1d：question 快、answer 
   工具）都在 core 中重新校验 live + 模式。`devlead_use_workspace` 0.2.0 起转发 live lead Agent
   给 core 的 `useWorkspace(agent, request, signal)`，`create` 默认
   `false`，仅当人类明确要求建目录时才传 `create: true`（工具 schema 与 policy 文案同步）。
-- 关闭语义工具（共 2 个；当前为 **17 个主工具 + 1 个汇报工具**。unarchive 已折叠进 archive，批量清理不另增工具）：`devlead_remove_workspace` 执行 DSH **remove**：
+- 关闭语义工具（共 2 个；当前为 **17 个主工具 + 1 个汇报工具**。unarchive 已折叠进 archive，所有调用保持单 Session 原子语义）：`devlead_remove_workspace` 执行 DSH **remove**：
   只注销 Workspace 记录，目录、文件与 Session 日志保留，其 Session 变未分组；返回注销前快照
   与 `removed`。`devlead_archive_session` 执行 DSH **archive**：日志保留、可恢复；带运行中
   工作（turn / subagent / job / schedule）的 Session 默认报 `DEVLEAD_SESSION_ACTIVE`，
   `stop_running: true` 时先写归档、再由 Host 的 `workspace/session-stop` providers 请求停止
   （不等待 settle），结果 `stopped: true`；已归档是 no-op（不检查活动、不请求停止，结果
-  `stopped: false`）。归档成功（含幂等已归档）自动 unwatch；`archived:false` 幂等恢复。显式
-  `sessions` 按顺序处理，`workspace + settled_only:true` 归档该 Workspace 所有已 settle 且未归档项。
+  `stopped: false`）。归档成功（含幂等已归档）自动 unwatch；`archived:false` 幂等恢复。每次调用只处理
+  一个 Session；多个对象由 PTC `run_code` 循环或并行调用，不另设批量 API。
   lead 不能归档自己的 Session（`DEVLEAD_INVALID_INPUT`，提示人类在侧边栏操作），subagent
   Session 不在可寻址集合内、自然报 not found。授权口径是**判断式自主**（judgment-based
   autonomy）：合理收尾时模型可自行归档自己创建/派发且已完成的临时 Session、注销明显陈旧/

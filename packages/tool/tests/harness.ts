@@ -31,8 +31,7 @@ import type {
 import type {
   DevLeadAgentPresetCatalog,
   DevLeadArchivedSession,
-  DevLeadArchiveSessionResult,
-  DevLeadArchiveSessionsRequest,
+  DevLeadArchiveSessionOptions,
   DevLeadCreatedSession,
   DevLeadModelCatalog,
   DevLeadNotification,
@@ -555,17 +554,13 @@ export class FakeDevLead {
     return this.removed
   }
 
-  async archiveSessions(
+  async archiveSession(
     agent: Agent,
-    request: DevLeadArchiveSessionsRequest,
-  ): Promise<DevLeadArchiveSessionResult[]> {
-    this.enter('archiveSessions', agent, request)
-    if (request.archived === false) {
-      const ids = request.sessions ?? [request.session ?? 'session-1']
-      return ids.map(sessionId => ({ sessionId, archived: false }))
-    }
-    const ids = request.sessions ?? [request.session ?? 'session-1']
-    return ids.map(sessionId => ({ ...this.archived, sessionId }))
+    sessionId: string,
+    options?: DevLeadArchiveSessionOptions,
+  ): Promise<DevLeadArchivedSession> {
+    this.enter('archiveSession', agent, sessionId, options)
+    return this.archived
   }
 
   async unarchiveSession(agent: Agent, sessionId: string, signal?: AbortSignal): Promise<DevLeadUnarchivedSession> {

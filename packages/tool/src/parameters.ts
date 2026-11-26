@@ -432,25 +432,13 @@ export const TOOL_PARAMETERS = {
   devlead_archive_session: {
     session: {
       type: 'string',
+      required: true,
       description: SESSION_ARGUMENT_DESCRIPTION,
-    },
-    sessions: {
-      type: 'array',
-      items: { type: 'string' },
-      description: 'Explicit Session references to process in order; blank entries are rejected and duplicates coalesce.',
-    },
-    workspace: {
-      type: 'string',
-      description: `With settled_only:true, archive every settled unarchived Session in this Workspace. ${WORKSPACE_ARGUMENT_DESCRIPTION}`,
-    },
-    settled_only: {
-      type: 'boolean',
-      description: 'Required true with workspace: select only non-running, unarchived Sessions with a settled turn.',
     },
     archived: {
       type: 'boolean',
       default: true,
-      description: 'True archives (default); false restores explicit session/sessions targets and forbids workspace cleanup and stop_running.',
+      description: 'True archives (default); false restores this Session. archived:false forbids stop_running.',
     },
     stop_running: {
       type: 'boolean',

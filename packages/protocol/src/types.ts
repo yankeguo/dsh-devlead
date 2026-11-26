@@ -944,25 +944,7 @@ export interface DevLeadUnarchivedSession {
   readonly archived: false
 }
 
-/** One explicit-target or settled-Workspace archive/unarchive batch request. */
-export interface DevLeadArchiveSessionsRequest {
-  /** One Session reference; mutually exclusive with the other target forms. */
-  readonly session?: string
-  /** Explicit Session references, processed in order after trimming/deduplication. */
-  readonly sessions?: readonly string[]
-  /** Workspace whose settled, unarchived Sessions should be archived. */
-  readonly workspace?: string
-  /** Required `true` for Workspace cleanup; rejected for explicit targets. */
-  readonly settledOnly?: boolean
-  /** Archive when true (default), restore explicit targets when false. */
-  readonly archived?: boolean
-  /** Archive first, then ask the Host to stop remaining activity. */
-  readonly stopRunning?: boolean
-  /** Cancellation checked between target mutations. */
-  readonly signal?: AbortSignal
-}
-
-/** One item of an archive/unarchive batch result. */
+/** One atomic archive or restore outcome. */
 export type DevLeadArchiveSessionResult = DevLeadArchivedSession | DevLeadUnarchivedSession
 
 /**

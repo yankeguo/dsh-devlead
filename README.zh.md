@@ -257,9 +257,8 @@ turn 最多 4 条不同的非 question 汇报（`question` 汇报不计入），
 
 两个关闭类工具沿用 DSH 自己的术语，且从不具破坏性：`devlead_remove_workspace` 只注销
 Workspace（文件与 Session 日志都保留；它的 Session 变为未分组）。`devlead_archive_session`
-默认以 `archived:true` 归档并自动取消关注，以 `archived:false` 恢复；支持单个 `session`、有序
-`sessions`，或 `workspace` + `settled_only:true` 批量归档该 Workspace 已 settle 且未归档的 Session。
-带运行中工作的 Session 会被拒绝并返回 `DEVLEAD_SESSION_ACTIVE`，除非传入 `stop_running: true`——那会先归档，
+默认以 `archived:true` 归档并自动取消关注，以 `archived:false` 恢复；每次只处理一个 `session`，多个 Session
+由运行时编排，不另设批量 API。带运行中工作的 Session 会被拒绝并返回 `DEVLEAD_SESSION_ACTIVE`，除非传入 `stop_running: true`——那会先归档，
 再请 Host 停止该工作。
 
 关闭是**判断式**的：模型可以在没有逐条指令的情况下，归档自己创建或派发、已完成收尾的
@@ -317,7 +316,7 @@ path；两个 notes 工具都不接受文件路径参数。
 | `devlead_notifications` | 通知与汇报 digest | `limit?` |
 | `devlead_report` | 单向的 turn 中途汇报（仅被关注的子会话） | `message`、`kind?`、`summary?` |
 | `devlead_remove_workspace` | 注销 Workspace（文件与日志不受影响） | `workspace` |
-| `devlead_archive_session` | 归档/恢复 Session、批量清理已 settle 的 Workspace；归档即取消关注 | `session?`/`sessions?`/`workspace?`+`settled_only`、`archived?`、`stop_running?` |
+| `devlead_archive_session` | 归档/恢复单个 Session；归档即取消关注 | `session`、`archived?`、`stop_running?` |
 
 领域错误使用稳定的 `DEVLEAD_*` / `BOARD_*` 错误码，并渲染成友好文本。读取状态请以 `lastTurn` /
 `lastTransition` / `lastError` / `lastAssistant` 为准，不要靠猜。

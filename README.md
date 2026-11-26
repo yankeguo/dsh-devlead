@@ -282,8 +282,8 @@ action-required reports per lead/child pair.
 The two closing tools use DSH's own vocabulary and are never destructive:
 `devlead_remove_workspace` unregisters the Workspace only (files and Session logs stay; its
 Sessions become ungrouped). `devlead_archive_session` archives with `archived:true` (the default) and restores with
-`archived:false`; successful archives also unwatch. It accepts one `session`, ordered `sessions`, or
-`workspace` + `settled_only:true` to archive every settled, unarchived Session there. A Session with running
+`archived:false`; successful archives also unwatch. Each call handles exactly one `session`; use the runtime's
+orchestration for multiple Sessions instead of a separate batch API. A Session with running
 work is refused as `DEVLEAD_SESSION_ACTIVE` unless `stop_running: true` is passed, which archives
 first and then asks the Host to stop that work.
 
@@ -350,7 +350,7 @@ notes tool accepts a file path.
 | `devlead_notifications` | notification + report digests | `limit?` |
 | `devlead_report` | one-way mid-turn report (watched child only) | `message`, `kind?`, `summary?` |
 | `devlead_remove_workspace` | unregister a Workspace (files and logs untouched) | `workspace` |
-| `devlead_archive_session` | archive/restore Sessions; batch settled Workspace cleanup; archive implies unwatch | `session?`/`sessions?`/`workspace?`+`settled_only`, `archived?`, `stop_running?` |
+| `devlead_archive_session` | archive/restore one Session; archive implies unwatch | `session`, `archived?`, `stop_running?` |
 
 Domain failures use stable `DEVLEAD_*` / `BOARD_*` error codes (including notes CAS and missing-note
 failures) and are rendered as friendly text. Read state from `lastTurn` / `lastTransition` / `lastError` /

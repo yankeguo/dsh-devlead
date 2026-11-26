@@ -857,14 +857,8 @@ export const ARCHIVE_SESSION_ITEM_SCHEMA = {
   },
 } as const
 
-/** Canonical value of the folded archive/unarchive tool: every target in order. */
-export const ARCHIVE_SESSION_OUTPUT = jsonOutput({
-  type: 'object',
-  additionalProperties: false,
-  properties: {
-    sessions: required({ type: 'array', items: ARCHIVE_SESSION_ITEM_SCHEMA }),
-  },
-} as const)
+/** Canonical value of one atomic archive/restore mutation. */
+export const ARCHIVE_SESSION_OUTPUT = jsonOutput(ARCHIVE_SESSION_ITEM_SCHEMA)
 
 /** Project one applied model selection onto the canonical value. */
 export function modelSelectionValue(selection: DevLeadModelSelection): ModelSelectionValue {
@@ -976,15 +970,13 @@ export function removedWorkspaceValue(
   }
 }
 
-/** Project ordered archive/restore results onto the canonical batch value. */
-export function archiveSessionsValue(
-  results: readonly DevLeadArchiveSessionResult[],
+/** Project one atomic archive/restore result onto the canonical value. */
+export function archiveSessionValue(
+  result: DevLeadArchiveSessionResult,
 ): InferValue<typeof ARCHIVE_SESSION_OUTPUT.schema> {
   return {
-    sessions: results.map(result => ({
-      sessionId: result.sessionId,
-      archived: result.archived,
-      ...result.archived ? { stopped: result.stopped, watched: result.watched } : {},
-    })),
+    sessionId: result.sessionId,
+    archived: result.archived,
+    ...result.archived ? { stopped: result.stopped, watched: result.watched } : {},
   }
 }

@@ -126,11 +126,8 @@ export function presentRemoveWorkspaceCall(args: RemoveWorkspaceArgs): GenericCa
 
 /** Pending card of `devlead_archive_session`. */
 export function presentArchiveSessionCall(args: ArchiveSessionArgs): GenericCallView {
-  const batch = args.sessions !== undefined || args.workspace !== undefined
   const title = args.archived === false
-    ? batch ? 'Restore DevLead sessions' : 'Restore DevLead session'
-    : args.stop_running === true
-      ? 'Archive DevLead session (stop running work)'
-      : batch ? 'Archive DevLead sessions' : 'Archive DevLead session'
-  return present(title, 'other', firstText(args.session, args.workspace, args.sessions?.[0]))
+    ? 'Restore DevLead session'
+    : args.stop_running === true ? 'Archive DevLead session (stop running work)' : 'Archive DevLead session'
+  return present(title, 'other', firstText(args.session))
 }

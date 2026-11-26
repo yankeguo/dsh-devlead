@@ -71,7 +71,7 @@ import {
   USE_WORKSPACE_OUTPUT,
   WATCH_SESSION_OUTPUT,
   agentPresetCatalogValue,
-  archiveSessionsValue,
+  archiveSessionValue,
   createdSessionValue,
   modelCatalogValue,
   notificationValue,
@@ -259,13 +259,11 @@ const REMOVE_WORKSPACE_DESCRIPTION =
   + 'ids that just became ungrouped.'
 
 const ARCHIVE_SESSION_DESCRIPTION =
-  'Archive or restore DSH Sessions without deleting logs. Use session for one, sessions for an ordered explicit '
-  + 'batch, or workspace+settled_only:true for every settled unarchived Session in that Workspace. archived:false '
-  + 'restores explicit targets only. Successful archives automatically unwatch the target; earlier successful '
-  + 'mutations are not rolled back if a later item fails. Archive finished work you own or when the human asks; '
-  + 'never hide a failure or archive a Session the human is using. Running work fails with DEVLEAD_SESSION_ACTIVE '
-  + 'unless stop_running:true intentionally archives first and requests cancellation. A lead cannot archive itself. '
-  + 'Results list every processed item in order.'
+  'Archive or restore one DSH Session without deleting its log. archived:false restores it; successful archives '
+  + 'automatically unwatch it. Archive finished work you own or when the human asks; never hide a failure or archive '
+  + 'a Session the human is using. Running work fails with DEVLEAD_SESSION_ACTIVE unless stop_running:true '
+  + 'intentionally archives first and requests cancellation. A lead cannot archive itself. For multiple Sessions, '
+  + 'call this atomic tool repeatedly through the runtime\'s normal orchestration rather than a separate batch API.'
 
 /**
  * Register the seventeen lead tools, the watched-Session report tool, and
@@ -650,11 +648,14 @@ export function apply(ctx: Context): void {
       return runTool(async () => {
         assertKnownArguments(args, TOOL_ARGUMENT_KEYS.devlead_archive_session)
         const agent = requireAgent(exec.agent, 'devlead_archive_session')
-        const results = await ctx.devLead.archiveSessions(agent, {
-          ...archiveSessionRequest(args),
+        const request = archiveSessionRequest(args)
+        if (!request.archived) {
+          return archiveSessionValue(await ctx.devLead.unarchiveSession(agent, request.session, exec.signal))
+        }
+        return archiveSessionValue(await ctx.devLead.archiveSession(agent, request.session, {
+          stopRunning: request.stopRunning,
           signal: exec.signal,
-        })
-        return archiveSessionsValue(results)
+        }))
       })
     },
   }), { when: ({ agent }) => ctx.devLead.isEnabled(agent) })

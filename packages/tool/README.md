@@ -28,7 +28,7 @@ active lead.
 - `devlead_notifications` (notification digest + mid-turn report digest; `limit` applies to each digest separately, default 20)
 - `devlead_report` (watched child only: one-way `message`, `kind?`, `summary?`)
 - `devlead_remove_workspace` (DSH remove: unregister only, Sessions become ungrouped)
-- `devlead_archive_session` (archive by default, restore with `archived:false`; single/ordered batch/`workspace` + `settled_only`; successful archive implies unwatch)
+- `devlead_archive_session` (archive one Session by default, restore it with `archived:false`; successful archive implies unwatch; no batch variant)
 
 Every lead tool requires an enabled DevLead mode; `devlead_report` requires the inverse watched state. Mutations and Host-identity reads require a live calling Agent (`exec.agent`); `devlead_list_workspaces` does not inspect its identity. The two board tools are **lead-only**: the caller must be the current active lead that owns the board file, otherwise they fail with `BOARD_DISABLED` (no active lead, no absolute workspace root, a recorded workspace root that no longer exists, or a different Session than the active lead). Since 0.2.0 `devlead_use_workspace` forwards the live Agent to the core
 `useWorkspace(agent, { path, title?, create? }, signal)`; `create` defaults to `false` (a missing
@@ -107,11 +107,9 @@ clearly stale/duplicate/empty or self-created Workspace registrations, or a huma
 while forbidding closing a Session or Workspace the human is using, hiding a failure, or starting
 an unrelated large cleanup; every autonomous close is reported with its rationale and impact.
 `devlead_remove_workspace` returns the pre-removal Workspace snapshot plus `removed`;
-`devlead_archive_session` returns ordered `{ sessions:[{ sessionId, archived, stopped?, watched? }] }` rows and
-refuses running work as `DEVLEAD_SESSION_ACTIVE` unless `stop_running` is true. Successful archives unwatch;
-`archived:false` restores explicit targets. `workspace` + `settled_only:true` archives all settled, unarchived
-Sessions in that Workspace without a separate cleanup tool. A lead Session cannot archive itself
-(`DEVLEAD_INVALID_INPUT`).
+`devlead_archive_session` returns one `{ sessionId, archived, stopped?, watched? }` result and refuses running work
+as `DEVLEAD_SESSION_ACTIVE` unless `stop_running` is true. Successful archives unwatch; `archived:false` restores
+the same single target. Multiple Sessions are orchestrated with PTC `run_code`, not a batch tool. A lead Session cannot archive itself (`DEVLEAD_INVALID_INPUT`).
 
 `devlead_report` sends a one-way mid-turn update from a watched, non-DevLead Session to the
 single active lead that watches it. Its result is `{ report, durable, queued, warning? }`: `durable`
@@ -247,7 +245,7 @@ prompt 之前；策略实际执行时结果含 `retainedInputs`；无 interrupt 
 关闭类工具（remove / archive）都不是破坏性操作，且采用判断式自主：合理收尾时可自行关闭自己创建/派发
 且已完成的 Session、明显陈旧/重复/空置或由自己创建的 Workspace 注册；但不得关闭人类正在使用/对话的
 Session 或 Workspace、不得用关闭掩盖失败，并且每次自主关闭都要汇报原因与影响面。remove 只注销 Workspace、
-其 Session 变为未分组；archive 保留日志、成功后自动 unwatch，可用 `archived:false` 恢复，支持显式批量
-或 `workspace` + `settled_only:true` 清理。运行中工作默认报 `DEVLEAD_SESSION_ACTIVE`，传 `stop_running`
+其 Session 变为未分组；archive 保留日志、成功后自动 unwatch，可用 `archived:false` 恢复，每次只处理一个
+Session，多个对象由 PTC `run_code` 循环或并行调用。运行中工作默认报 `DEVLEAD_SESSION_ACTIVE`，传 `stop_running`
 才会先归档再请求停止；lead 不能归档自己的 Session。完整中文文档见[根 README.zh.md](https://github.com/yankeguo/dsh-devlead/blob/main/README.zh.md)与
 [设计说明](https://github.com/yankeguo/dsh-devlead/blob/main/docs/DESIGN.md)。
