@@ -7,7 +7,8 @@
 **Session**（会话），创建并续写其他会话、读取它们的状态、在状态变化时被唤醒——于是一个
 agent 就能在人可见、可参与的标准界面里统管多个仓库。
 
-稳定版 **0.4.2** · DSH **0.2.2-rc.1 – 0.2.2-rc.5** · 一条 `dsh plugin` 命令即可装好全部组件。
+当前候选版本 **0.4.3-rc.1**（prerelease，npm dist-tag `next`；稳定版 `latest` 仍为 **0.4.2**）·
+DSH **0.2.2-rc.1 – 0.2.2-rc.5** · 一条 `dsh plugin` 命令即可装好全部组件。
 
 ## 核心能力
 
@@ -66,19 +67,23 @@ Web 页面。
 固定到精确版本：
 
 ```sh
-dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.3-rc.1
 ```
 
-0.4.2 是无公网 API 破坏性变更的补丁版，新增**项目看板**（对 active lead 默认启用）与**项目 Markdown notes**：
-看板零配置跟随 lead 的 workspace，在右侧栏提供只读面板，显示项目状态、优先级、focus/next/blockers、任务进度
-与 blocked KPI，并采用紧凑响应式 2/3/1 列布局，通过文件 watch 与随页面可见性暂停的轮询自动刷新。notes 使用
-strict 元数据索引 + 独立 Markdown 正文：lead 工具创建、改元数据、删除索引，正文用 DSH 原生 read/write/edit
-编辑，并在安全的只读 reader 中打开。本版还新增 lead-only 的看板/notes workflow prompt 引导，并修复 blocked
-KPI 与自动刷新可能停住的问题。从 0.4.1 升级无需迁移或 `/devlead reset`；首次启用 lead 会在 workspace 根下
-创建 `.dsh/devlead/board.json` 与 `.dsh/devlead/notes/`。本版发布 dist-tag 为 `latest`。详见
-[0.4.2 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.2.md)；
-上一个稳定补丁的说明见
-[0.4.1 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.1.md)。
+0.4.3-rc.1 是计划中 0.4.3 版本的首个 prerelease 候选，属于 **0.x 允许的破坏性契约收口**。项目看板改为
+**per-project revision**，`expected_revision` 只校验目标 project；notes 工具只维护元数据索引——
+`devlead_board_note_read` 返回 metadata 与 `absolutePath` 而不再返回 Markdown 正文，`create` 只创建空正文，
+所有正文读写都走 DSH 原生 read/write/edit。assistant 摘要上限提升到 4096 码点并带显式截断状态，`devlead_get_session`
+新增可选 `last_assistant_limit`；所有 wake 载荷限制在 8000 码点；本 lead 通过 `interrupt:true` 主动取消的子 turn
+按普通活动通知，不再算 review failure。`devlead_board_update` 删除 `commit` 参数（插件不再调用 git），
+`devlead_archive_session` 收敛为单 Session 原子操作（`archived:false` 恢复，独立 unarchive 工具与批量 `sessions`
+参数删除），工具面为 **17 个主工具 + 1 个 `devlead_report`**（共 18）。静态 `workspaceModels` / `defaultModel`
+路由已移除：省略模型参数即继承 Host 默认，显式 provider/model 仍按原规则校验。升级**不需要迁移数据**，也不需要
+`/devlead reset`；旧看板文件里的 project revision 会在首次 Host 读取时自动回填。本版发布 dist-tag 为 `next`，
+稳定版 `latest` 保持 0.4.2。既有调用方需要按
+[0.4.3-rc.1 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.3-rc.1.md)
+的 breaking 表迁移被删除的工具参数；上一个稳定补丁的说明见
+[0.4.2 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.2.md)。
 
 进阶用户可以单独安装各个包，并自行把对应的 loader row 插入 profile 的 `cordis.patch.yml`；
 推荐直接用 bundle。
@@ -89,8 +94,8 @@ KPI 与自动刷新可能停住的问题。从 0.4.1 升级无需迁移或 `/dev
 # 把 bundle 升级到最新发布版
 dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 
-# 或固定到某个版本
-dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2
+# 或固定到某个版本（prerelease 必须写精确版本）
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.3-rc.1
 ```
 
 > **从旧版本（低于 0.4.0）升级：** 0.4.0 会直接丢弃旧的 DevLead 会话状态（模式、关注集合、

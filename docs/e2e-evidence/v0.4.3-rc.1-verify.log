@@ -1,0 +1,102 @@
+$ pnpm run typecheck && pnpm run test && pnpm run build
+$ tsc -p tsconfig.json --noEmit
+$ vitest run
+
+ RUN  v4.1.12 /Users/guoyk/Workspace/src/dsh-devlead
+
+ ✓ packages/devlead/tests/board-race.spec.ts (6 tests) 63ms
+ ✓ packages/client-ui/tests/board-render.spec.tsx (37 tests) 171ms
+ ✓ packages/client-ui/tests/useBoardFile.spec.tsx (29 tests) 111ms
+ ✓ packages/devlead/tests/board-lifecycle.spec.ts (17 tests) 260ms
+ ✓ packages/devlead/tests/supervision-log-recovery.spec.ts (25 tests) 260ms
+ ✓ packages/devlead/tests/lanes.spec.ts (43 tests) 317ms
+ ✓ packages/devlead/tests/notification.spec.ts (97 tests) 342ms
+ ✓ packages/tool/tests/tools.spec.ts (195 tests) 329ms
+ ✓ packages/devlead/tests/isolation.spec.ts (13 tests) 65ms
+ ✓ packages/devlead/tests/notes-io.spec.ts (11 tests) 256ms
+ ✓ packages/devlead/tests/board-io.spec.ts (9 tests) 37ms
+ ✓ packages/client-ui/tests/render.spec.tsx (57 tests) 55ms
+ ✓ packages/tool/tests/board-tools.spec.ts (13 tests) 32ms
+ ✓ packages/devlead/tests/session-feature-contracts.spec.ts (5 tests) 31ms
+ ✓ packages/client-ui/tests/board.spec.ts (70 tests) 24ms
+ ✓ packages/tool/tests/board-note-tools.spec.ts (10 tests) 24ms
+ ✓ packages/devlead/tests/fold.spec.ts (87 tests) 23ms
+ ✓ packages/client-ui/tests/note-file.spec.tsx (5 tests) 16ms
+ ✓ packages/devlead/tests/regressions.spec.ts (4 tests) 21ms
+ ✓ packages/devlead/tests/notes.spec.ts (15 tests) 702ms
+     ✓ enforces per-project count limits and ignores orphan bodies  364ms
+ ✓ packages/devlead/tests/record-api.spec.ts (9 tests) 22ms
+ ✓ packages/devlead/tests/outbox.spec.ts (27 tests) 25ms
+ ✓ packages/protocol/tests/board.spec.ts (53 tests) 14ms
+ ✓ packages/devlead/tests/board-watcher.spec.ts (2 tests) 9ms
+ ✓ packages/client-ui/tests/locales.spec.ts (15 tests) 7ms
+ ✓ packages/client-ui/tests/styles.spec.ts (30 tests) 12ms
+ ✓ packages/devlead/tests/answers.spec.ts (41 tests) 14ms
+ ✓ packages/devlead/tests/domain.spec.ts (31 tests) 9ms
+ ✓ packages/devlead/tests/idempotency.spec.ts (10 tests) 12ms
+ ✓ packages/devlead/tests/message-policy.spec.ts (109 tests) 8ms
+ ✓ packages/devlead/tests/plugin-metadata.spec.ts (22 tests) 7ms
+ ✓ packages/client-ui/tests/apply.spec.ts (18 tests) 10ms
+ ✓ packages/client-ui/tests/markdown.spec.tsx (3 tests) 7ms
+ ✓ packages/protocol/tests/notes.spec.ts (35 tests) 11ms
+ ✓ packages/protocol/tests/format.spec.ts (45 tests) 7ms
+ ✓ packages/command/tests/handler.spec.ts (56 tests) 10ms
+ ✓ packages/command/tests/parse.spec.ts (21 tests) 6ms
+ ✓ packages/devlead/tests/active.spec.ts (8 tests) 7ms
+ ✓ packages/client-ui/tests/notes.spec.ts (4 tests) 5ms
+ ✓ packages/command/tests/render.spec.ts (21 tests) 7ms
+ ✓ packages/client-ui/tests/format.spec.ts (50 tests) 7ms
+ ✓ packages/command/tests/resolve.spec.ts (19 tests) 3ms
+ ✓ packages/devlead/tests/mode-projection.spec.ts (10 tests) 5ms
+ ✓ packages/devlead/tests/runtime-projections.spec.ts (5 tests) 9ms
+ ✓ packages/client-ui/tests/results.spec.ts (23 tests) 4ms
+ ✓ packages/devlead/tests/metrics.spec.ts (6 tests) 3ms
+ ✓ packages/client-ui/tests/sessionMark.spec.ts (10 tests) 3ms
+ ✓ packages/client-ui/tests/board-inject.spec.ts (4 tests) 2ms
+ ✓ packages/protocol/tests/types.spec.ts (8 tests) 2ms
+ ✓ packages/devlead/tests/watch-projection.spec.ts (7 tests) 3ms
+ ✓ packages/tool/tests/errors.spec.ts (17 tests) 3ms
+ ✓ packages/devlead/tests/board.spec.ts (35 tests) 2596ms
+     ✓ maps writer-lock timeout to a retryable BOARD_IO_ERROR without changing bytes  2118ms
+ ✓ packages/devlead/tests/service.spec.ts (301 tests) 16394ms
+     ✓ keeps an action report queued behind an unclaimed action wake and delivers it when the inbox clears  1104ms
+     ✓ retries a cold outbox replay receipt failure and clears the row without injecting  1305ms
+     ✓ loads and serves live leads when the corpus never becomes consistent  2023ms
+     ✓ bounds the readiness barrier when the persistence listing keeps failing  2027ms
+     ✓ never fails the plugin load when the persisted scan rejects  2265ms
+     ✓ the retry timer drains a queued discard without any activation or prompt  5304ms
+ ✓ packages/devlead/tests/phase2.spec.ts (71 tests) 17612ms
+     ✓ clears live-only authorization before a late corpus read finishes  323ms
+     ✓ recovers prompt authorization after an incomplete scan succeeds on retry  324ms
+     ✓ reschedules after a slow first scan fails without requiring another injection  2558ms
+     ✓ resumes beyond 64 benign rows and mixed missing/legacy cache rows  908ms
+     ✓ recovers a no-cache corpus without a hot retry loop  908ms
+     ✓ bounds failed retries and recovers after the cause clears  1309ms
+     ✓ retains query lifecycle retries when persistence arrives before sessionQuery  306ms
+     ✓ keeps a corrupt first batch closed after later benign batches  465ms
+     ✓ does not start a timer when no corpus service exists  354ms
+     ✓ re-lists after corpus readiness instead of trusting a pre-ready partial snapshot  2531ms
+     ✓ keeps terminal corruption across lifecycle events without resetting the retry budget  574ms
+     ✓ does not count live-only early returns against the retry budget  554ms
+     ✓ refuses delivery when the listing authorized by the barrier changes before finalize  404ms
+     ✓ does not trust a scan re-list that omits a stored foreign supervisor  2543ms
+     ✓ stays fail-closed when the corpus binding is removed after a proof  580ms
+     ✓ stays fail-closed when a real cordis corpus Service is removed with ctx.set(undefined)  578ms
+     ✓ does not finalize while the finalize refresh budget is exhausted and new persisted rows keep appearing  758ms
+
+ Test Files  54 passed (54)
+      Tests  1874 passed (1874)
+   Start at  21:09:55
+   Duration  18.14s (transform 3.23s, setup 0ms, import 7.36s, tests 39.99s, environment 2ms)
+
+$ node scripts/build.mjs
+built packages/protocol/lib/index.js
+built packages/protocol/lib/client.js
+built packages/devlead/lib/index.js
+built packages/tool/lib/index.js
+built packages/command/lib/index.js
+built packages/client-ui/lib/index.js
+built packages/client-ui/lib/client.js
+validated bundle (patch-only)
+build complete (6 targets)
+VERIFY_EXIT=0

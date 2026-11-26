@@ -8,8 +8,8 @@ upgrades **one ordinary session** into a **DevLead session**: it can operate DSH
 their state changes — so one agent can orchestrate multiple repositories inside a standard
 interface the human can see and interact with.
 
-Stable release **0.4.2** · DSH **0.2.2-rc.1 – 0.2.2-rc.5** · one `dsh plugin` command installs
-everything.
+Current release candidate **0.4.3-rc.1** (prerelease, npm dist-tag `next`; stable `latest` stays
+**0.4.2**) · DSH **0.2.2-rc.1 – 0.2.2-rc.5** · one `dsh plugin` command installs everything.
 
 ## What you get
 
@@ -70,23 +70,27 @@ page.
 To pin an exact version:
 
 ```sh
-dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.3-rc.1
 ```
 
-0.4.2 is a patch release with no breaking public API changes. It adds the lead-only **project board**
-(on by default for the active lead) and **per-project Markdown notes**: the board follows the lead's
-workspace with zero configuration, shows project status, priority, focus, next, blockers, task
-progress and a blocked KPI strip in a compact responsive 2/3/1-column read-only right-Sidebar panel,
-and refreshes automatically from file watch plus visibility-aware polling. Notes use a strict
-metadata index with ordinary Markdown bodies; lead tools create, update metadata and delete index
-entries while the body is edited with DSH's native read/write/edit, and notes open in a safe
-read-only reader. The release also adds lead-only board/notes workflow prompt guidance and fixes a
-blocked-KPI/auto-refresh stall. Upgrading from 0.4.1 needs no migration or `/devlead reset`; the
-first lead run creates `.dsh/devlead/board.json` and `.dsh/devlead/notes/` under the workspace root.
-The release uses npm dist-tag `latest`. See the
-[0.4.2 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.2.md);
+0.4.3-rc.1 is the first prerelease candidate for the planned 0.4.3 release: an intentional 0.x
+breaking contract cleanup. The project board now keeps a **per-project revision** and CASes only the
+target project; the notes tools own only the metadata index — `devlead_board_note_read` returns
+metadata plus `absolutePath` instead of Markdown contents, `create` makes an empty body, and every
+body read/edit uses DSH-native read/write/edit. Assistant excerpts grow to 4096 code points with
+explicit truncation state and an optional `last_assistant_limit`, every wake payload is bounded to
+8000 code points, and a child turn this lead cancelled with `interrupt:true` is delivered as ordinary
+activity instead of a review failure. `devlead_board_update` no longer accepts `commit` (the plugin
+never calls git), `devlead_archive_session` is one atomic Session operation whose `archived:false`
+restores (the separate unarchive tool and the batch `sessions` parameter are gone), and the tool
+surface is 17 main tools + `devlead_report` (18 total). Static `workspaceModels` / `defaultModel`
+routing is removed: omitting model arguments inherits the Host default, while explicit
+provider/model selection keeps its validation. There is no state migration and no `/devlead reset`;
+legacy board files get their project revisions backfilled on the first Host read. The release uses
+npm dist-tag `next` and stable `latest` stays 0.4.2. Callers must migrate the removed tool arguments
+as listed in the [0.4.3-rc.1 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.3-rc.1.md);
 the previous stable patch is documented in the
-[0.4.1 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.1.md).
+[0.4.2 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.2.md).
 
 Advanced users can install individual packages and insert the corresponding loader rows into the
 profile's `cordis.patch.yml` themselves; the bundle is the recommended path.
@@ -97,8 +101,8 @@ profile's `cordis.patch.yml` themselves; the bundle is the recommended path.
 # upgrade the bundle to the latest release
 dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 
-# or pin a specific version
-dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.2
+# or pin a specific version (required for prereleases)
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.3-rc.1
 ```
 
 > **Upgrading from an older release (below 0.4.0):** 0.4.0 intentionally discards older DevLead

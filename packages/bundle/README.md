@@ -1,7 +1,7 @@
 # @yankeguo/dsh-devlead-bundle
 
 The npm bundle that upgrades one ordinary [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)
-(DSH) session into a **DevLead session**: it ships the core host service, eighteen lead
+(DSH) session into a **DevLead session**: it ships the core host service, seventeen lead
 `devlead_*` tools plus the watched-child `devlead_report` tool, the human `/devlead` command, and
 the browser UI (composer-toolbar switch, read-only status strip, sidebar marks, and the lead-only
 read-only project board).
@@ -88,7 +88,7 @@ MIT. See [LICENSE](https://github.com/yankeguo/dsh-devlead/blob/main/LICENSE).
 ## 中文
 
 `@yankeguo/dsh-devlead-bundle` 是 DevLead 套件的安装入口：把 DSH 的一个普通会话升级为 DevLead
-会话，内含核心服务 `ctx.devLead`、18 个主 `devlead_*` 工具加 1 个 `devlead_report` 汇报工具、
+会话，内含核心服务 `ctx.devLead`、17 个主 `devlead_*` 工具加 1 个 `devlead_report` 汇报工具、
 人类 `/devlead` 命令，以及浏览器端 UI（composer 工具条开关、只读状态条、侧边栏标记，以及仅
 lead 可见的只读项目看板；UI 只在 DSH Web 平台渲染）。
 

@@ -514,7 +514,7 @@ default: boolean; broken? }[]; reason? }`；`default` 是 Host 有效默认（`s
     结果 `retainedInputs` 仅在 keep/clear-own 实际对 running 目标执行时出现；无 interrupt、
     idle/cold 目标一律 no-op，默认 `clear-all` 行为与历史完全一致。
 - `watchSession`：追加完整 watch 记录；上限 `maxWatchedSessions`；不能 watch 自己。
-- **关闭语义（remove / archive / unarchive）**：`removeWorkspace` / `archiveSession` / `unarchiveSession` 都先
+- **关闭语义（remove / archive / restore）**：`removeWorkspace` / `archiveSession` / `unarchiveSession` 都先
   `assertReady(agent)` 并转发 signal，Host 未组合 registry 时统一走 `requireWorkspaceRegistry`
   的 `DEVLEAD_WORKSPACE_NOT_FOUND`。`removeWorkspace` 用 `resolveWorkspaceReference` 解析
   id、canonical path 或精确 title，在删除前取 `devLeadWorkspaceView` 快照（返回视图即注销前状态），
@@ -530,8 +530,13 @@ default: boolean; broken? }[]; reason? }`；`default` 是 Host 有效默认（`s
   `DEVLEAD_SESSION_NOT_FOUND`；两者都按 `error.name` 结构判定（dsh-workspace 是可选 peer，
   且重复加载的模块实例仍能映射）。`stopRunning: true` 时由 Host 先写归档、再经
   `workspace/session-stop` providers 请求停止（与人类点停止同一路径），**不等待 settle**，
-  结果 `stopped: true`。`unarchiveSession` 幂等调用 `workspaceRegistry.unarchiveSession(id)`，
-  返回 `{ archived: false }`；归档从未触碰 Workspace 账目，恢复后回到原位置。
+  结果 `stopped: true`。归档成功后（含幂等已归档路径）core 会把该 Session 从本 lead 的 watch 集合
+  移除并返回 `watched: false`：先提交 registry 归档、再走常规 watch 记录路径 unwatch，unwatch/flush
+  失败会如实抛错但**不回滚**已提交的归档。`unarchiveSession` 幂等调用
+  `workspaceRegistry.unarchiveSession(id)`，返回 `{ archived: false }`；归档从未触碰 Workspace 账目，
+  恢复后回到原位置。**模型工具面已把两者折叠为单个 `devlead_archive_session`（`archived:false` 恢复、
+  不接受批量 `sessions`、一次一个 Session）**；core service 仍保留两个方法，`unarchiveSession` 只作为
+  工具转发与内部入口。
 - `notifications`：返回本会话 projection 里保留的通知（最新 limit 条；非法 limit 退回默认 20）。
 - `ctx.sessions.flush()` 返回 `false` 只表示"没有组合任何持久化参与者"（headless / SDK
   组合），不是失败；参与者抛出的错误只记 warning，不会让已提交的内存 append 变成抛错。
@@ -2913,10 +2918,11 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   暴露）。
   patch 与 installed 两条加载流都跑完整多阶段；`--no-worktree` 跳过阶段 2（阶段 1、1b、3 仍
   运行，调试用）。每阶段 check 总数已 pin（`EXPECTED_CHECKS`，删/增 check 未更新 pin 会失败），
-  PASS 与 SKIP 分开输出；当前 0.4.2 pin 以脚本为准（phase 1=30、1b=18、2=24、**3=141**、1e=31，
-  完整流 **244/244**、no-worktree **220/220**，见 [CONTRIBUTING](CONTRIBUTING.md) 与
-  [COMPATIBILITY](COMPATIBILITY.md)）。0.4.2 三条流的真实结果与退出码详见
-  [v0.4.2 release prep](e2e-evidence/v0.4.2-release-prep.md)。以下为 Phase 1e 时点的历史实测：基线 DSH 0.2.2-rc.5
+  PASS 与 SKIP 分开输出；当前 0.4.3-rc.1（与 0.4.2 相同）pin 以脚本为准（phase 1=30、1b=18、2=24、
+  **3=141**、1e=31，完整流 **244/244**、no-worktree **220/220**，见 [CONTRIBUTING](CONTRIBUTING.md) 与
+  [COMPATIBILITY](COMPATIBILITY.md)）。0.4.3-rc.1 三条流的真实结果与退出码详见
+  [v0.4.3-rc.1 release prep](e2e-evidence/v0.4.3-rc.1-release-prep.md)（0.4.2 的对应记录在
+  [v0.4.2 release prep](e2e-evidence/v0.4.2-release-prep.md)）。以下为 Phase 1e 时点的历史实测：基线 DSH 0.2.2-rc.5
   的两条加载流完整组合计数为 **221/221**
   （阶段 1 27 + 阶段 1b 12 + 阶段 2 23 + 阶段 3 128 + 阶段 1e 31，阶段 3 含 agent preset roster、
   watched-Session 问题路由、排队 inbox、question conclude/durable/memory-only、两条 scripted

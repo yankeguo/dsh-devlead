@@ -175,8 +175,9 @@ provider / 基础设施凭据按名称模式从环境清除，turn 稳定以 pro
   `baseCommit` 等于 checkout `HEAD`、子会话有效 cwd 切到 worktree 而 header cwd 仍指向
   Workspace、Session 仍归属该 Workspace。该阶段启用 scratch `boardPath` override，同时证明
   override 优先于 workspace 派生并以 `override:true` 发布。
-- **阶段 3**：真实 Host 上验证工具与关闭生命周期——模式开启时恰好 18 个主 `devlead_*`、关闭时
-  为 0，`devlead:policy` 文案契约，archive/unarchive/`stop_running`，注销 Workspace 的 durable
+- **阶段 3**：真实 Host 上验证工具与关闭生命周期——模式开启时恰好 17 个主 `devlead_*`、关闭时
+  为 0，`devlead:policy` 文案契约，单 Session 原子 archive（`archived:true/false`）与 `stop_running`、
+  归档自动 unwatch，注销 Workspace 的 durable
   行为，模型目录与创建时的模型 / Agent Teams 设置，以及 watched child 的 `devlead_report` 与
   `ask_user_question` 转发。board/notes 检查：真实 `ctx.devLead.updateBoard` 写入（CAS 与
   workspace-path/title 引用）、notes create → 原生 absolutePath 写入 → read/list 对账、真实
