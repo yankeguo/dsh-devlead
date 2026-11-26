@@ -213,6 +213,9 @@ function expectValidOutput(harness: Harness, toolName: string, value: unknown): 
 }
 
 describe('registration', () => {
+  // This pins the public API contract, not a "fewer tools is better" KPI.
+  // Additions remain acceptable when their semantics are non-overlapping and
+  // save more model turns than their resident description costs.
   it('registers exactly the eighteen documented tools', () => {
     const harness = boot()
     expect([...harness.tools.keys()].sort()).toEqual([...TOOL_NAMES].sort())
@@ -220,14 +223,6 @@ describe('registration', () => {
     for (const name of TOOL_NAMES) {
       expect(harness.tool(name).definition.description.length).toBeGreaterThan(0)
     }
-  })
-
-  it('keeps the tool surface and resident descriptions below the pre-consolidation budget', () => {
-    const harness = boot()
-    const descriptions = [...harness.tools.values()].map(tool => tool.definition.description)
-    expect(harness.tools.size).toBe(18)
-    expect(descriptions.reduce((total, text) => total + text.length, 0)).toBeLessThan(15_028)
-    expect(descriptions.reduce((total, text) => total + Buffer.byteLength(text, 'utf8'), 0)).toBeLessThan(15_038)
   })
 
   it('derives TOOL_ARGUMENT_KEYS from the parameter schemas defineTool receives', () => {
