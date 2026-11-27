@@ -79,8 +79,11 @@ deployment key `boardPath` is renamed to `statePath`, whose value is now a **rel
 defaulting to `.dsh/devlead`. It is resolved against the active lead Session's original workspace root
 (`SessionHeader.cwd`, not a worktree checkout): board data is `<workspace>/<statePath>/board.json`, and
 notes are `<workspace>/<statePath>/notes/{index.json,<project>/<note-id>.md}`. The value names a directory,
-not an exact board JSON file, and there is no separate notes-path setting. Absolute POSIX, Windows drive
-and UNC paths, backslashes, empty segments and `..` escapes are likewise rejected. See the
+not an exact board JSON file, and there is no separate notes-path setting. The browser global's resolved
+absolute `boardPath` field is also renamed to `boardFilePath`, and the Host's `boardPathOverride` observation
+field becomes `statePathOverride`; mixed pre-rc.3/rc.3 Host and client versions are not guaranteed to keep
+this global compatible. Absolute POSIX, Windows drive and UNC paths, backslashes, empty segments and `..`
+escapes are likewise rejected. See the
 [0.4.3-rc.3 release-notes draft](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.3-rc.3.md);
 rc.1's tool migrations and rc.2's workspace-relative location requirement still apply, and the previous
 stable patch is documented in the

@@ -75,8 +75,9 @@ dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.3-rc.2
 默认 `.dsh/devlead`。它相对 active lead Session 的原始 workspace 根（`SessionHeader.cwd`，不是 worktree
 检出）解析：看板为 `<workspace>/<statePath>/board.json`，notes 为
 `<workspace>/<statePath>/notes/{index.json,<project>/<note-id>.md}`。该值表示目录而非精确 board JSON
-文件，也没有独立 notes 路径配置。POSIX 绝对路径、Windows 盘符/UNC、反斜杠、空段和 `..` 逃逸同样拒绝。
-详见
+文件，也没有独立 notes 路径配置。浏览器 global 的已解析绝对 `boardPath` 字段同时改名为 `boardFilePath`，
+Host 的 `boardPathOverride` 观测字段改名为 `statePathOverride`；跨 rc.3 前后的 Host/client 混装不保证
+此 global 兼容。POSIX 绝对路径、Windows 盘符/UNC、反斜杠、空段和 `..` 逃逸同样拒绝。详见
 [0.4.3-rc.3 release notes 草稿](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.3-rc.3.md)；
 rc.1 的工具迁移与 rc.2 的 workspace 相对位置要求仍然适用，上一个稳定补丁的说明见
 [0.4.2 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.2.md)。

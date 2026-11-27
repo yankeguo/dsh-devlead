@@ -123,10 +123,10 @@ export interface DevLeadBoardConfig {
  * Host-published browser configuration, extended by Hosts whose board follows
  * one lead Session.
  *
- * `leadSessionId` and `override` are optional because older Hosts publish the
- * deployment-wide path only (no lead attribution). When present they let the
- * browser tell "this global is mine" from "this global belongs to another
- * lead", which matters after a lead switch without a page reload.
+ * `leadSessionId` and `override` are optional within the current `boardFilePath`
+ * contract for a deployment-wide path without lead attribution. When present
+ * they let the browser tell "this global is mine" from "this global belongs to
+ * another lead", which matters after a lead switch without a page reload.
  */
 export interface DevLeadBoardGlobal extends DevLeadBoardConfig {
   /** Lead Session whose original workspace root owns the published board. */
@@ -147,10 +147,10 @@ export class DevLeadBoardParseError extends Error {
  * Read and validate the Host global. Anything absent or not exactly the current
  * contract disables the feature; no partial config is ever used for a read.
  *
- * The base fields are the original Step B contract; the two optional lead
+ * The current `boardFilePath` base fields are required; the two optional lead
  * fields are validated strictly when present (a non-string/empty
  * `leadSessionId` or a non-boolean `override` rejects the whole global instead
- * of silently falling back to the legacy meaning).
+ * of silently falling back to the deployment-wide meaning).
  */
 export function readDevLeadBoardConfig(value: unknown): DevLeadBoardGlobal | undefined {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
@@ -284,7 +284,7 @@ function boardConfigOf(global: DevLeadBoardGlobal): DevLeadBoardConfig {
  * 1. A deployment Config override published by the Host (`override: true`)
  *    wins for every lead, because the deployment named one host-wide file.
  * 2. A global whose `leadSessionId` is this Session wins.
- * 3. A legacy global without either lead field keeps its old
+ * 3. A current global without either optional lead field keeps its
  *    deployment-wide meaning.
  * 4. Otherwise the default path is derived from this Session's own workspace
  *    root, using the Host-published `pathPlatform` when one is known and the

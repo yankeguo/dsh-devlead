@@ -327,13 +327,13 @@ const PROBE_LANES_RATE_COMMAND = 'devlead-e2e-lanes-rate'
 /** Phase 1e: low-cardinality delivery/suppression/guard metrics snapshot. */
 const PROBE_LANES_METRICS_COMMAND = 'devlead-e2e-lanes-metrics'
 /** Default board file path the Host derives from one Session workspace root. */
-function derivedBoardPath(workspaceRoot) {
+function derivedBoardFilePath(workspaceRoot) {
   return join(workspaceRoot, '.dsh', 'devlead', 'board.json')
 }
 
 /** Notes are siblings of board.json, never fields inside its 256 KiB budget. */
 function derivedNotesIndexPath(workspaceRoot) {
-  return join(dirname(derivedBoardPath(workspaceRoot)), 'notes', 'index.json')
+  return join(dirname(derivedBoardFilePath(workspaceRoot)), 'notes', 'index.json')
 }
 
 /** Decode the HTTP bridge's Uint8Array JSON representation without assuming one envelope spelling. */
@@ -1198,11 +1198,11 @@ async function runChecks(client, paths) {
   // The board needs no configuration: the active lead's original workspace
   // root owns `.dsh/devlead/board.json`, and the Host publishes that derived
   // path (plus the lead identity) in the index global.
-  const defaultBoardPath = derivedBoardPath(paths.workspace)
+  const defaultBoardFilePath = derivedBoardFilePath(paths.workspace)
   const boardGlobal = await client.injectedGlobal('__DSH_DEVLEAD_BOARD__')
   checks.expect(
     'default board global follows the lead workspace without configuration',
-    boardGlobal?.boardFilePath === defaultBoardPath
+    boardGlobal?.boardFilePath === defaultBoardFilePath
       && boardGlobal?.leadSessionId === leadId
       && boardGlobal?.override === false
       && boardGlobal?.schemaVersion === 1
@@ -1342,7 +1342,7 @@ async function runRehydrationChecks(client, paths, state) {
   }, 10_000)
   checks.expect(
     'restarted Host derives the cold lead board path from its persisted header',
-    coldBoardGlobal?.boardFilePath === derivedBoardPath(paths.workspace)
+    coldBoardGlobal?.boardFilePath === derivedBoardFilePath(paths.workspace)
       && coldBoardGlobal?.leadSessionId === leadId
       && coldBoardGlobal?.override === false,
     JSON.stringify(coldBoardGlobal),
@@ -1416,7 +1416,7 @@ async function runRehydrationChecks(client, paths, state) {
   const boardGlobalB = await client.injectedGlobal('__DSH_DEVLEAD_BOARD__')
   checks.expect(
     'switching the lead workspace switches the derived board path',
-    boardGlobalB?.boardFilePath === derivedBoardPath(workspaceB) && boardGlobalB?.leadSessionId === leadBId,
+    boardGlobalB?.boardFilePath === derivedBoardFilePath(workspaceB) && boardGlobalB?.leadSessionId === leadBId,
     JSON.stringify(boardGlobalB),
   )
   checks.expect(
@@ -1678,7 +1678,7 @@ async function runCloseChecks(client, paths, dshVersion) {
   const on = await client.command(leadId, '/devlead on')
   checks.expect('phase 3 /devlead on settles success', on?.result?.kind === 'success', on?.result?.text?.split('\n')[0])
 
-  const derivedBoard = derivedBoardPath(paths.workspace)
+  const derivedBoard = derivedBoardFilePath(paths.workspace)
   const board = await runProbeCommand(client, leadId, PROBE_BOARD_COMMAND)
   checks.expect(
     'phase 3 real board create + CAS + path/title refs + Host read-back succeed',

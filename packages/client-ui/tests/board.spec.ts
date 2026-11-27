@@ -148,7 +148,7 @@ describe('board global contract and per-Session path resolution', () => {
     pathPlatform: 'posix' as const,
   }
 
-  it('reads the lead-attributed global and keeps the legacy shape unchanged', () => {
+  it('reads the lead-attributed global and accepts omitted optional lead fields', () => {
     expect(readDevLeadBoardConfig({ ...BASE, leadSessionId: 'session-lead', override: false })).toEqual({
       ...BASE, leadSessionId: 'session-lead', override: false,
     })
@@ -156,7 +156,7 @@ describe('board global contract and per-Session path resolution', () => {
       ...BASE, leadSessionId: 'session-lead',
     })
     expect(readDevLeadBoardConfig({ ...BASE, override: true })).toEqual({ ...BASE, override: true })
-    // A legacy Host publishes no lead attribution; it stays readable as-is.
+    // A deployment-wide global may omit lead attribution within the current contract.
     expect(readDevLeadBoardConfig(BASE)).toEqual(BASE)
   })
 
@@ -229,7 +229,7 @@ describe('board global contract and per-Session path resolution', () => {
     expect(resolveDevLeadBoardConfig({ sessionId: 'session-other', global })).toBeUndefined()
   })
 
-  it('keeps a legacy deployment-wide global authoritative for every lead', () => {
+  it('keeps a deployment-wide global without optional lead fields authoritative for every lead', () => {
     expect(resolveDevLeadBoardConfig({ sessionId: 'any-session', cwd: '/work/other', global: BASE })).toEqual(BASE)
     expect(resolveDevLeadBoardConfig({ sessionId: 'any-session', global: BASE })).toEqual(BASE)
   })

@@ -479,8 +479,9 @@ global 存在但页面渲染后换了 lead 时，client 按 `leadSessionId` 判�
 summary `cwd` 自愈派生默认路径，此时只读面板显示空态/读取错误（浏览器只做 `stat`/`readBytes`，
 不会创建目录或写入），Host 侧的看板仍是 disabled。
 
-global 的 `leadSessionId` / `override` 是**additive** 字段：旧 Host 的 global 缺这两个字段时，
-client 按旧部署级宽路径语义继续工作；旧 client 会忽略新字段。
+在当前 `boardFilePath` 契约内，global 的 `leadSessionId` / `override` 是可选字段：两者缺省时，
+client 按部署级宽路径语义处理。**跨 rc.3 的 Host/client 混装不保证 global 兼容**：rc.3 之前的 Host
+发布旧 `boardPath` 字段，而 rc.3 之前的 client 也不认识新的 `boardFilePath` 字段。
 
 - tab definition：`kind: 'devlead-board'`，`id: '@yankeguo/dsh-client-ui-devlead/board'`；标准
   guide entry 与会话头按钮通过 `sidebarRight.openTab(kind)` 打开。body slot 是

@@ -52,7 +52,7 @@ peer 使用同一范围；本地 devDependencies 与编译基线仍固定 rc.1�
     sync 即关闭。
   - rc.4 项目 notes 的 Host 存储仍只使用 rc.1 已有的 `node:fs` 与
     `@deepseek-ai/dsh-atomic-write`（`writeFileAtomic` / `withFileLock`）；active-lead service 方法与工具
-    属于本插件自身 API。client 只从既有 board config 派生 `dirname(boardPath)/notes/*`，继续只调用
+    属于本插件自身 API。client 只从既有 board config 派生 `dirname(boardFilePath)/notes/*`，继续只调用
     rc.1 已有的 `remote.workspaceFiles.stat/readBytes/changes`；watch+poll、React elements/text Markdown
     reader、CSS container queries 都不新增 Host API、Remote、`dsh.client.inject` 项或 DSH 版本要求。
   - rc.5 的 notes 加固仍只使用 rc.1 typings 已有的 Node `TextDecoder`、atomic-write 与 Workspace Files；

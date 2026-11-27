@@ -2858,7 +2858,7 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   stat/read/not-found/坏 JSON/debounce/旧请求淘汰/abort+dispose/空态轮询/watch 降级、
   注册开关与 `openTab`，以及看板卡片、空态、错误态、XSS 文本转义、a11y 属性、`useId`
   id 隔离、折叠区与 zh/en 渲染。本轮动态看板另覆盖 global 形状
-  （`leadSessionId`/`override` 的严格校验与旧 Host 缺字段兼容）、lead-only 入口门控、global
+  （`boardFilePath` 必填、`leadSessionId`/`override` 可缺省及出现时的严格校验）、lead-only 入口门控、global
   缺失时从 Session summary `cwd` 派生默认路径、自定义 Config `statePath` 对所有 lead 生效、off/切换后
   dispose 与不读旧文件。rc.4 另覆盖共享 `useWorkspaceFile` 的 board/index/note 状态、notes 路径/schema、
   chips/count/latest、全栏 reader 各空载错态、外部修改、坏 index/note 局部降级、valuePath 防旧响应、
