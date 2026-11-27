@@ -57,10 +57,8 @@ plugin-market 等）。审计对象是本仓库的 6 个包（`protocol`、`devl
 > **当前部署配置（`statePath`）**：上述历史 `boardPath` 配置键随后重命名为 `statePath`，语义改为相对
 > 原始 workspace 根的状态目录，默认 `.dsh/devlead`。看板固定为 `<workspace>/<statePath>/board.json`，
 > notes 固定为 `<workspace>/<statePath>/notes/{index.json,<project>/<note-id>.md}`；不接受精确 board JSON
-> 路径或独立 notes 路径，空白也不是默认值别名。旧 `boardPath` 键只要出现（包括空白）就以结构化
-> `BOARD_INVALID` + `/statePath` fail-fast，并提示把 `boardPath: custom/board.json` 迁移为
-> `statePath: custom`，或把 `boardPath: custom/state/board.json` 迁移为 `statePath: custom/state`。
-> POSIX/Windows drive/UNC 绝对路径、反斜杠、空段与 `..` 逃逸同样按 `/statePath` 拒绝；最终派生的
+> 路径或独立 notes 路径，空白也不是默认值别名。POSIX/Windows drive/UNC 绝对路径、反斜杠、空段与
+> `..` 逃逸同样按 `/statePath` 拒绝；最终派生的
 > `board.json` 不能是 symlink，父目录链 symlink 可接受，原始 workspace 根缺失仍不重建。浏览器 global
 > 的已解析绝对 `boardPath` 字段名不变；自定义 `statePath` 的 late-enable 场景仍需刷新页面。该配置改名
 > 不改变 board/notes wire schema、CAS 或工具语义，也不增加任何可选插件依赖。

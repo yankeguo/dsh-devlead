@@ -96,8 +96,6 @@
    `override:true` 的 global（这是预期行为，不是 bug；默认路径不需要刷新）。另验证绝对 POSIX、Windows
    盘符/UNC、反斜杠、空段与 `..` 逃逸在 Loader/直接构造时以结构化 `BOARD_INVALID` + `/statePath`
    fail-fast，`path.resolve` 后仍在根内，最终 `board.json` 不能是 symlink 而父目录链 symlink 可接受。
-   旧 `boardPath` 键只要出现（包括空白）也必须按同一结构拒绝，并显示重命名/迁移提示；验证把
-   `boardPath: custom/board.json` 改为 `statePath: custom` 后可从原目录读取 board 与 notes。
 4. **顶部与项目卡片**：准备含四种状态、不同 priority/updatedAt 的 schema v1 文件；顶部
    active/blocked/paused/done KPI 数量、revision、updated 相对时间与 Live 自动状态正确。blocked
    强警示与项目组置顶，active 位于主区；宽右栏为响应式 2 列、窄栏降为 1 列，同组排序正确。

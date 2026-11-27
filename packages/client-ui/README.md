@@ -35,10 +35,8 @@ Browser half of the DevLead suite, loaded on the DSH **Web** platform.
   `statePath` is a host-wide relative state directory defaulting to `.dsh/devlead`; the Host resolves
   `<workspace>/<statePath>/board.json` against that original root before publishing the absolute
   `boardPath` global, with notes under `<workspace>/<statePath>/notes/`. Exact board JSON paths and
-  independent notes paths are not accepted. Any legacy `boardPath` key, even blank, fails fast with
-  `BOARD_INVALID` and `/statePath`; migrate `boardPath: custom/board.json` to `statePath: custom`, or
-  `boardPath: custom/state/board.json` to `statePath: custom/state`. A page loaded before the lead
-  existed still needs a refresh to see a custom `statePath`. Turning mode off or switching to a non-lead Session disposes every
+  independent notes paths are not accepted. A page loaded before the lead existed still needs a refresh
+  to see a custom `statePath`. Turning mode off or switching to a non-lead Session disposes every
   board registration and closes the on-screen Session's lingering board tab, so the panel never
   keeps reading a previous lead's file. The required services follow the default Web composition,
   and this package has no runtime dependency on the Host package.
@@ -121,10 +119,7 @@ guide 卡片、标题与 Session 头部按钮（头部按钮本身静态注册�
 Session 原始 workspace root 派生 `<cwd>/.dsh/devlead/board.json`；部署配置 `statePath` 是默认
 `.dsh/devlead` 的 Host 级相对状态目录，Host 相对该原始根解析 `<workspace>/<statePath>/board.json` 后才
 发布绝对 `boardPath` global，notes 位于 `<workspace>/<statePath>/notes/`。不接受精确 board JSON 路径或
-独立 notes 路径。旧 `boardPath` 键只要出现（包括空白）就以 `BOARD_INVALID` + `/statePath` fail-fast；
-把 `boardPath: custom/board.json` 迁移为 `statePath: custom`，或把
-`boardPath: custom/state/board.json` 迁移为 `statePath: custom/state`。页面若在 lead 出现之前加载，
-自定义 `statePath` 仍需刷新才能看到覆盖路径。模式关闭或切换到非 lead Session 会注销全部
+独立 notes 路径。页面若在 lead 出现之前加载，自定义 `statePath` 仍需刷新才能看到覆盖路径。模式关闭或切换到非 lead Session 会注销全部
 看板注册并关闭当前 Session 遗留的看板 tab，绝不继续读上一个 lead 的文件。所需服务由默认 Web 组合
 提供，本包不依赖 Host 包运行期代码。
 

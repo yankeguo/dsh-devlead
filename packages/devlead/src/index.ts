@@ -646,21 +646,8 @@ class DevLeadInterruptedAdmissionError extends DevLeadError {
   }
 }
 
-/** Reject the removed exact-file setting with an actionable migration error. */
-function assertNoLegacyBoardPath(config: unknown): void {
-  if (typeof config !== 'object' || config === null || !('boardPath' in config)) return
-  const message = '`boardPath` 已重命名为 `statePath`，且现在是相对目录（默认 `.dsh/devlead`）。'
-    + '请把旧的精确 board JSON 路径改为所在目录，例如 `boardPath: custom/board.json` '
-    + '改为 `statePath: custom`；不支持单独 notes 路径'
-  throw new DevLeadBoardError(message, 'BOARD_INVALID', [{ pointer: '/statePath', message }])
-}
-
-/**
- * Loader schema for the DevLead core service. The outer transform detects the
- * removed key before Schemastery's unknown-key passthrough can hide it; its
- * pre-default input type is broader than the public normalized Config type.
- */
-export const Config: z<Config> = z.transform(z.object({
+/** Loader schema for the DevLead core service. */
+export const Config: z<Config> = z.object({
   notificationBatchMs: z.number().step(1).min(0).max(MAX_TIMER_DELAY_MS).default(400),
   actionRequiredBatchMs: z.number().step(1).min(0).max(400).default(0),
   maxWatchedSessions: z.number().step(1).min(1).default(DEVLEAD_DEFAULT_MAX_WATCHED),
@@ -674,11 +661,6 @@ export const Config: z<Config> = z.transform(z.object({
     assertValidDevLeadStatePath(value.trim())
     return value.trim()
   }).default(DEVLEAD_DEFAULT_STATE_PATH),
-}), (value) => {
-  // Schemastery preserves unknown object keys, so the removed key reaches this
-  // guard instead of being silently ignored by the Loader.
-  assertNoLegacyBoardPath(value)
-  return value
 }) as unknown as z<Config>
 
 /** Fully materialized deployment configuration, with Loader defaults applied. */
@@ -711,7 +693,6 @@ export interface DevLeadSettings {
  * @returns resolved configuration.
  */
 function resolveConfig(config: Config): DevLeadSettings {
-  assertNoLegacyBoardPath(config)
   const notificationBatchMs = config.notificationBatchMs ?? 400
   if (!Number.isSafeInteger(notificationBatchMs)
     || notificationBatchMs < 0

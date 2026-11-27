@@ -114,10 +114,7 @@ path and blank is not a default alias. Absolute POSIX paths, Windows drive/UNC p
 empty segments and `..` root escapes fail fast with structured `BOARD_INVALID` and `/statePath` at
 both Loader and direct-construction boundaries. After `path.resolve`, the directory must remain inside
 the root and the final derived `board.json` cannot be a symlink; parent-directory symlinks are accepted.
-Any legacy `boardPath` key, even blank, fails startup with an actionable rename/migration error. Replace
-`boardPath: custom/board.json` with `statePath: custom`, or `boardPath: custom/state/board.json` with
-`statePath: custom/state`, keeping `board.json` and `notes/` together in that directory. No tool argument
-can redirect the board file or notes root.
+No tool argument can redirect the board file or notes root.
 See the
 [configuration section](https://github.com/yankeguo/dsh-devlead/blob/main/README.md#configuration) for defaults and ranges; all limits are
 validated at both the Loader and direct-construction boundaries.
@@ -140,9 +137,7 @@ workspace 根 `SessionHeader.cwd`（不是 worktree checkout）解析，看板�
 绝对 POSIX、Windows 盘符/UNC、反斜杠、空段与 `..` 逃逸在 Loader/直接构造时以结构化 `BOARD_INVALID` +
 `/statePath` fail-fast，`path.resolve` 后必须仍在根内，最终派生的 `board.json` 不能是 symlink，父目录链
 symlink 可接受。默认与自定义目录都要求原始根存在，缺失时不重建；没有 lead、没有绝对 workspace 根或根
-缺失时禁用。旧 `boardPath` 键只要出现（包括空白）就启动失败并给出重命名/迁移提示：把
-`boardPath: custom/board.json` 改为 `statePath: custom`，或把 `boardPath: custom/state/board.json` 改为
-`statePath: custom/state`，`board.json` 与 `notes/` 一起留在该目录。lead off/切换会释放旧 store/watcher，start/预创建失败只记 warning + degraded、不阻塞服务加载
+缺失时禁用。lead off/切换会释放旧 store/watcher，start/预创建失败只记 warning + degraded、不阻塞服务加载
 （board 工具报 `BOARD_IO_ERROR`，其余功能照常）。看板与 notes 写入都使用
 `@deepseek-ai/dsh-atomic-write`（安装运行时提供）。同一 Host board service 拥有随 board
 切换/关闭的 `ctx.devLead.notes`（`DevLeadBoardNotesStore`，root 固定

@@ -56,14 +56,6 @@ POSIX 绝对路径、Windows 盘符/UNC（包括 `/tmp/x`、`C:\\x`、`C:/x`、`
 不改变 notes、权限或 CAS 语义。路径只来自部署配置；board/notes AI 工具都没有、也不接受 board 文件或
 notes 根路径参数。
 
-**Breaking 迁移：**旧 `boardPath` 键只要出现就 fail-fast，包括空白值，不会作为未知键被忽略。错误同样
-是结构化 `BOARD_INVALID` + `/statePath`，并明确说明「boardPath 已重命名为 statePath，且现在是相对目录
-（默认 .dsh/devlead）」以及迁移操作：删除 `boardPath`，把 `boardPath: custom/board.json` 改为
-`statePath: custom`，把 `boardPath: custom/state/board.json` 改为 `statePath: custom/state`。更早版本
-若使用 `/work/project/custom/board.json` 且 lead 原始 workspace 根是 `/work/project`，改配
-`statePath: custom`；workspace 外的看板需先与同级 `notes/` 一起移入该根目录。迁移后
-`board.json` 与 `notes/` 必须位于所选状态目录，不需要改写 board/notes 内容。
-
 ```yaml
 - id: devlead
   name: '@yankeguo/dsh-devlead'
@@ -162,8 +154,8 @@ workspace 根时是 disabled store）：
 `boardDisabledReason` 暴露当前 store 归属的 lead Session、路径是否来自自定义 Config `statePath`、最近一次
 start 失败（degraded 时非空），以及看板当前被禁用的原因（`no-workspace` /
 `relative-workspace` / `missing-workspace`；有活动 store 时 undefined）。`boardPathOverride` 是保持兼容的
-Host **观测字段名**，不是仍可使用的部署配置键。非法 `statePath` 或遗留 `boardPath` 不会成为 disabled
-状态，而是在配置/解析边界直接抛出 `BOARD_INVALID` + `/statePath`。
+Host **观测字段名**，不是仍可使用的部署配置键。非法 `statePath` 不会成为 disabled 状态，而是在
+配置/解析边界直接抛出 `BOARD_INVALID` + `/statePath`。
 `ctx.devLead.updateBoard(agent, patch, expectedRevision?, signal?)` 额外补上 lead 身份；调用者
 必须是当前 active lead，否则 `BOARD_DISABLED`。`read()` / `update()` 在没有 board 或
 `expectedRevision` 不是非负安全整数时返回 rejected Promise；它与**目标 project 的 revision** 比较，

@@ -2419,9 +2419,7 @@ DSH peer 依赖。最小可交付闭环是 1b + 1c + 1d：question 快、answer 
   看板固定为 `<workspace>/<statePath>/board.json`，notes 固定为
   `<workspace>/<statePath>/notes/{index.json,<project>/<note-id>.md}`；该值只表示目录而非精确 board JSON
   文件，也没有独立 notes 路径，空白不是默认值别名。绝对 POSIX、Windows 盘符/UNC、反斜杠、空段与 `..` 逃逸在 Loader/
-  直接构造边界以结构化 `BOARD_INVALID` + `/statePath` fail-fast，`path.resolve` 后必须仍在根内。旧
-  `boardPath` 键只要出现（包括空白）也按同一结构 fail-fast，错误明确「boardPath 已重命名为 statePath，
-  且现在是相对目录（默认 .dsh/devlead）」并给出删除旧键、改配目录的迁移操作，绝不静默忽略。最终派生的
+  直接构造边界以结构化 `BOARD_INVALID` + `/statePath` fail-fast，`path.resolve` 后必须仍在根内。最终派生的
   `board.json` 不能是 symlink，父目录链 symlink 可接受。默认与自定义 `statePath` 都要求原始根存在，
   缺失时不重建；没有 lead、没有绝对 workspace 根或根缺失时 `BOARD_DISABLED`、摘要为空。文件写入使用 Host promise 链 + `withFileLock` +
   `writeFileAtomic`，支持目标 project 的 expectedRevision CAS（旧文件 revision 按文件代际回填并写回）；坏 JSON 保留最后合法缓存并拒绝覆盖。
@@ -2768,7 +2766,7 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
 | `DEVLEAD_SELF_WATCH` | `watchSession` 试图关注自己（`promptSession` 向自己投递使用 `DEVLEAD_INVALID_INPUT`） |
 | `DEVLEAD_PROJECTION_INVALID` | 持久记录损坏（fold failure）；人类可用 `/devlead reset`（或冻结时的 `/devlead off`）恢复，`setEnabled(true)` 会拒绝并提示先 reset |
 
-| `BOARD_*` | 项目看板/notes 域错误：`BOARD_DISABLED`（没有 active lead/workspace 根、原始根缺失、调用者不是当前 active lead，或看板被禁用）、`BOARD_NOT_FOUND`、`BOARD_INVALID`（含非法 `statePath` 或任何遗留 `boardPath` 键；在 Loader/直接构造 fail-fast，带 `/statePath`，旧键错误说明重命名与迁移操作）、`BOARD_PROJECT_NOT_FOUND` / `BOARD_PROJECT_AMBIGUOUS`（锁内快照解析失败）、`BOARD_REVISION_CONFLICT`（board 或 notes index CAS）、`BOARD_NOTE_NOT_FOUND`（metadata 或 indexed body 缺失）、`BOARD_LIMIT_EXCEEDED`、`BOARD_IO_ERROR`（含 degraded start 后的真实 I/O 故障）。board/notes start 失败本身不映射为服务加载失败，只记录 `boardStartError` 并 warn；配置校验的 `BOARD_INVALID` fail-fast 不属于这种降级 |
+| `BOARD_*` | 项目看板/notes 域错误：`BOARD_DISABLED`（没有 active lead/workspace 根、原始根缺失、调用者不是当前 active lead，或看板被禁用）、`BOARD_NOT_FOUND`、`BOARD_INVALID`（含非法 `statePath`；在 Loader/直接构造 fail-fast，带 `/statePath`）、`BOARD_PROJECT_NOT_FOUND` / `BOARD_PROJECT_AMBIGUOUS`（锁内快照解析失败）、`BOARD_REVISION_CONFLICT`（board 或 notes index CAS）、`BOARD_NOTE_NOT_FOUND`（metadata 或 indexed body 缺失）、`BOARD_LIMIT_EXCEEDED`、`BOARD_IO_ERROR`（含 degraded start 后的真实 I/O 故障）。board/notes start 失败本身不映射为服务加载失败，只记录 `boardStartError` 并 warn；配置校验的 `BOARD_INVALID` fail-fast 不属于这种降级 |
 取消（`AbortSignal`）不映射到上面任何码：调用按标准 `AbortError` 拒绝。
 
 ## 9. 测试策略
@@ -2818,8 +2816,8 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   新开启、冷占用者删除后释放、archived 冷占用者经 controller resume 后释放、无法 resume 时的专门文案）。
   项目看板覆盖动态路径与生命周期（无 lead/原始根缺失时 disabled、缺省 `statePath` 从
   `SessionHeader.cwd` 下的 `.dsh/devlead` 派生、自定义 Config 仅接受根内相对目录，
-  绝对/反斜杠/空段/`..` 逃逸在配置边界以 `BOARD_INVALID` + `/statePath` fail-fast、任何遗留
-  `boardPath` 键按同结构拒绝并提示重命名/迁移、最终 `board.json` symlink 在 start/read 以
+  绝对/反斜杠/空段/`..` 逃逸在配置边界以 `BOARD_INVALID` + `/statePath` fail-fast、最终
+  `board.json` symlink 在 start/read 以
   `BOARD_INVALID` 拒绝而父目录链 symlink 可接受、`/devlead off` 与 lead 切换释放旧 store/watcher、
   start/预创建失败只 degraded 且服务照常激活）、
   板文件读写/CAS/watcher、64 KiB 读取裁剪与 `truncated`、以及长

@@ -75,11 +75,8 @@ dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.3-rc.2
 默认 `.dsh/devlead`。它相对 active lead Session 的原始 workspace 根（`SessionHeader.cwd`，不是 worktree
 检出）解析：看板为 `<workspace>/<statePath>/board.json`，notes 为
 `<workspace>/<statePath>/notes/{index.json,<project>/<note-id>.md}`。该值表示目录而非精确 board JSON
-文件，也没有独立 notes 路径配置。旧 `boardPath` 键只要出现（包括空白值）就以结构化 `BOARD_INVALID` 和
-`/statePath` fail-fast，错误会明确说明重命名、相对目录语义与迁移操作，绝不会静默忽略。POSIX 绝对路径、
-Windows 盘符/UNC、反斜杠、空段和 `..` 逃逸同样拒绝。升级前把 `boardPath: custom/board.json` 改为
-`statePath: custom`，并让 `board.json` 与 `notes/` 一起位于该目录。无需迁移看板内容，也无需
-`/devlead reset`。完整升级步骤见
+文件，也没有独立 notes 路径配置。POSIX 绝对路径、Windows 盘符/UNC、反斜杠、空段和 `..` 逃逸同样拒绝。
+详见
 [0.4.3-rc.3 release notes 草稿](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.3-rc.3.md)；
 rc.1 的工具迁移与 rc.2 的 workspace 相对位置要求仍然适用，上一个稳定补丁的说明见
 [0.4.2 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.2.md)。
@@ -374,14 +371,7 @@ config）：
 | `wakeColdSession` | `true` | 为 `true` 时，带排队通知的冷 lead Session 会被恢复以完成投递；设为 `false` 可让队列留在内存里，直到人类打开该 lead Session |
 | `defaultAgentPreset` | `''` | 创建会话未指定 `preset` 时使用的默认值；空表示 Host 的实际默认值。无效 id 会让创建失败并返回结构化错误 |
 | `questionTtlMs` | `86400000` | 非负安全整数；open question 的 lazy TTL（24 小时），`0` 禁用过期。已回答的问题不会追溯过期 |
-| `statePath` | `.dsh/devlead` | 可选的**相对目录**，以 active lead Session 的原始 workspace 根（`SessionHeader.cwd`，不是 worktree 检出）为基准解析。看板为 `<workspace>/<statePath>/board.json`；notes 为 `<workspace>/<statePath>/notes/{index.json,<project>/<note-id>.md}`。此键配置状态目录而非 JSON 文件，也没有独立 notes 路径配置。省略时使用默认值；空白不是默认值的别名。POSIX 绝对路径、Windows 盘符/UNC、反斜杠、空段与 `..` 逃逸都会在 Loader/直接构造时以结构化 `BOARD_INVALID` 和 `/statePath` fail-fast。**破坏性变化：**旧 `boardPath` 键只要出现就启动失败，包括空白值；错误明确说明「boardPath 已重命名为 statePath，且现在是相对目录（默认 .dsh/devlead）」并给出迁移操作（见下）。最终派生的 **`board.json` 不能是 symlink**；父目录链中的 symlink 可以。只有 lead AI 通过工具写入，人类/浏览器只读。详见 [docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md) |
-
-**从 `boardPath` 迁移：**删除旧键，不要保留空白值。把 `boardPath: custom/board.json` 改为
-`statePath: custom`，把 `boardPath: custom/state/board.json` 改为 `statePath: custom/state`。更早版本
-若使用 `/work/project/custom/board.json` 这样的绝对值，且 lead 原始 workspace 根是 `/work/project`，
-改配 `statePath: custom`；workspace 外的看板要先与同级 `notes/` **一起**移入该根目录。迁移后的文件必须
-分别是 `<workspace>/custom/board.json` 与 `<workspace>/custom/notes/…`（或对应的 `custom/state/` 布局）。
-任何旧键都会在启动时返回可操作的 `BOARD_INVALID` / `/statePath` 错误，绝不会被静默忽略或替换成默认路径。
+| `statePath` | `.dsh/devlead` | 可选的**相对目录**，以 active lead Session 的原始 workspace 根（`SessionHeader.cwd`，不是 worktree 检出）为基准解析。看板为 `<workspace>/<statePath>/board.json`；notes 为 `<workspace>/<statePath>/notes/{index.json,<project>/<note-id>.md}`。此键配置状态目录而非 JSON 文件，也没有独立 notes 路径配置。省略时使用默认值；空白不是默认值的别名。POSIX 绝对路径、Windows 盘符/UNC、反斜杠、空段与 `..` 逃逸都会在 Loader/直接构造时以结构化 `BOARD_INVALID` 和 `/statePath` fail-fast。最终派生的 **`board.json` 不能是 symlink**；父目录链中的 symlink 可以。只有 lead AI 通过工具写入，人类/浏览器只读。详见 [docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md) |
 
 看板默认启用并跟随唯一的 active lead：该 Session 的原始 workspace 根（`SessionHeader.cwd`，
 不是 worktree 检出）拥有看板文件；关闭 lead、切换 lead 或工作区时立即释放旧 store 并改读新

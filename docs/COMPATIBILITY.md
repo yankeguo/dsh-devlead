@@ -13,8 +13,8 @@ workspace。磁盘 DevLead state、`board.json` 与 notes 索引无需内容迁�
 兼容面与 `engines.dsh` 不变。历史 staged 记录不得混入本次批准，其它旧候选的 release notes 保持历史事实。
 `0.4.3-rc.2` 只是**插件版本**，**不代表 DSH 0.4.3**。下一候选 `0.4.3-rc.3`（尚未发布）追加
 `boardPath` → `statePath` 的 breaking：新键是默认 `.dsh/devlead` 的 workspace 相对目录，board 与 notes
-统一派生为 `<workspace>/<statePath>/board.json` 和 `<workspace>/<statePath>/notes/`；旧键出现即以
-`BOARD_INVALID` + `/statePath` fail-fast。详细迁移见 [rc.3 release notes 草稿](releases/v0.4.3-rc.3.md)。
+统一派生为 `<workspace>/<statePath>/board.json` 和 `<workspace>/<statePath>/notes/`。详见
+[rc.3 release notes 草稿](releases/v0.4.3-rc.3.md)。
 6 个可发布包的 `engines.dsh` 均为 `>=0.2.2-rc.1 <0.3.0`（根
 `package.json` 是 private 包，不声明 `engines.dsh`，只声明 `engines.node`），所有 `@deepseek-ai/dsh-*`
 peer 使用同一范围；本地 devDependencies 与编译基线仍固定 rc.1，用最旧 API 做类型检查，本机运行验证
@@ -40,8 +40,8 @@ peer 使用同一范围；本地 devDependencies 与编译基线仍固定 rc.1�
     不依赖 0.2.3-only API，engines/peer DSH range 不变。默认路径派生自 active lead 的原始
     workspace 根 `SessionHeader.cwd`（`<cwd>/.dsh/devlead/board.json`，不是 worktree checkout）；
     下一候选的 `statePath` 只接受相对该根的目录（默认 `.dsh/devlead`，如 `custom/state`），board 固定为
-    `<workspace>/<statePath>/board.json`，notes 固定为 `<workspace>/<statePath>/notes/`；旧 `boardPath`
-    键出现即拒绝，空白 `statePath` 也不是默认值别名。绝对 POSIX、Windows 盘符/UNC、反斜杠、空段与
+    `<workspace>/<statePath>/board.json`，notes 固定为 `<workspace>/<statePath>/notes/`；空白 `statePath`
+    也不是默认值别名。绝对 POSIX、Windows 盘符/UNC、反斜杠、空段与
     `..` 逃逸在 Loader/直接构造时以 `BOARD_INVALID` + `/statePath` fail-fast，`path.resolve` 后必须仍在
     根内，最终 `board.json` 不能是 symlink。没有 lead 时看板禁用（无 global、无面板）。默认与自定义
     `statePath` 都要求原始 workspace 根仍是已存在目录：缺失时 Host 以
@@ -661,8 +661,8 @@ issue fail-fast；反斜杠、空段与 `..` 逃逸同样被拒绝，解析结�
 [v0.4.3-rc.2 release prep](e2e-evidence/v0.4.3-rc.2-release-prep.md)。
 
 **0.4.3-rc.3 开发轮（尚未发布）**把配置 `boardPath` 重命名为 `statePath`，从精确 board 文件改为
-board/notes 共用的相对状态目录，默认 `.dsh/devlead`。旧键出现即报 `BOARD_INVALID` + `/statePath`，
-错误包含重命名与迁移提示；非法绝对路径、反斜杠、空段和 `..` 逃逸仍 fail-fast，最终 `board.json`
+board/notes 共用的相对状态目录，默认 `.dsh/devlead`。非法绝对路径、反斜杠、空段和 `..` 逃逸仍
+fail-fast，最终 `board.json`
 symlink 仍拒绝，父目录链 symlink 可接受，workspace 缺失仍不重建。board/notes wire schema、CAS、工具、
 Remote、浏览器 global 的绝对 `boardPath` 字段与 `dsh.client.inject` 均不变；DSH engines/peer 范围不变。
 

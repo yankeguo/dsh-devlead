@@ -133,25 +133,6 @@ describe('statePath relative state directory', () => {
     },
   )
 
-  it('rejects the legacy boardPath key with an actionable structured migration error', () => {
-    const legacy = { boardPath: 'custom/board.json' } as Config
-    for (const construct of [
-      () => Config(legacy),
-      () => new DevLeadService(new Context(), legacy),
-      () => Config({ boardPath: undefined } as Config),
-      () => new DevLeadService(new Context(), { boardPath: undefined } as Config),
-    ]) {
-      expect(construct).toThrowError(expect.objectContaining({
-        code: 'BOARD_INVALID',
-        issues: [expect.objectContaining({ pointer: '/statePath' })],
-        message: expect.stringMatching(/boardPath.*已重命名为.*statePath.*相对目录.*\.dsh\/devlead/u),
-      }))
-      expect(construct).toThrowError(expect.objectContaining({
-        message: expect.stringMatching(/boardPath: custom\/board\.json.*statePath: custom/u),
-      }))
-    }
-  })
-
   it('uses the original workspace rather than a worktree checkout for both stores', async () => {
     const original = await tempRoot('original')
     const checkout = await tempRoot('checkout')

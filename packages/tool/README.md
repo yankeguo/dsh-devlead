@@ -44,10 +44,8 @@ root. The board is `<workspace>/<statePath>/board.json`, and notes share
 With no active lead / workspace root they report `BOARD_DISABLED`. Both default and custom directories
 require the recorded original workspace root to still exist as a directory: the Host never recreates a
 deleted or moved workspace just to host the board, and a custom `statePath` cannot bypass this
-missing-root gate. Any legacy `boardPath` key, even blank, fails fast with `BOARD_INVALID` and
-`/statePath`; migrate `boardPath: custom/board.json` to `statePath: custom`, or
-`boardPath: custom/state/board.json` to `statePath: custom/state`. The tools never accept a board file
-or notes-root path argument — both are derived by the Host from deployment config only.
+missing-root gate. The tools never accept a board file or notes-root path argument — both are derived
+by the Host from deployment config only.
 `devlead_board_read` defaults to project summaries without tasks; a selected project includes at most
 50 tasks by default and reports `truncated:true` beyond that. The whole serialized result is also
 capped at 64 KiB (`DEVLEAD_BOARD_READ_MAX_BYTES`): tasks, then blockers, then whole project rows are
@@ -200,9 +198,7 @@ Host 默认/selectedDefault；无效 id 在创建阶段返回结构化错误，�
 原始 workspace 根 `SessionHeader.cwd` 解析；看板为 `<workspace>/<statePath>/board.json`，notes 同目录
 派生到 `<workspace>/<statePath>/notes/`。不接受精确 board JSON 路径或独立 notes 路径，空白也不是默认值
 别名。没有 lead、没有绝对 workspace 根或原始根缺失时返回 `BOARD_DISABLED`；自定义 `statePath` 也不能绕过
-missing-root 检查，Host 不重建目录。旧 `boardPath` 键只要出现（包括空白）就以 `BOARD_INVALID` +
-`/statePath` fail-fast；把 `boardPath: custom/board.json` 迁移为 `statePath: custom`，或把
-`boardPath: custom/state/board.json` 迁移为 `statePath: custom/state`。工具从不接受看板文件或 notes 根
+missing-root 检查，Host 不重建目录。工具从不接受看板文件或 notes 根
 路径参数。读取结果按 64 KiB 上限（tasks → blockers →
 project 行从尾部裁剪，`truncated:true`）；update 使用 per-project revision CAS；插件只写文件，是否提交由各仓库
 自行决定；project 引用在锁内快照上解析，长

@@ -56,10 +56,8 @@ Both default and custom directories require that root to exist; the Host never r
 root. Absolute POSIX paths, Windows drive/UNC paths, backslashes, empty segments and `..` root escapes
 fail fast with structured `BOARD_INVALID` and `/statePath` at Loader/direct construction. After
 `path.resolve`, the directory must stay inside the root and the final derived `board.json` cannot be
-a symlink; parent-directory symlinks are accepted. Any legacy `boardPath` key, even blank, is rejected
-with an actionable rename/migration error: replace `boardPath: custom/board.json` with
-`statePath: custom` (or `boardPath: custom/state/board.json` with `statePath: custom/state`). If the
-page was loaded before the lead was enabled and you use a custom `statePath`, refresh the page once
+a symlink; parent-directory symlinks are accepted. If the page was loaded before the lead was enabled
+and you use a custom `statePath`, refresh the page once
 so the browser receives the resolved custom path; the default derived path needs no refresh. Only
 the lead AI writes via `devlead_board_update`; humans and browser clients are read-only. See
 [docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md) for schema v1 and
@@ -121,9 +119,7 @@ board 与 notes 的共同状态目录时，覆盖 profile `cordis.patch.yml` 中
 而非 JSON 文件名，没有独立 notes 路径，空白也不是默认值别名。默认与自定义目录都要求原始根存在，缺失时
 不重建。绝对 POSIX、Windows 盘符/UNC、反斜杠、空段与 `..` 逃逸在 Loader/直接构造时以结构化
 `BOARD_INVALID` + `/statePath` fail-fast；`path.resolve` 后必须仍在根内，最终派生的 `board.json` 不能是
-symlink，父目录链 symlink 可接受。旧 `boardPath` 键只要出现（包括空白）就拒绝并给出重命名/迁移提示：
-把 `boardPath: custom/board.json` 改为 `statePath: custom`，或把 `boardPath: custom/state/board.json`
-改为 `statePath: custom/state`。若页面在 lead 启用前加载且使用自定义 `statePath`，需刷新一次页面以拿到
+symlink，父目录链 symlink 可接受。若页面在 lead 启用前加载且使用自定义 `statePath`，需刷新一次页面以拿到
 解析后的自定义路径（默认派生路径不需要刷新）。只有 lead AI 通过 `devlead_board_update` 写入，人类/浏览器只读；详见
 [docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md)。
 
