@@ -8,7 +8,7 @@ upgrades **one ordinary session** into a **DevLead session**: it can operate DSH
 their state changes — so one agent can orchestrate multiple repositories inside a standard
 interface the human can see and interact with.
 
-Current release candidate **0.4.3-rc.2** (prerelease, npm dist-tag `next`; stable `latest` stays
+Current release candidate **0.4.3-rc.3** (prerelease, npm dist-tag `next`; stable `latest` stays
 **0.4.2**) · DSH **0.2.2-rc.1 – 0.2.2-rc.5** · one `dsh plugin` command installs everything.
 
 ## What you get
@@ -70,21 +70,23 @@ page.
 To pin an exact version:
 
 ```sh
-dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.3-rc.2
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.3-rc.3
 ```
 
-0.4.3-rc.2 is the currently published prerelease candidate. The next candidate, 0.4.3-rc.3 (not yet
-published), retains the rc.1/rc.2 contract changes and adds another **breaking configuration change**:
-deployment key `boardPath` is renamed to `statePath`, whose value is now a **relative directory**,
-defaulting to `.dsh/devlead`. It is resolved against the active lead Session's original workspace root
-(`SessionHeader.cwd`, not a worktree checkout): board data is `<workspace>/<statePath>/board.json`, and
-notes are `<workspace>/<statePath>/notes/{index.json,<project>/<note-id>.md}`. The value names a directory,
-not an exact board JSON file, and there is no separate notes-path setting. The browser global's resolved
-absolute `boardPath` field is also renamed to `boardFilePath`, and the Host's `boardPathOverride` observation
-field becomes `statePathOverride`; mixed pre-rc.3/rc.3 Host and client versions are not guaranteed to keep
-this global compatible. Absolute POSIX, Windows drive and UNC paths, backslashes, empty segments and `..`
-escapes are likewise rejected. See the
-[0.4.3-rc.3 release-notes draft](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.3-rc.3.md);
+0.4.3-rc.3 is the current prerelease candidate. It retains the rc.1/rc.2 contract changes and adds another
+**breaking configuration change**: deployment key `boardPath` is renamed to `statePath`, whose value is now
+a **relative directory**, defaulting to `.dsh/devlead`. It is resolved against the active lead Session's
+original workspace root (`SessionHeader.cwd`, not a worktree checkout): board data is
+`<workspace>/<statePath>/board.json`, and notes are
+`<workspace>/<statePath>/notes/{index.json,<project>/<note-id>.md}`. The value names a directory, not an
+exact board JSON file, and there is no separate notes-path setting. The old `boardPath` key is silently
+ignored as an unknown key, so migrate it explicitly: `boardPath: custom/board.json` becomes
+`statePath: custom`, with notes following automatically. The browser global's resolved absolute `boardPath`
+field is also renamed to `boardFilePath`, and the Host's `boardPathOverride` observation field becomes
+`statePathOverride`; mixed pre-rc.3/rc.3 Host and client versions are not guaranteed to keep this global
+compatible. Absolute POSIX, Windows drive and UNC paths, backslashes, empty segments and `..` escapes are
+rejected. See the
+[0.4.3-rc.3 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.3-rc.3.md);
 rc.1's tool migrations and rc.2's workspace-relative location requirement still apply, and the previous
 stable patch is documented in the
 [0.4.2 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.2.md).
@@ -99,7 +101,7 @@ profile's `cordis.patch.yml` themselves; the bundle is the recommended path.
 dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 
 # or pin a specific version (required for prereleases)
-dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.3-rc.2
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.3-rc.3
 ```
 
 > **Upgrading from an older release (below 0.4.0):** 0.4.0 intentionally discards older DevLead

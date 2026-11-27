@@ -1,20 +1,18 @@
 # DSH 兼容性矩阵
 
 本仓库的目标兼容面是 **DeepSeek Harness `0.2.2-rc.1` – `0.2.2-rc.5`**；当前候选发布版本是插件版本
-**`0.4.3-rc.2`**（6 个可发布包共用同一版本号；prerelease，CI 以 npm dist-tag `next` stage，维护者
-approve 后公开）。稳定版 `latest` 当前为 **`0.4.2`**，已发布的 `0.4.3-rc.1` 当前位于 `next`；approve
-`0.4.3-rc.2` 前 `next` 保持 `0.4.3-rc.1`，approve 后指向本候选，`latest` 仍为 `0.4.2`。rc.2 完整保留
-rc.1 的 0.x 破坏性契约收口：看板 per-project revision/CAS、notes 工具只维护索引、assistant 摘要与 wake
-载荷上限、lead 主动 interrupt 的 T1 通知、看板持久化移出 git、单 Session archive/restore、删除静态模型
-路由；工具面保持 **17 个主工具 + `devlead_report`**。本候选新增 `boardPath` 配置 breaking：非空值只接受
-相对 active lead 原始 workspace 根的路径，绝对 POSIX、Windows 盘符/UNC、反斜杠、空段与 `..` 逃逸均
-fail-fast，最终组件不能是 symlink。既有绝对配置必须迁移；workspace 外的看板要与同级 notes 一起移入
-workspace。磁盘 DevLead state、`board.json` 与 notes 索引无需内容迁移，也不需要 `/devlead reset`；DSH
-兼容面与 `engines.dsh` 不变。历史 staged 记录不得混入本次批准，其它旧候选的 release notes 保持历史事实。
-`0.4.3-rc.2` 只是**插件版本**，**不代表 DSH 0.4.3**。下一候选 `0.4.3-rc.3`（尚未发布）追加
-`boardPath` → `statePath` 的 breaking：新键是默认 `.dsh/devlead` 的 workspace 相对目录，board 与 notes
-统一派生为 `<workspace>/<statePath>/board.json` 和 `<workspace>/<statePath>/notes/`。详见
-[rc.3 release notes 草稿](releases/v0.4.3-rc.3.md)。
+**`0.4.3-rc.3`**（6 个可发布包共用同一版本号；prerelease，CI 以 npm dist-tag `next` stage，维护者
+approve 后公开）。稳定版 `latest` 当前为 **`0.4.2`**，已发布的 `0.4.3-rc.2` 当前位于 `next`；approve
+`0.4.3-rc.3` 前 `next` 保持 `0.4.3-rc.2`，approve 后指向本候选，`latest` 仍为 `0.4.2`。rc.3 完整保留
+rc.1/rc.2 的 0.x 破坏性契约收口，工具面保持 **17 个主工具 + `devlead_report`**。本候选把部署配置
+`boardPath` 重命名为 `statePath`，语义从精确 board JSON 文件改为 board/notes 共用的 workspace 相对状态目录，
+默认 `.dsh/devlead`：board = `<workspace>/<statePath>/board.json`，notes =
+`<workspace>/<statePath>/notes/`。旧 `boardPath` 键不再有专门迁移提示，会按未知配置键静默忽略；升级前必须
+主动改名并移动必要文件。非法 `statePath` 以 `BOARD_INVALID` + `/statePath` fail-fast，最终 `board.json`
+不能是 symlink，父目录链 symlink 可接受，workspace 缺失不重建。磁盘 DevLead state、`board.json` 与 notes
+索引无需内容迁移，也不需要 `/devlead reset`；DSH 兼容面与 `engines.dsh` 不变。历史 staged 记录不得混入
+本次批准，其它旧候选的 release notes 保持历史事实。`0.4.3-rc.3` 只是**插件版本**，**不代表 DSH 0.4.3**。
+升级步骤详见 [rc.3 release notes](releases/v0.4.3-rc.3.md)。
 6 个可发布包的 `engines.dsh` 均为 `>=0.2.2-rc.1 <0.3.0`（根
 `package.json` 是 private 包，不声明 `engines.dsh`，只声明 `engines.node`），所有 `@deepseek-ai/dsh-*`
 peer 使用同一范围；本地 devDependencies 与编译基线仍固定 rc.1，用最旧 API 做类型检查，本机运行验证
@@ -39,7 +37,7 @@ peer 使用同一范围；本地 devDependencies 与编译基线仍固定 rc.1�
     `remote.workspaceFiles.stat/readBytes/changes` 与 `useWorkspaces` / `useSessions`。
     不依赖 0.2.3-only API，engines/peer DSH range 不变。默认路径派生自 active lead 的原始
     workspace 根 `SessionHeader.cwd`（`<cwd>/.dsh/devlead/board.json`，不是 worktree checkout）；
-    下一候选的 `statePath` 只接受相对该根的目录（默认 `.dsh/devlead`，如 `custom/state`），board 固定为
+    当前候选的 `statePath` 只接受相对该根的目录（默认 `.dsh/devlead`，如 `custom/state`），board 固定为
     `<workspace>/<statePath>/board.json`，notes 固定为 `<workspace>/<statePath>/notes/`；空白 `statePath`
     也不是默认值别名。绝对 POSIX、Windows 盘符/UNC、反斜杠、空段与
     `..` 逃逸在 Loader/直接构造时以 `BOARD_INVALID` + `/statePath` fail-fast，`path.resolve` 后必须仍在
@@ -527,9 +525,9 @@ lane/deliveryState、blocked/decision action steer、真实 T1 followup / T2 rev
 
 上表 Phase 1e 行即 **Batch 1 最终树**的 pin 实测：installed / patch 完整流各 **221/221**
 （218 PASS + 3 SKIP；phase 1 27 + 1b 12 + 2 23 + 3 128 + 1e 31），`--no-worktree` **198/198**
-（phase 2 skipped）。当前候选发布版本是插件 **`0.4.3-rc.2`**（prerelease，dist-tag `next`；stage 本身
+（phase 2 skipped）。当前候选发布版本是插件 **`0.4.3-rc.3`**（prerelease，dist-tag `next`；stage 本身
 不改变公开 dist-tag，approve 后 `next` 才指向本候选、`latest` 保持 `0.4.2`，approve 前 `next` 仍为
-`0.4.3-rc.1`；DSH 兼容面仍为 rc.1–rc.5）。
+`0.4.3-rc.2`；DSH 兼容面仍为 rc.1–rc.5）。
 `0.4.0-rc.1` 候选的三条真实
 E2E 重跑（含真实 `*_EXIT=0` 与总计行）记录在
 [`docs/e2e-evidence/batch2-release-prep.md`](e2e-evidence/batch2-release-prep.md)；稳定版 `0.4.0`
@@ -540,10 +538,10 @@ E2E 重跑（含真实 `*_EXIT=0` 与总计行）记录在
 当前 board 加固轮保留上述全部旧检查，并在 phase 3 新增真实 `ctx.devLead.updateBoard` 写入/CAS、
 `webserver/index-inject` board global 与独立磁盘 revision/内容 read-back；Step B 复核修复轮又把
 phase 1 与 1b 改回未配置 `boardPath` 的默认组合并固定当轮目标 pin（phase 1=28、phase 3=132、
-完整流=226、no-worktree=203）。**当前 `0.4.3-rc.2`（与 `0.4.2` 相同）的权威 pin 是
+完整流=226、no-worktree=203）。**当前 `0.4.3-rc.3`（与 `0.4.2` 相同）的权威 pin 是
 `scripts/e2e-smoke.mjs` 的 `EXPECTED_CHECKS`：phase 1=30、phase 1b=18、phase 2=24、phase 3=141、
 phase 1e=31，完整流目标 244/244（241 PASS + 3 credential-less SKIP），`--no-worktree` 220/220；
-`0.4.3-rc.2` 发布轮实际执行的 patch 完整流结果与退出码以当轮 release-prep 原始日志为准。** 本轮新增/改写的断言
+`0.4.3-rc.3` 发布轮实际执行的 patch 完整流结果与退出码以当轮 release-prep 原始日志为准。** 本轮新增/改写的断言
 包括：没有 lead 时不注入 board global、lead 开启后从 `SessionHeader.cwd` 派生默认路径并发布
 `{leadSessionId, override:false}`、预创建父目录、冷 lead 从持久 header 派生、`/devlead off`
 移除 global、换 workspace 后立即换源、phase 2 的相对原始 workspace 根 Config override 以
@@ -660,12 +658,14 @@ issue fail-fast；反斜杠、空段与 `..` 逃逸同样被拒绝，解析结�
 发布轮实际执行的冻结树门禁与 patch 完整 E2E 证据详见
 [v0.4.3-rc.2 release prep](e2e-evidence/v0.4.3-rc.2-release-prep.md)。
 
-**0.4.3-rc.3 开发轮（尚未发布）**把配置 `boardPath` 重命名为 `statePath`，从精确 board 文件改为
-board/notes 共用的相对状态目录，默认 `.dsh/devlead`。非法绝对路径、反斜杠、空段和 `..` 逃逸仍
-fail-fast，最终 `board.json`
-symlink 仍拒绝，父目录链 symlink 可接受，workspace 缺失仍不重建。board/notes wire schema、CAS、工具、
-Remote 与 `dsh.client.inject` 均不变；浏览器 global 的绝对路径字段改名为 `boardFilePath`，Host 的
-override 观测字段改名为 `statePathOverride`；DSH engines/peer 范围不变。
+**0.4.3-rc.3 发布轮**把配置 `boardPath` 重命名为 `statePath`，从精确 board 文件改为 board/notes
+共用的相对状态目录，默认 `.dsh/devlead`。旧 `boardPath` 不再有专门迁移提示，按未知配置键静默忽略；
+非法 `statePath` 的绝对路径、反斜杠、空段和 `..` 逃逸以 `BOARD_INVALID` + `/statePath` fail-fast，
+最终 `board.json` symlink 仍拒绝，父目录链 symlink 可接受，workspace 缺失仍不重建。board/notes wire
+schema、CAS、工具、Remote 与 `dsh.client.inject` 均不变；浏览器 global 的绝对路径字段改名为
+`boardFilePath`，Host 的 override 观测字段改名为 `statePathOverride`；DSH engines/peer 范围不变。
+发布轮实际执行的冻结树门禁与 patch 完整 E2E 证据详见
+[v0.4.3-rc.3 release prep](e2e-evidence/v0.4.3-rc.3-release-prep.md)。
 
 每条 flow 有 3 条正向模型选择检查因无 provider 凭据 SKIP（打印真实原因）；负向
 `DEVLEAD_MODEL_UNAVAILABLE`、`devlead_list_models`、preset roster 与 watched-child

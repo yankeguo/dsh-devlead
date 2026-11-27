@@ -7,7 +7,7 @@
 **Session**（会话），创建并续写其他会话、读取它们的状态、在状态变化时被唤醒——于是一个
 agent 就能在人可见、可参与的标准界面里统管多个仓库。
 
-当前候选版本 **0.4.3-rc.2**（prerelease，npm dist-tag `next`；稳定版 `latest` 仍为 **0.4.2**）·
+当前候选版本 **0.4.3-rc.3**（prerelease，npm dist-tag `next`；稳定版 `latest` 仍为 **0.4.2**）·
 DSH **0.2.2-rc.1 – 0.2.2-rc.5** · 一条 `dsh plugin` 命令即可装好全部组件。
 
 ## 核心能力
@@ -67,18 +67,20 @@ Web 页面。
 固定到精确版本：
 
 ```sh
-dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.3-rc.2
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.3-rc.3
 ```
 
-当前已发布的 prerelease 候选是 0.4.3-rc.2。下一候选 0.4.3-rc.3（尚未发布）完整保留 rc.1/rc.2
-的契约变更，并新增一项配置 breaking：部署键 `boardPath` 重命名为 `statePath`，语义改为**相对目录**，
-默认 `.dsh/devlead`。它相对 active lead Session 的原始 workspace 根（`SessionHeader.cwd`，不是 worktree
-检出）解析：看板为 `<workspace>/<statePath>/board.json`，notes 为
+当前 prerelease 候选是 0.4.3-rc.3。它完整保留 rc.1/rc.2 的契约变更，并新增一项配置 breaking：
+部署键 `boardPath` 重命名为 `statePath`，语义改为**相对目录**，默认 `.dsh/devlead`。它相对 active lead
+Session 的原始 workspace 根（`SessionHeader.cwd`，不是 worktree 检出）解析：看板为
+`<workspace>/<statePath>/board.json`，notes 为
 `<workspace>/<statePath>/notes/{index.json,<project>/<note-id>.md}`。该值表示目录而非精确 board JSON
-文件，也没有独立 notes 路径配置。浏览器 global 的已解析绝对 `boardPath` 字段同时改名为 `boardFilePath`，
-Host 的 `boardPathOverride` 观测字段改名为 `statePathOverride`；跨 rc.3 前后的 Host/client 混装不保证
-此 global 兼容。POSIX 绝对路径、Windows 盘符/UNC、反斜杠、空段和 `..` 逃逸同样拒绝。详见
-[0.4.3-rc.3 release notes 草稿](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.3-rc.3.md)；
+文件，也没有独立 notes 路径配置。旧 `boardPath` 键会按未知配置键静默忽略，因此必须主动迁移：
+`boardPath: custom/board.json` 改为 `statePath: custom`，notes 自动跟随。浏览器 global 的已解析绝对
+`boardPath` 字段同时改名为 `boardFilePath`，Host 的 `boardPathOverride` 观测字段改名为
+`statePathOverride`；跨 rc.3 前后的 Host/client 混装不保证此 global 兼容。POSIX 绝对路径、Windows
+盘符/UNC、反斜杠、空段和 `..` 逃逸同样拒绝。详见
+[0.4.3-rc.3 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.3-rc.3.md)；
 rc.1 的工具迁移与 rc.2 的 workspace 相对位置要求仍然适用，上一个稳定补丁的说明见
 [0.4.2 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.2.md)。
 
@@ -92,7 +94,7 @@ rc.1 的工具迁移与 rc.2 的 workspace 相对位置要求仍然适用，上�
 dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 
 # 或固定到某个版本（prerelease 必须写精确版本）
-dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.3-rc.2
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.3-rc.3
 ```
 
 > **从旧版本（低于 0.4.0）升级：** 0.4.0 会直接丢弃旧的 DevLead 会话状态（模式、关注集合、
