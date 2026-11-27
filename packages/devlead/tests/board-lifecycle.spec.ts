@@ -4,7 +4,7 @@
  *
  * The board follows the single active lead Session: its original workspace root
  * (`SessionHeader.cwd`) owns `.dsh/devlead/board.json`, unless the deployment
- * Config `boardPath` override is set. No lead/workspace means the existing
+ * Config `statePath` names a custom state directory. No lead/workspace means the existing
  * disabled store, and a start failure must never block plugin activation.
  */
 
@@ -17,7 +17,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import {
   DEVLEAD_BOARD_DIR_SEGMENTS,
   DEVLEAD_BOARD_FILE_NAME,
-  resolveDevLeadBoardPath,
+  resolveDevLeadStateDir,
 } from '../src/board.ts'
 import {
   FakeAgent,
@@ -54,51 +54,48 @@ afterEach(async () => {
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true })
 })
 
-describe('resolveDevLeadBoardPath', () => {
-  it('resolves the deployment override beneath the original workspace', () => {
-    expect(resolveDevLeadBoardPath({
-      override: 'custom/shared/../shared/board.json',
+describe('resolveDevLeadStateDir', () => {
+  it('resolves the deployment state directory beneath the original workspace', () => {
+    expect(resolveDevLeadStateDir({
+      statePath: 'custom/shared/../shared/state',
       cwd: '/workspace/alpha',
-    })).toEqual({ kind: 'resolved', path: '/workspace/alpha/custom/shared/board.json', source: 'override' })
-    expect(resolveDevLeadBoardPath({ override: '  custom/board.json  ', cwd: '/workspace/alpha' })).toEqual({
-      kind: 'resolved', path: '/workspace/alpha/custom/board.json', source: 'override',
+    })).toEqual({ kind: 'resolved', path: '/workspace/alpha/custom/shared/state', source: 'override' })
+    expect(resolveDevLeadStateDir({ statePath: '  custom/state  ', cwd: '/workspace/alpha' })).toEqual({
+      kind: 'resolved', path: '/workspace/alpha/custom/state', source: 'override',
     })
   })
 
-  it('derives the default path from the original workspace root', () => {
-    expect(resolveDevLeadBoardPath({ cwd: '/workspace/alpha' })).toEqual({
+  it('derives the default state directory from the original workspace root', () => {
+    expect(resolveDevLeadStateDir({ cwd: '/workspace/alpha' })).toEqual({
       kind: 'resolved',
-      path: join('/workspace/alpha', '.dsh', 'devlead', 'board.json'),
+      path: join('/workspace/alpha', '.dsh', 'devlead'),
       source: 'workspace',
     })
     // Trailing separators are normalized, not duplicated.
-    expect(resolveDevLeadBoardPath({ cwd: '/workspace/alpha/' })).toEqual({
+    expect(resolveDevLeadStateDir({ cwd: '/workspace/alpha/' })).toEqual({
       kind: 'resolved',
-      path: join('/workspace/alpha', '.dsh', 'devlead', 'board.json'),
+      path: join('/workspace/alpha', '.dsh', 'devlead'),
       source: 'workspace',
     })
     // A root workspace still nests under the shared segments.
-    expect(resolveDevLeadBoardPath({ cwd: '/' })).toEqual({
+    expect(resolveDevLeadStateDir({ cwd: '/' })).toEqual({
       kind: 'resolved',
-      path: join('/', '.dsh', 'devlead', 'board.json'),
+      path: join('/', '.dsh', 'devlead'),
       source: 'workspace',
     })
   })
 
   it('disables instead of fabricating a relative path', () => {
-    expect(resolveDevLeadBoardPath({})).toEqual({ kind: 'disabled', reason: 'no-workspace' })
-    expect(resolveDevLeadBoardPath({ cwd: '   ' })).toEqual({ kind: 'disabled', reason: 'no-workspace' })
-    expect(resolveDevLeadBoardPath({ cwd: 'relative/project' })).toEqual({
+    expect(resolveDevLeadStateDir({})).toEqual({ kind: 'disabled', reason: 'no-workspace' })
+    expect(resolveDevLeadStateDir({ cwd: '   ' })).toEqual({ kind: 'disabled', reason: 'no-workspace' })
+    expect(resolveDevLeadStateDir({ cwd: 'relative/project' })).toEqual({
       kind: 'disabled', reason: 'relative-workspace',
     })
-    expect(resolveDevLeadBoardPath({ override: 'relative/board.json' })).toEqual({
+    expect(resolveDevLeadStateDir({ statePath: 'custom/state' })).toEqual({
       kind: 'disabled', reason: 'no-workspace',
     })
-    expect(() => resolveDevLeadBoardPath({ override: '/absolute/board.json', cwd: '/workspace/alpha' }))
+    expect(() => resolveDevLeadStateDir({ statePath: '/absolute/state', cwd: '/workspace/alpha' }))
       .toThrowError(expect.objectContaining({ code: 'BOARD_INVALID' }))
-    expect(resolveDevLeadBoardPath({ override: '', cwd: '/workspace/alpha' })).toMatchObject({
-      kind: 'resolved', source: 'workspace',
-    })
   })
 })
 
@@ -126,14 +123,14 @@ describe('service board lifecycle', () => {
     }
   })
 
-  it('keeps the Config boardPath as a workspace-relative override', async () => {
+  it('keeps Config statePath as a workspace-relative state directory', async () => {
     const workspace = await tempRoot('override-cwd')
     const override = join(workspace, 'nested', 'board.json')
-    const harness = await bootService({ enabled: true, leadCwd: workspace, config: { boardPath: 'nested/board.json' } })
+    const harness = await bootService({ enabled: true, leadCwd: workspace, config: { statePath: 'nested' } })
     try {
       expect(harness.service.board.path).toBe(override)
       expect(harness.service.boardPathOverride).toBe(true)
-      expect(harness.service.settings.boardPath).toBe('nested/board.json')
+      expect(harness.service.settings.statePath).toBe('nested')
       expect(await directoryMode(join(workspace, 'nested'))).toBe(0o700)
       // The workspace-derived file is never created while the override is set.
       expect(existsSync(expectedPath(workspace))).toBe(false)
@@ -250,7 +247,7 @@ describe('service board lifecycle', () => {
   })
 
   it('keeps a relative override disabled without an original lead workspace root', async () => {
-    const harness = await bootService({ config: { boardPath: 'nested/board.json' } })
+    const harness = await bootService({ config: { statePath: 'nested' } })
     try {
       expect(harness.service.board.path).toBeUndefined()
       expect(harness.service.board.enabled).toBe(false)
@@ -274,7 +271,7 @@ describe('service board lifecycle', () => {
     await writeFile(blocker, 'not a directory\n')
     const boardPath = join(blocker, 'nested', 'board.json')
     const harness = await bootService({
-      enabled: true, leadCwd: workspace, config: { boardPath: 'blocker/nested/board.json' },
+      enabled: true, leadCwd: workspace, config: { statePath: 'blocker/nested' },
     })
     try {
       // The plugin loaded and every non-board DevLead surface still works.
@@ -321,7 +318,7 @@ describe('service board lifecycle', () => {
     const harness = await bootService({
       enabled: true,
       leadCwd: workspace,
-      config: { boardPath: 'existing/board.json' },
+      config: { statePath: 'existing' },
     })
     try {
       expect((await stat(parent)).mode & 0o777).toBe(0o755)
@@ -403,7 +400,7 @@ describe('service board lifecycle', () => {
     const root = await tempRoot('override-missing-cwd')
     const missing = join(root, 'moved-away')
     const harness = await bootService({
-      enabled: true, leadCwd: missing, config: { boardPath: 'deploy-board/nested/board.json' },
+      enabled: true, leadCwd: missing, config: { statePath: 'deploy-board/nested' },
     })
     try {
       expect(harness.service.board.path).toBeUndefined()
@@ -424,7 +421,7 @@ describe('service board lifecycle', () => {
     await writeFile(blocker, 'not a directory\n')
     const boardPath = join(blocker, 'nested', 'board.json')
     const harness = await bootService({
-      enabled: true, leadCwd: workspace, config: { boardPath: 'blocker/nested/board.json' },
+      enabled: true, leadCwd: workspace, config: { statePath: 'blocker/nested' },
     })
     try {
       expect(harness.service.boardStartError).toMatchObject({ code: 'BOARD_IO_ERROR' })

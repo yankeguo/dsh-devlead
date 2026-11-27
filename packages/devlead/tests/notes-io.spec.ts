@@ -69,7 +69,7 @@ async function boot(): Promise<{ boardPath: string; notes: DevLeadBoardNotesStor
     project: 'alpha', create: true, updatedBy: actor,
     set: { workspace: { path: '/tmp/alpha', title: 'alpha' } },
   })
-  const notes = new DevLeadBoardNotesStore(boardPath, board, { warn: () => undefined }, () => clock++)
+  const notes = new DevLeadBoardNotesStore(root, board, { warn: () => undefined }, () => clock++)
   stores.push(notes)
   await notes.start()
   return { boardPath, notes }

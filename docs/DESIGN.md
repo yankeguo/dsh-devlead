@@ -124,7 +124,8 @@ Host/Node；浏览器侧 `zod` 来自 DSH 冻结 module table 的 platform singl
 **只依赖 `protocol`**：浏览器侧直接复用其 schema/常量，node 入口从
 `@yankeguo/dsh-devlead-protocol` 导入 `DEVLEAD_BOARD_SCHEMA_VERSION`，读取
 `ctx.devLead.board`/`boardLeadSessionId`/`boardPathOverride` 后注入 board global，不再依赖
-`@yankeguo/dsh-devlead` 的 JS 入口。发布顺序由 `scripts/stage-release.mjs` 按该图做确定性
+`@yankeguo/dsh-devlead` 的 JS 入口。`boardPathOverride` 与 global 的绝对 `boardPath` 都是保留原名的
+内部观测/浏览器字段；部署配置键只有 `statePath`。发布顺序由 `scripts/stage-release.mjs` 按该图做确定性
 拓扑排序（protocol、client-ui、devlead、command、tool、bundle；同层按包名）。项目看板完整
 契约（默认路径派生、lead 生命周期、notes 存储/CAS、global、浏览器 reader、读取上限与降级）见 [BOARD](BOARD.md)。
 构建时 host 入口 external `@deepseek-ai/*`、`@yankeguo/*`、`node:*`；浏览器入口只 external
@@ -2413,19 +2414,24 @@ DSH peer 依赖。最小可交付闭环是 1b + 1c + 1d：question 快、answer 
 
 - `devlead:board-summary` 是 `systemPrompt.context()` 动态快照（order 220），仅 enabled lead
   且缓存非空时注入；从当前 active lead 的 `ctx.devLead.board.summary()` 同步渲染，
-  ≤1536 UTF-8 bytes。看板默认启用：空白/缺省 `boardPath` 派生 active lead 原始 workspace 根
-  `SessionHeader.cwd`（不是 worktree checkout）下的 `.dsh/devlead/board.json`；非空值只接受相对该根的
-  路径，例如 `.dsh/devlead/board.json`、`custom/board.json`。绝对 POSIX、Windows 盘符/UNC 在 Loader/
-  直接构造边界以 `BOARD_INVALID` fail-fast，错误提示改用相对路径；反斜杠、空段与 `..` 逃逸同样被拒绝，
-  `path.resolve` 后必须仍在根内，最终组件不能是 symlink。默认与显式 override 都要求原始根存在，
-  缺失时不重建；没有 lead、没有绝对 workspace 根或根缺失时 `BOARD_DISABLED`、摘要为空。既有绝对
-  路径部署升级后会启动失败，必须迁移为相对路径。文件写入使用 Host promise 链 + `withFileLock` +
+  ≤1536 UTF-8 bytes。看板默认启用：部署配置 `statePath` 缺省为 `.dsh/devlead`，只接受相对 active lead
+  原始 workspace 根 `SessionHeader.cwd`（不是 worktree checkout）的**目录**，例如 `custom/state`。
+  看板固定为 `<workspace>/<statePath>/board.json`，notes 固定为
+  `<workspace>/<statePath>/notes/{index.json,<project>/<note-id>.md}`；该值只表示目录而非精确 board JSON
+  文件，也没有独立 notes 路径，空白不是默认值别名。绝对 POSIX、Windows 盘符/UNC、反斜杠、空段与 `..` 逃逸在 Loader/
+  直接构造边界以结构化 `BOARD_INVALID` + `/statePath` fail-fast，`path.resolve` 后必须仍在根内。旧
+  `boardPath` 键只要出现（包括空白）也按同一结构 fail-fast，错误明确「boardPath 已重命名为 statePath，
+  且现在是相对目录（默认 .dsh/devlead）」并给出删除旧键、改配目录的迁移操作，绝不静默忽略。最终派生的
+  `board.json` 不能是 symlink，父目录链 symlink 可接受。默认与自定义 `statePath` 都要求原始根存在，
+  缺失时不重建；没有 lead、没有绝对 workspace 根或根缺失时 `BOARD_DISABLED`、摘要为空。文件写入使用 Host promise 链 + `withFileLock` +
   `writeFileAtomic`，支持目标 project 的 expectedRevision CAS（旧文件 revision 按文件代际回填并写回）；坏 JSON 保留最后合法缓存并拒绝覆盖。
   `devlead_board_read` 结果按 `DEVLEAD_BOARD_READ_MAX_BYTES`（64 KiB）裁剪 tasks → blockers →
   project 行；`devlead_board_update` 的 project 引用（id/title/path）在锁内快照上解析，预检使用
   固定 synthetic project id，长引用不再误报 `BOARD_LIMIT_EXCEEDED`。start/预创建失败只降级看板
-  （P2-2），不阻塞服务激活。notes store 固定派生 `dirname(boardPath)/notes/index.json`，正文为
-  `<sanitized project>/<note-id>.md`，index schema v1 只含 metadata；strict schema 拒绝未知字段、
+  （P2-2），不阻塞服务激活。notes store 固定派生 `<workspace>/<statePath>/notes/index.json`（内部等价于
+  已解析绝对 `dirname(boardPath)/notes/index.json`），正文为 `<sanitized project>/<note-id>.md`，没有独立
+  notes 路径；index schema v1 只含 metadata，board/notes wire schema、CAS 与工具语义均不因配置改名而变化；
+  strict schema 拒绝未知字段、
   重复 id/directory/path 与 traversal，index ≤128 KiB、单 note ≤256 KiB、每项目 ≤100 条，
   `board.json` 不变。index 写入同样走 Host promise 链 + `withFileLock` + `writeFileAtomic`，以
   `expected_revision` 做 CAS；工具仅 create（始终空正文）/update-metadata/delete，所有正文读写都用返回的
@@ -2674,8 +2680,8 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   lead 拥有看板路径时注入 `__DSH_DEVLEAD_BOARD__ = { boardPath, schemaVersion:1, pathPlatform,
   leadSessionId, override }`；没有 lead 时不注入。页面在 lead 启用前加载时，client 从该 lead
   Session summary 的 `cwd` 派生默认路径 `<cwd>/.dsh/devlead/board.json`（与 Host 共用 protocol
-  的目录段常量）；使用 Config `boardPath` override 的部署在 late-enable 场景需要刷新页面才能
-  拿到 override 路径与 `override:true`。模式 off、Session 切换、路径切换会立即重渲染并 dispose
+  的目录段常量）；使用自定义 Config `statePath` 的部署在 late-enable 场景需要刷新页面才能
+  拿到自定义解析路径与 `override:true`。global 的绝对 `boardPath` 字段名保持不变。模式 off、Session 切换、路径切换会立即重渲染并 dispose
   旧面板，不继续读旧文件。tab `kind='devlead-board'`，definition id
   `@yankeguo/dsh-client-ui-devlead/board`；keyed body slot 使用 id，`openTab` 使用 kind。
   `useBoardFile` 用 tab SessionId + 解析出的看板路径执行 `stat` / `readBytes` / `changes`，首读与
@@ -2762,7 +2768,7 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
 | `DEVLEAD_SELF_WATCH` | `watchSession` 试图关注自己（`promptSession` 向自己投递使用 `DEVLEAD_INVALID_INPUT`） |
 | `DEVLEAD_PROJECTION_INVALID` | 持久记录损坏（fold failure）；人类可用 `/devlead reset`（或冻结时的 `/devlead off`）恢复，`setEnabled(true)` 会拒绝并提示先 reset |
 
-| `BOARD_*` | 项目看板/notes 域错误：`BOARD_DISABLED`（没有 active lead/workspace 根、原始根缺失、调用者不是当前 active lead，或看板被禁用）、`BOARD_NOT_FOUND`、`BOARD_INVALID`（含非法 `boardPath`；绝对路径在 Loader/直接构造 fail-fast，错误提示改用相对路径）、`BOARD_PROJECT_NOT_FOUND` / `BOARD_PROJECT_AMBIGUOUS`（锁内快照解析失败）、`BOARD_REVISION_CONFLICT`（board 或 notes index CAS）、`BOARD_NOTE_NOT_FOUND`（metadata 或 indexed body 缺失）、`BOARD_LIMIT_EXCEEDED`、`BOARD_IO_ERROR`（含 degraded start 后的真实 I/O 故障）。board/notes start 失败本身不映射为服务加载失败，只记录 `boardStartError` 并 warn；配置校验的 `BOARD_INVALID` fail-fast 不属于这种降级 |
+| `BOARD_*` | 项目看板/notes 域错误：`BOARD_DISABLED`（没有 active lead/workspace 根、原始根缺失、调用者不是当前 active lead，或看板被禁用）、`BOARD_NOT_FOUND`、`BOARD_INVALID`（含非法 `statePath` 或任何遗留 `boardPath` 键；在 Loader/直接构造 fail-fast，带 `/statePath`，旧键错误说明重命名与迁移操作）、`BOARD_PROJECT_NOT_FOUND` / `BOARD_PROJECT_AMBIGUOUS`（锁内快照解析失败）、`BOARD_REVISION_CONFLICT`（board 或 notes index CAS）、`BOARD_NOTE_NOT_FOUND`（metadata 或 indexed body 缺失）、`BOARD_LIMIT_EXCEEDED`、`BOARD_IO_ERROR`（含 degraded start 后的真实 I/O 故障）。board/notes start 失败本身不映射为服务加载失败，只记录 `boardStartError` 并 warn；配置校验的 `BOARD_INVALID` fail-fast 不属于这种降级 |
 取消（`AbortSignal`）不映射到上面任何码：调用按标准 `AbortError` 拒绝。
 
 ## 9. 测试策略
@@ -2810,10 +2816,12 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   **全局单活**（第二会话被 `DEVLEAD_ALREADY_ACTIVE` 拒绝且消息含占用者、并发 on 只成功一个、
   off 立即释放、archived 占用者释放、启动时多个 live enabled 只保留一个、冷持久占用者拒绝
   新开启、冷占用者删除后释放、archived 冷占用者经 controller resume 后释放、无法 resume 时的专门文案）。
-  项目看板覆盖动态路径与生命周期（无 lead/原始根缺失时 disabled、空白默认从 `SessionHeader.cwd`
-  派生、非空 Config 仅接受根内相对 override、绝对/反斜杠/空段/`..` 逃逸在配置边界以
-  `BOARD_INVALID` fail-fast、最终组件 symlink 在 start/read 以 `BOARD_INVALID` 拒绝、
-  `/devlead off` 与 lead 切换释放旧 store/watcher、start/预创建失败只 degraded 且服务照常激活）、
+  项目看板覆盖动态路径与生命周期（无 lead/原始根缺失时 disabled、缺省 `statePath` 从
+  `SessionHeader.cwd` 下的 `.dsh/devlead` 派生、自定义 Config 仅接受根内相对目录，
+  绝对/反斜杠/空段/`..` 逃逸在配置边界以 `BOARD_INVALID` + `/statePath` fail-fast、任何遗留
+  `boardPath` 键按同结构拒绝并提示重命名/迁移、最终 `board.json` symlink 在 start/read 以
+  `BOARD_INVALID` 拒绝而父目录链 symlink 可接受、`/devlead off` 与 lead 切换释放旧 store/watcher、
+  start/预创建失败只 degraded 且服务照常激活）、
   板文件读写/CAS/watcher、64 KiB 读取裁剪与 `truncated`、以及长
   workspace path/title 引用在锁内快照上解析（P2-1，不再误报 `BOARD_LIMIT_EXCEEDED`）。notes store 覆盖
   directory/note id/absolutePath 派生、missing index、strict/corrupt/超限降级、metadata/full-body read、
@@ -2853,7 +2861,7 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   注册开关与 `openTab`，以及看板卡片、空态、错误态、XSS 文本转义、a11y 属性、`useId`
   id 隔离、折叠区与 zh/en 渲染。本轮动态看板另覆盖 global 形状
   （`leadSessionId`/`override` 的严格校验与旧 Host 缺字段兼容）、lead-only 入口门控、global
-  缺失时从 Session summary `cwd` 派生默认路径、Config override 对所有 lead 生效、off/切换后
+  缺失时从 Session summary `cwd` 派生默认路径、自定义 Config `statePath` 对所有 lead 生效、off/切换后
   dispose 与不读旧文件。rc.4 另覆盖共享 `useWorkspaceFile` 的 board/index/note 状态、notes 路径/schema、
   chips/count/latest、全栏 reader 各空载错态、外部修改、坏 index/note 局部降级、valuePath 防旧响应、
   Markdown 常用子集/XSS 惰性文本与紧凑 2/3/1 列/a11y。

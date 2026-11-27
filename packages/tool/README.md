@@ -37,13 +37,17 @@ to create the directory. Domain failures are translated to `HarnessError` with a
 `DEVLEAD_*` code (board failures use `BOARD_*`). Tool outputs are canonical JSON validated against
 their declared output schemas.
 
-The board tools follow the board's default-on lifecycle: the active lead Session's original
-workspace root owns `<header.cwd>/.dsh/devlead/board.json`; a non-blank deployment `boardPath` is a
-relative-only override resolved against that same root. With no active lead / workspace root they
-report `BOARD_DISABLED`. Both derived and explicit-override boards require the recorded original
-workspace root to still exist as a directory: the Host never recreates a deleted or moved workspace
-just to host the board, and an explicit `boardPath` cannot bypass this missing-root gate. They never
-accept a board file path argument — the path is derived by the Host or set by deployment config only.
+The board tools follow the board's default-on lifecycle: deployment `statePath` is a relative state
+directory defaulting to `.dsh/devlead`, resolved against the active lead Session's original workspace
+root. The board is `<workspace>/<statePath>/board.json`, and notes share
+`<workspace>/<statePath>/notes/`; exact board JSON paths and independent notes paths are not accepted.
+With no active lead / workspace root they report `BOARD_DISABLED`. Both default and custom directories
+require the recorded original workspace root to still exist as a directory: the Host never recreates a
+deleted or moved workspace just to host the board, and a custom `statePath` cannot bypass this
+missing-root gate. Any legacy `boardPath` key, even blank, fails fast with `BOARD_INVALID` and
+`/statePath`; migrate `boardPath: custom/board.json` to `statePath: custom`, or
+`boardPath: custom/state/board.json` to `statePath: custom/state`. The tools never accept a board file
+or notes-root path argument — both are derived by the Host from deployment config only.
 `devlead_board_read` defaults to project summaries without tasks; a selected project includes at most
 50 tasks by default and reports `truncated:true` beyond that. The whole serialized result is also
 capped at 64 KiB (`DEVLEAD_BOARD_READ_MAX_BYTES`): tasks, then blockers, then whole project rows are
@@ -65,7 +69,8 @@ tool and then edit bodies with native file tools, reconcile stale state before r
 once instead of repeatedly retrying. Ordinary Sessions see neither text nor board tools.
 
 The two notes tools use the same active-lead gate and board-project id/title/absolute-path resolver,
-but never accept a notes file path argument. They read and manage only `dirname(boardPath)/notes/`: the strict
+but never accept a notes file path argument. They read and manage only `<workspace>/<statePath>/notes/`
+(equivalently, the Host's resolved absolute `dirname(boardPath)/notes/`): the strict
 schema-v1 `index.json` contains `{ revision, updatedAt, projects:[{ id, directory, notes[] }] }` and
 metadata only, while each body is `<directory>/<note-id>.md`. Every read/create/update-metadata/delete result adds a
 Host-derived `absolutePath` to returned note metadata; it is not persisted in the disk index. `create` makes an
@@ -191,10 +196,14 @@ supported platform.
 不虚构 id）。`preset` 是 Host 定义的 id；省略/空白先回退插件 `defaultAgentPreset`，再回退
 Host 默认/selectedDefault；无效 id 在创建阶段返回结构化错误，不会被静默忽略。领域错误翻译为
 稳定的 `DEVLEAD_*` code（看板为 `BOARD_*`）。`devlead_board_read` / `devlead_board_update` 提供
-用户可见项目看板：默认启用，由唯一 active lead 的原始 workspace 根 `SessionHeader.cwd` 派生
-`<cwd>/.dsh/devlead/board.json`；非空 `boardPath` 只接受相对该根的 override，空白仍用默认路径。
-没有 lead、没有绝对 workspace 根或原始根缺失时返回 `BOARD_DISABLED`；显式 override 也不能绕过
-missing-root 检查，Host 不重建目录。工具从不接受看板文件路径参数。读取结果按 64 KiB 上限（tasks → blockers →
+用户可见项目看板：默认启用，部署 `statePath` 缺省为相对目录 `.dsh/devlead`，由唯一 active lead 的
+原始 workspace 根 `SessionHeader.cwd` 解析；看板为 `<workspace>/<statePath>/board.json`，notes 同目录
+派生到 `<workspace>/<statePath>/notes/`。不接受精确 board JSON 路径或独立 notes 路径，空白也不是默认值
+别名。没有 lead、没有绝对 workspace 根或原始根缺失时返回 `BOARD_DISABLED`；自定义 `statePath` 也不能绕过
+missing-root 检查，Host 不重建目录。旧 `boardPath` 键只要出现（包括空白）就以 `BOARD_INVALID` +
+`/statePath` fail-fast；把 `boardPath: custom/board.json` 迁移为 `statePath: custom`，或把
+`boardPath: custom/state/board.json` 迁移为 `statePath: custom/state`。工具从不接受看板文件或 notes 根
+路径参数。读取结果按 64 KiB 上限（tasks → blockers →
 project 行从尾部裁剪，`truncated:true`）；update 使用 per-project revision CAS；插件只写文件，是否提交由各仓库
 自行决定；project 引用在锁内快照上解析，长
 workspace path/title 不再误报 `BOARD_LIMIT_EXCEEDED`，未知引用仍是
@@ -210,7 +219,8 @@ workspace path/title 不再误报 `BOARD_LIMIT_EXCEEDED`，未知引用仍是
 update-metadata 只改 title/summary。read/create/update-metadata/delete 返回的每个 note metadata 都增加
 Host 派生的 `absolutePath`（不写入磁盘 index），所有正文读写都用 DSH 原生 `read`/`write`/`edit` 作用于
 该绝对路径，不要手改 `notes/index.json`。project 仍按看板 id/title/绝对 path 解析，
-两个工具都不接受文件路径参数。notes 根目录固定为 `dirname(boardPath)/notes/`，index 只含 metadata，正文路径固定为
+两个工具都不接受文件路径参数。notes 根目录固定为 `<workspace>/<statePath>/notes/`（等价于 Host 内部
+已解析绝对 `dirname(boardPath)/notes/`），index 只含 metadata，正文路径固定为
 `<directory>/<note-id>.md`；工具管理的 index/metadata/删除写入使用跨进程文件锁、原子替换与
 `expected_revision` CAS，index 是提交事实、orphan Markdown 忽略。index ≤128 KiB、单 note ≤256 KiB 合法 UTF-8、
 每项目 ≤100 条。详见

@@ -73,19 +73,22 @@ To pin an exact version:
 dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.3-rc.2
 ```
 
-0.4.3-rc.2 is the second prerelease candidate for the planned 0.4.3 release. It retains rc.1's
-intentional 0.x contract cleanup and adds another **breaking configuration change**: a non-blank
-`boardPath` must now be relative to the active lead Session's original workspace root. Absolute POSIX,
-Windows drive and UNC paths fail Loader validation or direct service construction with `BOARD_INVALID`
-and a `/boardPath` issue instead of silently falling back. Blank still derives
-`<lead workspace>/.dsh/devlead/board.json`; backslashes, empty segments, `..` escapes and a symlinked
-final component are rejected. Before upgrading, convert an old absolute path such as
-`/work/project/custom/board.json` to `custom/board.json` when the workspace is `/work/project`. A board
-outside that workspace must be moved into it **together with its sibling `notes/` directory**. No board
-content migration or `/devlead reset` is needed. The release uses npm dist-tag `next` and stable `latest`
-stays 0.4.2. Follow the complete upgrade steps in the
-[0.4.3-rc.2 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.3-rc.2.md);
-rc.1's tool migrations still apply, and the previous stable patch is documented in the
+0.4.3-rc.2 is the currently published prerelease candidate. The next candidate, 0.4.3-rc.3 (not yet
+published), retains the rc.1/rc.2 contract changes and adds another **breaking configuration change**:
+deployment key `boardPath` is renamed to `statePath`, whose value is now a **relative directory**,
+defaulting to `.dsh/devlead`. It is resolved against the active lead Session's original workspace root
+(`SessionHeader.cwd`, not a worktree checkout): board data is `<workspace>/<statePath>/board.json`, and
+notes are `<workspace>/<statePath>/notes/{index.json,<project>/<note-id>.md}`. The value names a directory,
+not an exact board JSON file, and there is no separate notes-path setting. Any legacy `boardPath` key, even
+a blank one, fails fast with structured `BOARD_INVALID` and `/statePath`, with an explicit rename and
+migration message; it is never ignored. Absolute POSIX, Windows drive and UNC paths, backslashes, empty
+segments and `..` escapes are likewise rejected. Before upgrading, replace
+`boardPath: custom/board.json` with `statePath: custom`, keeping `board.json` and `notes/` together in
+that directory. No board-content migration or `/devlead reset` is needed. Follow the complete upgrade
+steps in the
+[0.4.3-rc.3 release-notes draft](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.3-rc.3.md);
+rc.1's tool migrations and rc.2's workspace-relative location requirement still apply, and the previous
+stable patch is documented in the
 [0.4.2 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.2.md).
 
 Advanced users can install individual packages and insert the corresponding loader rows into the
@@ -400,7 +403,7 @@ profile's `cordis.patch.yml` — DSH replaces a row's whole config):
     wakeColdSession: true        # resume a cold DevLead Session to deliver queued notifications
     defaultAgentPreset: ''       # default Agent preset for created sessions (empty = Host default)
     questionTtlMs: 86400000      # open-question TTL (24h; 0 disables lazy expiry)
-    boardPath: custom/board.json # optional relative override; '' derives <lead workspace>/.dsh/devlead/board.json
+    statePath: custom/state      # optional relative state directory; default .dsh/devlead
 ```
 
 | Key | Default | Range / notes |
@@ -412,23 +415,26 @@ profile's `cordis.patch.yml` — DSH replaces a row's whole config):
 | `wakeColdSession` | `true` | when `true`, a cold lead Session with queued notifications is resumed to deliver them; set `false` to keep the queues in memory until a human opens the lead Session |
 | `defaultAgentPreset` | `''` | default value used when a created session names no `preset`; empty means the Host's effective default. An invalid id fails creation with a structured error |
 | `questionTtlMs` | `86400000` | non-negative safe integer; lazy open-question TTL (24h), `0` disables expiry. Answered questions do not retroactively expire |
-| `boardPath` | `''` (derived) | optional **relative** override resolved with `path.resolve` against the active lead Session's original workspace root (`SessionHeader.cwd`, not a worktree checkout). Trimmed blank derives `<lead workspace>/.dsh/devlead/board.json`; non-blank values such as `.dsh/devlead/board.json` or `custom/board.json` win over that derivation. Absolute POSIX paths, Windows drive/UNC paths, backslashes, empty segments, and `..` escapes are rejected at Loader/direct construction with `BOARD_INVALID`; the resolved path must remain inside the workspace. **Breaking:** an existing absolute `boardPath` now fails startup instead of falling back; change it to a relative path (see the migration note below). The final path component must not be a symlink; symlinks in the parent directory chain are fine. Only the lead AI writes through tools; humans/browser clients are read-only. See [docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md) |
+| `statePath` | `.dsh/devlead` | optional **relative directory** resolved against the active lead Session's original workspace root (`SessionHeader.cwd`, not a worktree checkout). The board is `<workspace>/<statePath>/board.json`; notes are `<workspace>/<statePath>/notes/{index.json,<project>/<note-id>.md}`. This key names the state directory, not the JSON file, and there is no independent notes-path setting. Omitting it uses the default; blank is not a fallback alias. Absolute POSIX paths, Windows drive/UNC paths, backslashes, empty segments, and `..` escapes fail fast at Loader/direct construction with structured `BOARD_INVALID` and `/statePath`. **Breaking:** any legacy `boardPath` key fails startup, even when blank; the error explicitly says it was renamed to `statePath`, now a relative directory defaulting to `.dsh/devlead`, and explains how to migrate (see below). The final derived `board.json` must not be a symlink; symlinks in the parent directory chain are fine. Only the lead AI writes through tools; humans/browser clients are read-only. See [docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md) |
 
-**Migrating an absolute `boardPath`:** if the old value was `/work/project/custom/board.json` and the
-lead's original workspace root is `/work/project`, configure `custom/board.json`. A board outside that
-workspace is no longer supported; move it beneath the original workspace and use its relative path.
-The old absolute value is rejected at startup with an actionable `BOARD_INVALID` error, never silently
-ignored or replaced by the default path.
+**Migrating `boardPath`:** delete the old key rather than leaving it blank. Replace
+`boardPath: custom/board.json` with `statePath: custom`, or `boardPath: custom/state/board.json` with
+`statePath: custom/state`. For an older absolute value such as `/work/project/custom/board.json`, use
+`statePath: custom` when the lead's original workspace root is `/work/project`; a board outside that root
+must first be moved into it **together with its sibling `notes/` directory**. The resulting files must be
+`<workspace>/custom/board.json` and `<workspace>/custom/notes/…` (or the corresponding `custom/state/`
+layout). Any old key is rejected at startup with an actionable `BOARD_INVALID` / `/statePath` error, never
+silently ignored or replaced by the default path.
 
 The board is enabled by default and follows the single active lead: that Session's original workspace
 root (its `SessionHeader.cwd`, not a worktree checkout) owns the file, and turning the lead off, switching
 leads or changing the workspace releases the old store and reads the new file immediately. With no active
-lead or no absolute original workspace root (including when a relative override is configured) the board is disabled: the tools report `BOARD_DISABLED`, the summary
-is empty and no board UI appears. Both the derived path and a relative override require that the lead's
+lead or no absolute original workspace root (including when a custom `statePath` is configured) the board is disabled: the tools report `BOARD_DISABLED`, the summary
+is empty and no board UI appears. Both the default and a custom state directory require that the lead's
 recorded original workspace root still exists as a directory: if it was deleted or moved, the Host keeps
 the board disabled (`boardDisabledReason = missing-workspace`), logs one warning and **never recreates the
 workspace** just to host the board; returning the original workspace lets the next
-lead sync/switch resolve either the default or relative-override path again. A start failure (for example an unwritable directory) degrades only the
+lead sync/switch resolve either the default or custom state path again. A start failure (for example an unwritable directory) degrades only the
 board — DevLead keeps loading and the board tools report `BOARD_IO_ERROR`; the next lead sync (even to the
 same path) or path switch retries `start()`.
 
@@ -443,8 +449,9 @@ revision has committed. See [docs/BOARD.md](https://github.com/yankeguo/dsh-devl
 for the strict schema, corruption handling, and durability boundary. The wire schema and limits are
 owned by `@yankeguo/dsh-devlead-protocol` and shared by the Host validator and the browser decoder.
 
-Project notes live under `dirname(boardPath)/notes/`: a strict schema-v1 `index.json` contains metadata only,
-and each Markdown body is `<sanitized project>/<note-id>.md`. The index is capped at 128 KiB, each note at
+Project notes share the configured state directory: the board is `<workspace>/<statePath>/board.json`, the
+strict schema-v1 metadata-only index is `<workspace>/<statePath>/notes/index.json`, and each Markdown body is
+`<workspace>/<statePath>/notes/<sanitized project>/<note-id>.md`. There is no independent notes path. The index is capped at 128 KiB, each note at
 256 KiB, and each project at 100 notes; `board.json` itself is unchanged. The lead uses
 `devlead_board_note_write` only to create an empty note, update title/summary, or delete; `expected_revision`
 protects index metadata writes. **Note tools never accept or return Markdown bodies.** All body reads/edits use
@@ -489,11 +496,11 @@ permanent bar on every conversation:
   search results use a separate row surface and show no mark.
 - **Project board (lead-only, on by default):** the tab, its guide entry and the Session-header
   button exist only in the on-screen Session that is the active DevLead; other Sessions (and off/old
-  leads) show no board entry, and opening the board requires the lead. With no `boardPath` override
+  leads) show no board entry, and opening the board requires the lead. With the default `statePath`,
   the file is `<lead Session header cwd>/.dsh/devlead/board.json`, published to the browser while the
   lead owns it. If the page was loaded before the lead was enabled, the client derives that default
-  path from the lead Session's summary `cwd`; a deployment that pins `boardPath` needs a page refresh
-  in that late-enable case, because only a fresh page load carries the override path. Turning the mode
+  path from the lead Session's summary `cwd`; a deployment that sets a custom `statePath` needs a page refresh
+  in that late-enable case, because only a fresh page load carries the custom resolved path. Turning the mode
   off or switching leads re-renders immediately and never keeps reading the old file and closes the
   on-screen Session's lingering board tab (including a tab restored from a previous page load). The panel
   reads the board file directly — the schema's 256 KiB file cap applies, not the model tool's 64 KiB

@@ -2,7 +2,7 @@
 
 项目看板为 DevLead 提供跨 Session 的持久项目状态。**看板默认启用、无需任何配置**：唯一事实源
 是当前 active lead 的看板文件，默认由该 Session 原始 workspace 根派生
-`<cwd>/.dsh/devlead/board.json`（`boardPath` 配置项只是可选的 workspace 相对路径 override）。人类/浏览器
+`<cwd>/.dsh/devlead/board.json`（部署配置 `statePath` 是可选的 workspace 相对状态目录，默认 `.dsh/devlead`）。人类/浏览器
 只读，只有启用 DevLead 模式的 lead AI 可以通过
 `devlead_board_update` 写入看板、通过 `devlead_board_note_write` 维护项目 notes 索引；note 正文由 lead 使用
 DSH 原生 read/write/edit 编辑。Step A 实现 Host
@@ -15,15 +15,15 @@ lead-only 客户端入口与 notes reader 以本页当前契约为准。
   `<SessionHeader.cwd>/.dsh/devlead/board.json`。`SessionHeader.cwd` 是 Session **创建时的原始
   workspace 根**，不是某次 turn 的 effective/worktree cwd；worktree 隔离的 lead 仍把看板放在
   项目根，而不是 `.agents/worktrees/...` 检出里。
-- **所有路径都要求 workspace 根仍然存在**：Host 在派生默认路径或解析相对 override 前先确认该
+- **所有路径都要求 workspace 根仍然存在**：Host 在派生默认路径或解析自定义 `statePath` 前先确认该
   `cwd` 仍是**已存在的目录**。不存在（cold lead 记录的 workspace 被删除/移走/变成普通文件，或无法
   `stat`）时看板进入 disabled 状态，reason 为 `missing-workspace`
   （`ctx.devLead.boardDisabledReason` 可读），只记录一条 warning；
   **不会 `mkdir` 重建 workspace 根，也不会写入任何文件**，工具返回 `BOARD_DISABLED`、摘要为空、
   不注入浏览器 global。workspace 恢复后，下一次 lead 同步/切换会重新解析并重新启用看板。
-  相对 `boardPath` override 同样受此限制，因为解析结果也位于该根目录内。
+  自定义 `statePath` 同样受此限制，因为解析结果也位于该根目录内。
 - **没有 lead 就看板禁用**：没有 active lead 时，或 lead 的 header 没有绝对原始 workspace 根时
-  （即使配置了相对 override），工具返回 `BOARD_DISABLED`、动态摘要为空、浏览器 global 不注入、
+  （即使配置了自定义 `statePath`），工具返回 `BOARD_DISABLED`、动态摘要为空、浏览器 global 不注入、
   UI 不显示任何看板入口；不会伪造相对路径，也不会回退到插件安装目录。
 - **单活即单 store**：DevLead 模式本来就是 Host 级单活（见 [DESIGN](DESIGN.md) §2），因此
   同一时刻最多只有一个看板 store 与一个目录 watcher。`/devlead off`、lead 切换到另一个
@@ -33,43 +33,55 @@ lead-only 客户端入口与 notes reader 以本页当前契约为准。
 - **切换立即生效**：下一次 `devlead_board_read` / `devlead_board_update` 与浏览器面板读的是
   当前 active lead 的文件，绝不继续读旧 lead 的文件；旧文件里的数据不会迁移。
 
-## 配置（可选 override）
+## 配置（`statePath` 相对状态目录）
 
-默认零配置即可用。需要自定义看板位置时，在 profile 的 `cordis.patch.yml` 中覆盖 loader row
-`devlead` 的 `config.boardPath`；显式非空时它**优先于自动派生**，但只能是相对于 active lead
-原始 workspace 根（`SessionHeader.cwd`，不是 worktree 检出）的路径。trim 后为空白表示“使用
-active lead workspace 自动派生”；非空值通过 `path.resolve(workspaceRoot, boardPath)` 解析，
-并用 `path.relative` 断言结果仍在该根内。可写 `.dsh/devlead/board.json` 或 `custom/board.json`。
+默认零配置即可用。需要自定义看板与 notes 的共同位置时，在 profile 的 `cordis.patch.yml` 中覆盖
+loader row `devlead` 的 `config.statePath`。它只能是相对于 active lead 原始 workspace 根
+（`SessionHeader.cwd`，不是 worktree 检出）的**目录**；省略时默认 `.dsh/devlead`，空白不是默认值的
+别名。路径派生固定为：
+
+```text
+board = <workspace>/<statePath>/board.json
+notes = <workspace>/<statePath>/notes/{index.json,<project>/<note-id>.md}
+```
+
+因此 `statePath: custom/state` 对应 `<workspace>/custom/state/board.json` 与
+`<workspace>/custom/state/notes/…`。`statePath` 只表示目录，不要把旧的精确 board JSON 文件值（例如
+`custom/board.json`）当作新配置，也没有独立 notes 路径配置；Host 通过 `path.resolve(workspaceRoot, statePath)`
+解析状态目录，再拼接固定文件名，并断言结果仍在原始 workspace 根内。
 
 POSIX 绝对路径、Windows 盘符/UNC（包括 `/tmp/x`、`C:\\x`、`C:/x`、`\\\\server\\share`）、
-反斜杠、空路径段与 `..` 逃逸都在 Loader/直接构造时以 `BOARD_INVALID` 和 `/boardPath` issue
-**fail-fast**；错误提示改成相对路径，绝不静默回退到默认文件。`../x`、`a/../../x` 因此不可配置；
-解析后仍位于根内的规范化不改变 notes、权限或 CAS 语义。路径只来自部署配置；两个 AI 工具都没有、
-也不接受 board 文件路径参数。
+反斜杠、空路径段与 `..` 逃逸都在 Loader/直接构造时以结构化 `BOARD_INVALID` 和 `/statePath` issue
+**fail-fast**，绝不静默回退到默认目录。`../x`、`a/../../x` 因此不可配置；解析后仍位于根内的规范化
+不改变 notes、权限或 CAS 语义。路径只来自部署配置；board/notes AI 工具都没有、也不接受 board 文件或
+notes 根路径参数。
 
-**Breaking 迁移：**既有绝对 `boardPath` 部署升级后会启动失败。若旧值是
-`/work/project/custom/board.json` 且 lead 原始 workspace 根是 `/work/project`，改成
-`custom/board.json`；workspace 外的看板不再受支持，需先移入该根目录。迁移说明也随下一 rc 的
-release notes 发布。
+**Breaking 迁移：**旧 `boardPath` 键只要出现就 fail-fast，包括空白值，不会作为未知键被忽略。错误同样
+是结构化 `BOARD_INVALID` + `/statePath`，并明确说明「boardPath 已重命名为 statePath，且现在是相对目录
+（默认 .dsh/devlead）」以及迁移操作：删除 `boardPath`，把 `boardPath: custom/board.json` 改为
+`statePath: custom`，把 `boardPath: custom/state/board.json` 改为 `statePath: custom/state`。更早版本
+若使用 `/work/project/custom/board.json` 且 lead 原始 workspace 根是 `/work/project`，改配
+`statePath: custom`；workspace 外的看板需先与同级 `notes/` 一起移入该根目录。迁移后
+`board.json` 与 `notes/` 必须位于所选状态目录，不需要改写 board/notes 内容。
 
 ```yaml
 - id: devlead
   name: '@yankeguo/dsh-devlead'
   config:
     # 其余 devlead config 按部署需要保留；DSH 整体替换一行的 config。
-    # 可选：相对 active lead 原始 workspace 根；省略/空白则使用默认派生。
-    boardPath: custom/board.json
+    # 可选：相对 active lead 原始 workspace 根的状态目录；省略则默认 .dsh/devlead。
+    statePath: custom/state
 ```
 
-`boardPath` 的**最终组件不能是 symlink**：写入是把同目录临时文件原子 rename 到该路径，会替换
-symlink 本身而不是它指向的目标文件，外部对目标的编辑因此不会被看板读到；目录链中的 symlink
-可以正常工作（`mkdir`、`stat` 与目录 watch 都按解析后的目录进行）。插件不做 realpath
+最终派生的 **`board.json` 不能是 symlink**：写入是把同目录临时文件原子 rename 到该路径，会替换
+symlink 本身而不是它指向的目标文件，外部对目标的编辑因此不会被看板读到；状态目录及其父目录链中的
+symlink 可以正常工作（`mkdir`、`stat` 与目录 watch 都按解析后的目录进行）。插件不做 realpath
 canonicalization。
 
 看板路径解析完成后，`DevLeadBoardStore.start()` 先以
 `mkdir(dirname, {recursive:true, mode:0o700})` 幂等预创建父目录（不修改已有目录权限），再启动
 读取/监听。这保证浏览器 chokidar 首开时父目录已存在，Host 首次写入能触发 `add` 事件。该预创建
-只发生在**已确认存在的原始 workspace 根**之上，默认路径与相对 override 都一样：根不存在时不会进入
+只发生在**已确认存在的原始 workspace 根**之上，默认与自定义 `statePath` 都一样：根不存在时不会进入
 `start()`（见上文 `missing-workspace`）。
 `update()` 仍先完成逻辑预检，再执行自己的 mkdir，因此失败预检不会由 update 新建目录。文件以
 `0600` 原子替换。是否把 `.dsh/devlead/` 加入仓库的 `.gitignore` 由用户/仓库所有者决定；
@@ -147,10 +159,11 @@ workspace 根时是 disabled store）：
 - `summary()`：从最后合法内存缓存同步渲染摘要；禁用或空 projects 时为空串。
 
 `ctx.devLead.boardLeadSessionId` / `boardPathOverride` / `boardStartError` /
-`boardDisabledReason` 暴露当前 store 归属的 lead Session、路径是否来自 Config override、最近一次
+`boardDisabledReason` 暴露当前 store 归属的 lead Session、路径是否来自自定义 Config `statePath`、最近一次
 start 失败（degraded 时非空），以及看板当前被禁用的原因（`no-workspace` /
-`relative-workspace` / `missing-workspace`；有活动 store 时 undefined）。非法 override 不再成为
-disabled 状态，而是在配置/解析边界直接抛出 `BOARD_INVALID`。
+`relative-workspace` / `missing-workspace`；有活动 store 时 undefined）。`boardPathOverride` 是保持兼容的
+Host **观测字段名**，不是仍可使用的部署配置键。非法 `statePath` 或遗留 `boardPath` 不会成为 disabled
+状态，而是在配置/解析边界直接抛出 `BOARD_INVALID` + `/statePath`。
 `ctx.devLead.updateBoard(agent, patch, expectedRevision?, signal?)` 额外补上 lead 身份；调用者
 必须是当前 active lead，否则 `BOARD_DISABLED`。`read()` / `update()` 在没有 board 或
 `expectedRevision` 不是非负安全整数时返回 rejected Promise；它与**目标 project 的 revision** 比较，
@@ -179,11 +192,11 @@ schema 错误、未知字段或超限文件会产生带 RFC 6901 JSON pointer �
 ## 项目 Markdown notes（schema v1）
 
 每个看板可以带一组项目 notes。它们与 `board.json` 同生命周期、同 active lead 所有权，但使用独立文件；
-**不修改 board.json 的 schema、revision 或内容，也不新增配置项、Host global 或 Remote API**。notes 根目录
-只由当前已解析的 `boardPath` 派生：
+**不修改 board.json 的 schema、revision 或内容，也不新增独立 notes 配置、Host global 或 Remote API**。
+notes 根目录只由 active lead 原始 workspace 根与 Config `statePath` 派生：
 
 ```text
-<dirname(boardPath)>/
+<workspace>/<statePath>/
 ├── board.json                 # 原有看板，完全不变
 └── notes/
     ├── index.json            # schema v1；已提交 metadata 的唯一事实源
@@ -198,8 +211,9 @@ agent 不得手改 `notes/index.json`。
 
 ### 路径、id 与严格 index schema
 
-`DevLeadBoardNotesStore` 固定 `path = dirname(boardPath)/notes`、`indexPath = <path>/index.json`，调用者
-不能传入 root、index 或正文路径。project directory 由 Host 从原始 board project id 生成：NFKD/lowercase
+`DevLeadBoardNotesStore` 固定 `path = <workspace>/<statePath>/notes`（等价于内部已解析绝对
+`dirname(boardPath)/notes`）、`indexPath = <path>/index.json`，调用者不能传入 root、index 或正文路径，
+也没有独立 notes 路径配置。project directory 由 Host 从原始 board project id 生成：NFKD/lowercase
 后保留安全 ASCII 段，截断的可读 base 加 project id 的 SHA-256 短 digest，避免不同 id 清理成同名目录；
 极端短 digest 冲突使用完整 hash。已有项目的 directory 永久沿用 index 中的值。create 省略 note id 时由
 Host 生成 UUID；调用者提供的 id 必须匹配 `[A-Za-z0-9][A-Za-z0-9._-]*`，不能是路径或 traversal。
@@ -287,7 +301,7 @@ project directory + note id 派生，只出现在工具结果，不进入 strict
 
 ### 坏 index、orphan 与 board 重建后的恢复
 
-先执行 `/devlead off`（或停止 Host），确保没有 writer，再备份整个 `dirname(boardPath)/notes/`；不要在与
+先执行 `/devlead off`（或停止 Host），确保没有 writer，再备份整个 `<workspace>/<statePath>/notes/`；不要在与
 active lead 并发写入时手改文件。恢复后重新 `/devlead on`，store 会 fresh read 并 strict-validate：
 
 - **坏 JSON / 非法 UTF-8 / schema 错误**：保留备份，修复 `notes/index.json` 后重试。若只需丢弃全部
@@ -426,17 +440,17 @@ index 提交或 read/list 对账后的新 revision 在下一次上下文重建�
 ## Step B 浏览器契约
 
 Host 只在**当前 active lead 拥有看板路径时**注入 global：每次 `webserver/index-inject` 渲染
-时写入；没有 lead 或绝对原始 workspace 根时不注入（有根时，路径来自默认派生或相对 Config
-override）。看板 start 失败（degraded）仍按
+时写入；没有 lead 或绝对原始 workspace 根时不注入（有根时，路径来自默认或自定义 Config
+`statePath`）。看板 start 失败（degraded）仍按
 当前 lead 发布 global：路径已经确定，浏览器面板照常打开并显示空态/读取错误（`BOARD_IO_ERROR`）。
 
 ```ts
 window.__DSH_DEVLEAD_BOARD__ = {
-  boardPath: '/path/to/workbox/.dsh/devlead/board.json', // 派生路径或 Config override
+  boardPath: '/path/to/workbox/.dsh/devlead/board.json', // Host 已解析绝对路径；字段名保持 boardPath
   schemaVersion: 1,
   pathPlatform: 'posix', // Windows Host 为 'win32'
   leadSessionId: 'session-...', // 页面渲染时持有看板的 active lead
-  override: false, // boardPath 是否来自部署 Config override
+  override: false, // 是否来自自定义 Config statePath
 }
 ```
 
@@ -465,8 +479,8 @@ kind 上。模式 off、Session 切换、路径切换会立即重渲染并 dispo
 `node:path.join` 语义，Windows 盘符/UNC 也做规范化），path platform 取 global 已知的
 `pathPlatform`，没有 global 时按 `cwd` 语法识别 `/`（posix）或盘符/反斜杠（win32）——只用于
 语法判断，仍要求 cwd 是该平台的绝对路径。因此默认路径部署不需要刷新页面也能出现入口。
-**使用 Config `boardPath` override 的部署在这种 late-enable 场景需要刷新页面**：只有刷新后的
-HTML 才携带 override 的真实路径与 `override:true`；client 不会把 override 路径猜成默认路径。
+**使用自定义 Config `statePath` 的部署在这种 late-enable 场景需要刷新页面**：只有刷新后的
+HTML 才携带自定义状态目录的真实解析路径与 `override:true`；client 不会把自定义路径猜成默认路径。
 global 存在但页面渲染后换了 lead 时，client 按 `leadSessionId` 判定归属，不匹配就回到从当前
 屏幕 lead 的 summary 派生；`override:true` 的 global 是部署级路径，对所有 lead 生效。
 派生路径的 workspace 根已不存在时 Host 不发布 global；但页面在 late-enable 场景下仍可能按
@@ -519,8 +533,8 @@ client 按旧部署级宽路径语义继续工作；旧 client 会忽略新字�
   “读取中”），看板文件未就绪时只显示「不可用」。symlink/realpath 别名仍需 Step C 由 Host
   权威解析，浏览器不伪造 canonicalization。组标题的 DOM id 用 React `useId` 前缀，多个面板
   实例同时挂载也不会冲突。
-- **notes 路径与读取**：client 从已经解析的 board config 直接派生
-  `dirname(boardPath)/notes/index.json`，目录名/文件名与 limits 复用 protocol 常量。project 只按原始
+- **notes 路径与读取**：client 从已经解析的内部绝对 `boardPath`（global 字段名不变）直接派生
+  `dirname(boardPath)/notes/index.json`，等价于 `<workspace>/<statePath>/notes/index.json`；目录名/文件名与 limits 复用 protocol 常量。project 只按原始
   board project id 关联 notes entry；正文路径只接受 strict schema 已证明的 metadata.path，再按 Host
   `pathPlatform` 拼到固定 notes root。没有任意路径输入、自定义 Remote、写 API 或乐观写状态。
   `useWorkspaceFile` 是 board、notes index、当前 note 共用的只读 `stat/readBytes/changes` 状态机；

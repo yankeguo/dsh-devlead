@@ -12,7 +12,7 @@
 import { watch } from 'node:fs'
 import type { FSWatcher } from 'node:fs'
 import { lstat, mkdir, readFile, stat } from 'node:fs/promises'
-import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep, win32 } from 'node:path'
+import { basename, dirname, isAbsolute, posix, relative, resolve, sep, win32 } from 'node:path'
 import { withFileLock, writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
 import {
   createDevLeadBoardSchema,
@@ -295,109 +295,110 @@ function normalizeUpdatedBy(updatedBy: DevLeadBoardUpdatedBy): DevLeadBoardUpdat
   return { sessionId: updatedBy.sessionId, title: title.length === 0 ? 'DevLead' : title }
 }
 
-/** Where one resolved default board path came from. */
-export type DevLeadBoardPathSource = 'override' | 'workspace'
+/** Default directory containing the board file and notes root. */
+export const DEVLEAD_DEFAULT_STATE_PATH = DEVLEAD_BOARD_DIR_SEGMENTS.join('/')
 
-/** Why automatic board-path resolution disabled the board. */
-export type DevLeadBoardPathDisabledReason = 'no-workspace' | 'relative-workspace' | 'invalid-override'
+/** Where one resolved state directory came from. */
+export type DevLeadStatePathSource = 'override' | 'workspace'
+
+/** Why automatic state-directory resolution disabled the board. */
+export type DevLeadStatePathDisabledReason = 'no-workspace' | 'relative-workspace' | 'invalid-override'
 
 /**
  * Why the Host currently exposes no board store.
  *
  * `missing-workspace` is decided by the service, not by
- * {@link resolveDevLeadBoardPath}: either a derived or relative-override path
- * is only used while the lead's recorded original workspace root still exists
- * as a directory. The store then stays disabled without creating anything, so
- * a cold lead whose workspace was deleted or moved cannot make the Host
- * recreate it to hold the board.
+ * {@link resolveDevLeadStateDir}: the state directory is only used while the
+ * lead's recorded original workspace root still exists as a directory. The
+ * store then stays disabled without creating anything, so a cold lead whose
+ * workspace was deleted or moved cannot make the Host recreate it.
  */
-export type DevLeadBoardDisabledReason = DevLeadBoardPathDisabledReason | 'missing-workspace'
+export type DevLeadBoardDisabledReason = DevLeadStatePathDisabledReason | 'missing-workspace'
 
-/** One automatic board-path resolution outcome. */
-export type DevLeadBoardPathResolution =
-  | { readonly kind: 'resolved'; readonly path: string; readonly source: DevLeadBoardPathSource }
-  | { readonly kind: 'disabled'; readonly reason: DevLeadBoardPathDisabledReason }
+/** One automatic state-directory resolution outcome. */
+export type DevLeadStateDirResolution =
+  | { readonly kind: 'resolved'; readonly path: string; readonly source: DevLeadStatePathSource }
+  | { readonly kind: 'disabled'; readonly reason: DevLeadStatePathDisabledReason }
 
-/** A lexical absolute root used only to prove that a relative override cannot escape its future workspace. */
-const BOARD_PATH_VALIDATION_ROOT = '/__devlead_lead_workspace__'
+/** A lexical absolute root used only to prove that statePath cannot escape its future workspace. */
+const STATE_PATH_VALIDATION_ROOT = '/__devlead_lead_workspace__'
 
 /**
- * Return the actionable configuration error for one non-blank board override.
+ * Return the actionable configuration error for one state directory.
  *
  * The grammar is platform-independent: forward slashes are mandatory, POSIX
  * and Windows absolute forms are forbidden, and lexical `..` escapes fail even
  * though no lead workspace is available at Loader-validation time.
  */
-export function devLeadBoardPathOverrideError(value: string): string | undefined {
+export function devLeadStatePathError(value: string): string | undefined {
   const trimmed = value.trim()
-  if (trimmed.length === 0) return undefined
+  if (trimmed.length === 0) {
+    return 'statePath must be a non-empty relative directory; omit it to use the default ".dsh/devlead"'
+  }
   if (isAbsolute(trimmed) || win32.isAbsolute(trimmed) || /^[A-Za-z]:/u.test(trimmed)) {
-    return 'boardPath must be relative to the lead workspace; absolute POSIX paths, Windows drive paths, '
-      + 'and UNC paths are not supported. Use a relative path such as ".dsh/devlead/board.json"'
+    return 'statePath must be a relative directory in the lead workspace; absolute POSIX paths, Windows drive paths, '
+      + 'and UNC paths are not supported. Use a relative directory such as ".dsh/devlead"'
   }
   if (trimmed.includes('\\')) {
-    return 'boardPath must be relative to the lead workspace and use forward slashes; backslashes are not supported'
+    return 'statePath must be a relative directory using forward slashes; backslashes are not supported'
   }
   if (trimmed.split('/').some(segment => segment.length === 0)) {
-    return 'boardPath must be relative to the lead workspace and must not contain empty path segments'
+    return 'statePath must be a relative directory and must not contain empty path segments'
   }
   const escaped = posix.relative(
-    BOARD_PATH_VALIDATION_ROOT,
-    posix.resolve(BOARD_PATH_VALIDATION_ROOT, trimmed),
+    STATE_PATH_VALIDATION_ROOT,
+    posix.resolve(STATE_PATH_VALIDATION_ROOT, trimmed),
   )
   if (escaped === '..' || escaped.startsWith('../') || posix.isAbsolute(escaped)) {
-    return 'boardPath must stay within the lead workspace; ".." path escapes are not supported'
+    return 'statePath must stay within the lead workspace; ".." path escapes are not supported'
   }
   return undefined
 }
 
 /** Fail fast with the established structured board-validation error. */
-export function assertValidDevLeadBoardPathOverride(value: string): void {
-  const message = devLeadBoardPathOverrideError(value)
+export function assertValidDevLeadStatePath(value: string): void {
+  const message = devLeadStatePathError(value)
   if (message === undefined) return
-  throw new DevLeadBoardError(message, 'BOARD_INVALID', [{ pointer: '/boardPath', message }])
+  throw new DevLeadBoardError(message, 'BOARD_INVALID', [{ pointer: '/statePath', message }])
 }
 
 /**
- * Resolve the board file path for one active lead.
+ * Resolve the shared board/notes state directory for one active lead.
  *
- * A non-blank deployment `boardPath` override is resolved against the lead
- * Session's **original** workspace root (`SessionHeader.cwd`), never against
- * the effective/worktree cwd. Otherwise that root owns the default file
- * `<cwd>/.dsh/devlead/board.json`. The result is absolute, normalized, and
- * proven to remain beneath the original root. Invalid overrides throw a
+ * Deployment `statePath` is resolved against the lead Session's **original**
+ * workspace root (`SessionHeader.cwd`), never against the effective/worktree
+ * cwd. The default is `<cwd>/.dsh/devlead`. The result is absolute, normalized,
+ * and proven to remain beneath the original root. Invalid values throw a
  * structured error rather than silently falling back to the default. A caller
  * with no absolute workspace root gets the disabled outcome instead of a
  * fabricated path. This pure resolver never touches the filesystem; the
  * service additionally verifies that the workspace root still exists as a
- * directory before using either path (a missing root yields
+ * directory before using it (a missing root yields
  * {@link DevLeadBoardDisabledReason} `missing-workspace` rather than a
- * recreated workspace).
- * @param input - optional deployment override and the lead's original workspace root.
- * @returns a normalized absolute path, or the disabled reason.
+ * recreated workspace). The board file is `<path>/board.json`; notes live at
+ * `<path>/notes`.
+ * @param input - optional deployment state directory and original workspace root.
+ * @returns a normalized absolute state directory, or the disabled reason.
  */
-export function resolveDevLeadBoardPath(
-  input: { readonly override?: string; readonly cwd?: string } = {},
-): DevLeadBoardPathResolution {
-  const override = input.override?.trim() ?? ''
-  assertValidDevLeadBoardPathOverride(override)
+export function resolveDevLeadStateDir(
+  input: { readonly statePath?: string; readonly cwd?: string } = {},
+): DevLeadStateDirResolution {
+  const statePath = input.statePath === undefined ? DEVLEAD_DEFAULT_STATE_PATH : input.statePath.trim()
+  assertValidDevLeadStatePath(statePath)
   const cwd = input.cwd?.trim() ?? ''
   if (cwd.length === 0) return { kind: 'disabled', reason: 'no-workspace' }
   if (!isAbsolute(cwd)) return { kind: 'disabled', reason: 'relative-workspace' }
   const workspaceRoot = resolve(cwd)
-  if (override.length > 0) {
-    const path = resolve(workspaceRoot, override)
-    const within = relative(workspaceRoot, path)
-    if (within === '..' || within.startsWith(`..${sep}`) || isAbsolute(within)) {
-      const message = 'boardPath must resolve within the lead workspace; ".." path escapes are not supported'
-      throw new DevLeadBoardError(message, 'BOARD_INVALID', [{ pointer: '/boardPath', message }])
-    }
-    return { kind: 'resolved', path, source: 'override' }
+  const path = resolve(workspaceRoot, statePath)
+  const within = relative(workspaceRoot, path)
+  if (within === '..' || within.startsWith(`..${sep}`) || isAbsolute(within)) {
+    const message = 'statePath must resolve within the lead workspace; ".." path escapes are not supported'
+    throw new DevLeadBoardError(message, 'BOARD_INVALID', [{ pointer: '/statePath', message }])
   }
   return {
     kind: 'resolved',
-    path: join(workspaceRoot, ...DEVLEAD_BOARD_DIR_SEGMENTS, DEVLEAD_BOARD_FILE_NAME),
-    source: 'workspace',
+    path,
+    source: statePath === DEVLEAD_DEFAULT_STATE_PATH ? 'workspace' : 'override',
   }
 }
 
@@ -637,7 +638,7 @@ async function assertFinalComponentNotSymlink(filePath: string): Promise<void> {
     const entry = await lstat(filePath)
     if (!entry.isSymbolicLink()) return
     const message = `board final path component must not be a symlink: ${filePath}`
-    throw new DevLeadBoardError(message, 'BOARD_INVALID', [{ pointer: '/boardPath', message }])
+    throw new DevLeadBoardError(message, 'BOARD_INVALID', [{ pointer: '/statePath', message }])
   } catch (error) {
     if (errorCode(error) === 'ENOENT') return
     throw error
@@ -664,20 +665,19 @@ export class DevLeadBoardStore {
   private legacyMigrationPending = false
 
   /**
-   * @param boardPath - absolute deployment-configured path; blank/undefined disables the board.
+   * @param filePath - absolute board file derived from the state directory; blank/undefined disables the board.
    * @param logger - Host logger for best-effort watcher failures.
    * @param now - injectable clock used by tests.
    */
   constructor(
-    boardPath: string | undefined,
+    filePath: string | undefined,
     private readonly logger: BoardLogger = { warn: () => undefined },
     private readonly now: () => number = Date.now,
   ) {
-    const trimmed = boardPath?.trim() ?? ''
+    const trimmed = filePath?.trim() ?? ''
     if (trimmed.length > 0 && !isAbsolute(trimmed)) {
-      throw new DevLeadBoardError('boardPath must be an absolute path', 'BOARD_INVALID', [
-        { pointer: '/boardPath', message: 'boardPath must be an absolute path' },
-      ])
+      const message = 'board file path must be absolute after statePath resolution'
+      throw new DevLeadBoardError(message, 'BOARD_INVALID', [{ pointer: '/statePath', message }])
     }
     this.filePath = trimmed.length === 0 ? undefined : trimmed
   }
@@ -696,9 +696,9 @@ export class DevLeadBoardStore {
    * Prepare the watchable parent, then load without rejecting for a malformed
    * file.
    *
-   * The service only calls this for an explicit deployment override or for a
-   * derived path whose workspace root already exists as a directory; a missing
-   * workspace root disables the board instead of being recreated here.
+   * The service only calls this for a state-derived path whose original
+   * workspace root already exists as a directory; a missing workspace root
+   * disables the board instead of being recreated here.
    */
   async start(): Promise<void> {
     if (this.filePath === undefined) return
@@ -727,7 +727,7 @@ export class DevLeadBoardStore {
 
   private requirePath(): string {
     if (this.filePath === undefined) {
-      throw new DevLeadBoardError('DevLead board is disabled; configure devlead boardPath', 'BOARD_DISABLED')
+      throw new DevLeadBoardError('DevLead board is disabled; activate a lead with an original workspace root', 'BOARD_DISABLED')
     }
     return this.filePath
   }

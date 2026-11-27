@@ -45,19 +45,22 @@ active lead — turning the mode off or switching leads leaves the old file unto
 new one — and with no lead the board is disabled (the tools report `BOARD_DISABLED`, no board UI
 appears).
 
-To pin the file to a deployment-specific location instead, override loader row `devlead` in the
-profile's `cordis.patch.yml` and set `config.boardPath` to a relative JSON path such as
-`.dsh/devlead/board.json` or `custom/board.json` (retain the other `devlead` config keys because
-DSH replaces the row's whole config). A non-blank value is resolved against the active lead's
-original workspace root (`SessionHeader.cwd`, not its worktree checkout); blank still uses
-`<cwd>/.dsh/devlead/board.json`. Both forms require that root to exist; the Host never recreates a
-missing root. Absolute POSIX paths and Windows drive/UNC paths fail fast with `BOARD_INVALID` at
-Loader/direct construction, with an error asking for a relative path. Backslashes, empty segments,
-and `..` root escapes are also rejected; after `path.resolve`, the path must stay inside the root
-and its final component cannot be a symlink. Existing
-absolute-path deployments fail on startup after upgrade and must migrate to a relative path. If the
-page was loaded before the lead was enabled and you use a custom `boardPath`, refresh the page once
-so the browser receives the resolved override path; the default derived path needs no refresh. Only
+To place the board and notes in a deployment-specific state directory instead, override loader row
+`devlead` in the profile's `cordis.patch.yml` and set `config.statePath` to a relative directory such
+as `custom/state` (retain the other `devlead` config keys because DSH replaces the row's whole
+config). It defaults to `.dsh/devlead` and resolves against the active lead's original workspace root
+(`SessionHeader.cwd`, not its worktree checkout): the board is
+`<workspace>/<statePath>/board.json`, and notes share `<workspace>/<statePath>/notes/`. The value is
+a directory, not a JSON filename; there is no independent notes path and blank is not a default alias.
+Both default and custom directories require that root to exist; the Host never recreates a missing
+root. Absolute POSIX paths, Windows drive/UNC paths, backslashes, empty segments and `..` root escapes
+fail fast with structured `BOARD_INVALID` and `/statePath` at Loader/direct construction. After
+`path.resolve`, the directory must stay inside the root and the final derived `board.json` cannot be
+a symlink; parent-directory symlinks are accepted. Any legacy `boardPath` key, even blank, is rejected
+with an actionable rename/migration error: replace `boardPath: custom/board.json` with
+`statePath: custom` (or `boardPath: custom/state/board.json` with `statePath: custom/state`). If the
+page was loaded before the lead was enabled and you use a custom `statePath`, refresh the page once
+so the browser receives the resolved custom path; the default derived path needs no refresh. Only
 the lead AI writes via `devlead_board_update`; humans and browser clients are read-only. See
 [docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md) for schema v1 and
 the `window.__DSH_DEVLEAD_BOARD__` contract. No user path is hardcoded in this package.
@@ -66,7 +69,7 @@ Each project can also carry long-form Markdown notes outside `board.json`: the a
 `devlead_board_note_read` for list/read and `devlead_board_note_write` only for create/metadata/delete,
 then edits the returned absolute Markdown path with DSH-native file tools. People get a compact notes chip
 and an immersive, read-only Markdown reader in the board. Notes use a bounded metadata index under
-`dirname(boardPath)/notes/`; Host reads lazily reconcile file metadata without rewriting bodies, and the
+`<workspace>/<statePath>/notes/`; Host reads lazily reconcile file metadata without rewriting bodies, and the
 browser uses the same Workspace Files read path as the board with no write API or custom Remote.
 
 ## What's inside
@@ -110,21 +113,24 @@ dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 同一 Host 同一时间只能有一个 DevLead 会话，关闭用 `/devlead off`。
 
 项目看板默认启用、无需配置：active lead 会话的原始 workspace 根拥有
-`<workspace>/.dsh/devlead/board.json`，看板 tab/guide/会话头按钮只在该 lead 会话出现。需要固定
-路径时，覆盖 profile `cordis.patch.yml` 中 loader row `devlead` 的 `config.boardPath`，非空仅接受
-`.dsh/devlead/board.json`、`custom/board.json` 等相对路径（保留其余 config 键，DSH 会整体替换一行的
-config）；它相对原始 `SessionHeader.cwd`（不是 worktree checkout）解析，空白仍用默认路径。默认与
-override 都要求原始根存在，缺失时不重建。绝对 POSIX、Windows 盘符/UNC 在 Loader/直接构造时以
-`BOARD_INVALID` fail-fast，错误提示改用相对路径；反斜杠、空段与 `..` 逃逸同样被拒绝，
-`path.resolve` 后必须仍在根内，最终组件不能是 symlink。既有绝对路径部署升级后会启动失败，必须迁移为相对路径。若页面在 lead
-启用前加载且使用自定义 `boardPath`，需刷新一次页面以拿到解析后的 override 路径（默认派生路径不需要
-刷新）。只有 lead AI 通过 `devlead_board_update` 写入，人类/浏览器只读；详见
+`<workspace>/.dsh/devlead/board.json`，看板 tab/guide/会话头按钮只在该 lead 会话出现。需要自定义
+board 与 notes 的共同状态目录时，覆盖 profile `cordis.patch.yml` 中 loader row `devlead` 的
+`config.statePath`，例如相对目录 `custom/state`（保留其余 config 键，DSH 会整体替换一行的 config）。
+该键默认 `.dsh/devlead`，相对原始 `SessionHeader.cwd`（不是 worktree checkout）解析：看板为
+`<workspace>/<statePath>/board.json`，notes 同目录派生到 `<workspace>/<statePath>/notes/`。配置值是目录
+而非 JSON 文件名，没有独立 notes 路径，空白也不是默认值别名。默认与自定义目录都要求原始根存在，缺失时
+不重建。绝对 POSIX、Windows 盘符/UNC、反斜杠、空段与 `..` 逃逸在 Loader/直接构造时以结构化
+`BOARD_INVALID` + `/statePath` fail-fast；`path.resolve` 后必须仍在根内，最终派生的 `board.json` 不能是
+symlink，父目录链 symlink 可接受。旧 `boardPath` 键只要出现（包括空白）就拒绝并给出重命名/迁移提示：
+把 `boardPath: custom/board.json` 改为 `statePath: custom`，或把 `boardPath: custom/state/board.json`
+改为 `statePath: custom/state`。若页面在 lead 启用前加载且使用自定义 `statePath`，需刷新一次页面以拿到
+解析后的自定义路径（默认派生路径不需要刷新）。只有 lead AI 通过 `devlead_board_update` 写入，人类/浏览器只读；详见
 [docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md)。
 
 每个项目还可在 `board.json` 之外保存长篇 Markdown notes：active lead 用
 `devlead_board_note_read` 读取列表/全文，只用 `devlead_board_note_write` 创建/更新元数据/删除，
 再用 DSH 原生文件工具编辑返回的绝对 Markdown 路径；用户通过项目卡上的紧凑 notes chip 打开全栏
-只读阅读器。notes 在 `dirname(boardPath)/notes/` 下使用有界元数据索引，Host read/list 惰性对账且
+只读阅读器。notes 在 `<workspace>/<statePath>/notes/` 下使用有界元数据索引，Host read/list 惰性对账且
 不重写正文；浏览器沿用 Workspace Files 只读路径，没有写 API 或新增 Remote。
 
 更多文档见[根 README.zh.md](https://github.com/yankeguo/dsh-devlead/blob/main/README.zh.md)与

@@ -54,7 +54,7 @@ async function boot(options: { readonly betaTitle?: string } = {}): Promise<Fixt
   }
   let generated = 0
   const notes = new DevLeadBoardNotesStore(
-    boardPath,
+    root,
     board,
     { warn: () => undefined },
     () => clock++,
@@ -80,7 +80,7 @@ afterEach(async () => {
 })
 
 describe('DevLeadBoardNotesStore', () => {
-  it('derives dirname(boardPath)/notes and reads a missing index as revision zero', async () => {
+  it('derives <stateDir>/notes and reads a missing index as revision zero', async () => {
     const fixture = await boot()
     expect(fixture.notes.path).toBe(join(dirname(fixture.boardPath), 'notes'))
     expect(fixture.notes.indexPath).toBe(join(fixture.notes.path!, 'index.json'))
@@ -188,7 +188,7 @@ describe('DevLeadBoardNotesStore', () => {
   it('serializes two store instances through the index lock without lost notes', async () => {
     const fixture = await boot()
     const second = new DevLeadBoardNotesStore(
-      fixture.boardPath, fixture.board, { warn: () => undefined }, () => clock++,
+      fixture.root, fixture.board, { warn: () => undefined }, () => clock++,
     )
     stores.push(second)
     await second.start()
@@ -386,7 +386,7 @@ describe('DevLeadBoardNotesStore', () => {
   it('allows only the service active lead and follows mode-off lifecycle', async () => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-devlead-notes-service-'))
     roots.push(root)
-    const harness = await bootService({ enabled: true, leadCwd: root, config: { boardPath: 'board.json' } })
+    const harness = await bootService({ enabled: true, leadCwd: root, config: { statePath: 'state' } })
     try {
       await harness.service.updateBoard(harness.lead.agent, {
         project: 'alpha', create: true, set: { workspace: { path: '/tmp/alpha', title: 'alpha' } },
@@ -394,6 +394,9 @@ describe('DevLeadBoardNotesStore', () => {
       const created = await harness.service.writeBoardNote(harness.lead.agent, {
         project: 'alpha', operation: 'create', title: 'Lead note',
       })
+      expect(harness.service.board.path).toBe(join(root, 'state', 'board.json'))
+      expect(harness.service.notes.indexPath).toBe(join(root, 'state', 'notes', 'index.json'))
+      expect(created.note.absolutePath.startsWith(join(root, 'state', 'notes'))).toBe(true)
       expect(created.note.bytes).toBe(0)
       expect(created.note.absolutePath).toBeTruthy()
       expect(await readFile(created.note.absolutePath, 'utf8')).toBe('')

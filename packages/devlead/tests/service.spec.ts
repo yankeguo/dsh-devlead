@@ -218,6 +218,7 @@ describe('configuration', () => {
     expect(harness.service.settings.defaultAgentPreset).toBeUndefined()
     // Phase 1e: the action-required lane flushes on a microtask by default.
     expect(harness.service.settings.actionRequiredBatchMs).toBe(0)
+    expect(harness.service.settings.statePath).toBe('.dsh/devlead')
   })
 
   it('resolves explicit configuration and trims the preset', async () => {
@@ -238,6 +239,7 @@ describe('configuration', () => {
       wakeColdSession: true,
       defaultAgentPreset: 'reviewer',
       questionTtlMs: 0,
+      statePath: '.dsh/devlead',
     })
   })
 
@@ -250,6 +252,7 @@ describe('configuration', () => {
       wakeColdSession: true,
       defaultAgentPreset: '',
       questionTtlMs: 24 * 60 * 60 * 1_000,
+      statePath: '.dsh/devlead',
     })
     expect(() => Config({ notificationBatchMs: -1 })).toThrow()
     expect(() => Config({ maxWatchedSessions: 0 })).toThrow()
@@ -271,6 +274,7 @@ describe('configuration', () => {
       { defaultAgentPreset: 1 },
       { questionTtlMs: -1 },
       { questionTtlMs: 1.5 },
+      { statePath: 1 },
     ]
     for (const config of cases) {
       expect(() => new DevLeadService(new Context(), config as DevLeadConfig), JSON.stringify(config)).toThrow(TypeError)

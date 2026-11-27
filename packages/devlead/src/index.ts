@@ -10,6 +10,7 @@
  */
 
 import { mkdir, stat } from 'node:fs/promises'
+import { join } from 'node:path'
 import { Service } from '@deepseek-ai/cordis'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
@@ -166,11 +167,13 @@ import {
 } from './active.ts'
 import { worktreeCapabilityOf, worktreeCheckoutOf } from './isolation.ts'
 import {
-  assertValidDevLeadBoardPathOverride,
+  assertValidDevLeadStatePath,
+  DEVLEAD_BOARD_FILE_NAME,
+  DEVLEAD_DEFAULT_STATE_PATH,
   DevLeadBoardError,
   DevLeadBoardStore,
   isDevLeadBoardError,
-  resolveDevLeadBoardPath,
+  resolveDevLeadStateDir,
 } from './board.ts'
 import type {
   DevLeadBoardDisabledReason,
@@ -277,15 +280,13 @@ export interface Config {
   /** Open-question lifetime in milliseconds; default 24h, 0 disables expiry. */
   questionTtlMs?: number
   /**
-   * Optional project-board JSON path relative to the active lead's original
-   * workspace root (`SessionHeader.cwd`, not a worktree checkout).
-   *
-   * Blank or omitted (the default) derives `<lead header.cwd>/.dsh/devlead/board.json`.
-   * A non-blank value wins over that derivation, must remain within the lead
-   * workspace, and remains a deployment-only setting: no tool argument can
-   * redirect the board file. Absolute paths fail at Loader/construction time.
+   * Board/notes state directory relative to the active lead's original
+   * workspace root (`SessionHeader.cwd`, not a worktree checkout). Defaults to
+   * `.dsh/devlead`; the board is `<statePath>/board.json` and notes are rooted
+   * at `<statePath>/notes`. Absolute paths, empty segments, backslashes, and
+   * `..` escapes fail at Loader/construction time.
    */
-  boardPath?: string
+  statePath?: string
 }
 
 /**
@@ -645,8 +646,21 @@ class DevLeadInterruptedAdmissionError extends DevLeadError {
   }
 }
 
-/** Loader schema for the DevLead core service. */
-export const Config: z<Config> = z.object({
+/** Reject the removed exact-file setting with an actionable migration error. */
+function assertNoLegacyBoardPath(config: unknown): void {
+  if (typeof config !== 'object' || config === null || !('boardPath' in config)) return
+  const message = '`boardPath` 已重命名为 `statePath`，且现在是相对目录（默认 `.dsh/devlead`）。'
+    + '请把旧的精确 board JSON 路径改为所在目录，例如 `boardPath: custom/board.json` '
+    + '改为 `statePath: custom`；不支持单独 notes 路径'
+  throw new DevLeadBoardError(message, 'BOARD_INVALID', [{ pointer: '/statePath', message }])
+}
+
+/**
+ * Loader schema for the DevLead core service. The outer transform detects the
+ * removed key before Schemastery's unknown-key passthrough can hide it; its
+ * pre-default input type is broader than the public normalized Config type.
+ */
+export const Config: z<Config> = z.transform(z.object({
   notificationBatchMs: z.number().step(1).min(0).max(MAX_TIMER_DELAY_MS).default(400),
   actionRequiredBatchMs: z.number().step(1).min(0).max(400).default(0),
   maxWatchedSessions: z.number().step(1).min(1).default(DEVLEAD_DEFAULT_MAX_WATCHED),
@@ -655,12 +669,17 @@ export const Config: z<Config> = z.object({
   defaultAgentPreset: z.string().default(''),
   questionTtlMs: z.number().step(1).min(0).max(Number.MAX_SAFE_INTEGER).default(DEFAULT_QUESTION_TTL_MS),
   // Schemastery's Loader schema uses transform as its refinement primitive;
-  // propagating the domain error preserves BOARD_INVALID and /boardPath.
-  boardPath: z.transform(z.string(), (value) => {
-    assertValidDevLeadBoardPathOverride(value)
-    return value
-  }).default(''),
-})
+  // propagating the domain error preserves BOARD_INVALID and /statePath.
+  statePath: z.transform(z.string(), (value) => {
+    assertValidDevLeadStatePath(value.trim())
+    return value.trim()
+  }).default(DEVLEAD_DEFAULT_STATE_PATH),
+}), (value) => {
+  // Schemastery preserves unknown object keys, so the removed key reaches this
+  // guard instead of being silently ignored by the Loader.
+  assertNoLegacyBoardPath(value)
+  return value
+}) as unknown as z<Config>
 
 /** Fully materialized deployment configuration, with Loader defaults applied. */
 export interface DevLeadSettings {
@@ -681,11 +700,8 @@ export interface DevLeadSettings {
   readonly defaultAgentPreset: string | undefined
   /** Open-question lifetime in milliseconds; zero disables expiry. */
   readonly questionTtlMs: number
-  /**
-   * Validated lead-workspace-relative board path override, or undefined when
-   * the default lead-workspace derivation applies.
-   */
-  readonly boardPath?: string
+  /** Validated lead-workspace-relative board/notes state directory. */
+  readonly statePath: string
 }
 
 /**
@@ -695,6 +711,7 @@ export interface DevLeadSettings {
  * @returns resolved configuration.
  */
 function resolveConfig(config: Config): DevLeadSettings {
+  assertNoLegacyBoardPath(config)
   const notificationBatchMs = config.notificationBatchMs ?? 400
   if (!Number.isSafeInteger(notificationBatchMs)
     || notificationBatchMs < 0
@@ -721,10 +738,10 @@ function resolveConfig(config: Config): DevLeadSettings {
   if (!Number.isSafeInteger(questionTtlMs) || questionTtlMs < 0) {
     throw new TypeError('questionTtlMs must be a non-negative safe integer')
   }
-  const boardPath = config.boardPath ?? ''
-  if (typeof boardPath !== 'string') throw new TypeError('boardPath must be a string')
-  const trimmedBoardPath = boardPath.trim()
-  assertValidDevLeadBoardPathOverride(trimmedBoardPath)
+  const statePath = config.statePath ?? DEVLEAD_DEFAULT_STATE_PATH
+  if (typeof statePath !== 'string') throw new TypeError('statePath must be a string')
+  const trimmedStatePath = statePath.trim()
+  assertValidDevLeadStatePath(trimmedStatePath)
   return {
     notificationBatchMs,
     actionRequiredBatchMs,
@@ -733,7 +750,7 @@ function resolveConfig(config: Config): DevLeadSettings {
     wakeColdSession,
     defaultAgentPreset: defaultAgentPreset.trim().length === 0 ? undefined : defaultAgentPreset.trim(),
     questionTtlMs,
-    ...trimmedBoardPath.length === 0 ? {} : { boardPath: trimmedBoardPath },
+    statePath: trimmedStatePath,
   }
 }
 
@@ -1020,7 +1037,7 @@ export class DevLeadService extends Service {
 
   /** Active lead Session whose workspace owns {@link boardStore}, when enabled. */
   private boardLeadSessionIdValue: string | undefined
-  /** Whether the current board path comes from the deployment Config override. */
+  /** Whether the current state directory comes from a non-default deployment statePath. */
   private boardPathOverrideValue = false
   /** Latest board start failure; the rest of the service keeps serving without a board. */
   private boardStartErrorValue: DevLeadBoardStartError | undefined
@@ -2754,7 +2771,7 @@ export class DevLeadService extends Service {
     return this.boardStore
   }
 
-  /** Current notes store, rooted at `dirname(board.path)/notes` when enabled. */
+  /** Current notes store, rooted beside `board.json` in the configured state directory. */
   get notes(): DevLeadBoardNotesStore {
     return this.notesStore
   }
@@ -2764,7 +2781,7 @@ export class DevLeadService extends Service {
     return this.boardLeadSessionIdValue
   }
 
-  /** Whether the current board path comes from the deployment Config override. */
+  /** Whether the current state directory comes from a non-default deployment statePath. */
   get boardPathOverride(): boolean {
     return this.boardPathOverrideValue
   }
@@ -2901,9 +2918,9 @@ export class DevLeadService extends Service {
    * Point the service at the board file of one lead, releasing any previous
    * store/watcher.
    *
-   * The path is the original workspace root plus the relative Config override
-   * when configured, otherwise plus `.dsh/devlead/board.json`. Either path is
-   * used only while that workspace root still exists as a directory: a cold
+   * The state directory is the original workspace root plus the relative
+   * Config `statePath` (default `.dsh/devlead`). It is used only while that
+   * workspace root still exists as a directory: a cold
    * lead whose recorded root was deleted or moved must never make the Host
    * recreate the workspace to host the board file.
    * The same resolved file keeps its store (so a lead switch inside one
@@ -2921,8 +2938,8 @@ export class DevLeadService extends Service {
     // DevLead (the file is only meaningful while one Session owns it).
     const resolution = sessionId === undefined
       ? { kind: 'disabled' as const, reason: 'no-workspace' as const }
-      : resolveDevLeadBoardPath({
-        ...this.resolved.boardPath === undefined ? {} : { override: this.resolved.boardPath },
+      : resolveDevLeadStateDir({
+        statePath: this.resolved.statePath,
         ...workspaceRoot === undefined ? {} : { cwd: workspaceRoot },
       })
     if (resolution.kind === 'disabled') {
@@ -2935,7 +2952,8 @@ export class DevLeadService extends Service {
       await this.disableBoardStore(resolution.reason)
       return
     }
-    const nextPath = resolution.path
+    const nextStateDir = resolution.path
+    const nextPath = join(nextStateDir, DEVLEAD_BOARD_FILE_NAME)
     const nextOverride = resolution.source === 'override'
     if (!(await this.workspaceRootExists(workspaceRoot))) {
       // Every board location lives inside the user's original project root.
@@ -2964,7 +2982,7 @@ export class DevLeadService extends Service {
       return
     }
     const next = new DevLeadBoardStore(nextPath, this.ctx.logger)
-    const nextNotes = new DevLeadBoardNotesStore(nextPath, next, this.ctx.logger)
+    const nextNotes = new DevLeadBoardNotesStore(nextStateDir, next, this.ctx.logger)
     let startError: DevLeadBoardStartError | undefined
     try {
       await next.start()

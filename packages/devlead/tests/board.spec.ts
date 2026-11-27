@@ -210,13 +210,13 @@ describe('DevLeadBoardStore', () => {
   it('stamps the enabled lead identity in the core service and rejects writes after mode-off', async () => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-devlead-board-service-'))
     roots.push(root)
-    const file = join(root, 'board.json')
-    const harness = await bootService({ enabled: true, leadCwd: root, config: { boardPath: 'board.json' } })
+    const file = join(root, 'state', 'board.json')
+    const harness = await bootService({ enabled: true, leadCwd: root, config: { statePath: 'state' } })
     try {
       harness.sessionTitle.set(String(harness.lead.id), 'Lead title')
       const result = await harness.service.updateBoard(harness.lead.agent, patch())
       expect(result.revision).toBe(1)
-      expect(harness.service.settings.boardPath).toBe('board.json')
+      expect(harness.service.settings.statePath).toBe('state')
       const persisted = JSON.parse(await readFile(file, 'utf8')) as DevLeadBoard
       expect(persisted.updatedBy).toEqual({ sessionId: String(harness.lead.id), title: 'Lead title' })
       await harness.service.setEnabled(harness.lead.agent, false)

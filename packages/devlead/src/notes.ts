@@ -1,7 +1,7 @@
 /**
  * Host-owned Markdown notes beside the project board.
  *
- * The notes root is always `dirname(boardPath)/notes`; callers resolve a board
+ * The notes root is always `<statePath>/notes`; callers resolve a board
  * project but never supply a filesystem path. The tool owns index metadata and
  * lifecycle only: create makes an empty body, while every Markdown read/edit
  * uses DSH's native file tools directly. Reads reconcile file size/mtime back
@@ -297,17 +297,17 @@ export class DevLeadBoardNotesStore {
   private writeTail: Promise<unknown> = Promise.resolve()
 
   constructor(
-    boardPath: string | undefined,
+    stateDir: string | undefined,
     private readonly board: DevLeadBoardStore,
     private readonly logger: NotesLogger = { warn: () => undefined },
     private readonly now: () => number = Date.now,
     private readonly randomUUID: () => string = cryptoRandomUUID,
   ) {
-    const trimmed = boardPath?.trim() ?? ''
+    const trimmed = stateDir?.trim() ?? ''
     if (trimmed.length > 0 && !isAbsolute(trimmed)) {
-      throw invalid('boardPath must be an absolute path', '/boardPath')
+      throw invalid('state directory must be an absolute path', '/statePath')
     }
-    this.rootPath = trimmed.length === 0 ? undefined : join(dirname(trimmed), DEVLEAD_NOTES_DIR_NAME)
+    this.rootPath = trimmed.length === 0 ? undefined : join(trimmed, DEVLEAD_NOTES_DIR_NAME)
     this.filePath = this.rootPath === undefined ? undefined : join(this.rootPath, DEVLEAD_NOTES_INDEX_FILE_NAME)
   }
 

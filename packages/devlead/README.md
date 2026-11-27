@@ -5,9 +5,10 @@ Core Host service of the DevLead suite (`ctx.devLead`): the durable mode switch,
 with directory creation opt-in), the watched-session notification hub with cold-lead rehydration, the mid-turn report channel for watched Sessions,
 and the `devLead` / `devLeadMode` / `devLeadWatch` Session projections. `ctx.devLead.board` also
 owns the strict, atomically written project-board JSON file. The board is **on by default**: the
-unique active lead Session's original workspace root owns `<header.cwd>/.dsh/devlead/board.json`;
-a non-blank `boardPath` is a relative-only override resolved against that same original
-`SessionHeader.cwd`, never the worktree checkout. Both default and explicit paths require the
+unique active lead Session's original workspace root owns `<header.cwd>/.dsh/devlead/board.json`.
+Deployment `statePath` is a relative state directory defaulting to `.dsh/devlead`, resolved against
+that same original `SessionHeader.cwd`, never the worktree checkout; the board is
+`<workspace>/<statePath>/board.json`. Both default and custom directories require the
 original workspace root to exist; the Host never recreates a missing root. With no active lead, no
 absolute workspace root, or a missing root, the board is disabled (`BOARD_DISABLED`, empty summary,
 no browser global), and turning the lead off or switching leads releases the old store/watcher
@@ -16,7 +17,8 @@ before the new file is read. A board start/pre-create failure is logged and surf
 the rest of DevLead keeps working. `updateBoard` stamps the calling lead identity and requires the
 caller to be the current active lead. The file is lead-AI-writable and human/browser-read-only.
 The same Host-owned board service also owns `ctx.devLead.notes`, a `DevLeadBoardNotesStore` rooted at
-`dirname(boardPath)/notes/` and swapped/closed with the board lifecycle. Tool-facing service methods are
+`<workspace>/<statePath>/notes/` (equivalently, the Host's resolved absolute `dirname(boardPath)/notes/`)
+and swapped/closed with the board lifecycle. Tool-facing service methods are
 `readBoardNote(agent, { project, note? })` and
 `writeBoardNote(agent, { project, operation, note?, title?, summary?, expectedRevision? }, signal?)`;
 both recheck the active lead and accept no filesystem path input. Results contain metadata only and derive an
@@ -102,16 +104,20 @@ dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 
 The Loader row id `devlead` accepts `notificationBatchMs`, `maxWatchedSessions`,
 `maxListedSessions`, `wakeColdSession` (default `true` since 0.2.0), `defaultAgentPreset`
-(used when a created Session names no preset; an invalid id fails creation), and the optional `boardPath` override. The board is enabled by default: a trimmed-blank / omitted `boardPath` derives
-`<active lead Session header cwd>/.dsh/devlead/board.json`. A non-blank value accepts only a relative
-path such as `.dsh/devlead/board.json` or `custom/board.json`, resolved with `path.resolve` against
-the active lead's original `SessionHeader.cwd` (not its worktree checkout). Absolute POSIX paths and
-Windows drive/UNC paths fail fast with `BOARD_INVALID` at both Loader and direct-construction
-boundaries, with errors directing users to a relative path. Backslashes, empty segments, and `..`
-root escapes are also rejected; after `path.resolve`, the path must remain inside the root and its
-final component cannot be a symlink.
-Existing absolute-path deployments fail on startup after upgrade and must migrate to a relative
-path. No tool argument can redirect the board file.
+(used when a created Session names no preset; an invalid id fails creation), and optional `statePath`.
+The board is enabled by default: omitted `statePath` defaults to the relative directory `.dsh/devlead`,
+resolved with `path.resolve` against the active lead's original `SessionHeader.cwd` (not its worktree
+checkout). The derived files are `<workspace>/<statePath>/board.json` and
+`<workspace>/<statePath>/notes/{index.json,<project>/<note-id>.md}`. `statePath` accepts only a
+relative directory such as `custom/state`, not an exact board JSON path; there is no independent notes
+path and blank is not a default alias. Absolute POSIX paths, Windows drive/UNC paths, backslashes,
+empty segments and `..` root escapes fail fast with structured `BOARD_INVALID` and `/statePath` at
+both Loader and direct-construction boundaries. After `path.resolve`, the directory must remain inside
+the root and the final derived `board.json` cannot be a symlink; parent-directory symlinks are accepted.
+Any legacy `boardPath` key, even blank, fails startup with an actionable rename/migration error. Replace
+`boardPath: custom/board.json` with `statePath: custom`, or `boardPath: custom/state/board.json` with
+`statePath: custom/state`, keeping `board.json` and `notes/` together in that directory. No tool argument
+can redirect the board file or notes root.
 See the
 [configuration section](https://github.com/yankeguo/dsh-devlead/blob/main/README.md#configuration) for defaults and ranges; all limits are
 validated at both the Loader and direct-construction boundaries.
@@ -127,17 +133,20 @@ validated at both the Loader and direct-construction boundaries.
 `@yankeguo/dsh-devlead` 是套件的 Host 核心服务 `ctx.devLead`：模式开关、损坏状态恢复
 `reset()`、Workspace/Session 编排（`useWorkspace(agent, request, signal?)`，目录创建 opt-in）、
 带冷 lead 索引重建的关注关系索引与通知投递，以及 `devLead` / `devLeadMode` / `devLeadWatch` projection。
-项目看板默认启用：空白/缺省 `boardPath` 由唯一 active lead 的原始 workspace 根
-`SessionHeader.cwd`（不是 worktree checkout）派生 `<cwd>/.dsh/devlead/board.json`；非空只接受
-`.dsh/devlead/board.json`、`custom/board.json` 等相对该根的路径。绝对 POSIX、Windows 盘符/UNC 在
-Loader/直接构造时以 `BOARD_INVALID` fail-fast，错误提示改用相对路径；反斜杠、空段与 `..` 逃逸同样
-被拒绝，`path.resolve` 后必须仍在根内，最终组件不能是 symlink。默认与 override 都要求原始根存在，缺失时
-不重建；没有 lead、没有绝对 workspace 根或根缺失时禁用。既有绝对路径部署升级后会启动失败，必须
-迁移为相对路径。lead off/切换会释放旧 store/watcher，start/预创建失败只记 warning + degraded、不阻塞服务加载
+项目看板默认启用：部署配置 `statePath` 缺省为相对目录 `.dsh/devlead`，由唯一 active lead 的原始
+workspace 根 `SessionHeader.cwd`（不是 worktree checkout）解析，看板固定为
+`<workspace>/<statePath>/board.json`，notes 固定为 `<workspace>/<statePath>/notes/`。自定义值只接受
+`custom/state` 这类相对目录，不接受精确 board JSON 路径，也没有独立 notes 路径；空白不是默认值别名。
+绝对 POSIX、Windows 盘符/UNC、反斜杠、空段与 `..` 逃逸在 Loader/直接构造时以结构化 `BOARD_INVALID` +
+`/statePath` fail-fast，`path.resolve` 后必须仍在根内，最终派生的 `board.json` 不能是 symlink，父目录链
+symlink 可接受。默认与自定义目录都要求原始根存在，缺失时不重建；没有 lead、没有绝对 workspace 根或根
+缺失时禁用。旧 `boardPath` 键只要出现（包括空白）就启动失败并给出重命名/迁移提示：把
+`boardPath: custom/board.json` 改为 `statePath: custom`，或把 `boardPath: custom/state/board.json` 改为
+`statePath: custom/state`，`board.json` 与 `notes/` 一起留在该目录。lead off/切换会释放旧 store/watcher，start/预创建失败只记 warning + degraded、不阻塞服务加载
 （board 工具报 `BOARD_IO_ERROR`，其余功能照常）。看板与 notes 写入都使用
 `@deepseek-ai/dsh-atomic-write`（安装运行时提供）。同一 Host board service 拥有随 board
 切换/关闭的 `ctx.devLead.notes`（`DevLeadBoardNotesStore`，root 固定
-`dirname(boardPath)/notes/`）。工具侧 service 方法是 `readBoardNote(agent,{project,note?})` 与
+`<workspace>/<statePath>/notes/`，等价于内部已解析绝对 `dirname(boardPath)/notes/`）。工具侧 service 方法是 `readBoardNote(agent,{project,note?})` 与
 `writeBoardNote(agent,patch,signal?)`，patch 含 create/update-metadata/delete operation、可选
 note/title/summary 与 expectedRevision，均不接受文件路径或正文 content；create 始终创建空文件。返回的
 absolutePath 供 DSH 原生 read/write/edit 读写正文，不写入 index，工具不接收也不返回正文。store

@@ -11,7 +11,10 @@ rc.1 的 0.x 破坏性契约收口：看板 per-project revision/CAS、notes 工
 fail-fast，最终组件不能是 symlink。既有绝对配置必须迁移；workspace 外的看板要与同级 notes 一起移入
 workspace。磁盘 DevLead state、`board.json` 与 notes 索引无需内容迁移，也不需要 `/devlead reset`；DSH
 兼容面与 `engines.dsh` 不变。历史 staged 记录不得混入本次批准，其它旧候选的 release notes 保持历史事实。
-`0.4.3-rc.2` 只是**插件版本**，**不代表 DSH 0.4.3**。
+`0.4.3-rc.2` 只是**插件版本**，**不代表 DSH 0.4.3**。下一候选 `0.4.3-rc.3`（尚未发布）追加
+`boardPath` → `statePath` 的 breaking：新键是默认 `.dsh/devlead` 的 workspace 相对目录，board 与 notes
+统一派生为 `<workspace>/<statePath>/board.json` 和 `<workspace>/<statePath>/notes/`；旧键出现即以
+`BOARD_INVALID` + `/statePath` fail-fast。详细迁移见 [rc.3 release notes 草稿](releases/v0.4.3-rc.3.md)。
 6 个可发布包的 `engines.dsh` 均为 `>=0.2.2-rc.1 <0.3.0`（根
 `package.json` 是 private 包，不声明 `engines.dsh`，只声明 `engines.node`），所有 `@deepseek-ai/dsh-*`
 peer 使用同一范围；本地 devDependencies 与编译基线仍固定 rc.1，用最旧 API 做类型检查，本机运行验证
@@ -36,12 +39,13 @@ peer 使用同一范围；本地 devDependencies 与编译基线仍固定 rc.1�
     `remote.workspaceFiles.stat/readBytes/changes` 与 `useWorkspaces` / `useSessions`。
     不依赖 0.2.3-only API，engines/peer DSH range 不变。默认路径派生自 active lead 的原始
     workspace 根 `SessionHeader.cwd`（`<cwd>/.dsh/devlead/board.json`，不是 worktree checkout）；
-    非空 `boardPath` 只接受相对该根的 override（如 `.dsh/devlead/board.json`、`custom/board.json`），
-    空白仍用默认路径。绝对 POSIX、Windows 盘符/UNC 在 Loader/直接构造时以 `BOARD_INVALID` fail-fast，
-    错误提示改用相对路径；反斜杠、空段与 `..` 逃逸同样被拒绝，`path.resolve` 后必须仍在根内，最终
-    组件不能是 symlink。既有绝对路径部署升级后会启动失败，必须迁移为相对路径。没有 lead 时看板禁用（无
-    global、无面板）。默认与显式 override 都要求原始 workspace 根仍是已存在目录：缺失时 Host 以
-    `missing-workspace` 保持看板禁用（不重建目录、不写入、工具 `BOARD_DISABLED`），override 也不能
+    下一候选的 `statePath` 只接受相对该根的目录（默认 `.dsh/devlead`，如 `custom/state`），board 固定为
+    `<workspace>/<statePath>/board.json`，notes 固定为 `<workspace>/<statePath>/notes/`；旧 `boardPath`
+    键出现即拒绝，空白 `statePath` 也不是默认值别名。绝对 POSIX、Windows 盘符/UNC、反斜杠、空段与
+    `..` 逃逸在 Loader/直接构造时以 `BOARD_INVALID` + `/statePath` fail-fast，`path.resolve` 后必须仍在
+    根内，最终 `board.json` 不能是 symlink。没有 lead 时看板禁用（无 global、无面板）。默认与自定义
+    `statePath` 都要求原始 workspace 根仍是已存在目录：缺失时 Host 以
+    `missing-workspace` 保持看板禁用（不重建目录、不写入、工具 `BOARD_DISABLED`），自定义目录也不能
     绕过。看板 start/预创建失败只降级该功能（P2-2），不影响插件加载；同一 resolved 路径的下一次 lead 同步也会
     按需重试 `start()`。浏览器入口为 lead-only：tab/guide/header 只在屏幕上的 active lead Session
     出现，global 形状含 `leadSessionId` / `override`；恢复出来但已非合规 lead 的 board tab 在首次
@@ -656,6 +660,12 @@ issue fail-fast；反斜杠、空段与 `..` 逃逸同样被拒绝，解析结�
 发布轮实际执行的冻结树门禁与 patch 完整 E2E 证据详见
 [v0.4.3-rc.2 release prep](e2e-evidence/v0.4.3-rc.2-release-prep.md)。
 
+**0.4.3-rc.3 开发轮（尚未发布）**把配置 `boardPath` 重命名为 `statePath`，从精确 board 文件改为
+board/notes 共用的相对状态目录，默认 `.dsh/devlead`。旧键出现即报 `BOARD_INVALID` + `/statePath`，
+错误包含重命名与迁移提示；非法绝对路径、反斜杠、空段和 `..` 逃逸仍 fail-fast，最终 `board.json`
+symlink 仍拒绝，父目录链 symlink 可接受，workspace 缺失仍不重建。board/notes wire schema、CAS、工具、
+Remote、浏览器 global 的绝对 `boardPath` 字段与 `dsh.client.inject` 均不变；DSH engines/peer 范围不变。
+
 每条 flow 有 3 条正向模型选择检查因无 provider 凭据 SKIP（打印真实原因）；负向
 `DEVLEAD_MODEL_UNAVAILABLE`、`devlead_list_models`、preset roster 与 watched-child
 `devlead_report` 均真实运行。
@@ -680,7 +690,7 @@ issue fail-fast；反斜杠、空段与 `..` 逃逸同样被拒绝，解析结�
   看板入口是 **lead-only** 的：tab/guide/header 按钮只在屏幕上的 active lead Session 注册/渲染，
   非 lead 与 subagent Session 没有入口；Host 只在当前 active lead 拥有看板路径时注入
   `__DSH_DEVLEAD_BOARD__`，没有 lead 时该 global 缺失。页面在 lead 启用之前加载时，client 从
-  该 lead Session summary 的 `cwd` 派生默认路径；使用 Config `boardPath` override 的部署在
+  该 lead Session summary 的 `cwd` 派生默认路径；使用自定义 Config `statePath` 的部署在
   late-enable 场景需要刷新页面（只有新 HTML 携带 override 路径与 `override:true`）。模式 off、
   Session 切换、路径切换会立即 dispose 旧面板并重读新文件。
 - rc.3 在 rc.5 Web UI 的隔离 profile 中留存过 light/dark、宽栏双列、窄栏单列与极窄 KPI 截图，
