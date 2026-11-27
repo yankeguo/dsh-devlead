@@ -1,21 +1,17 @@
 # DSH 兼容性矩阵
 
 本仓库的目标兼容面是 **DeepSeek Harness `0.2.2-rc.1` – `0.2.2-rc.5`**；当前候选发布版本是插件版本
-**`0.4.3-rc.1`**（6 个可发布包共用同一版本号；prerelease，CI 以 npm dist-tag `next` stage，维护者
-approve 后公开）。稳定版 `latest` 当前为 **`0.4.2`**（2026-11-24 经 staged publish + 人工 approve 公开
-并安装）；approve `0.4.3-rc.1` 前 `next` 仍指向 `0.4.2-rc.10`，approve 后 `next` 指向本候选、`latest`
-保持 `0.4.2`。`0.4.3-rc.1` 是计划中 0.4.3 的首个候选，相对已发布的 `0.4.2` 做 0.x 允许的破坏性契约
-收口：看板 per-project revision/CAS、notes 工具只维护索引（正文归 DSH 原生 read/write/edit）、assistant
-摘要默认 4096 码点且 wake 载荷上限 8000 码点、lead 主动 interrupt 不再算 failure、看板持久化移出插件
-（删除 `commit`）、archive 单 Session 原子语义（删除批量 `sessions` 与 `devlead_unarchive_session`
-工具）、移除 `workspaceModels`/`defaultModel` 静态模型路由；工具面 19 → **18**
-（17 个主工具 + `devlead_report`）。磁盘 DevLead state、`board.json` 与 notes 索引无需迁移
-（旧看板 project revision 首次读取时回填）；DSH 兼容面与 `engines.dsh` 不变。历史
-`0.4.2-rc.1`/`rc.4`/`rc.8` 的 staged 记录从未 approve，不得混入本次批准，其它旧候选的 release notes
-保持历史事实。`0.4.3-rc.1` 只是**插件版本**，**不代表 DSH 0.4.3**。
-
-当前工作树（下一 rc）另将非空 `boardPath` 改为仅接受相对原始 workspace 根的路径；既有绝对配置必须
-迁移，否则升级后启动失败。这不改写已发布 `0.4.3-rc.1` 的历史契约。
+**`0.4.3-rc.2`**（6 个可发布包共用同一版本号；prerelease，CI 以 npm dist-tag `next` stage，维护者
+approve 后公开）。稳定版 `latest` 当前为 **`0.4.2`**，已发布的 `0.4.3-rc.1` 当前位于 `next`；approve
+`0.4.3-rc.2` 前 `next` 保持 `0.4.3-rc.1`，approve 后指向本候选，`latest` 仍为 `0.4.2`。rc.2 完整保留
+rc.1 的 0.x 破坏性契约收口：看板 per-project revision/CAS、notes 工具只维护索引、assistant 摘要与 wake
+载荷上限、lead 主动 interrupt 的 T1 通知、看板持久化移出 git、单 Session archive/restore、删除静态模型
+路由；工具面保持 **17 个主工具 + `devlead_report`**。本候选新增 `boardPath` 配置 breaking：非空值只接受
+相对 active lead 原始 workspace 根的路径，绝对 POSIX、Windows 盘符/UNC、反斜杠、空段与 `..` 逃逸均
+fail-fast，最终组件不能是 symlink。既有绝对配置必须迁移；workspace 外的看板要与同级 notes 一起移入
+workspace。磁盘 DevLead state、`board.json` 与 notes 索引无需内容迁移，也不需要 `/devlead reset`；DSH
+兼容面与 `engines.dsh` 不变。历史 staged 记录不得混入本次批准，其它旧候选的 release notes 保持历史事实。
+`0.4.3-rc.2` 只是**插件版本**，**不代表 DSH 0.4.3**。
 6 个可发布包的 `engines.dsh` 均为 `>=0.2.2-rc.1 <0.3.0`（根
 `package.json` 是 private 包，不声明 `engines.dsh`，只声明 `engines.node`），所有 `@deepseek-ai/dsh-*`
 peer 使用同一范围；本地 devDependencies 与编译基线仍固定 rc.1，用最旧 API 做类型检查，本机运行验证
@@ -527,9 +523,9 @@ lane/deliveryState、blocked/decision action steer、真实 T1 followup / T2 rev
 
 上表 Phase 1e 行即 **Batch 1 最终树**的 pin 实测：installed / patch 完整流各 **221/221**
 （218 PASS + 3 SKIP；phase 1 27 + 1b 12 + 2 23 + 3 128 + 1e 31），`--no-worktree` **198/198**
-（phase 2 skipped）。当前候选发布版本是插件 **`0.4.3-rc.1`**（prerelease，dist-tag `next`；stage 本身
+（phase 2 skipped）。当前候选发布版本是插件 **`0.4.3-rc.2`**（prerelease，dist-tag `next`；stage 本身
 不改变公开 dist-tag，approve 后 `next` 才指向本候选、`latest` 保持 `0.4.2`，approve 前 `next` 仍为
-`0.4.2-rc.10`；DSH 兼容面仍为 rc.1–rc.5）。
+`0.4.3-rc.1`；DSH 兼容面仍为 rc.1–rc.5）。
 `0.4.0-rc.1` 候选的三条真实
 E2E 重跑（含真实 `*_EXIT=0` 与总计行）记录在
 [`docs/e2e-evidence/batch2-release-prep.md`](e2e-evidence/batch2-release-prep.md)；稳定版 `0.4.0`
@@ -540,10 +536,10 @@ E2E 重跑（含真实 `*_EXIT=0` 与总计行）记录在
 当前 board 加固轮保留上述全部旧检查，并在 phase 3 新增真实 `ctx.devLead.updateBoard` 写入/CAS、
 `webserver/index-inject` board global 与独立磁盘 revision/内容 read-back；Step B 复核修复轮又把
 phase 1 与 1b 改回未配置 `boardPath` 的默认组合并固定当轮目标 pin（phase 1=28、phase 3=132、
-完整流=226、no-worktree=203）。**当前 `0.4.3-rc.1`（与 `0.4.2` 相同）的权威 pin 是
+完整流=226、no-worktree=203）。**当前 `0.4.3-rc.2`（与 `0.4.2` 相同）的权威 pin 是
 `scripts/e2e-smoke.mjs` 的 `EXPECTED_CHECKS`：phase 1=30、phase 1b=18、phase 2=24、phase 3=141、
 phase 1e=31，完整流目标 244/244（241 PASS + 3 credential-less SKIP），`--no-worktree` 220/220；
-`0.4.3-rc.1` 实测与退出码以当轮 release-prep 原始日志为准。** 本轮新增/改写的断言
+`0.4.3-rc.2` 发布轮实际执行的 patch 完整流结果与退出码以当轮 release-prep 原始日志为准。** 本轮新增/改写的断言
 包括：没有 lead 时不注入 board global、lead 开启后从 `SessionHeader.cwd` 派生默认路径并发布
 `{leadSessionId, override:false}`、预创建父目录、冷 lead 从持久 header 派生、`/devlead off`
 移除 global、换 workspace 后立即换源、phase 2 的相对原始 workspace 根 Config override 以
@@ -651,6 +647,14 @@ T1 并带 `cancelledByLeadInterrupt`、`devlead_board_update` 删除 `commit`（
 19 → **18**（17 个主工具 + `devlead_report`）。磁盘 state、`board.json` 与 notes 索引无需迁移，既有
 staged 记录不得混入本候选批准。冻结树实测与证据详见
 [v0.4.3-rc.1 release prep](e2e-evidence/v0.4.3-rc.1-release-prep.md)。
+
+**0.4.3-rc.2 发布轮**完整保留 rc.1 契约，只追加 `boardPath` 的 workspace-relative-only 破坏性配置收口，
+**不改 DSH 兼容面**：绝对 POSIX、Windows 盘符/UNC 在 Loader/直接构造时以 `BOARD_INVALID` 和 `/boardPath`
+issue fail-fast；反斜杠、空段与 `..` 逃逸同样被拒绝，解析结果必须留在 lead 原始 workspace 根内，最终组件
+不能是 symlink。默认空白派生、原始根/worktree 隔离、notes 派生、board schema、工具、Remote 与
+`dsh.client.inject` 均不变；既有绝对配置必须先迁移，workspace 外看板与同级 notes 必须一起移入根内。
+发布轮实际执行的冻结树门禁与 patch 完整 E2E 证据详见
+[v0.4.3-rc.2 release prep](e2e-evidence/v0.4.3-rc.2-release-prep.md)。
 
 每条 flow 有 3 条正向模型选择检查因无 provider 凭据 SKIP（打印真实原因）；负向
 `DEVLEAD_MODEL_UNAVAILABLE`、`devlead_list_models`、preset roster 与 watched-child

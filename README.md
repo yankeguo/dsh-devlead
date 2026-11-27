@@ -8,7 +8,7 @@ upgrades **one ordinary session** into a **DevLead session**: it can operate DSH
 their state changes — so one agent can orchestrate multiple repositories inside a standard
 interface the human can see and interact with.
 
-Current release candidate **0.4.3-rc.1** (prerelease, npm dist-tag `next`; stable `latest` stays
+Current release candidate **0.4.3-rc.2** (prerelease, npm dist-tag `next`; stable `latest` stays
 **0.4.2**) · DSH **0.2.2-rc.1 – 0.2.2-rc.5** · one `dsh plugin` command installs everything.
 
 ## What you get
@@ -70,26 +70,22 @@ page.
 To pin an exact version:
 
 ```sh
-dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.3-rc.1
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.3-rc.2
 ```
 
-0.4.3-rc.1 is the first prerelease candidate for the planned 0.4.3 release: an intentional 0.x
-breaking contract cleanup. The project board now keeps a **per-project revision** and CASes only the
-target project; the notes tools own only the metadata index — `devlead_board_note_read` returns
-metadata plus `absolutePath` instead of Markdown contents, `create` makes an empty body, and every
-body read/edit uses DSH-native read/write/edit. Assistant excerpts grow to 4096 code points with
-explicit truncation state and an optional `last_assistant_limit`, every wake payload is bounded to
-8000 code points, and a child turn this lead cancelled with `interrupt:true` is delivered as ordinary
-activity instead of a review failure. `devlead_board_update` no longer accepts `commit` (the plugin
-never calls git), `devlead_archive_session` is one atomic Session operation whose `archived:false`
-restores (the separate unarchive tool and the batch `sessions` parameter are gone), and the tool
-surface is 17 main tools + `devlead_report` (18 total). Static `workspaceModels` / `defaultModel`
-routing is removed: omitting model arguments inherits the Host default, while explicit
-provider/model selection keeps its validation. There is no state migration and no `/devlead reset`;
-legacy board files get their project revisions backfilled on the first Host read. The release uses
-npm dist-tag `next` and stable `latest` stays 0.4.2. Callers must migrate the removed tool arguments
-as listed in the [0.4.3-rc.1 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.3-rc.1.md);
-the previous stable patch is documented in the
+0.4.3-rc.2 is the second prerelease candidate for the planned 0.4.3 release. It retains rc.1's
+intentional 0.x contract cleanup and adds another **breaking configuration change**: a non-blank
+`boardPath` must now be relative to the active lead Session's original workspace root. Absolute POSIX,
+Windows drive and UNC paths fail Loader validation or direct service construction with `BOARD_INVALID`
+and a `/boardPath` issue instead of silently falling back. Blank still derives
+`<lead workspace>/.dsh/devlead/board.json`; backslashes, empty segments, `..` escapes and a symlinked
+final component are rejected. Before upgrading, convert an old absolute path such as
+`/work/project/custom/board.json` to `custom/board.json` when the workspace is `/work/project`. A board
+outside that workspace must be moved into it **together with its sibling `notes/` directory**. No board
+content migration or `/devlead reset` is needed. The release uses npm dist-tag `next` and stable `latest`
+stays 0.4.2. Follow the complete upgrade steps in the
+[0.4.3-rc.2 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.3-rc.2.md);
+rc.1's tool migrations still apply, and the previous stable patch is documented in the
 [0.4.2 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.2.md).
 
 Advanced users can install individual packages and insert the corresponding loader rows into the
@@ -102,7 +98,7 @@ profile's `cordis.patch.yml` themselves; the bundle is the recommended path.
 dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 
 # or pin a specific version (required for prereleases)
-dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.3-rc.1
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.3-rc.2
 ```
 
 > **Upgrading from an older release (below 0.4.0):** 0.4.0 intentionally discards older DevLead
@@ -428,7 +424,7 @@ The board is enabled by default and follows the single active lead: that Session
 root (its `SessionHeader.cwd`, not a worktree checkout) owns the file, and turning the lead off, switching
 leads or changing the workspace releases the old store and reads the new file immediately. With no active
 lead or no absolute original workspace root (including when a relative override is configured) the board is disabled: the tools report `BOARD_DISABLED`, the summary
-is empty and no board UI appears. A derived (non-override) path additionally requires that the lead's
+is empty and no board UI appears. Both the derived path and a relative override require that the lead's
 recorded original workspace root still exists as a directory: if it was deleted or moved, the Host keeps
 the board disabled (`boardDisabledReason = missing-workspace`), logs one warning and **never recreates the
 workspace** just to host the board; returning the original workspace lets the next

@@ -7,7 +7,7 @@
 **Session**（会话），创建并续写其他会话、读取它们的状态、在状态变化时被唤醒——于是一个
 agent 就能在人可见、可参与的标准界面里统管多个仓库。
 
-当前候选版本 **0.4.3-rc.1**（prerelease，npm dist-tag `next`；稳定版 `latest` 仍为 **0.4.2**）·
+当前候选版本 **0.4.3-rc.2**（prerelease，npm dist-tag `next`；稳定版 `latest` 仍为 **0.4.2**）·
 DSH **0.2.2-rc.1 – 0.2.2-rc.5** · 一条 `dsh plugin` 命令即可装好全部组件。
 
 ## 核心能力
@@ -67,22 +67,19 @@ Web 页面。
 固定到精确版本：
 
 ```sh
-dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.3-rc.1
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.3-rc.2
 ```
 
-0.4.3-rc.1 是计划中 0.4.3 版本的首个 prerelease 候选，属于 **0.x 允许的破坏性契约收口**。项目看板改为
-**per-project revision**，`expected_revision` 只校验目标 project；notes 工具只维护元数据索引——
-`devlead_board_note_read` 返回 metadata 与 `absolutePath` 而不再返回 Markdown 正文，`create` 只创建空正文，
-所有正文读写都走 DSH 原生 read/write/edit。assistant 摘要上限提升到 4096 码点并带显式截断状态，`devlead_get_session`
-新增可选 `last_assistant_limit`；所有 wake 载荷限制在 8000 码点；本 lead 通过 `interrupt:true` 主动取消的子 turn
-按普通活动通知，不再算 review failure。`devlead_board_update` 删除 `commit` 参数（插件不再调用 git），
-`devlead_archive_session` 收敛为单 Session 原子操作（`archived:false` 恢复，独立 unarchive 工具与批量 `sessions`
-参数删除），工具面为 **17 个主工具 + 1 个 `devlead_report`**（共 18）。静态 `workspaceModels` / `defaultModel`
-路由已移除：省略模型参数即继承 Host 默认，显式 provider/model 仍按原规则校验。升级**不需要迁移数据**，也不需要
-`/devlead reset`；旧看板文件里的 project revision 会在首次 Host 读取时自动回填。本版发布 dist-tag 为 `next`，
-稳定版 `latest` 保持 0.4.2。既有调用方需要按
-[0.4.3-rc.1 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.3-rc.1.md)
-的 breaking 表迁移被删除的工具参数；上一个稳定补丁的说明见
+0.4.3-rc.2 是计划中 0.4.3 版本的第二个 prerelease 候选，完整保留 rc.1 的 **0.x 破坏性契约收口**，并新增
+一项配置 breaking：非空 `boardPath` 只能相对 active lead Session 的原始 workspace 根。POSIX 绝对路径、
+Windows 盘符/UNC 会在 Loader 校验或直接构造服务时以 `BOARD_INVALID` 和 `/boardPath` issue fail-fast，
+不会静默回退。空白配置仍派生 `<lead workspace>/.dsh/devlead/board.json`；反斜杠、空段、`..` 逃逸和最终组件
+symlink 都会被拒绝。升级前必须把旧绝对路径改为相对路径，例如原始 workspace 为 `/work/project` 时，把
+`/work/project/custom/board.json` 改成 `custom/board.json`。看板在 workspace 外时，要把 `board.json` 与同级
+`notes/` **一起**移入 workspace。无需迁移看板内容，也无需 `/devlead reset`。本版发布 dist-tag 为 `next`，
+稳定版 `latest` 保持 0.4.2。完整升级步骤见
+[0.4.3-rc.2 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.3-rc.2.md)；
+rc.1 的工具迁移要求仍然适用，上一个稳定补丁的说明见
 [0.4.2 release notes](https://github.com/yankeguo/dsh-devlead/blob/main/docs/releases/v0.4.2.md)。
 
 进阶用户可以单独安装各个包，并自行把对应的 loader row 插入 profile 的 `cordis.patch.yml`；
@@ -95,7 +92,7 @@ dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.3-rc.1
 dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 
 # 或固定到某个版本（prerelease 必须写精确版本）
-dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.3-rc.1
+dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle@0.4.3-rc.2
 ```
 
 > **从旧版本（低于 0.4.0）升级：** 0.4.0 会直接丢弃旧的 DevLead 会话状态（模式、关注集合、
@@ -385,7 +382,7 @@ workspace 根是 `/work/project`，改配 `custom/board.json`。不再支持把�
 看板默认启用并跟随唯一的 active lead：该 Session 的原始 workspace 根（`SessionHeader.cwd`，
 不是 worktree 检出）拥有看板文件；关闭 lead、切换 lead 或工作区时立即释放旧 store 并改读新
 文件。没有 active lead 或没有绝对原始 workspace 根时（即使配置了相对 override）看板禁用：工具返回 `BOARD_DISABLED`、摘要
-为空、界面上没有看板入口。派生路径（无 override）还要求 lead 记录的原始 workspace 根仍是**已存在
+为空、界面上没有看板入口。默认派生路径与相对 override 都要求 lead 记录的原始 workspace 根仍是**已存在
 目录**：目录被删除/移走时看板保持 disabled（`boardDisabledReason = missing-workspace`），只记一条
 warning，**绝不为了放看板重建 workspace**；原始 workspace 恢复后，下一次
 lead 同步/切换会重新解析默认路径或相对 override。start 失败（例如目录不可写）只降级看板——DevLead 照常加载，看板
