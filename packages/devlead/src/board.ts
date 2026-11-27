@@ -11,8 +11,8 @@
 
 import { watch } from 'node:fs'
 import type { FSWatcher } from 'node:fs'
-import { mkdir, readFile, stat } from 'node:fs/promises'
-import { basename, dirname, isAbsolute, join, normalize } from 'node:path'
+import { lstat, mkdir, readFile, stat } from 'node:fs/promises'
+import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep, win32 } from 'node:path'
 import { withFileLock, writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
 import {
   createDevLeadBoardSchema,
@@ -305,11 +305,11 @@ export type DevLeadBoardPathDisabledReason = 'no-workspace' | 'relative-workspac
  * Why the Host currently exposes no board store.
  *
  * `missing-workspace` is decided by the service, not by
- * {@link resolveDevLeadBoardPath}: a derived (non-override) path is only used
- * while the lead's recorded original workspace root still exists as a directory.
- * The store then stays disabled without creating anything, so a cold lead whose
- * workspace was deleted or moved cannot make the Host recreate it just to hold
- * `.dsh/devlead`.
+ * {@link resolveDevLeadBoardPath}: either a derived or relative-override path
+ * is only used while the lead's recorded original workspace root still exists
+ * as a directory. The store then stays disabled without creating anything, so
+ * a cold lead whose workspace was deleted or moved cannot make the Host
+ * recreate it to hold the board.
  */
 export type DevLeadBoardDisabledReason = DevLeadBoardPathDisabledReason | 'missing-workspace'
 
@@ -318,20 +318,59 @@ export type DevLeadBoardPathResolution =
   | { readonly kind: 'resolved'; readonly path: string; readonly source: DevLeadBoardPathSource }
   | { readonly kind: 'disabled'; readonly reason: DevLeadBoardPathDisabledReason }
 
+/** A lexical absolute root used only to prove that a relative override cannot escape its future workspace. */
+const BOARD_PATH_VALIDATION_ROOT = '/__devlead_lead_workspace__'
+
+/**
+ * Return the actionable configuration error for one non-blank board override.
+ *
+ * The grammar is platform-independent: forward slashes are mandatory, POSIX
+ * and Windows absolute forms are forbidden, and lexical `..` escapes fail even
+ * though no lead workspace is available at Loader-validation time.
+ */
+export function devLeadBoardPathOverrideError(value: string): string | undefined {
+  const trimmed = value.trim()
+  if (trimmed.length === 0) return undefined
+  if (isAbsolute(trimmed) || win32.isAbsolute(trimmed) || /^[A-Za-z]:/u.test(trimmed)) {
+    return 'boardPath must be relative to the lead workspace; absolute POSIX paths, Windows drive paths, '
+      + 'and UNC paths are not supported. Use a relative path such as ".dsh/devlead/board.json"'
+  }
+  if (trimmed.includes('\\')) {
+    return 'boardPath must be relative to the lead workspace and use forward slashes; backslashes are not supported'
+  }
+  if (trimmed.split('/').some(segment => segment.length === 0)) {
+    return 'boardPath must be relative to the lead workspace and must not contain empty path segments'
+  }
+  const escaped = posix.relative(
+    BOARD_PATH_VALIDATION_ROOT,
+    posix.resolve(BOARD_PATH_VALIDATION_ROOT, trimmed),
+  )
+  if (escaped === '..' || escaped.startsWith('../') || posix.isAbsolute(escaped)) {
+    return 'boardPath must stay within the lead workspace; ".." path escapes are not supported'
+  }
+  return undefined
+}
+
+/** Fail fast with the established structured board-validation error. */
+export function assertValidDevLeadBoardPathOverride(value: string): void {
+  const message = devLeadBoardPathOverrideError(value)
+  if (message === undefined) return
+  throw new DevLeadBoardError(message, 'BOARD_INVALID', [{ pointer: '/boardPath', message }])
+}
+
 /**
  * Resolve the board file path for one active lead.
  *
- * The deployment `boardPath` override wins when present (it is validated at
- * configuration time, but a direct caller still gets a structured refusal for
- * a relative path). Otherwise the lead Session's **original** workspace root
- * (`SessionHeader.cwd`) owns the default file
- * `<cwd>/.dsh/devlead/board.json`. The effective/worktree cwd is deliberately
- * ignored: the board belongs to the project root the Session was created in,
- * not to a checkout a turn moved into. The result is absolute and normalized;
- * a caller with no absolute workspace root gets the disabled outcome instead
- * of a fabricated relative path. This pure resolver never touches the
- * filesystem; the service additionally verifies that a derived workspace root
- * still exists as a directory before using the path (a missing root yields
+ * A non-blank deployment `boardPath` override is resolved against the lead
+ * Session's **original** workspace root (`SessionHeader.cwd`), never against
+ * the effective/worktree cwd. Otherwise that root owns the default file
+ * `<cwd>/.dsh/devlead/board.json`. The result is absolute, normalized, and
+ * proven to remain beneath the original root. Invalid overrides throw a
+ * structured error rather than silently falling back to the default. A caller
+ * with no absolute workspace root gets the disabled outcome instead of a
+ * fabricated path. This pure resolver never touches the filesystem; the
+ * service additionally verifies that the workspace root still exists as a
+ * directory before using either path (a missing root yields
  * {@link DevLeadBoardDisabledReason} `missing-workspace` rather than a
  * recreated workspace).
  * @param input - optional deployment override and the lead's original workspace root.
@@ -341,16 +380,23 @@ export function resolveDevLeadBoardPath(
   input: { readonly override?: string; readonly cwd?: string } = {},
 ): DevLeadBoardPathResolution {
   const override = input.override?.trim() ?? ''
-  if (override.length > 0) {
-    if (!isAbsolute(override)) return { kind: 'disabled', reason: 'invalid-override' }
-    return { kind: 'resolved', path: normalize(override), source: 'override' }
-  }
+  assertValidDevLeadBoardPathOverride(override)
   const cwd = input.cwd?.trim() ?? ''
   if (cwd.length === 0) return { kind: 'disabled', reason: 'no-workspace' }
   if (!isAbsolute(cwd)) return { kind: 'disabled', reason: 'relative-workspace' }
+  const workspaceRoot = resolve(cwd)
+  if (override.length > 0) {
+    const path = resolve(workspaceRoot, override)
+    const within = relative(workspaceRoot, path)
+    if (within === '..' || within.startsWith(`..${sep}`) || isAbsolute(within)) {
+      const message = 'boardPath must resolve within the lead workspace; ".." path escapes are not supported'
+      throw new DevLeadBoardError(message, 'BOARD_INVALID', [{ pointer: '/boardPath', message }])
+    }
+    return { kind: 'resolved', path, source: 'override' }
+  }
   return {
     kind: 'resolved',
-    path: join(normalize(cwd), ...DEVLEAD_BOARD_DIR_SEGMENTS, DEVLEAD_BOARD_FILE_NAME),
+    path: join(workspaceRoot, ...DEVLEAD_BOARD_DIR_SEGMENTS, DEVLEAD_BOARD_FILE_NAME),
     source: 'workspace',
   }
 }
@@ -585,6 +631,19 @@ export function renderDevLeadBoardSummary(
   return output.text
 }
 
+/** Refuse a symlinked final component; an atomic rename would replace the link rather than its target. */
+async function assertFinalComponentNotSymlink(filePath: string): Promise<void> {
+  try {
+    const entry = await lstat(filePath)
+    if (!entry.isSymbolicLink()) return
+    const message = `board final path component must not be a symlink: ${filePath}`
+    throw new DevLeadBoardError(message, 'BOARD_INVALID', [{ pointer: '/boardPath', message }])
+  } catch (error) {
+    if (errorCode(error) === 'ENOENT') return
+    throw error
+  }
+}
+
 /**
  * Host-owned board store. Construction validates the configured absolute path
  * once; callers can never redirect an individual operation to another file.
@@ -647,6 +706,7 @@ export class DevLeadBoardStore {
       // Browser watchers subscribe to the parent before the first Host write.
       // Create it up front so their ready -> add transition is observable.
       await mkdir(dirname(this.filePath), { recursive: true, mode: 0o700 })
+      await assertFinalComponentNotSymlink(this.filePath)
     } catch (error) {
       if (isDevLeadBoardError(error)) throw error
       if (isWriteIoError(error)) throw writeIoError(this.filePath, error)
@@ -741,6 +801,7 @@ export class DevLeadBoardStore {
     this.dirty = false
     this.legacyMigrationPending = false
     try {
+      await assertFinalComponentNotSymlink(filePath)
       for (let attempt = 0; attempt < DEVLEAD_BOARD_READ_ATTEMPTS; attempt += 1) {
         const before = await stat(filePath)
         if (!force && this.cache !== undefined && this.lastError === undefined && sameFingerprint(this.fingerprint, before)) {

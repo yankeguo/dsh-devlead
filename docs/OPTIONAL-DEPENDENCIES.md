@@ -38,9 +38,13 @@ plugin-market 等）。审计对象是本仓库的 6 个包（`protocol`、`devl
 > 插件的硬依赖。
 >
 > **动态看板 / 包拓扑收口轮**：看板从「配置了 `boardPath` 才启用」改为**默认启用**——由唯一
-> active lead Session 的原始 workspace 根（`SessionHeader.cwd`）派生
-> `<cwd>/.dsh/devlead/board.json`，`boardPath` 只保留为可选的绝对路径 override；没有 lead 时
-> 看板禁用（工具 `BOARD_DISABLED`、无 global、无面板），lead 切换会释放旧 store/watcher。看板
+> active lead Session 的原始 workspace 根（`SessionHeader.cwd`，不是 worktree checkout）派生
+> `<cwd>/.dsh/devlead/board.json`；非空 `boardPath` 只接受相对该根的 override，空白仍用默认路径。
+> 绝对 POSIX、Windows 盘符/UNC 在 Loader/直接构造时以 `BOARD_INVALID` fail-fast，错误提示改用相对路径；
+> 反斜杠、空段与 `..` 逃逸同样被拒绝，`path.resolve` 后必须仍在根内，最终组件不能是 symlink。默认与
+> override 都要求原始根存在，缺失时不重建；既有绝对路径配置升级后会启动失败，必须迁移为相对路径。
+> 没有 lead 或原始根缺失时看板禁用（工具 `BOARD_DISABLED`、无 global、无面板），lead 切换会释放旧
+> store/watcher。看板
 > start/pre-create 失败（P2-2）只记 warning + degraded，不阻塞 DevLead 服务/插件加载；此时
 > board 工具报 `BOARD_IO_ERROR`、摘要为空，其余功能正常。`devlead_board_read` 结果另有 64 KiB
 > 上限（`DEVLEAD_BOARD_READ_MAX_BYTES`，依次裁 tasks → blockers → project 行，`truncated:true`）；
@@ -400,7 +404,7 @@ module table 里。E1 佐证：安装运行时 `dsh/node_modules/@deepseek-ai/` 
 | `sessionPersistence`（0.2.0 新增探测，仅就绪判定） | `src/persistence.ts`（`persistedSessionsOf` 结构化探针）；`src/index.ts`（`awaitCorpusReady` / `armRehydrationRetry` / `persistedLeadRecords`） | 缺失时先 live-attach 回退并通过 `ctx.inject` 观察 arrival/replacement/unload；屏障返回它用 persistence 真值校验过的 listing，扫描直接消费该 listing（不会再 list 一份未校验语料），超时/不一致时保持 prompt fail-closed；有界窗口分段独立：扫描阶段 5s、finalize 复核独立 5s、每次 append 批次经 attempt.extend() 重新 arm 5s（单次 attempt 最坏约 30s），挂起的后端 promise 在各自窗口被放弃并计失败；随后按可续扫的多批游标推进（每次尝试最多 64 条无法分类读取，仅当新校验 listing 的 persisted id 集合不变时复用游标），finalize 前复核语料 id 集合；不可验证（listing/真值暂时读不出，含就绪屏障）保留快照/游标/高水位并计入失败预算，只有可读不一致（changed）才丢弃重扫，间歇故障因此进入 12 次 cap + 30s 探针；读取失败按 250ms→5s 有界指数退避重试（最多 12 次），超限后只保留一条 sticky 的 30s 慢速降级探针；not-found 触发一次同样校验的 re-list，同一 id 连续 not-found 计读取失败（按行记录重试机会）；prompt gate 的 proof token 在 resume/interrupt 前与写入 child inbox 前复核，admission 窗口内的原地替换/移除 fail closed；从未组合则冷扫描不执行（不 per-event 扫描） | `service.spec.ts` 冷重建用例（`waits for the optional persistence binding before adopting cold leads`、`waits out a stale corpus listing before the authoritative scan`、`loads and serves live leads when the corpus never becomes consistent`）；`phase2.spec.ts`（`re-lists after corpus readiness instead of trusting a pre-ready partial snapshot`、`does not consume the failure cap while paginating a large corpus`、`refuses delivery when the listing authorized by the barrier changes before finalize`、`does not trust a scan re-list that omits a stored foreign supervisor`、`counts a repeated not-found as a read failure instead of forgiving the budget every round`、`abandons a scan attempt whose backend never settles and recovers on a later attempt`、`keeps the retry-cap probe sticky instead of restarting the fast backoff`） |
 | `worktrees`（实验） | `src/isolation.ts`（`worktreeCapabilityOf`；`ctx.get('worktrees')`）；`src/index.ts`（`worktreeIsolationAvailable` / `isolateSession`） | `isolation: {requested:'worktree', status:'unavailable'/'failed', reason?}`；创建与 prompt 照常（唯一例外是防御性的"子 Agent 非 live"：隔离报 `unavailable`，若同时要求 prompt 则仍走既有 `DEVLEAD_SESSION_UNAVAILABLE`；发行版 controller 不会触发） | `packages/devlead/tests/isolation.spec.ts`（缺失/非 live/失败/畸形服务/动态提供/取消） |
 | `storageDomain`（当前工作树新增探测） | `src/outbox.ts`（结构化 `open` / table 探测）；`src/idempotency.ts`（非 answer 幂等 receipt）；`src/index.ts`（`openOutbox` / `openIdempotencyStore` / `replayOutbox`） | 报告仍可投递但回执明确 `durable:false` + warning（进程内存队列，Host 退出可能丢）；outbox 行不落盘、cold/未 attached lead 无法跨重启 replay；archived tombstone 只在进程内生效；非 answer 幂等只在进程内窗口兜底并显式 warning | `packages/devlead/tests/outbox.spec.ts`、`idempotency.spec.ts`（缺失/写失败/TTL）、`service.spec.ts`（non-durable 回退、durable outbox、restart replay、reset drop）、`phase2.spec.ts`（重启幂等）；默认 Host 的 e2e 断言 storageDomain 存在且 receipt `durable:true` |
-| board store（项目看板） | `src/index.ts` 的 `syncBoardToActiveLead` / `swapBoardStore` / `readBoard` / `updateBoard`；由 active lead 生命周期驱动 | 没有 active lead 或其 header 没有绝对 workspace 根 → disabled store：工具 `BOARD_DISABLED`、摘要为空、browser global 不注入、无面板；路径 start/父目录预创建失败 → warning + degraded，**DevLead 服务/工具/命令/UI 照常加载**，board 工具与摘要按真实故障返回 `BOARD_IO_ERROR` 或空（P2-2）；lead off/切换释放旧 store 与 watcher | `packages/devlead/tests/board-lifecycle.spec.ts`（lead 切换/release、degraded start 不阻塞激活）、`board-io.spec.ts`、`board-watcher.spec.ts`、`board-race.spec.ts` |
+| board store（项目看板） | `src/index.ts` 的 `syncBoardToActiveLead` / `swapBoardStore` / `readBoard` / `updateBoard`；由 active lead 生命周期驱动 | 没有 active lead、其 header 没有绝对 workspace 根或原始根缺失（显式 override 也不能绕过）→ disabled store：不重建根目录，工具 `BOARD_DISABLED`、摘要为空、browser global 不注入、无面板；路径 start/父目录预创建失败 → warning + degraded，**DevLead 服务/工具/命令/UI 照常加载**，board 工具与摘要按真实故障返回 `BOARD_IO_ERROR` 或空（P2-2）；lead off/切换释放旧 store 与 watcher | `packages/devlead/tests/board-lifecycle.spec.ts`（lead 切换/release、degraded start 不阻塞激活）、`board-io.spec.ts`、`board-watcher.spec.ts`、`board-race.spec.ts` |
 
 **看板是默认启用、但可降级的内部路径**：它不依赖任何可选服务，只依赖 Host 自身的
 Session/Workspace 投影与 `dsh-atomic-write` 库；没有 active lead 时按禁用处理，start 失败时按

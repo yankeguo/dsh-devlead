@@ -363,7 +363,7 @@ config）：
     wakeColdSession: true        # 恢复冷 DevLead 会话以投递其排队通知
     defaultAgentPreset: ''       # 创建会话时的默认 Agent preset（空 = Host 默认）
     questionTtlMs: 86400000      # open question 的 TTL（24 小时；0 = 禁用 lazy 过期）
-    boardPath: ''                # 可选：空白 = 由 active lead 的 workspace 派生 <cwd>/.dsh/devlead/board.json
+    boardPath: custom/board.json # 可选相对路径 override；'' = 派生 <lead workspace>/.dsh/devlead/board.json
 ```
 
 | 键 | 默认值 | 范围 / 说明 |
@@ -375,15 +375,20 @@ config）：
 | `wakeColdSession` | `true` | 为 `true` 时，带排队通知的冷 lead Session 会被恢复以完成投递；设为 `false` 可让队列留在内存里，直到人类打开该 lead Session |
 | `defaultAgentPreset` | `''` | 创建会话未指定 `preset` 时使用的默认值；空表示 Host 的实际默认值。无效 id 会让创建失败并返回结构化错误 |
 | `questionTtlMs` | `86400000` | 非负安全整数；open question 的 lazy TTL（24 小时），`0` 禁用过期。已回答的问题不会追溯过期 |
-| `boardPath` | `''`（自动派生） | 可选的绝对路径 override。trim 后为空白时由 active lead Session 的原始 workspace 根自动派生 `<cwd>/.dsh/devlead/board.json`，看板默认启用；非空必须是项目看板 JSON 的绝对路径并优先于派生路径。相对路径直接拒绝，不按 cwd resolve。既有显式配置 `boardPath` 的部署升级后路径与行为不变。路径**最终组件不能是 symlink**（原子替换会换掉链接本身而不是目标文件）；父目录链中的 symlink 可以。只有 lead AI 通过工具写入，人类/浏览器只读。详见 [docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md) |
+| `boardPath` | `''`（自动派生） | 可选的**相对路径** override，以 active lead Session 的原始 workspace 根（`SessionHeader.cwd`，不是 worktree 检出）为基准通过 `path.resolve` 解析。trim 后为空白时派生 `<lead workspace>/.dsh/devlead/board.json`；`.dsh/devlead/board.json`、`custom/board.json` 等非空值优先于默认派生。POSIX 绝对路径、Windows 盘符/UNC、反斜杠、空段与 `..` 逃逸都会在 Loader/直接构造时以 `BOARD_INVALID` fail-fast，解析后必须仍位于 workspace 内。**破坏性变化：**既有绝对 `boardPath` 会在启动时失败，不会静默回退；必须改成相对路径（见下方迁移说明）。路径**最终组件不能是 symlink**；父目录链中的 symlink 可以。只有 lead AI 通过工具写入，人类/浏览器只读。详见 [docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md) |
+
+**从绝对 `boardPath` 迁移：**若旧值是 `/work/project/custom/board.json`，且 lead 的原始
+workspace 根是 `/work/project`，改配 `custom/board.json`。不再支持把看板放在该 workspace
+之外；请先移到原始 workspace 内再使用相对路径。旧绝对值会在启动时返回可操作的
+`BOARD_INVALID` 错误，绝不会被静默忽略或替换成默认路径。
 
 看板默认启用并跟随唯一的 active lead：该 Session 的原始 workspace 根（`SessionHeader.cwd`，
 不是 worktree 检出）拥有看板文件；关闭 lead、切换 lead 或工作区时立即释放旧 store 并改读新
-文件。没有 active lead（或既未配置 override、又没有绝对 workspace 根）时看板禁用：工具返回 `BOARD_DISABLED`、摘要
+文件。没有 active lead 或没有绝对原始 workspace 根时（即使配置了相对 override）看板禁用：工具返回 `BOARD_DISABLED`、摘要
 为空、界面上没有看板入口。派生路径（无 override）还要求 lead 记录的原始 workspace 根仍是**已存在
 目录**：目录被删除/移走时看板保持 disabled（`boardDisabledReason = missing-workspace`），只记一条
-warning，**绝不为了放 `.dsh/devlead` 重建 workspace**；workspace 恢复（或配置 `boardPath`）后，下一次
-lead 同步/切换会重新解析。start 失败（例如目录不可写）只降级看板——DevLead 照常加载，看板
+warning，**绝不为了放看板重建 workspace**；原始 workspace 恢复后，下一次
+lead 同步/切换会重新解析默认路径或相对 override。start 失败（例如目录不可写）只降级看板——DevLead 照常加载，看板
 工具返回 `BOARD_IO_ERROR`；下一次 lead 同步（同一路径也会重试）或路径切换会重试 `start()`。
 
 看板在锁内 fresh read，并支持 per-project `expected_revision` CAS：每个 project 记录最后修改它的看板代际，

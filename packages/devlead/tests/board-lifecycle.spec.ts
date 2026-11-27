@@ -55,13 +55,13 @@ afterEach(async () => {
 })
 
 describe('resolveDevLeadBoardPath', () => {
-  it('prefers the deployment override, normalized and absolute', () => {
+  it('resolves the deployment override beneath the original workspace', () => {
     expect(resolveDevLeadBoardPath({
-      override: '/work/shared/../shared/board.json',
+      override: 'custom/shared/../shared/board.json',
       cwd: '/workspace/alpha',
-    })).toEqual({ kind: 'resolved', path: '/work/shared/board.json', source: 'override' })
-    expect(resolveDevLeadBoardPath({ override: '  /work/board.json  ' })).toEqual({
-      kind: 'resolved', path: '/work/board.json', source: 'override',
+    })).toEqual({ kind: 'resolved', path: '/workspace/alpha/custom/shared/board.json', source: 'override' })
+    expect(resolveDevLeadBoardPath({ override: '  custom/board.json  ', cwd: '/workspace/alpha' })).toEqual({
+      kind: 'resolved', path: '/workspace/alpha/custom/board.json', source: 'override',
     })
   })
 
@@ -92,8 +92,10 @@ describe('resolveDevLeadBoardPath', () => {
       kind: 'disabled', reason: 'relative-workspace',
     })
     expect(resolveDevLeadBoardPath({ override: 'relative/board.json' })).toEqual({
-      kind: 'disabled', reason: 'invalid-override',
+      kind: 'disabled', reason: 'no-workspace',
     })
+    expect(() => resolveDevLeadBoardPath({ override: '/absolute/board.json', cwd: '/workspace/alpha' }))
+      .toThrowError(expect.objectContaining({ code: 'BOARD_INVALID' }))
     expect(resolveDevLeadBoardPath({ override: '', cwd: '/workspace/alpha' })).toMatchObject({
       kind: 'resolved', source: 'workspace',
     })
@@ -124,16 +126,15 @@ describe('service board lifecycle', () => {
     }
   })
 
-  it('keeps the Config boardPath as an override over the lead workspace', async () => {
+  it('keeps the Config boardPath as a workspace-relative override', async () => {
     const workspace = await tempRoot('override-cwd')
-    const overrideRoot = await tempRoot('override-path')
-    const override = join(overrideRoot, 'nested', 'board.json')
-    const harness = await bootService({ enabled: true, leadCwd: workspace, config: { boardPath: override } })
+    const override = join(workspace, 'nested', 'board.json')
+    const harness = await bootService({ enabled: true, leadCwd: workspace, config: { boardPath: 'nested/board.json' } })
     try {
       expect(harness.service.board.path).toBe(override)
       expect(harness.service.boardPathOverride).toBe(true)
-      expect(harness.service.settings.boardPath).toBe(override)
-      expect(await directoryMode(join(overrideRoot, 'nested'))).toBe(0o700)
+      expect(harness.service.settings.boardPath).toBe('nested/board.json')
+      expect(await directoryMode(join(workspace, 'nested'))).toBe(0o700)
       // The workspace-derived file is never created while the override is set.
       expect(existsSync(expectedPath(workspace))).toBe(false)
     } finally {
@@ -248,25 +249,17 @@ describe('service board lifecycle', () => {
     }
   })
 
-  it('keeps a configured override disabled until a lead activates, then uses it without a workspace root', async () => {
-    const overrideRoot = await tempRoot('override-no-lead')
-    const override = join(overrideRoot, 'nested', 'board.json')
-    const harness = await bootService({ config: { boardPath: override } })
+  it('keeps a relative override disabled without an original lead workspace root', async () => {
+    const harness = await bootService({ config: { boardPath: 'nested/board.json' } })
     try {
-      // No lead identity means no board at all: the override must not
-      // pre-create its directory or watch it for a host with no active lead.
       expect(harness.service.board.path).toBeUndefined()
       expect(harness.service.board.enabled).toBe(false)
       expect(harness.service.boardPathOverride).toBe(false)
-      expect(existsSync(join(overrideRoot, 'nested'))).toBe(false)
-      // An explicit override is the deployment's authority: once a lead exists
-      // it names the board file even when that Session records no workspace
-      // root (the default derivation would have nothing to derive from).
       await harness.service.setEnabled(harness.lead.agent, true)
-      expect(harness.service.board.path).toBe(override)
-      expect(harness.service.boardPathOverride).toBe(true)
-      expect(harness.service.boardLeadSessionId).toBe(String(harness.lead.id))
-      expect(existsSync(join(overrideRoot, 'nested'))).toBe(true)
+      expect(harness.service.board.path).toBeUndefined()
+      expect(harness.service.boardPathOverride).toBe(false)
+      expect(harness.service.boardLeadSessionId).toBeUndefined()
+      expect(harness.service.boardDisabledReason).toBe('no-workspace')
       expect(harness.service.boardStartError).toBeUndefined()
     } finally {
       await harness.dispose()
@@ -280,7 +273,9 @@ describe('service board lifecycle', () => {
     const blocker = join(workspace, 'blocker')
     await writeFile(blocker, 'not a directory\n')
     const boardPath = join(blocker, 'nested', 'board.json')
-    const harness = await bootService({ enabled: true, leadCwd: workspace, config: { boardPath } })
+    const harness = await bootService({
+      enabled: true, leadCwd: workspace, config: { boardPath: 'blocker/nested/board.json' },
+    })
     try {
       // The plugin loaded and every non-board DevLead surface still works.
       expect(harness.service.isEnabled(harness.lead.agent)).toBe(true)
@@ -326,7 +321,7 @@ describe('service board lifecycle', () => {
     const harness = await bootService({
       enabled: true,
       leadCwd: workspace,
-      config: { boardPath: join(parent, 'board.json') },
+      config: { boardPath: 'existing/board.json' },
     })
     try {
       expect((await stat(parent)).mode & 0o777).toBe(0o755)
@@ -404,19 +399,17 @@ describe('service board lifecycle', () => {
     }
   })
 
-  it('keeps the explicit override pre-creating even when the lead workspace is missing', async () => {
+  it('does not recreate a missing workspace for a relative override', async () => {
     const root = await tempRoot('override-missing-cwd')
     const missing = join(root, 'moved-away')
-    const override = join(root, 'deploy-board', 'nested', 'board.json')
-    const harness = await bootService({ enabled: true, leadCwd: missing, config: { boardPath: override } })
+    const harness = await bootService({
+      enabled: true, leadCwd: missing, config: { boardPath: 'deploy-board/nested/board.json' },
+    })
     try {
-      // The deployment override owns its own location; it does not depend on
-      // the lead workspace existing and keeps the existing pre-create contract.
-      expect(harness.service.board.path).toBe(override)
-      expect(harness.service.boardPathOverride).toBe(true)
-      expect(harness.service.boardDisabledReason).toBeUndefined()
+      expect(harness.service.board.path).toBeUndefined()
+      expect(harness.service.boardPathOverride).toBe(false)
+      expect(harness.service.boardDisabledReason).toBe('missing-workspace')
       expect(harness.service.boardStartError).toBeUndefined()
-      expect(await directoryMode(join(root, 'deploy-board', 'nested'))).toBe(0o700)
       expect(existsSync(missing)).toBe(false)
     } finally {
       await harness.dispose()
@@ -430,7 +423,9 @@ describe('service board lifecycle', () => {
     const blocker = join(workspace, 'blocker')
     await writeFile(blocker, 'not a directory\n')
     const boardPath = join(blocker, 'nested', 'board.json')
-    const harness = await bootService({ enabled: true, leadCwd: workspace, config: { boardPath } })
+    const harness = await bootService({
+      enabled: true, leadCwd: workspace, config: { boardPath: 'blocker/nested/board.json' },
+    })
     try {
       expect(harness.service.boardStartError).toMatchObject({ code: 'BOARD_IO_ERROR' })
       expect(harness.service.board.path).toBe(boardPath)

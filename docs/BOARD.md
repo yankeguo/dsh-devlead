@@ -2,7 +2,7 @@
 
 项目看板为 DevLead 提供跨 Session 的持久项目状态。**看板默认启用、无需任何配置**：唯一事实源
 是当前 active lead 的看板文件，默认由该 Session 原始 workspace 根派生
-`<cwd>/.dsh/devlead/board.json`（`boardPath` 配置项只是可选的绝对路径 override）。人类/浏览器
+`<cwd>/.dsh/devlead/board.json`（`boardPath` 配置项只是可选的 workspace 相对路径 override）。人类/浏览器
 只读，只有启用 DevLead 模式的 lead AI 可以通过
 `devlead_board_update` 写入看板、通过 `devlead_board_note_write` 维护项目 notes 索引；note 正文由 lead 使用
 DSH 原生 read/write/edit 编辑。Step A 实现 Host
@@ -15,15 +15,15 @@ lead-only 客户端入口与 notes reader 以本页当前契约为准。
   `<SessionHeader.cwd>/.dsh/devlead/board.json`。`SessionHeader.cwd` 是 Session **创建时的原始
   workspace 根**，不是某次 turn 的 effective/worktree cwd；worktree 隔离的 lead 仍把看板放在
   项目根，而不是 `.agents/worktrees/...` 检出里。
-- **派生路径要求 workspace 根仍然存在**：没有 override 时，Host 在派生
-  `<cwd>/.dsh/devlead/board.json` 前先确认该 `cwd` 仍是**已存在的目录**。不存在（cold lead 记录的
-  workspace 被删除/移走/变成普通文件，或无法 `stat`）时看板进入 disabled 状态，新增 reason
-  `missing-workspace`（`ctx.devLead.boardDisabledReason` 可读），只记录一条 warning；
+- **所有路径都要求 workspace 根仍然存在**：Host 在派生默认路径或解析相对 override 前先确认该
+  `cwd` 仍是**已存在的目录**。不存在（cold lead 记录的 workspace 被删除/移走/变成普通文件，或无法
+  `stat`）时看板进入 disabled 状态，reason 为 `missing-workspace`
+  （`ctx.devLead.boardDisabledReason` 可读），只记录一条 warning；
   **不会 `mkdir` 重建 workspace 根，也不会写入任何文件**，工具返回 `BOARD_DISABLED`、摘要为空、
   不注入浏览器 global。workspace 恢复后，下一次 lead 同步/切换会重新解析并重新启用看板。
-  显式 `boardPath` override 不受此限制，保持既有预创建语义（见下）。
-- **没有 lead 就看板禁用**：没有 active lead 时，或既未配置 `boardPath` override、lead 的
-  header 又没有绝对 workspace 根时，工具返回 `BOARD_DISABLED`、动态摘要为空、浏览器 global 不注入、
+  相对 `boardPath` override 同样受此限制，因为解析结果也位于该根目录内。
+- **没有 lead 就看板禁用**：没有 active lead 时，或 lead 的 header 没有绝对原始 workspace 根时
+  （即使配置了相对 override），工具返回 `BOARD_DISABLED`、动态摘要为空、浏览器 global 不注入、
   UI 不显示任何看板入口；不会伪造相对路径，也不会回退到插件安装目录。
 - **单活即单 store**：DevLead 模式本来就是 Host 级单活（见 [DESIGN](DESIGN.md) §2），因此
   同一时刻最多只有一个看板 store 与一个目录 watcher。`/devlead off`、lead 切换到另一个
@@ -35,20 +35,30 @@ lead-only 客户端入口与 notes reader 以本页当前契约为准。
 
 ## 配置（可选 override）
 
-默认零配置即可用。只有需要把看板放到固定位置时才在 profile 的 `cordis.patch.yml` 中覆盖
-loader row `devlead` 的 `config.boardPath`；显式非空时它**优先于自动派生**。既有已配置
-`boardPath` 的部署升级后行为不变（路径、权限、CAS 语义都不变）。`boardPath` trim 后为空白
-表示“使用 active lead workspace 自动派生”，非空必须是绝对路径，相对路径直接拒绝，不按 cwd
-resolve。路径只来自部署配置；两个 AI 工具都没有、也不接受 board 文件路径参数。不要把某个
-开发者的本机绝对路径提交到本仓库。
+默认零配置即可用。需要自定义看板位置时，在 profile 的 `cordis.patch.yml` 中覆盖 loader row
+`devlead` 的 `config.boardPath`；显式非空时它**优先于自动派生**，但只能是相对于 active lead
+原始 workspace 根（`SessionHeader.cwd`，不是 worktree 检出）的路径。trim 后为空白表示“使用
+active lead workspace 自动派生”；非空值通过 `path.resolve(workspaceRoot, boardPath)` 解析，
+并用 `path.relative` 断言结果仍在该根内。可写 `.dsh/devlead/board.json` 或 `custom/board.json`。
+
+POSIX 绝对路径、Windows 盘符/UNC（包括 `/tmp/x`、`C:\\x`、`C:/x`、`\\\\server\\share`）、
+反斜杠、空路径段与 `..` 逃逸都在 Loader/直接构造时以 `BOARD_INVALID` 和 `/boardPath` issue
+**fail-fast**；错误提示改成相对路径，绝不静默回退到默认文件。`../x`、`a/../../x` 因此不可配置；
+解析后仍位于根内的规范化不改变 notes、权限或 CAS 语义。路径只来自部署配置；两个 AI 工具都没有、
+也不接受 board 文件路径参数。
+
+**Breaking 迁移：**既有绝对 `boardPath` 部署升级后会启动失败。若旧值是
+`/work/project/custom/board.json` 且 lead 原始 workspace 根是 `/work/project`，改成
+`custom/board.json`；workspace 外的看板不再受支持，需先移入该根目录。迁移说明也随下一 rc 的
+release notes 发布。
 
 ```yaml
 - id: devlead
   name: '@yankeguo/dsh-devlead'
   config:
     # 其余 devlead config 按部署需要保留；DSH 整体替换一行的 config。
-    # 可选：显式固定看板路径；省略/空白则由 active lead 的 workspace 自动派生。
-    boardPath: /path/to/workbox/.dsh/devlead/board.json
+    # 可选：相对 active lead 原始 workspace 根；省略/空白则使用默认派生。
+    boardPath: custom/board.json
 ```
 
 `boardPath` 的**最终组件不能是 symlink**：写入是把同目录临时文件原子 rename 到该路径，会替换
@@ -59,8 +69,8 @@ canonicalization。
 看板路径解析完成后，`DevLeadBoardStore.start()` 先以
 `mkdir(dirname, {recursive:true, mode:0o700})` 幂等预创建父目录（不修改已有目录权限），再启动
 读取/监听。这保证浏览器 chokidar 首开时父目录已存在，Host 首次写入能触发 `add` 事件。该预创建
-只发生在**显式 override** 或**已确认存在的派生 workspace 根**之上：派生路径的 workspace 根不存在
-时不会进入 `start()`（见上文 `missing-workspace`）。
+只发生在**已确认存在的原始 workspace 根**之上，默认路径与相对 override 都一样：根不存在时不会进入
+`start()`（见上文 `missing-workspace`）。
 `update()` 仍先完成逻辑预检，再执行自己的 mkdir，因此失败预检不会由 update 新建目录。文件以
 `0600` 原子替换。是否把 `.dsh/devlead/` 加入仓库的 `.gitignore` 由用户/仓库所有者决定；
 插件不修改 `.gitignore`，也不要求看板进入 Git。
@@ -69,8 +79,8 @@ canonicalization。
 
 **start 失败不阻塞 DevLead（P2-2）**：父目录预创建或 `start()` 失败时，Host 只记录一条 warning
 并把看板标记为 degraded；`DevLeadService`、`devlead_*` 工具、`/devlead` 命令与浏览器 UI 照常
-加载。此时 board 相关工具与摘要按真实故障返回 `BOARD_IO_ERROR`（或保持空摘要），其余 DevLead
-功能不受影响。下一次 lead 同步（同一 resolved 路径也会**按需重试** `start()`）或路径切换会再次
+加载。此时 board 相关工具与摘要按真实故障返回结构化错误（I/O 故障为 `BOARD_IO_ERROR`，最终组件
+symlink 为 `BOARD_INVALID`，或保持空摘要），其余 DevLead 功能不受影响。下一次 lead 同步（同一 resolved 路径也会**按需重试** `start()`）或路径切换会再次
 尝试 `start()`；重试仍失败时 `boardStartError` 保留最后一次真实故障。
 
 ## 文件 schema v1
@@ -127,8 +137,8 @@ offset 的时间拒绝。`updatedBy` 是最后写入的 lead Session id/title；
 
 ## 数据层与故障语义
 
-Host 通过 `ctx.devLead.board` 暴露**当前 active lead 的 store**（没有 lead，或既无 override 又无
-绝对 workspace 根时是 disabled store）：
+Host 通过 `ctx.devLead.board` 暴露**当前 active lead 的 store**（没有 lead 或没有绝对原始
+workspace 根时是 disabled store）：
 
 - `path` / `enabled`：当前 store 状态；无 lead/workspace 根时为 undefined / false；
 - `read(filter?)`：返回 `{ revision, updatedAt, projects, truncated? }`；
@@ -139,7 +149,8 @@ Host 通过 `ctx.devLead.board` 暴露**当前 active lead 的 store**（没有 
 `ctx.devLead.boardLeadSessionId` / `boardPathOverride` / `boardStartError` /
 `boardDisabledReason` 暴露当前 store 归属的 lead Session、路径是否来自 Config override、最近一次
 start 失败（degraded 时非空），以及看板当前被禁用的原因（`no-workspace` /
-`relative-workspace` / `invalid-override` / `missing-workspace`；有活动 store 时 undefined）。
+`relative-workspace` / `missing-workspace`；有活动 store 时 undefined）。非法 override 不再成为
+disabled 状态，而是在配置/解析边界直接抛出 `BOARD_INVALID`。
 `ctx.devLead.updateBoard(agent, patch, expectedRevision?, signal?)` 额外补上 lead 身份；调用者
 必须是当前 active lead，否则 `BOARD_DISABLED`。`read()` / `update()` 在没有 board 或
 `expectedRevision` 不是非负安全整数时返回 rejected Promise；它与**目标 project 的 revision** 比较，
@@ -156,8 +167,8 @@ schema 错误、未知字段或超限文件会产生带 RFC 6901 JSON pointer �
 前后的 `mtimeMs/size/ino` 指纹，并核对实际 UTF-8 字节数；只有稳定快照才进入缓存。文件持续变化
 时返回可重试的 `BOARD_IO_ERROR`。watcher 出错后，在下一次成功 load 时 rearm。
 
-文件不存在为 `BOARD_NOT_FOUND`；没有 active lead（或既无 override 又无绝对 workspace 根）、派生
-路径的 workspace 根已不存在（`missing-workspace`），或调用者不是当前 active lead
+文件不存在为 `BOARD_NOT_FOUND`；没有 active lead 或绝对原始 workspace 根、该根已不存在
+（`missing-workspace`），或调用者不是当前 active lead
 时为 `BOARD_DISABLED`。start 的父目录预创建失败、读取故障以及整个写周期中已知的 filesystem
 错误、锁超时和 `FileLockError` 都映射为 `BOARD_IO_ERROR`，领域错误保持原错误码；锁超时文案
 提示当前 writer 结束后 retry。start 失败本身不会 reject 服务加载：它只产生
@@ -415,8 +426,8 @@ index 提交或 read/list 对账后的新 revision 在下一次上下文重建�
 ## Step B 浏览器契约
 
 Host 只在**当前 active lead 拥有看板路径时**注入 global：每次 `webserver/index-inject` 渲染
-时写入；没有 lead 时不注入（有 active lead 时，路径来自 workspace 派生或 Config override，
-因此 lead 自身没有 workspace 根也有 override 路径可发布）。看板 start 失败（degraded）仍按
+时写入；没有 lead 或绝对原始 workspace 根时不注入（有根时，路径来自默认派生或相对 Config
+override）。看板 start 失败（degraded）仍按
 当前 lead 发布 global：路径已经确定，浏览器面板照常打开并显示空态/读取错误（`BOARD_IO_ERROR`）。
 
 ```ts

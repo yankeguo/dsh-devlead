@@ -38,11 +38,11 @@ to create the directory. Domain failures are translated to `HarnessError` with a
 their declared output schemas.
 
 The board tools follow the board's default-on lifecycle: the active lead Session's original
-workspace root owns `<header.cwd>/.dsh/devlead/board.json` (the optional deployment `boardPath` wins
-when configured), and with no active lead / workspace root they report `BOARD_DISABLED`. A derived
-(non-override) board also requires that recorded workspace root to still exist as a directory: the
-Host never recreates a deleted or moved workspace just to host the board, so the tools report
-`BOARD_DISABLED` until the workspace comes back or an explicit `boardPath` covers it. They never
+workspace root owns `<header.cwd>/.dsh/devlead/board.json`; a non-blank deployment `boardPath` is a
+relative-only override resolved against that same root. With no active lead / workspace root they
+report `BOARD_DISABLED`. Both derived and explicit-override boards require the recorded original
+workspace root to still exist as a directory: the Host never recreates a deleted or moved workspace
+just to host the board, and an explicit `boardPath` cannot bypass this missing-root gate. They never
 accept a board file path argument — the path is derived by the Host or set by deployment config only.
 `devlead_board_read` defaults to project summaries without tasks; a selected project includes at most
 50 tasks by default and reports `truncated:true` beyond that. The whole serialized result is also
@@ -191,9 +191,10 @@ supported platform.
 不虚构 id）。`preset` 是 Host 定义的 id；省略/空白先回退插件 `defaultAgentPreset`，再回退
 Host 默认/selectedDefault；无效 id 在创建阶段返回结构化错误，不会被静默忽略。领域错误翻译为
 稳定的 `DEVLEAD_*` code（看板为 `BOARD_*`）。`devlead_board_read` / `devlead_board_update` 提供
-用户可见项目看板：默认启用，由唯一 active lead 的 `SessionHeader.cwd` 派生
-`<cwd>/.dsh/devlead/board.json`，`boardPath` 仅作可选绝对路径 override；没有 lead 时返回
-`BOARD_DISABLED`。工具从不接受看板文件路径参数。读取结果按 64 KiB 上限（tasks → blockers →
+用户可见项目看板：默认启用，由唯一 active lead 的原始 workspace 根 `SessionHeader.cwd` 派生
+`<cwd>/.dsh/devlead/board.json`；非空 `boardPath` 只接受相对该根的 override，空白仍用默认路径。
+没有 lead、没有绝对 workspace 根或原始根缺失时返回 `BOARD_DISABLED`；显式 override 也不能绕过
+missing-root 检查，Host 不重建目录。工具从不接受看板文件路径参数。读取结果按 64 KiB 上限（tasks → blockers →
 project 行从尾部裁剪，`truncated:true`）；update 使用 per-project revision CAS；插件只写文件，是否提交由各仓库
 自行决定；project 引用在锁内快照上解析，长
 workspace path/title 不再误报 `BOARD_LIMIT_EXCEEDED`，未知引用仍是

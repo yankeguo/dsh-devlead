@@ -173,8 +173,9 @@ provider / 基础设施凭据按名称模式从环境清除，turn 稳定以 pro
 - **阶段 2**：向一次性 profile 追加官方实验 forge bundle，验证 worktree happy path：结果
   `status: 'worktree'` 且 `path`/`branch`/`baseCommit` 非空、`git worktree list` 与分支存在、
   `baseCommit` 等于 checkout `HEAD`、子会话有效 cwd 切到 worktree 而 header cwd 仍指向
-  Workspace、Session 仍归属该 Workspace。该阶段启用 scratch `boardPath` override，同时证明
-  override 优先于 workspace 派生并以 `override:true` 发布。
+  Workspace、Session 仍归属该 Workspace。该阶段启用相对 scratch 原始 workspace 根的
+  `boardPath` override，同时证明 override 优先于默认派生、解析不落到 worktree checkout，并以
+  `override:true` 发布。
 - **阶段 3**：真实 Host 上验证工具与关闭生命周期——模式开启时恰好 17 个主 `devlead_*`、关闭时
   为 0，`devlead:policy` 文案契约，单 Session 原子 archive（`archived:true/false`）与 `stop_running`、
   归档自动 unwatch，注销 Workspace 的 durable

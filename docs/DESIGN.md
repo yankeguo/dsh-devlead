@@ -2413,10 +2413,13 @@ DSH peer 依赖。最小可交付闭环是 1b + 1c + 1d：question 快、answer 
 
 - `devlead:board-summary` 是 `systemPrompt.context()` 动态快照（order 220），仅 enabled lead
   且缓存非空时注入；从当前 active lead 的 `ctx.devLead.board.summary()` 同步渲染，
-  ≤1536 UTF-8 bytes。看板默认启用：文件是 active lead `SessionHeader.cwd` 下的
-  `.dsh/devlead/board.json`，`boardPath` 仅作可选绝对路径 override；没有 lead（或既无
-  override 又无 workspace 根）时
-  `BOARD_DISABLED`、摘要为空。文件写入使用 Host promise 链 + `withFileLock` +
+  ≤1536 UTF-8 bytes。看板默认启用：空白/缺省 `boardPath` 派生 active lead 原始 workspace 根
+  `SessionHeader.cwd`（不是 worktree checkout）下的 `.dsh/devlead/board.json`；非空值只接受相对该根的
+  路径，例如 `.dsh/devlead/board.json`、`custom/board.json`。绝对 POSIX、Windows 盘符/UNC 在 Loader/
+  直接构造边界以 `BOARD_INVALID` fail-fast，错误提示改用相对路径；反斜杠、空段与 `..` 逃逸同样被拒绝，
+  `path.resolve` 后必须仍在根内，最终组件不能是 symlink。默认与显式 override 都要求原始根存在，
+  缺失时不重建；没有 lead、没有绝对 workspace 根或根缺失时 `BOARD_DISABLED`、摘要为空。既有绝对
+  路径部署升级后会启动失败，必须迁移为相对路径。文件写入使用 Host promise 链 + `withFileLock` +
   `writeFileAtomic`，支持目标 project 的 expectedRevision CAS（旧文件 revision 按文件代际回填并写回）；坏 JSON 保留最后合法缓存并拒绝覆盖。
   `devlead_board_read` 结果按 `DEVLEAD_BOARD_READ_MAX_BYTES`（64 KiB）裁剪 tasks → blockers →
   project 行；`devlead_board_update` 的 project 引用（id/title/path）在锁内快照上解析，预检使用
@@ -2759,7 +2762,7 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
 | `DEVLEAD_SELF_WATCH` | `watchSession` 试图关注自己（`promptSession` 向自己投递使用 `DEVLEAD_INVALID_INPUT`） |
 | `DEVLEAD_PROJECTION_INVALID` | 持久记录损坏（fold failure）；人类可用 `/devlead reset`（或冻结时的 `/devlead off`）恢复，`setEnabled(true)` 会拒绝并提示先 reset |
 
-| `BOARD_*` | 项目看板/notes 域错误：`BOARD_DISABLED`（没有 active lead/workspace 根、调用者不是当前 active lead，或看板被禁用）、`BOARD_NOT_FOUND`、`BOARD_INVALID`、`BOARD_PROJECT_NOT_FOUND` / `BOARD_PROJECT_AMBIGUOUS`（锁内快照解析失败）、`BOARD_REVISION_CONFLICT`（board 或 notes index CAS）、`BOARD_NOTE_NOT_FOUND`（metadata 或 indexed body 缺失）、`BOARD_LIMIT_EXCEEDED`、`BOARD_IO_ERROR`（含 degraded start 后的真实 I/O 故障）。board/notes start 失败本身不映射为服务加载失败，只记录 `boardStartError` 并 warn |
+| `BOARD_*` | 项目看板/notes 域错误：`BOARD_DISABLED`（没有 active lead/workspace 根、原始根缺失、调用者不是当前 active lead，或看板被禁用）、`BOARD_NOT_FOUND`、`BOARD_INVALID`（含非法 `boardPath`；绝对路径在 Loader/直接构造 fail-fast，错误提示改用相对路径）、`BOARD_PROJECT_NOT_FOUND` / `BOARD_PROJECT_AMBIGUOUS`（锁内快照解析失败）、`BOARD_REVISION_CONFLICT`（board 或 notes index CAS）、`BOARD_NOTE_NOT_FOUND`（metadata 或 indexed body 缺失）、`BOARD_LIMIT_EXCEEDED`、`BOARD_IO_ERROR`（含 degraded start 后的真实 I/O 故障）。board/notes start 失败本身不映射为服务加载失败，只记录 `boardStartError` 并 warn；配置校验的 `BOARD_INVALID` fail-fast 不属于这种降级 |
 取消（`AbortSignal`）不映射到上面任何码：调用按标准 `AbortError` 拒绝。
 
 ## 9. 测试策略
@@ -2807,9 +2810,11 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   **全局单活**（第二会话被 `DEVLEAD_ALREADY_ACTIVE` 拒绝且消息含占用者、并发 on 只成功一个、
   off 立即释放、archived 占用者释放、启动时多个 live enabled 只保留一个、冷持久占用者拒绝
   新开启、冷占用者删除后释放、archived 冷占用者经 controller resume 后释放、无法 resume 时的专门文案）。
-  项目看板覆盖动态路径与生命周期（无 lead 时 disabled、`SessionHeader.cwd` 派生、Config
-  override 优先、`/devlead off` 与 lead 切换释放旧 store/watcher、start/预创建失败只 degraded
-  且服务照常激活）、板文件读写/CAS/watcher、64 KiB 读取裁剪与 `truncated`、以及长
+  项目看板覆盖动态路径与生命周期（无 lead/原始根缺失时 disabled、空白默认从 `SessionHeader.cwd`
+  派生、非空 Config 仅接受根内相对 override、绝对/反斜杠/空段/`..` 逃逸在配置边界以
+  `BOARD_INVALID` fail-fast、最终组件 symlink 在 start/read 以 `BOARD_INVALID` 拒绝、
+  `/devlead off` 与 lead 切换释放旧 store/watcher、start/预创建失败只 degraded 且服务照常激活）、
+  板文件读写/CAS/watcher、64 KiB 读取裁剪与 `truncated`、以及长
   workspace path/title 引用在锁内快照上解析（P2-1，不再误报 `BOARD_LIMIT_EXCEEDED`）。notes store 覆盖
   directory/note id/absolutePath 派生、missing index、strict/corrupt/超限降级、metadata/full-body read、
   create/update-metadata/delete、index revision CAS/no-op、初始正文先写/index 提交/rollback、delete orphan、

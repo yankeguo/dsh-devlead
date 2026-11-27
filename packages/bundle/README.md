@@ -46,12 +46,19 @@ new one — and with no lead the board is disabled (the tools report `BOARD_DISA
 appears).
 
 To pin the file to a deployment-specific location instead, override loader row `devlead` in the
-profile's `cordis.patch.yml` and set `config.boardPath` to an absolute JSON path (retain the other
-`devlead` config keys because DSH replaces the row's whole config). `boardPath` is optional, wins
-over the derived path, and existing explicit `boardPath` deployments keep working unchanged. If the
+profile's `cordis.patch.yml` and set `config.boardPath` to a relative JSON path such as
+`.dsh/devlead/board.json` or `custom/board.json` (retain the other `devlead` config keys because
+DSH replaces the row's whole config). A non-blank value is resolved against the active lead's
+original workspace root (`SessionHeader.cwd`, not its worktree checkout); blank still uses
+`<cwd>/.dsh/devlead/board.json`. Both forms require that root to exist; the Host never recreates a
+missing root. Absolute POSIX paths and Windows drive/UNC paths fail fast with `BOARD_INVALID` at
+Loader/direct construction, with an error asking for a relative path. Backslashes, empty segments,
+and `..` root escapes are also rejected; after `path.resolve`, the path must stay inside the root
+and its final component cannot be a symlink. Existing
+absolute-path deployments fail on startup after upgrade and must migrate to a relative path. If the
 page was loaded before the lead was enabled and you use a custom `boardPath`, refresh the page once
-so the browser receives the override path; the default derived path needs no refresh. Only the lead
-AI writes via `devlead_board_update`; humans and browser clients are read-only. See
+so the browser receives the resolved override path; the default derived path needs no refresh. Only
+the lead AI writes via `devlead_board_update`; humans and browser clients are read-only. See
 [docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md) for schema v1 and
 the `window.__DSH_DEVLEAD_BOARD__` contract. No user path is hardcoded in this package.
 
@@ -104,10 +111,14 @@ dsh plugin --profile desktop add @yankeguo/dsh-devlead-bundle
 
 项目看板默认启用、无需配置：active lead 会话的原始 workspace 根拥有
 `<workspace>/.dsh/devlead/board.json`，看板 tab/guide/会话头按钮只在该 lead 会话出现。需要固定
-路径时，覆盖 profile `cordis.patch.yml` 中 loader row `devlead` 的 `config.boardPath`（绝对路径、
-可选；保留其余 config 键，DSH 会整体替换一行的 config）。已显式配置 `boardPath` 的部署行为不变；
-若页面在 lead 启用前加载且使用自定义 `boardPath`，需刷新一次页面以拿到 override 路径（默认
-派生路径不需要刷新）。只有 lead AI 通过 `devlead_board_update` 写入，人类/浏览器只读；详见
+路径时，覆盖 profile `cordis.patch.yml` 中 loader row `devlead` 的 `config.boardPath`，非空仅接受
+`.dsh/devlead/board.json`、`custom/board.json` 等相对路径（保留其余 config 键，DSH 会整体替换一行的
+config）；它相对原始 `SessionHeader.cwd`（不是 worktree checkout）解析，空白仍用默认路径。默认与
+override 都要求原始根存在，缺失时不重建。绝对 POSIX、Windows 盘符/UNC 在 Loader/直接构造时以
+`BOARD_INVALID` fail-fast，错误提示改用相对路径；反斜杠、空段与 `..` 逃逸同样被拒绝，
+`path.resolve` 后必须仍在根内，最终组件不能是 symlink。既有绝对路径部署升级后会启动失败，必须迁移为相对路径。若页面在 lead
+启用前加载且使用自定义 `boardPath`，需刷新一次页面以拿到解析后的 override 路径（默认派生路径不需要
+刷新）。只有 lead AI 通过 `devlead_board_update` 写入，人类/浏览器只读；详见
 [docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md)。
 
 每个项目还可在 `board.json` 之外保存长篇 Markdown notes：active lead 用

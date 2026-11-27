@@ -7,11 +7,15 @@ approve 后公开）。稳定版 `latest` 当前为 **`0.4.2`**（2026-11-24 经
 保持 `0.4.2`。`0.4.3-rc.1` 是计划中 0.4.3 的首个候选，相对已发布的 `0.4.2` 做 0.x 允许的破坏性契约
 收口：看板 per-project revision/CAS、notes 工具只维护索引（正文归 DSH 原生 read/write/edit）、assistant
 摘要默认 4096 码点且 wake 载荷上限 8000 码点、lead 主动 interrupt 不再算 failure、看板持久化移出插件
-（删除 `commit`）、archive 单 Session 原子语义（删除批量 `sessions` 与 `devlead_unarchive_session` 工具）、
-移除 `workspaceModels`/`defaultModel` 静态模型路由；工具面 19 → **18**（17 个主工具 + `devlead_report`）。
-磁盘 DevLead state、`board.json` 与 notes 索引无需迁移（旧看板 project revision 首次读取时回填），DSH
-兼容面与 `engines.dsh` 不变。历史 `0.4.2-rc.1`/`rc.4`/`rc.8` 的 staged 记录从未 approve，不得混入本次
-批准，其它旧候选的 release notes 保持历史事实。`0.4.3-rc.1` 只是**插件版本**，**不代表 DSH 0.4.3**。
+（删除 `commit`）、archive 单 Session 原子语义（删除批量 `sessions` 与 `devlead_unarchive_session`
+工具）、移除 `workspaceModels`/`defaultModel` 静态模型路由；工具面 19 → **18**
+（17 个主工具 + `devlead_report`）。磁盘 DevLead state、`board.json` 与 notes 索引无需迁移
+（旧看板 project revision 首次读取时回填）；DSH 兼容面与 `engines.dsh` 不变。历史
+`0.4.2-rc.1`/`rc.4`/`rc.8` 的 staged 记录从未 approve，不得混入本次批准，其它旧候选的 release notes
+保持历史事实。`0.4.3-rc.1` 只是**插件版本**，**不代表 DSH 0.4.3**。
+
+当前工作树（下一 rc）另将非空 `boardPath` 改为仅接受相对原始 workspace 根的路径；既有绝对配置必须
+迁移，否则升级后启动失败。这不改写已发布 `0.4.3-rc.1` 的历史契约。
 6 个可发布包的 `engines.dsh` 均为 `>=0.2.2-rc.1 <0.3.0`（根
 `package.json` 是 private 包，不声明 `engines.dsh`，只声明 `engines.node`），所有 `@deepseek-ai/dsh-*`
 peer 使用同一范围；本地 devDependencies 与编译基线仍固定 rc.1，用最旧 API 做类型检查，本机运行验证
@@ -34,12 +38,15 @@ peer 使用同一范围；本地 devDependencies 与编译基线仍固定 rc.1�
     `systemPrompt.context()` 和 `webserver/index-inject`；只读右栏使用同版本范围的
     `sidebarRightTabs` / `sidebarRight.openTab`、`sidebar.right.pane.tab`、
     `remote.workspaceFiles.stat/readBytes/changes` 与 `useWorkspaces` / `useSessions`。
-    不依赖 0.2.3-only API，engines/peer DSH range 不变。默认路径派生自 active lead 的
-    `SessionHeader.cwd`（`<cwd>/.dsh/devlead/board.json`），`boardPath` 仍是可选的绝对路径
-    override（既有配置升级后行为不变）；没有 lead 时看板禁用（无 global、无面板）。派生路径还要求
-    lead 记录的原始 workspace 根仍是已存在目录：缺失时 Host 以 `missing-workspace` 保持看板禁用
-    （不重建目录、不写入、工具 `BOARD_DISABLED`），显式 override 则保持既有预创建语义。看板
-    start/预创建失败只降级该功能（P2-2），不影响插件加载；同一 resolved 路径的下一次 lead 同步也会
+    不依赖 0.2.3-only API，engines/peer DSH range 不变。默认路径派生自 active lead 的原始
+    workspace 根 `SessionHeader.cwd`（`<cwd>/.dsh/devlead/board.json`，不是 worktree checkout）；
+    非空 `boardPath` 只接受相对该根的 override（如 `.dsh/devlead/board.json`、`custom/board.json`），
+    空白仍用默认路径。绝对 POSIX、Windows 盘符/UNC 在 Loader/直接构造时以 `BOARD_INVALID` fail-fast，
+    错误提示改用相对路径；反斜杠、空段与 `..` 逃逸同样被拒绝，`path.resolve` 后必须仍在根内，最终
+    组件不能是 symlink。既有绝对路径部署升级后会启动失败，必须迁移为相对路径。没有 lead 时看板禁用（无
+    global、无面板）。默认与显式 override 都要求原始 workspace 根仍是已存在目录：缺失时 Host 以
+    `missing-workspace` 保持看板禁用（不重建目录、不写入、工具 `BOARD_DISABLED`），override 也不能
+    绕过。看板 start/预创建失败只降级该功能（P2-2），不影响插件加载；同一 resolved 路径的下一次 lead 同步也会
     按需重试 `start()`。浏览器入口为 lead-only：tab/guide/header 只在屏幕上的 active lead Session
     出现，global 形状含 `leadSessionId` / `override`；恢复出来但已非合规 lead 的 board tab 在首次
     sync 即关闭。
@@ -539,8 +546,9 @@ phase 1e=31，完整流目标 244/244（241 PASS + 3 credential-less SKIP），`
 `0.4.3-rc.1` 实测与退出码以当轮 release-prep 原始日志为准。** 本轮新增/改写的断言
 包括：没有 lead 时不注入 board global、lead 开启后从 `SessionHeader.cwd` 派生默认路径并发布
 `{leadSessionId, override:false}`、预创建父目录、冷 lead 从持久 header 派生、`/devlead off`
-移除 global、换 workspace 后立即换源、phase 2 的 Config override 以 `override:true` 发布、
-phase 3 的 lead-off store 释放（没有 workspace 根的 `BOARD_DISABLED` 由 host 单测覆盖，e2e 的 HTTP session/create 总会落一个 cwd）。
+移除 global、换 workspace 后立即换源、phase 2 的相对原始 workspace 根 Config override 以
+`override:true` 发布、phase 3 的 lead-off store 释放（没有 workspace 根的 `BOARD_DISABLED` 由 host
+单测覆盖，e2e 的 HTTP session/create 总会落一个 cwd）。
 rc.4 另 pin 真实 notes create/append、id/title/path project 引用、有界 summary、index + Markdown 磁盘
 read-back、浏览器 `workspaceFiles.stat/readBytes` 与 systemPrompt.context 发布；rc.5 再新增一条真实
 `devlead_board_note_read` 经 `ctx.tools.resolve/execute` → 参数转换 → active-lead service → Markdown read-back

@@ -404,7 +404,7 @@ profile's `cordis.patch.yml` — DSH replaces a row's whole config):
     wakeColdSession: true        # resume a cold DevLead Session to deliver queued notifications
     defaultAgentPreset: ''       # default Agent preset for created sessions (empty = Host default)
     questionTtlMs: 86400000      # open-question TTL (24h; 0 disables lazy expiry)
-    boardPath: ''                # optional: blank derives <active lead workspace>/.dsh/devlead/board.json
+    boardPath: custom/board.json # optional relative override; '' derives <lead workspace>/.dsh/devlead/board.json
 ```
 
 | Key | Default | Range / notes |
@@ -416,17 +416,23 @@ profile's `cordis.patch.yml` — DSH replaces a row's whole config):
 | `wakeColdSession` | `true` | when `true`, a cold lead Session with queued notifications is resumed to deliver them; set `false` to keep the queues in memory until a human opens the lead Session |
 | `defaultAgentPreset` | `''` | default value used when a created session names no `preset`; empty means the Host's effective default. An invalid id fails creation with a structured error |
 | `questionTtlMs` | `86400000` | non-negative safe integer; lazy open-question TTL (24h), `0` disables expiry. Answered questions do not retroactively expire |
-| `boardPath` | `''` (derived) | optional absolute override. Trimmed blank derives `<active lead Session header cwd>/.dsh/devlead/board.json` and the board is on by default; a non-blank value must be an absolute project-board JSON path and wins over the derived path. Relative paths are rejected, never resolved against cwd. Existing explicit `boardPath` deployments keep their path and behaviour unchanged. The final path component must not be a symlink (the atomic replace would swap the link itself, not its target); symlinks in the parent directory chain are fine. Only the lead AI writes through tools; humans/browser clients are read-only. See [docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md) |
+| `boardPath` | `''` (derived) | optional **relative** override resolved with `path.resolve` against the active lead Session's original workspace root (`SessionHeader.cwd`, not a worktree checkout). Trimmed blank derives `<lead workspace>/.dsh/devlead/board.json`; non-blank values such as `.dsh/devlead/board.json` or `custom/board.json` win over that derivation. Absolute POSIX paths, Windows drive/UNC paths, backslashes, empty segments, and `..` escapes are rejected at Loader/direct construction with `BOARD_INVALID`; the resolved path must remain inside the workspace. **Breaking:** an existing absolute `boardPath` now fails startup instead of falling back; change it to a relative path (see the migration note below). The final path component must not be a symlink; symlinks in the parent directory chain are fine. Only the lead AI writes through tools; humans/browser clients are read-only. See [docs/BOARD.md](https://github.com/yankeguo/dsh-devlead/blob/main/docs/BOARD.md) |
+
+**Migrating an absolute `boardPath`:** if the old value was `/work/project/custom/board.json` and the
+lead's original workspace root is `/work/project`, configure `custom/board.json`. A board outside that
+workspace is no longer supported; move it beneath the original workspace and use its relative path.
+The old absolute value is rejected at startup with an actionable `BOARD_INVALID` error, never silently
+ignored or replaced by the default path.
 
 The board is enabled by default and follows the single active lead: that Session's original workspace
 root (its `SessionHeader.cwd`, not a worktree checkout) owns the file, and turning the lead off, switching
 leads or changing the workspace releases the old store and reads the new file immediately. With no active
-lead (or neither an override nor an absolute workspace root) the board is disabled: the tools report `BOARD_DISABLED`, the summary
+lead or no absolute original workspace root (including when a relative override is configured) the board is disabled: the tools report `BOARD_DISABLED`, the summary
 is empty and no board UI appears. A derived (non-override) path additionally requires that the lead's
 recorded original workspace root still exists as a directory: if it was deleted or moved, the Host keeps
 the board disabled (`boardDisabledReason = missing-workspace`), logs one warning and **never recreates the
-workspace** just to host `.dsh/devlead`; returning the workspace (or configuring `boardPath`) lets the next
-lead sync/switch resolve it again. A start failure (for example an unwritable directory) degrades only the
+workspace** just to host the board; returning the original workspace lets the next
+lead sync/switch resolve either the default or relative-override path again. A start failure (for example an unwritable directory) degrades only the
 board — DevLead keeps loading and the board tools report `BOARD_IO_ERROR`; the next lead sync (even to the
 same path) or path switch retries `start()`.
 

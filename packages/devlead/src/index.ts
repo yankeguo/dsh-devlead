@@ -10,7 +10,6 @@
  */
 
 import { mkdir, stat } from 'node:fs/promises'
-import { isAbsolute } from 'node:path'
 import { Service } from '@deepseek-ai/cordis'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
@@ -166,7 +165,13 @@ import {
   type DevLeadActiveSession,
 } from './active.ts'
 import { worktreeCapabilityOf, worktreeCheckoutOf } from './isolation.ts'
-import { DevLeadBoardError, DevLeadBoardStore, isDevLeadBoardError, resolveDevLeadBoardPath } from './board.ts'
+import {
+  assertValidDevLeadBoardPathOverride,
+  DevLeadBoardError,
+  DevLeadBoardStore,
+  isDevLeadBoardError,
+  resolveDevLeadBoardPath,
+} from './board.ts'
 import type {
   DevLeadBoardDisabledReason,
   DevLeadBoardReadFilter,
@@ -272,12 +277,13 @@ export interface Config {
   /** Open-question lifetime in milliseconds; default 24h, 0 disables expiry. */
   questionTtlMs?: number
   /**
-   * Optional absolute project-board JSON path override.
+   * Optional project-board JSON path relative to the active lead's original
+   * workspace root (`SessionHeader.cwd`, not a worktree checkout).
    *
-   * Blank or omitted (the default) derives the board file from the active lead
-   * Session's original workspace root: `<lead header.cwd>/.dsh/devlead/board.json`.
-   * A non-blank value wins over that derivation, must be absolute, and remains
-   * a deployment-only setting: no tool argument can redirect the board file.
+   * Blank or omitted (the default) derives `<lead header.cwd>/.dsh/devlead/board.json`.
+   * A non-blank value wins over that derivation, must remain within the lead
+   * workspace, and remains a deployment-only setting: no tool argument can
+   * redirect the board file. Absolute paths fail at Loader/construction time.
    */
   boardPath?: string
 }
@@ -648,7 +654,12 @@ export const Config: z<Config> = z.object({
   wakeColdSession: z.boolean().default(true),
   defaultAgentPreset: z.string().default(''),
   questionTtlMs: z.number().step(1).min(0).max(Number.MAX_SAFE_INTEGER).default(DEFAULT_QUESTION_TTL_MS),
-  boardPath: z.string().default(''),
+  // Schemastery's Loader schema uses transform as its refinement primitive;
+  // propagating the domain error preserves BOARD_INVALID and /boardPath.
+  boardPath: z.transform(z.string(), (value) => {
+    assertValidDevLeadBoardPathOverride(value)
+    return value
+  }).default(''),
 })
 
 /** Fully materialized deployment configuration, with Loader defaults applied. */
@@ -671,8 +682,8 @@ export interface DevLeadSettings {
   /** Open-question lifetime in milliseconds; zero disables expiry. */
   readonly questionTtlMs: number
   /**
-   * Resolved project-board path override, or undefined when the default
-   * lead-workspace derivation applies.
+   * Validated lead-workspace-relative board path override, or undefined when
+   * the default lead-workspace derivation applies.
    */
   readonly boardPath?: string
 }
@@ -713,9 +724,7 @@ function resolveConfig(config: Config): DevLeadSettings {
   const boardPath = config.boardPath ?? ''
   if (typeof boardPath !== 'string') throw new TypeError('boardPath must be a string')
   const trimmedBoardPath = boardPath.trim()
-  if (trimmedBoardPath.length > 0 && !isAbsolute(trimmedBoardPath)) {
-    throw new TypeError('boardPath must be an absolute path')
-  }
+  assertValidDevLeadBoardPathOverride(trimmedBoardPath)
   return {
     notificationBatchMs,
     actionRequiredBatchMs,
@@ -2776,9 +2785,9 @@ export class DevLeadService extends Service {
    *
    * `missing-workspace` reports a lead whose recorded original workspace root is
    * gone (or is no longer a directory): the board stays disabled with one
-   * warning and the Host never recreates the workspace. An explicit deployment
-   * `boardPath` override bypasses this check and keeps the existing pre-create
-   * semantics. Undefined while a board store is active.
+   * warning and the Host never recreates the workspace. Both derived and
+   * relative-override paths require this check because both
+   * live beneath that root. Undefined while a board store is active.
    */
   get boardDisabledReason(): DevLeadBoardDisabledReason | undefined {
     return this.boardDisabledReasonValue
@@ -2892,11 +2901,11 @@ export class DevLeadService extends Service {
    * Point the service at the board file of one lead, releasing any previous
    * store/watcher.
    *
-   * The path is the Config override when configured, otherwise the lead's
-   * original workspace root plus `.dsh/devlead/board.json`. A derived path is
+   * The path is the original workspace root plus the relative Config override
+   * when configured, otherwise plus `.dsh/devlead/board.json`. Either path is
    * used only while that workspace root still exists as a directory: a cold
    * lead whose recorded root was deleted or moved must never make the Host
-   * recreate the workspace (with just `.dsh/devlead`) to host the board file.
+   * recreate the workspace to host the board file.
    * The same resolved file keeps its store (so a lead switch inside one
    * workspace does not churn the watcher); a changed path starts the new store
    * before the old one is closed, so an in-flight read never sees a
@@ -2928,15 +2937,14 @@ export class DevLeadService extends Service {
     }
     const nextPath = resolution.path
     const nextOverride = resolution.source === 'override'
-    if (resolution.source === 'workspace' && !(await this.workspaceRootExists(workspaceRoot))) {
-      // The default board location lives inside the user's project root. If
-      // that root is gone, start() would `mkdir -p` it back (only
-      // `.dsh/devlead` inside); keep the board disabled instead and let the
-      // explicit deployment override own any board that must survive a move.
+    if (!(await this.workspaceRootExists(workspaceRoot))) {
+      // Every board location lives inside the user's original project root.
+      // If that root is gone, start() would `mkdir -p` it back; keep the board
+      // disabled instead of recreating a deleted or moved workspace.
       this.ctx.logger.warn(
         `devlead: Session "${sessionId ?? ''}" records a workspace root (${workspaceRoot ?? ''}) that is missing `
         + 'or not a directory; the project board stays disabled instead of recreating the workspace. '
-        + 'Configure an absolute devlead boardPath if this Session should keep a project board.',
+        + 'Restore the original workspace to re-enable the project board.',
       )
       await this.disableBoardStore('missing-workspace')
       return

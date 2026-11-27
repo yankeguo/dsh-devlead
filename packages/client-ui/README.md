@@ -32,7 +32,8 @@ Browser half of the DevLead suite, loaded on the DSH **Web** platform.
   The path comes from the Host global `__DSH_DEVLEAD_BOARD__` when it names this lead
   (`{ boardPath, schemaVersion, pathPlatform, leadSessionId, override }`); otherwise it is derived
   from the Session's *original* workspace root as `<cwd>/.dsh/devlead/board.json`. A deployment
-  Config `boardPath` still wins as a host-wide override, but a page loaded before the lead existed
+  Config `boardPath` is a host-wide, relative-only override that the Host resolves against that
+  original root before publishing the absolute board path, but a page loaded before the lead existed
   needs a refresh to see it. Turning mode off or switching to a non-lead Session disposes every
   board registration and closes the on-screen Session's lingering board tab, so the panel never
   keeps reading a previous lead's file. The required services follow the default Web composition,
@@ -112,8 +113,9 @@ guide 卡片、标题与 Session 头部按钮（头部按钮本身静态注册�
 冻结 module table，无额外运行期依赖）。恢复出来但当前 on-screen Session 已非合规 lead 的 board tab
 会在首次 sync 时被关闭（即使本页从未注册过看板 surface）。
 路径优先取 Host global `__DSH_DEVLEAD_BOARD__`（新 Host 带 `leadSessionId` 与 `override`），否则由
-Session 原始 workspace root 派生 `<cwd>/.dsh/devlead/board.json`；配置 `boardPath` 仍是部署级覆盖，
-但页面若在 lead 出现之前加载，需要刷新才能看到覆盖路径。模式关闭或切换到非 lead Session 会注销全部
+Session 原始 workspace root 派生 `<cwd>/.dsh/devlead/board.json`；配置 `boardPath` 是仅接受相对路径的
+部署级覆盖，Host 相对该原始根解析后才发布绝对看板路径，但页面若在 lead 出现之前加载，需要刷新才能
+看到覆盖路径。模式关闭或切换到非 lead Session 会注销全部
 看板注册并关闭当前 Session 遗留的看板 tab，绝不继续读上一个 lead 的文件。所需服务由默认 Web 组合
 提供，本包不依赖 Host 包运行期代码。
 

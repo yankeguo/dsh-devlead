@@ -87,9 +87,13 @@
    Host 侧看板保持 disabled（不 `mkdir` 重建、不写入，工具报 `BOARD_DISABLED`，`boardDisabledReason =
    missing-workspace`）；页面在 self-heal 下仍可能显示入口并读到空态/读取错误，这是只读读取，
    不得在磁盘上重新创建该 workspace 目录。
-3. **Config override + late enable 需要刷新**：如测试 `boardPath` override，先改 profile 配置再
-   启动；若页面在 lead 启用前已加载，late-enable 场景必须刷新页面才能读到 override 路径与
-   `override:true` 的 global（这是预期行为，不是 bug；默认路径不需要刷新）。
+3. **Config override + late enable 需要刷新**：如测试 `boardPath` override，先把 profile 配置为
+   `.dsh/devlead/board.json` 或 `custom/board.json` 等相对路径再启动；Host 相对 active lead 的原始
+   workspace 根 `SessionHeader.cwd`（不是 worktree checkout）解析，override 同样要求该根存在且不重建。
+   若页面在 lead 启用前已加载，late-enable 场景必须刷新页面才能读到解析后的 override 路径与
+   `override:true` 的 global（这是预期行为，不是 bug；默认路径不需要刷新）。另验证绝对 POSIX、Windows
+   盘符/UNC 在 Loader/直接构造时以 `BOARD_INVALID` fail-fast，错误提示改用相对路径；反斜杠、空段与
+   `..` 逃逸同样被拒绝，`path.resolve` 后仍在根内且最终组件不能是 symlink。既有绝对路径配置必须迁移后才能启动。
 4. **顶部与项目卡片**：准备含四种状态、不同 priority/updatedAt 的 schema v1 文件；顶部
    active/blocked/paused/done KPI 数量、revision、updated 相对时间与 Live 自动状态正确。blocked
    强警示与项目组置顶，active 位于主区；宽右栏为响应式 2 列、窄栏降为 1 列，同组排序正确。

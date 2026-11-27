@@ -211,12 +211,12 @@ describe('DevLeadBoardStore', () => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-devlead-board-service-'))
     roots.push(root)
     const file = join(root, 'board.json')
-    const harness = await bootService({ enabled: true, config: { boardPath: file } })
+    const harness = await bootService({ enabled: true, leadCwd: root, config: { boardPath: 'board.json' } })
     try {
       harness.sessionTitle.set(String(harness.lead.id), 'Lead title')
       const result = await harness.service.updateBoard(harness.lead.agent, patch())
       expect(result.revision).toBe(1)
-      expect(harness.service.settings.boardPath).toBe(file)
+      expect(harness.service.settings.boardPath).toBe('board.json')
       const persisted = JSON.parse(await readFile(file, 'utf8')) as DevLeadBoard
       expect(persisted.updatedBy).toEqual({ sessionId: String(harness.lead.id), title: 'Lead title' })
       await harness.service.setEnabled(harness.lead.agent, false)

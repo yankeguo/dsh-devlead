@@ -386,7 +386,7 @@ describe('DevLeadBoardNotesStore', () => {
   it('allows only the service active lead and follows mode-off lifecycle', async () => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-devlead-notes-service-'))
     roots.push(root)
-    const harness = await bootService({ enabled: true, config: { boardPath: join(root, 'board.json') } })
+    const harness = await bootService({ enabled: true, leadCwd: root, config: { boardPath: 'board.json' } })
     try {
       await harness.service.updateBoard(harness.lead.agent, {
         project: 'alpha', create: true, set: { workspace: { path: '/tmp/alpha', title: 'alpha' } },
