@@ -67,7 +67,7 @@ export function useBoardFile({
   readonly now?: () => number
 }): DevLeadBoardFileResult {
   const fileConfig = useMemo<DevLeadWorkspaceFileConfig<DevLeadBoard> | undefined>(() => config === undefined ? undefined : {
-    path: config.boardPath,
+    path: config.boardFilePath,
     maxBytes: DEVLEAD_BOARD_MAX_BYTES,
     fileLabel: 'board file',
     parse: bytes => parseDevLeadBoardBytes(bytes, config.pathPlatform),

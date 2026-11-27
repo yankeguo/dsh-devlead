@@ -37,7 +37,7 @@ describe('statePath relative state directory', () => {
     expect(harness.service.board.path).toBe(join(workspace, '.dsh', 'devlead', 'board.json'))
     expect(harness.service.notes.path).toBe(join(workspace, '.dsh', 'devlead', 'notes'))
     expect(harness.service.notes.indexPath).toBe(join(workspace, '.dsh', 'devlead', 'notes', 'index.json'))
-    expect(harness.service.boardPathOverride).toBe(false)
+    expect(harness.service.statePathOverride).toBe(false)
     await harness.service.updateBoard(harness.lead.agent, {
       project: 'alpha', create: true, set: { workspace: { path: workspace, title: 'alpha' } },
     })
@@ -62,7 +62,7 @@ describe('statePath relative state directory', () => {
     expect(harness.service.board.path).toBe(join(stateDir, 'board.json'))
     expect(harness.service.notes.path).toBe(notesRoot)
     expect(harness.service.notes.indexPath).toBe(join(notesRoot, 'index.json'))
-    expect(harness.service.boardPathOverride).toBe(true)
+    expect(harness.service.statePathOverride).toBe(true)
     expect(existsSync(join(workspace, '.dsh', 'devlead', 'board.json'))).toBe(false)
 
     await harness.service.updateBoard(harness.lead.agent, {
@@ -155,7 +155,7 @@ describe('statePath relative state directory', () => {
     const stateDir = join(workspace, 'custom', 'state')
     await mkdir(stateDir, { recursive: true })
     const target = join(stateDir, 'target.json')
-    const boardPath = join(stateDir, 'board.json')
+    const boardFilePath = join(stateDir, 'board.json')
     const original = JSON.stringify({
       schemaVersion: 1,
       revision: 0,
@@ -164,8 +164,8 @@ describe('statePath relative state directory', () => {
       projects: [],
     })
     await writeFile(target, original, 'utf8')
-    await symlink(target, boardPath, 'file')
-    const store = new DevLeadBoardStore(boardPath)
+    await symlink(target, boardFilePath, 'file')
+    const store = new DevLeadBoardStore(boardFilePath)
     await expect(store.start()).rejects.toMatchObject({
       code: 'BOARD_INVALID',
       issues: [expect.objectContaining({ pointer: '/statePath' })],

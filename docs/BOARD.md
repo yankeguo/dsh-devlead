@@ -150,11 +150,11 @@ workspace 根时是 disabled store）：
   其中 project 省略 tasks 但包含自己的 `revision`；
 - `summary()`：从最后合法内存缓存同步渲染摘要；禁用或空 projects 时为空串。
 
-`ctx.devLead.boardLeadSessionId` / `boardPathOverride` / `boardStartError` /
+`ctx.devLead.boardLeadSessionId` / `statePathOverride` / `boardStartError` /
 `boardDisabledReason` 暴露当前 store 归属的 lead Session、路径是否来自自定义 Config `statePath`、最近一次
 start 失败（degraded 时非空），以及看板当前被禁用的原因（`no-workspace` /
-`relative-workspace` / `missing-workspace`；有活动 store 时 undefined）。`boardPathOverride` 是保持兼容的
-Host **观测字段名**，不是仍可使用的部署配置键。非法 `statePath` 不会成为 disabled 状态，而是在
+`relative-workspace` / `missing-workspace`；有活动 store 时 undefined）。`statePathOverride` 是
+Host **观测字段**，不是部署配置键。非法 `statePath` 不会成为 disabled 状态，而是在
 配置/解析边界直接抛出 `BOARD_INVALID` + `/statePath`。
 `ctx.devLead.updateBoard(agent, patch, expectedRevision?, signal?)` 额外补上 lead 身份；调用者
 必须是当前 active lead，否则 `BOARD_DISABLED`。`read()` / `update()` 在没有 board 或
@@ -204,7 +204,7 @@ agent 不得手改 `notes/index.json`。
 ### 路径、id 与严格 index schema
 
 `DevLeadBoardNotesStore` 固定 `path = <workspace>/<statePath>/notes`（等价于内部已解析绝对
-`dirname(boardPath)/notes`）、`indexPath = <path>/index.json`，调用者不能传入 root、index 或正文路径，
+`dirname(boardFilePath)/notes`）、`indexPath = <path>/index.json`，调用者不能传入 root、index 或正文路径，
 也没有独立 notes 路径配置。project directory 由 Host 从原始 board project id 生成：NFKD/lowercase
 后保留安全 ASCII 段，截断的可读 base 加 project id 的 SHA-256 短 digest，避免不同 id 清理成同名目录；
 极端短 digest 冲突使用完整 hash。已有项目的 directory 永久沿用 index 中的值。create 省略 note id 时由
@@ -438,7 +438,7 @@ Host 只在**当前 active lead 拥有看板路径时**注入 global：每次 `w
 
 ```ts
 window.__DSH_DEVLEAD_BOARD__ = {
-  boardPath: '/path/to/workbox/.dsh/devlead/board.json', // Host 已解析绝对路径；字段名保持 boardPath
+  boardFilePath: '/path/to/workbox/.dsh/devlead/board.json', // Host 已解析的 board.json 绝对路径
   schemaVersion: 1,
   pathPlatform: 'posix', // Windows Host 为 'win32'
   leadSessionId: 'session-...', // 页面渲染时持有看板的 active lead
@@ -525,8 +525,8 @@ client 按旧部署级宽路径语义继续工作；旧 client 会忽略新字�
   “读取中”），看板文件未就绪时只显示「不可用」。symlink/realpath 别名仍需 Step C 由 Host
   权威解析，浏览器不伪造 canonicalization。组标题的 DOM id 用 React `useId` 前缀，多个面板
   实例同时挂载也不会冲突。
-- **notes 路径与读取**：client 从已经解析的内部绝对 `boardPath`（global 字段名不变）直接派生
-  `dirname(boardPath)/notes/index.json`，等价于 `<workspace>/<statePath>/notes/index.json`；目录名/文件名与 limits 复用 protocol 常量。project 只按原始
+- **notes 路径与读取**：client 从 global 中已经解析的绝对 `boardFilePath` 直接派生
+  `dirname(boardFilePath)/notes/index.json`，等价于 `<workspace>/<statePath>/notes/index.json`；目录名/文件名与 limits 复用 protocol 常量。project 只按原始
   board project id 关联 notes entry；正文路径只接受 strict schema 已证明的 metadata.path，再按 Host
   `pathPlatform` 拼到固定 notes root。没有任意路径输入、自定义 Remote、写 API 或乐观写状态。
   `useWorkspaceFile` 是 board、notes index、当前 note 共用的只读 `stat/readBytes/changes` 状态机；

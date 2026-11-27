@@ -64,7 +64,7 @@ describe('devlead board tools', () => {
     const harness = boot()
     expect((await failureOf(harness.call('devlead_board_read', { project: '  ' }))).code).toBe('DEVLEAD_INVALID_INPUT')
     expect((await failureOf(harness.call('devlead_board_read', { limit: 0 }))).code).toBe('DEVLEAD_INVALID_INPUT')
-    expect((await failureOf(harness.call('devlead_board_read', { boardPath: '/tmp/other.json' }))).code)
+    expect((await failureOf(harness.call('devlead_board_read', { boardFilePath: '/tmp/other.json' }))).code)
       .toBe('DEVLEAD_INVALID_INPUT')
     expect(harness.devLead.callsOf('readBoard')).toHaveLength(0)
   })

@@ -14,7 +14,7 @@
  *
  *   `devlead-e2e-board-state` (phase 3)
  *     Read the current lead's board activation facts (`ctx.devLead.board.path`,
- *     `boardLeadSessionId`, `boardPathOverride`) and one real `readBoard` call,
+ *     `boardLeadSessionId`, `statePathOverride`) and one real `readBoard` call,
  *     returning the structured failure when the board is disabled. Used for the
  *     no-workspace BOARD_DISABLED and mode-off lifecycle assertions.
  *
@@ -484,9 +484,9 @@ async function executeInspect(ctx, invocation) {
       storage: ctx.get('storage') !== undefined,
       reportOutboxAvailable: ctx.devLead.reportOutboxAvailable === true,
       reportOutboxLastError: ctx.devLead.reportOutboxLastError ?? null,
-      boardPath: ctx.devLead.board.path ?? null,
+      boardFilePath: ctx.devLead.board.path ?? null,
       boardLeadSessionId: ctx.devLead.boardLeadSessionId ?? null,
-      boardOverride: ctx.devLead.boardPathOverride,
+      boardOverride: ctx.devLead.statePathOverride,
       boardStartError: ctx.devLead.boardStartError ?? null,
       workspaceRegistry: ctx.get('workspaceRegistry') !== undefined,
       toolError,
@@ -559,9 +559,9 @@ async function executeBoard(ctx, invocation) {
   return {
     kind: 'success',
     text: JSON.stringify({
-      boardPath: ctx.devLead.board.path ?? null,
+      boardFilePath: ctx.devLead.board.path ?? null,
       boardLeadSessionId: ctx.devLead.boardLeadSessionId ?? null,
-      boardOverride: ctx.devLead.boardPathOverride,
+      boardOverride: ctx.devLead.statePathOverride,
       created,
       other,
       updated,
@@ -593,9 +593,9 @@ async function executeBoardState(ctx, invocation) {
     kind: 'success',
     text: JSON.stringify({
       enabled: ctx.devLead.isEnabled(agent),
-      boardPath: ctx.devLead.board.path ?? null,
+      boardFilePath: ctx.devLead.board.path ?? null,
       boardLeadSessionId: ctx.devLead.boardLeadSessionId ?? null,
-      boardOverride: ctx.devLead.boardPathOverride,
+      boardOverride: ctx.devLead.statePathOverride,
       read: read === undefined ? null : { revision: read.revision, projects: read.projects.length },
       error: error ?? null,
     }),

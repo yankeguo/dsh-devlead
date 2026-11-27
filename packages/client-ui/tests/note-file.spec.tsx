@@ -18,7 +18,7 @@ import type {
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
 const SESSION = 'session-1' as SessionId
-const PATHS = deriveDevLeadNotesPaths({ boardPath: '/work/board.json', schemaVersion: 1, pathPlatform: 'posix' })
+const PATHS = deriveDevLeadNotesPaths({ boardFilePath: '/work/board.json', schemaVersion: 1, pathPlatform: 'posix' })
 const NOTE_PATH = `${PATHS.root}/project-dir/note.md`
 const METADATA: DevLeadNoteMetadata = {
   id: 'note',

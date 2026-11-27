@@ -664,7 +664,8 @@ issue fail-fast；反斜杠、空段与 `..` 逃逸同样被拒绝，解析结�
 board/notes 共用的相对状态目录，默认 `.dsh/devlead`。非法绝对路径、反斜杠、空段和 `..` 逃逸仍
 fail-fast，最终 `board.json`
 symlink 仍拒绝，父目录链 symlink 可接受，workspace 缺失仍不重建。board/notes wire schema、CAS、工具、
-Remote、浏览器 global 的绝对 `boardPath` 字段与 `dsh.client.inject` 均不变；DSH engines/peer 范围不变。
+Remote 与 `dsh.client.inject` 均不变；浏览器 global 的绝对路径字段改名为 `boardFilePath`，Host 的
+override 观测字段改名为 `statePathOverride`；DSH engines/peer 范围不变。
 
 每条 flow 有 3 条正向模型选择检查因无 provider 凭据 SKIP（打印真实原因）；负向
 `DEVLEAD_MODEL_UNAVAILABLE`、`devlead_list_models`、preset roster 与 watched-child

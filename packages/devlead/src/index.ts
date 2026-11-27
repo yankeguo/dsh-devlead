@@ -1019,7 +1019,7 @@ export class DevLeadService extends Service {
   /** Active lead Session whose workspace owns {@link boardStore}, when enabled. */
   private boardLeadSessionIdValue: string | undefined
   /** Whether the current state directory comes from a non-default deployment statePath. */
-  private boardPathOverrideValue = false
+  private statePathOverrideValue = false
   /** Latest board start failure; the rest of the service keeps serving without a board. */
   private boardStartErrorValue: DevLeadBoardStartError | undefined
   /** Why the board is disabled right now, or undefined while a store is active. */
@@ -2763,8 +2763,8 @@ export class DevLeadService extends Service {
   }
 
   /** Whether the current state directory comes from a non-default deployment statePath. */
-  get boardPathOverride(): boolean {
-    return this.boardPathOverrideValue
+  get statePathOverride(): boolean {
+    return this.statePathOverrideValue
   }
 
   /**
@@ -2952,7 +2952,7 @@ export class DevLeadService extends Service {
     const previousNotes = this.notesStore
     if (previous.path === nextPath) {
       this.boardLeadSessionIdValue = sessionId
-      this.boardPathOverrideValue = nextOverride
+      this.statePathOverrideValue = nextOverride
       this.boardDisabledReasonValue = undefined
       if (this.boardStartErrorValue !== undefined) {
         // A start failure can be transient (permissions, a directory created or
@@ -2981,7 +2981,7 @@ export class DevLeadService extends Service {
     this.boardStore = next
     this.notesStore = nextNotes
     this.boardLeadSessionIdValue = sessionId
-    this.boardPathOverrideValue = nextOverride
+    this.statePathOverrideValue = nextOverride
     this.boardDisabledReasonValue = undefined
     this.boardStartErrorValue = startError
     await Promise.all([this.closeBoardStore(previous), this.closeNotesStore(previousNotes)])
@@ -3037,7 +3037,7 @@ export class DevLeadService extends Service {
     const previous = this.boardStore
     const previousNotes = this.notesStore
     this.boardLeadSessionIdValue = undefined
-    this.boardPathOverrideValue = false
+    this.statePathOverrideValue = false
     this.boardStartErrorValue = undefined
     this.boardDisabledReasonValue = reason
     if (previous.path !== undefined) {

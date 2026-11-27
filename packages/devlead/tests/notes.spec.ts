@@ -30,7 +30,7 @@ let clock = 1_800_000_000_000
 
 interface Fixture {
   readonly root: string
-  readonly boardPath: string
+  readonly boardFilePath: string
   readonly board: DevLeadBoardStore
   readonly notes: DevLeadBoardNotesStore
 }
@@ -38,8 +38,8 @@ interface Fixture {
 async function boot(options: { readonly betaTitle?: string } = {}): Promise<Fixture> {
   const root = await mkdtemp(join(tmpdir(), 'dsh-devlead-notes-'))
   roots.push(root)
-  const boardPath = join(root, 'board.json')
-  const board = new DevLeadBoardStore(boardPath, { warn: () => undefined }, () => clock++)
+  const boardFilePath = join(root, 'board.json')
+  const board = new DevLeadBoardStore(boardFilePath, { warn: () => undefined }, () => clock++)
   boards.push(board)
   await board.start()
   await board.update({
@@ -62,7 +62,7 @@ async function boot(options: { readonly betaTitle?: string } = {}): Promise<Fixt
   )
   stores.push(notes)
   await notes.start()
-  return { root, boardPath, board, notes }
+  return { root, boardFilePath, board, notes }
 }
 
 async function persistedIndex(fixture: Fixture): Promise<DevLeadNotesIndex> {
@@ -82,7 +82,7 @@ afterEach(async () => {
 describe('DevLeadBoardNotesStore', () => {
   it('derives <stateDir>/notes and reads a missing index as revision zero', async () => {
     const fixture = await boot()
-    expect(fixture.notes.path).toBe(join(dirname(fixture.boardPath), 'notes'))
+    expect(fixture.notes.path).toBe(join(dirname(fixture.boardFilePath), 'notes'))
     expect(fixture.notes.indexPath).toBe(join(fixture.notes.path!, 'index.json'))
     const result = await fixture.notes.read({ project: 'alpha' })
     expect(result).toMatchObject({ revision: 0, notes: [], project: { id: 'alpha' } })
@@ -333,7 +333,7 @@ describe('DevLeadBoardNotesStore', () => {
     const fixture = await boot()
     await fixture.notes.write(write({ project: 'alpha', operation: 'create', note: 'old', title: 'Old title' }))
     await fixture.notes.write(write({ project: 'alpha', operation: 'create', note: 'new', title: 'Latest🙂 title' }))
-    const board = JSON.parse(await readFile(fixture.boardPath, 'utf8')) as DevLeadBoard
+    const board = JSON.parse(await readFile(fixture.boardFilePath, 'utf8')) as DevLeadBoard
     const summary = renderDevLeadBoardSummary(board, fixture.notes.summaryIndex())
     expect(summary).toContain('notes:2')
     expect(summary).toContain('Latest🙂 title')

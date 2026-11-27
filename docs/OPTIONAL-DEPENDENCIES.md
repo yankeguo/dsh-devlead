@@ -60,7 +60,7 @@ plugin-market 等）。审计对象是本仓库的 6 个包（`protocol`、`devl
 > 路径或独立 notes 路径，空白也不是默认值别名。POSIX/Windows drive/UNC 绝对路径、反斜杠、空段与
 > `..` 逃逸同样按 `/statePath` 拒绝；最终派生的
 > `board.json` 不能是 symlink，父目录链 symlink 可接受，原始 workspace 根缺失仍不重建。浏览器 global
-> 的已解析绝对 `boardPath` 字段名不变；自定义 `statePath` 的 late-enable 场景仍需刷新页面。该配置改名
+> 通过已解析绝对 `boardFilePath` 字段携带 board 文件路径；自定义 `statePath` 的 late-enable 场景仍需刷新页面。该配置改名
 > 不改变 board/notes wire schema、CAS 或工具语义，也不增加任何可选插件依赖。
 >
 > 同一轮修正了 workspace 依赖拓扑：`packages/client-ui` **不再依赖** `@yankeguo/dsh-devlead`，

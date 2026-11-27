@@ -30,11 +30,11 @@ Browser half of the DevLead suite, loaded on the DSH **Web** platform.
   when this page instance never registered the board surfaces. A collapsed section joins the
   authoritative Workspace/Session projections to show registered Workspaces absent from the board.
   The path comes from the Host global `__DSH_DEVLEAD_BOARD__` when it names this lead
-  (`{ boardPath, schemaVersion, pathPlatform, leadSessionId, override }`); otherwise it is derived
+  (`{ boardFilePath, schemaVersion, pathPlatform, leadSessionId, override }`); otherwise it is derived
   from the Session's *original* workspace root as `<cwd>/.dsh/devlead/board.json`. Deployment Config
   `statePath` is a host-wide relative state directory defaulting to `.dsh/devlead`; the Host resolves
   `<workspace>/<statePath>/board.json` against that original root before publishing the absolute
-  `boardPath` global, with notes under `<workspace>/<statePath>/notes/`. Exact board JSON paths and
+  `boardFilePath` global, with notes under `<workspace>/<statePath>/notes/`. Exact board JSON paths and
   independent notes paths are not accepted. A page loaded before the lead existed still needs a refresh
   to see a custom `statePath`. Turning mode off or switching to a non-lead Session disposes every
   board registration and closes the on-screen Session's lingering board tab, so the panel never
@@ -56,8 +56,8 @@ Browser half of the DevLead suite, loaded on the DSH **Web** platform.
   keyboard-native disclosures, narrow-pane focus order, and read-only operation are part of the
   browser acceptance checklist.
 
-  The client derives `dirname(boardPath)/notes/index.json` from the already-resolved absolute
-  `boardPath` global, equivalently `<workspace>/<statePath>/notes/index.json`;
+  The client derives `dirname(boardFilePath)/notes/index.json` from the already-resolved absolute
+  `boardFilePath` global, equivalently `<workspace>/<statePath>/notes/index.json`;
   it never accepts a user path and performs all index/body I/O through the same read-only Workspace
   Files state machine (`stat`, `readBytes`, `changes`, watch + poll). Cards show note count and
   latest-title chips from index metadata; bodies are not embedded in the index. Opening a note loads
@@ -118,7 +118,7 @@ guide 卡片、标题与 Session 头部按钮（头部按钮本身静态注册�
 路径优先取 Host global `__DSH_DEVLEAD_BOARD__`（新 Host 带 `leadSessionId` 与 `override`），否则由
 Session 原始 workspace root 派生 `<cwd>/.dsh/devlead/board.json`；部署配置 `statePath` 是默认
 `.dsh/devlead` 的 Host 级相对状态目录，Host 相对该原始根解析 `<workspace>/<statePath>/board.json` 后才
-发布绝对 `boardPath` global，notes 位于 `<workspace>/<statePath>/notes/`。不接受精确 board JSON 路径或
+发布绝对 `boardFilePath` global，notes 位于 `<workspace>/<statePath>/notes/`。不接受精确 board JSON 路径或
 独立 notes 路径。页面若在 lead 出现之前加载，自定义 `statePath` 仍需刷新才能看到覆盖路径。模式关闭或切换到非 lead Session 会注销全部
 看板注册并关闭当前 Session 遗留的看板 tab，绝不继续读上一个 lead 的文件。所需服务由默认 Web 组合
 提供，本包不依赖 Host 包运行期代码。
@@ -134,7 +134,7 @@ Live 自动状态；blocked 强警示置顶，active 主区响应式 2/3 列（�
 field label，但保留 focus/next/blocker 与任务进度，非自明图标有可访问 tooltip；paused/done/unlisted
 为次级折叠。light/dark、aria、窄栏焦点顺序、键盘 disclosure 与只读行为均纳入浏览器人工验收。
 
-client 从已解析的绝对 `boardPath` global 派生 `dirname(boardPath)/notes/index.json`，等价于
+client 从已解析的绝对 `boardFilePath` global 派生 `dirname(boardFilePath)/notes/index.json`，等价于
 `<workspace>/<statePath>/notes/index.json`；不接受用户路径，index 与正文 I/O 都只经既有 Workspace Files
 `stat/readBytes/changes` 和 watch+poll 状态机。卡片从 metadata
 显示 note 数与最近标题 chip，index 不含正文；打开 note 时才读取经过校验的

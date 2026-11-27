@@ -123,9 +123,9 @@ pnpm workspace，`packages/*`：
 Host/Node；浏览器侧 `zod` 来自 DSH 冻结 module table 的 platform singleton）。`client-ui`
 **只依赖 `protocol`**：浏览器侧直接复用其 schema/常量，node 入口从
 `@yankeguo/dsh-devlead-protocol` 导入 `DEVLEAD_BOARD_SCHEMA_VERSION`，读取
-`ctx.devLead.board`/`boardLeadSessionId`/`boardPathOverride` 后注入 board global，不再依赖
-`@yankeguo/dsh-devlead` 的 JS 入口。`boardPathOverride` 与 global 的绝对 `boardPath` 都是保留原名的
-内部观测/浏览器字段；部署配置键只有 `statePath`。发布顺序由 `scripts/stage-release.mjs` 按该图做确定性
+`ctx.devLead.board`/`boardLeadSessionId`/`statePathOverride` 后注入 board global，不再依赖
+`@yankeguo/dsh-devlead` 的 JS 入口。`statePathOverride` 是 Host 的状态目录 override 观测字段，
+global 的 `boardFilePath` 是已解析的 board 文件绝对路径；部署配置键只有 `statePath`。发布顺序由 `scripts/stage-release.mjs` 按该图做确定性
 拓扑排序（protocol、client-ui、devlead、command、tool、bundle；同层按包名）。项目看板完整
 契约（默认路径派生、lead 生命周期、notes 存储/CAS、global、浏览器 reader、读取上限与降级）见 [BOARD](BOARD.md)。
 构建时 host 入口 external `@deepseek-ai/*`、`@yankeguo/*`、`node:*`；浏览器入口只 external
@@ -2427,7 +2427,7 @@ DSH peer 依赖。最小可交付闭环是 1b + 1c + 1d：question 快、answer 
   project 行；`devlead_board_update` 的 project 引用（id/title/path）在锁内快照上解析，预检使用
   固定 synthetic project id，长引用不再误报 `BOARD_LIMIT_EXCEEDED`。start/预创建失败只降级看板
   （P2-2），不阻塞服务激活。notes store 固定派生 `<workspace>/<statePath>/notes/index.json`（内部等价于
-  已解析绝对 `dirname(boardPath)/notes/index.json`），正文为 `<sanitized project>/<note-id>.md`，没有独立
+  已解析绝对 `dirname(boardFilePath)/notes/index.json`），正文为 `<sanitized project>/<note-id>.md`，没有独立
   notes 路径；index schema v1 只含 metadata，board/notes wire schema、CAS 与工具语义均不因配置改名而变化；
   strict schema 拒绝未知字段、
   重复 id/directory/path 与 traversal，index ≤128 KiB、单 note ≤256 KiB、每项目 ≤100 条，
@@ -2675,11 +2675,11 @@ UI 有一个开关、两种状态，避免在每个会话上显示常驻条：
   `sidebarRight`、`sidebarRightTabs`、`workspaces`，均在 `dsh.client.inject` 静态声明中）。
   入口是 **lead-only** 的：tab、guide entry 与会话头按钮只在屏幕上当前 active lead Session
   注册/渲染，非 lead/subagent Session 没有入口，打开也要求调用方是 lead。Host 只在当前 active
-  lead 拥有看板路径时注入 `__DSH_DEVLEAD_BOARD__ = { boardPath, schemaVersion:1, pathPlatform,
+  lead 拥有看板路径时注入 `__DSH_DEVLEAD_BOARD__ = { boardFilePath, schemaVersion:1, pathPlatform,
   leadSessionId, override }`；没有 lead 时不注入。页面在 lead 启用前加载时，client 从该 lead
   Session summary 的 `cwd` 派生默认路径 `<cwd>/.dsh/devlead/board.json`（与 Host 共用 protocol
   的目录段常量）；使用自定义 Config `statePath` 的部署在 late-enable 场景需要刷新页面才能
-  拿到自定义解析路径与 `override:true`。global 的绝对 `boardPath` 字段名保持不变。模式 off、Session 切换、路径切换会立即重渲染并 dispose
+  拿到自定义解析路径与 `override:true`。global 通过绝对 `boardFilePath` 字段携带 board 文件路径。模式 off、Session 切换、路径切换会立即重渲染并 dispose
   旧面板，不继续读旧文件。tab `kind='devlead-board'`，definition id
   `@yankeguo/dsh-client-ui-devlead/board`；keyed body slot 使用 id，`openTab` 使用 kind。
   `useBoardFile` 用 tab SessionId + 解析出的看板路径执行 `stat` / `readBytes` / `changes`，首读与

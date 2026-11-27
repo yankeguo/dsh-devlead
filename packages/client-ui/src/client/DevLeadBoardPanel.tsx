@@ -86,12 +86,12 @@ export function DevLeadBoardPanel({ sessionId, files, useWorkspaces, useSessions
   const visible = useTabInfo().tab.visible
   const summary = sessions.byId[sessionId]
   const resolved = resolveDevLeadBoardSessionConfig(sessionId, summary, currentDevLeadBoardConfig())
-  const config = useMemo(() => resolved, [resolved?.boardPath, resolved?.pathPlatform])
+  const config = useMemo(() => resolved, [resolved?.boardFilePath, resolved?.pathPlatform])
   const { refresh, watch, autoRefresh, ...state } = useBoardFile({ sessionId, config, files, visible })
   const notesPaths = useMemo(() => config === undefined ? undefined : deriveDevLeadNotesPaths(config), [config])
   const notesIndex = useDevLeadNotesIndex({ sessionId, config, files, visible })
   const [selection, setSelection] = useState<NotesSelection | undefined>()
-  useEffect(() => { setSelection(undefined) }, [config?.boardPath])
+  useEffect(() => { setSelection(undefined) }, [config?.boardFilePath])
   const readerProjectId = selection?.projectId
   const previousReaderProject = useRef<string | undefined>(undefined)
   useEffect(() => {

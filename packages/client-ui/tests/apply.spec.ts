@@ -443,7 +443,7 @@ describe('client apply', () => {
   it('installs the board surfaces for a lead named by the Host global, with no workspace root', () => {
     Object.defineProperty(globalThis, '__DSH_DEVLEAD_BOARD__', {
       value: {
-        boardPath: '/deploy/board.json',
+        boardFilePath: '/deploy/board.json',
         schemaVersion: 1,
         pathPlatform: 'posix',
         leadSessionId: 'session-lead',
@@ -461,7 +461,7 @@ describe('client apply', () => {
   it('derives for a lead the stale Host global does not name', () => {
     Object.defineProperty(globalThis, '__DSH_DEVLEAD_BOARD__', {
       value: {
-        boardPath: '/stale/board.json',
+        boardFilePath: '/stale/board.json',
         schemaVersion: 1,
         pathPlatform: 'posix',
         leadSessionId: 'session-previous',

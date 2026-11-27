@@ -158,8 +158,8 @@ blocker、任务进度与多条 notes，另准备一个完全没有 notes 的项
    触发控件。核对标题关联、按钮名称、状态 live region、任务进度 aria 值与 disclosure 展开状态。
 5. **notes chip / count / latest**：有 notes 的项目显示 notes chip、准确 note 数和最近一条标题；最近标题按
    `updatedAt` 选择，长标题截断但全文可达。无 notes 项目、空 index、index 不存在都不伪造 chip/count/latest。
-   notes 元信息来自 `<workspace>/<statePath>/notes/index.json`（等价于浏览器从已解析绝对 `boardPath`
-   global 派生的 `dirname(boardPath)/notes/index.json`），正文只在打开对应 note 时读取，index 不包含正文。
+   notes 元信息来自 `<workspace>/<statePath>/notes/index.json`（等价于浏览器从已解析绝对 `boardFilePath`
+   global 派生的 `dirname(boardFilePath)/notes/index.json`），正文只在打开对应 note 时读取，index 不包含正文。
 6. **全栏只读 reader 与安全 Markdown**：打开 note 后 reader 使用右栏全宽，不被项目卡片网格压成半栏；
    显示标题、摘要/更新时间与正文，返回/关闭后项目上下文仍在。用一份真实 note 覆盖 headings、段落、
    有序/无序列表、blockquote、 fenced code、inline code、bold/italic/strikethrough 与 HTTP(S) link。

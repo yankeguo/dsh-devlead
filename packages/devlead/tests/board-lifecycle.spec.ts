@@ -107,7 +107,7 @@ describe('service board lifecycle', () => {
       expect(harness.service.board.path).toBe(expectedPath(workspace))
       expect(harness.service.board.enabled).toBe(true)
       expect(harness.service.boardLeadSessionId).toBe(String(harness.lead.id))
-      expect(harness.service.boardPathOverride).toBe(false)
+      expect(harness.service.statePathOverride).toBe(false)
       expect(harness.service.boardStartError).toBeUndefined()
       expect(await directoryMode(join(workspace, '.dsh', 'devlead'))).toBe(0o700)
       const result = await harness.service.updateBoard(harness.lead.agent, {
@@ -129,7 +129,7 @@ describe('service board lifecycle', () => {
     const harness = await bootService({ enabled: true, leadCwd: workspace, config: { statePath: 'nested' } })
     try {
       expect(harness.service.board.path).toBe(override)
-      expect(harness.service.boardPathOverride).toBe(true)
+      expect(harness.service.statePathOverride).toBe(true)
       expect(harness.service.settings.statePath).toBe('nested')
       expect(await directoryMode(join(workspace, 'nested'))).toBe(0o700)
       // The workspace-derived file is never created while the override is set.
@@ -251,10 +251,10 @@ describe('service board lifecycle', () => {
     try {
       expect(harness.service.board.path).toBeUndefined()
       expect(harness.service.board.enabled).toBe(false)
-      expect(harness.service.boardPathOverride).toBe(false)
+      expect(harness.service.statePathOverride).toBe(false)
       await harness.service.setEnabled(harness.lead.agent, true)
       expect(harness.service.board.path).toBeUndefined()
-      expect(harness.service.boardPathOverride).toBe(false)
+      expect(harness.service.statePathOverride).toBe(false)
       expect(harness.service.boardLeadSessionId).toBeUndefined()
       expect(harness.service.boardDisabledReason).toBe('no-workspace')
       expect(harness.service.boardStartError).toBeUndefined()
@@ -266,10 +266,10 @@ describe('service board lifecycle', () => {
   it('never blocks DevLead activation when the board parent cannot be created', async () => {
     const workspace = await tempRoot('degraded')
     // A regular file where the board parent directory should be makes
-    // `mkdir(dirname(boardPath))` fail deterministically (ENOTDIR).
+    // `mkdir(dirname(boardFilePath))` fail deterministically (ENOTDIR).
     const blocker = join(workspace, 'blocker')
     await writeFile(blocker, 'not a directory\n')
-    const boardPath = join(blocker, 'nested', 'board.json')
+    const boardFilePath = join(blocker, 'nested', 'board.json')
     const harness = await bootService({
       enabled: true, leadCwd: workspace, config: { statePath: 'blocker/nested' },
     })
@@ -277,7 +277,7 @@ describe('service board lifecycle', () => {
       // The plugin loaded and every non-board DevLead surface still works.
       expect(harness.service.isEnabled(harness.lead.agent)).toBe(true)
       expect(harness.service.settings.notificationBatchMs).toBe(400)
-      expect(harness.service.board.path).toBe(boardPath)
+      expect(harness.service.board.path).toBe(boardFilePath)
       expect(harness.service.boardStartError).toMatchObject({ code: 'BOARD_IO_ERROR' })
       expect(harness.service.board.summary()).toBe('')
       await expect(harness.service.readBoard(harness.lead.agent))
@@ -404,7 +404,7 @@ describe('service board lifecycle', () => {
     })
     try {
       expect(harness.service.board.path).toBeUndefined()
-      expect(harness.service.boardPathOverride).toBe(false)
+      expect(harness.service.statePathOverride).toBe(false)
       expect(harness.service.boardDisabledReason).toBe('missing-workspace')
       expect(harness.service.boardStartError).toBeUndefined()
       expect(existsSync(missing)).toBe(false)
@@ -419,19 +419,19 @@ describe('service board lifecycle', () => {
     // deterministically (ENOTDIR) until the blocker is removed.
     const blocker = join(workspace, 'blocker')
     await writeFile(blocker, 'not a directory\n')
-    const boardPath = join(blocker, 'nested', 'board.json')
+    const boardFilePath = join(blocker, 'nested', 'board.json')
     const harness = await bootService({
       enabled: true, leadCwd: workspace, config: { statePath: 'blocker/nested' },
     })
     try {
       expect(harness.service.boardStartError).toMatchObject({ code: 'BOARD_IO_ERROR' })
-      expect(harness.service.board.path).toBe(boardPath)
+      expect(harness.service.board.path).toBe(boardFilePath)
       // The failure clears; a sync that resolves to the same path retries
       // start() instead of leaving the board degraded until a path switch.
       await rm(blocker, { force: true })
       await harness.service.setEnabled(harness.lead.agent, true)
       expect(harness.service.boardStartError).toBeUndefined()
-      expect(harness.service.board.path).toBe(boardPath)
+      expect(harness.service.board.path).toBe(boardFilePath)
       expect(await directoryMode(join(blocker, 'nested'))).toBe(0o700)
       expect(harness.service.boardDisabledReason).toBeUndefined()
     } finally {

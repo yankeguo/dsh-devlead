@@ -73,19 +73,19 @@ function board(projects: DevLeadBoardProject[] = [project('one')]): DevLeadBoard
 
 describe('board config and schema', () => {
   it('accepts only a complete current absolute-path global', () => {
-    expect(readDevLeadBoardConfig({ boardPath: '/work/.dsh/board.json', schemaVersion: 1, pathPlatform: 'posix' })).toEqual({
-      boardPath: '/work/.dsh/board.json', schemaVersion: 1, pathPlatform: 'posix',
+    expect(readDevLeadBoardConfig({ boardFilePath: '/work/.dsh/board.json', schemaVersion: 1, pathPlatform: 'posix' })).toEqual({
+      boardFilePath: '/work/.dsh/board.json', schemaVersion: 1, pathPlatform: 'posix',
     })
-    expect(readDevLeadBoardConfig({ boardPath: 'C:\\work\\board.json', schemaVersion: 1, pathPlatform: 'win32' })).toEqual({
-      boardPath: 'C:\\work\\board.json', schemaVersion: 1, pathPlatform: 'win32',
+    expect(readDevLeadBoardConfig({ boardFilePath: 'C:\\work\\board.json', schemaVersion: 1, pathPlatform: 'win32' })).toEqual({
+      boardFilePath: 'C:\\work\\board.json', schemaVersion: 1, pathPlatform: 'win32',
     })
     for (const value of [
       undefined,
       null,
       {},
-      { boardPath: 'relative/board.json', schemaVersion: 1 },
-      { boardPath: '/work/board.json', schemaVersion: 2 },
-      { boardPath: '', schemaVersion: 1 },
+      { boardFilePath: 'relative/board.json', schemaVersion: 1 },
+      { boardFilePath: '/work/board.json', schemaVersion: 2 },
+      { boardFilePath: '', schemaVersion: 1 },
     ]) expect(readDevLeadBoardConfig(value)).toBeUndefined()
   })
 
@@ -143,7 +143,7 @@ describe('board config and schema', () => {
 
 describe('board global contract and per-Session path resolution', () => {
   const BASE = {
-    boardPath: '/work/.dsh/devlead/board.json',
+    boardFilePath: '/work/.dsh/devlead/board.json',
     schemaVersion: 1 as const,
     pathPlatform: 'posix' as const,
   }
@@ -209,9 +209,9 @@ describe('board global contract and per-Session path resolution', () => {
 
   it('lets a Config override win for every lead, matching or not', () => {
     const override: DevLeadBoardGlobal = {
-      ...BASE, boardPath: '/deploy/board.json', leadSessionId: 'session-lead', override: true,
+      ...BASE, boardFilePath: '/deploy/board.json', leadSessionId: 'session-lead', override: true,
     }
-    const expected = { boardPath: '/deploy/board.json', schemaVersion: 1, pathPlatform: 'posix' }
+    const expected = { boardFilePath: '/deploy/board.json', schemaVersion: 1, pathPlatform: 'posix' }
     expect(resolveDevLeadBoardConfig({ sessionId: 'session-lead', cwd: '/work/lead', global: override })).toEqual(expected)
     expect(resolveDevLeadBoardConfig({ sessionId: 'session-other', cwd: '/work/other', global: override })).toEqual(expected)
     // The override needs no workspace root: the deployment named the file.
@@ -223,7 +223,7 @@ describe('board global contract and per-Session path resolution', () => {
     expect(resolveDevLeadBoardConfig({ sessionId: 'session-lead', cwd: '/work/lead', global })).toEqual(BASE)
     expect(resolveDevLeadBoardConfig({ sessionId: 'session-lead', global })).toEqual(BASE)
     expect(resolveDevLeadBoardConfig({ sessionId: 'session-other', cwd: '/work/other', global })).toEqual({
-      boardPath: '/work/other/.dsh/devlead/board.json', schemaVersion: 1, pathPlatform: 'posix',
+      boardFilePath: '/work/other/.dsh/devlead/board.json', schemaVersion: 1, pathPlatform: 'posix',
     })
     // No workspace root for the other lead: nothing can be derived.
     expect(resolveDevLeadBoardConfig({ sessionId: 'session-other', global })).toBeUndefined()
@@ -236,24 +236,24 @@ describe('board global contract and per-Session path resolution', () => {
 
   it('derives the default path without any global', () => {
     expect(resolveDevLeadBoardConfig({ sessionId: 'session-lead', cwd: '/work/project' })).toEqual({
-      boardPath: '/work/project/.dsh/devlead/board.json', schemaVersion: 1, pathPlatform: 'posix',
+      boardFilePath: '/work/project/.dsh/devlead/board.json', schemaVersion: 1, pathPlatform: 'posix',
     })
     expect(resolveDevLeadBoardConfig({ sessionId: 'session-lead', cwd: 'C:\\work\\project' })).toEqual({
-      boardPath: 'C:\\work\\project\\.dsh\\devlead\\board.json', schemaVersion: 1, pathPlatform: 'win32',
+      boardFilePath: 'C:\\work\\project\\.dsh\\devlead\\board.json', schemaVersion: 1, pathPlatform: 'win32',
     })
     // The Host trims the recorded root; the browser mirrors that so both sides
     // resolve the same file from a padded summary value.
     expect(resolveDevLeadBoardConfig({ sessionId: 'session-lead', cwd: ' /work/project ' })).toEqual({
-      boardPath: '/work/project/.dsh/devlead/board.json', schemaVersion: 1, pathPlatform: 'posix',
+      boardFilePath: '/work/project/.dsh/devlead/board.json', schemaVersion: 1, pathPlatform: 'posix',
     })
   })
 
   it('derives with the Host-published platform when a stale global is present', () => {
     const stale: DevLeadBoardGlobal = {
-      ...BASE, boardPath: '/stale/board.json', pathPlatform: 'win32', leadSessionId: 'session-lead',
+      ...BASE, boardFilePath: '/stale/board.json', pathPlatform: 'win32', leadSessionId: 'session-lead',
     }
     expect(resolveDevLeadBoardConfig({ sessionId: 'session-other', cwd: 'C:/work/other', global: stale })).toEqual({
-      boardPath: 'C:\\work\\other\\.dsh\\devlead\\board.json', schemaVersion: 1, pathPlatform: 'win32',
+      boardFilePath: 'C:\\work\\other\\.dsh\\devlead\\board.json', schemaVersion: 1, pathPlatform: 'win32',
     })
     // A stale POSIX global on a Windows-looking root cannot validate that root:
     // derivation follows the Host-published platform, never a guess.
@@ -279,7 +279,7 @@ describe('board global contract and per-Session path resolution', () => {
     }
     expect(resolveDevLeadBoardSessionConfig('session-lead', lead, global)).toEqual(BASE)
     expect(resolveDevLeadBoardSessionConfig('session-lead', lead, undefined)).toEqual({
-      boardPath: '/work/lead/.dsh/devlead/board.json', schemaVersion: 1, pathPlatform: 'posix',
+      boardFilePath: '/work/lead/.dsh/devlead/board.json', schemaVersion: 1, pathPlatform: 'posix',
     })
     // No row yet, mode off, or a subagent: no board surface at all.
     expect(resolveDevLeadBoardSessionConfig('session-lead', undefined, global)).toBeUndefined()

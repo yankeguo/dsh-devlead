@@ -17,7 +17,7 @@ before the new file is read. A board start/pre-create failure is logged and surf
 the rest of DevLead keeps working. `updateBoard` stamps the calling lead identity and requires the
 caller to be the current active lead. The file is lead-AI-writable and human/browser-read-only.
 The same Host-owned board service also owns `ctx.devLead.notes`, a `DevLeadBoardNotesStore` rooted at
-`<workspace>/<statePath>/notes/` (equivalently, the Host's resolved absolute `dirname(boardPath)/notes/`)
+`<workspace>/<statePath>/notes/` (equivalently, the Host's resolved absolute `dirname(boardFilePath)/notes/`)
 and swapped/closed with the board lifecycle. Tool-facing service methods are
 `readBoardNote(agent, { project, note? })` and
 `writeBoardNote(agent, { project, operation, note?, title?, summary?, expectedRevision? }, signal?)`;
@@ -141,7 +141,7 @@ symlink 可接受。默认与自定义目录都要求原始根存在，缺失时
 （board 工具报 `BOARD_IO_ERROR`，其余功能照常）。看板与 notes 写入都使用
 `@deepseek-ai/dsh-atomic-write`（安装运行时提供）。同一 Host board service 拥有随 board
 切换/关闭的 `ctx.devLead.notes`（`DevLeadBoardNotesStore`，root 固定
-`<workspace>/<statePath>/notes/`，等价于内部已解析绝对 `dirname(boardPath)/notes/`）。工具侧 service 方法是 `readBoardNote(agent,{project,note?})` 与
+`<workspace>/<statePath>/notes/`，等价于内部已解析绝对 `dirname(boardFilePath)/notes/`）。工具侧 service 方法是 `readBoardNote(agent,{project,note?})` 与
 `writeBoardNote(agent,patch,signal?)`，patch 含 create/update-metadata/delete operation、可选
 note/title/summary 与 expectedRevision，均不接受文件路径或正文 content；create 始终创建空文件。返回的
 absolutePath 供 DSH 原生 read/write/edit 读写正文，不写入 index，工具不接收也不返回正文。store

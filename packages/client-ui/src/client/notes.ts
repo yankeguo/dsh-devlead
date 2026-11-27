@@ -86,8 +86,8 @@ export interface DevLeadNotesPaths {
 export function deriveDevLeadNotesPaths(config: DevLeadBoardConfig): DevLeadNotesPaths {
   const separator = config.pathPlatform === 'win32' ? '\\' : '/'
   const alternate = config.pathPlatform === 'win32' ? '/' : '\\'
-  const cut = Math.max(config.boardPath.lastIndexOf(separator), config.boardPath.lastIndexOf(alternate))
-  let directory = config.boardPath.slice(0, Math.max(0, cut))
+  const cut = Math.max(config.boardFilePath.lastIndexOf(separator), config.boardFilePath.lastIndexOf(alternate))
+  let directory = config.boardFilePath.slice(0, Math.max(0, cut))
   if (directory.length === 0 && config.pathPlatform === 'posix') directory = '/'
   const root = `${directory}${directory.endsWith(separator) ? '' : separator}${DEVLEAD_NOTES_DIR_NAME}`
   return { root, indexPath: `${root}${separator}${DEVLEAD_NOTES_INDEX_FILE_NAME}`, pathPlatform: config.pathPlatform }

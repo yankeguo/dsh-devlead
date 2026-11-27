@@ -15,7 +15,7 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
 const SESSION = 'session-1' as SessionId
 const CONFIG: DevLeadBoardConfig = {
-  boardPath: '/work/.dsh/devlead/board.json',
+  boardFilePath: '/work/.dsh/devlead/board.json',
   schemaVersion: 1,
   pathPlatform: 'posix',
 }
@@ -61,7 +61,7 @@ function bytes(value: unknown): Uint8Array<ArrayBuffer> {
 function readValue(value: unknown, eof = true) {
   const data = bytes(value)
   return {
-    absolutePath: CONFIG.boardPath,
+    absolutePath: CONFIG.boardFilePath,
     version: 'v1',
     bytes: data.byteLength,
     offset: 0,
@@ -71,7 +71,7 @@ function readValue(value: unknown, eof = true) {
 }
 
 function statOk() {
-  return ok({ absolutePath: CONFIG.boardPath, version: 'v1', bytes: 100 })
+  return ok({ absolutePath: CONFIG.boardFilePath, version: 'v1', bytes: 100 })
 }
 
 /** Single-consumer stream with explicit frames, a failure path, and idempotent disposal. */
@@ -272,8 +272,8 @@ describe('useBoardFile', () => {
     const fake = fakeFiles()
     const renderer = await mount(<Probe config={CONFIG} files={fake.files} />)
     await flush()
-    expect(fake.stat).toHaveBeenCalledWith(SESSION, CONFIG.boardPath, expect.any(AbortSignal))
-    expect(fake.readBytes).toHaveBeenCalledWith(SESSION, CONFIG.boardPath, {}, expect.any(AbortSignal))
+    expect(fake.stat).toHaveBeenCalledWith(SESSION, CONFIG.boardFilePath, expect.any(AbortSignal))
+    expect(fake.readBytes).toHaveBeenCalledWith(SESSION, CONFIG.boardFilePath, {}, expect.any(AbortSignal))
     expect(stateOf(renderer)).toMatchObject({
       'data-status': 'ready',
       'data-revision': 1,
@@ -339,8 +339,8 @@ describe('useBoardFile', () => {
     fake.readBytes.mockResolvedValue(ok(readValue(board(2))))
     const stream = fake.streams[0]!
     await act(async () => {
-      stream.push({ kind: 'change', change: { absolutePath: CONFIG.boardPath, version: 'v2' } })
-      stream.push({ kind: 'change', change: { absolutePath: CONFIG.boardPath, version: 'v3' } })
+      stream.push({ kind: 'change', change: { absolutePath: CONFIG.boardFilePath, version: 'v2' } })
+      stream.push({ kind: 'change', change: { absolutePath: CONFIG.boardFilePath, version: 'v3' } })
       await Promise.resolve()
     })
     expect(fake.readBytes).toHaveBeenCalledTimes(1)
@@ -616,7 +616,7 @@ describe('useBoardFile', () => {
     let resolveStat!: (value: StatResult) => void
     fake.stat.mockImplementationOnce(() => new Promise<StatResult>(resolve => { resolveStat = resolve }))
     await act(async () => {
-      fake.streams[0]!.push({ kind: 'change', change: { absolutePath: CONFIG.boardPath, version: 'v2' } })
+      fake.streams[0]!.push({ kind: 'change', change: { absolutePath: CONFIG.boardFilePath, version: 'v2' } })
       await Promise.resolve()
       vi.advanceTimersByTime(5_000)
     })
@@ -625,7 +625,7 @@ describe('useBoardFile', () => {
     // A newer change arrives while that read is pending. It shares the current
     // request but must leave exactly one trailing read behind.
     await act(async () => {
-      fake.streams[0]!.push({ kind: 'change', change: { absolutePath: CONFIG.boardPath, version: 'v4' } })
+      fake.streams[0]!.push({ kind: 'change', change: { absolutePath: CONFIG.boardFilePath, version: 'v4' } })
       await Promise.resolve()
       vi.advanceTimersByTime(5_000)
     })
@@ -672,7 +672,7 @@ describe('useBoardFile', () => {
 
     fake.readBytes.mockResolvedValue(ok(readValue(board(2))))
     await act(async () => {
-      fake.streams[0]!.push({ kind: 'change', change: { absolutePath: CONFIG.boardPath, version: 'v2' } })
+      fake.streams[0]!.push({ kind: 'change', change: { absolutePath: CONFIG.boardFilePath, version: 'v2' } })
       await vi.advanceTimersByTimeAsync(20)
     })
     await flush()
@@ -824,9 +824,9 @@ describe('useBoardFile', () => {
     const fake = fakeFiles()
     const renderer = await mount(<Probe config={CONFIG} files={fake.files} />)
     await flush()
-    expect(fake.stat.mock.calls.map(call => call[1])).toEqual([CONFIG.boardPath])
+    expect(fake.stat.mock.calls.map(call => call[1])).toEqual([CONFIG.boardFilePath])
     const staleStream = fake.streams[0]!
-    const next: DevLeadBoardConfig = { ...CONFIG, boardPath: '/work/next/.dsh/devlead/board.json' }
+    const next: DevLeadBoardConfig = { ...CONFIG, boardFilePath: '/work/next/.dsh/devlead/board.json' }
     await act(async () => {
       renderer.update(<Probe config={next} files={fake.files} />)
     })
@@ -835,9 +835,9 @@ describe('useBoardFile', () => {
     // and the next stat/read pair targets only the new path.
     expect(fake.signals[0]?.aborted).toBe(true)
     expect(staleStream.dispose).toHaveBeenCalled()
-    expect(fake.stat.mock.calls.map(call => call[1])).toEqual([CONFIG.boardPath, next.boardPath])
-    expect(fake.readBytes.mock.calls.map(call => call[1])).toEqual([CONFIG.boardPath, next.boardPath])
-    expect(fake.changes.mock.calls.map(call => call[1])).toEqual([CONFIG.boardPath, next.boardPath])
+    expect(fake.stat.mock.calls.map(call => call[1])).toEqual([CONFIG.boardFilePath, next.boardFilePath])
+    expect(fake.readBytes.mock.calls.map(call => call[1])).toEqual([CONFIG.boardFilePath, next.boardFilePath])
+    expect(fake.changes.mock.calls.map(call => call[1])).toEqual([CONFIG.boardFilePath, next.boardFilePath])
     expect(stateOf(renderer)).toMatchObject({ 'data-status': 'ready', 'data-revision': 1 })
   })
 
@@ -846,15 +846,15 @@ describe('useBoardFile', () => {
     const fake = fakeFiles()
     const renderer = await mount(<Probe config={CONFIG} files={fake.files} pollMs={5_000} />)
     await flush()
-    const next: DevLeadBoardConfig = { ...CONFIG, boardPath: '/work/next/.dsh/devlead/board.json' }
+    const next: DevLeadBoardConfig = { ...CONFIG, boardFilePath: '/work/next/.dsh/devlead/board.json' }
     await act(async () => { renderer.update(<Probe config={next} files={fake.files} pollMs={5_000} />) })
     await flush()
     const callsAfterSwitch = fake.stat.mock.calls.length
     await act(async () => { vi.advanceTimersByTime(5_000) })
     await flush()
     expect(fake.stat.mock.calls.length).toBe(callsAfterSwitch + 1)
-    expect(fake.stat).toHaveBeenLastCalledWith(SESSION, next.boardPath, expect.any(AbortSignal))
-    expect(fake.stat.mock.calls.filter(call => call[1] === CONFIG.boardPath)).toHaveLength(1)
+    expect(fake.stat).toHaveBeenLastCalledWith(SESSION, next.boardFilePath, expect.any(AbortSignal))
+    expect(fake.stat.mock.calls.filter(call => call[1] === CONFIG.boardFilePath)).toHaveLength(1)
   })
 
   it('aborts the watch and disposes its direct handle on unmount', async () => {

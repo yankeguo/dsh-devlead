@@ -26,16 +26,16 @@ function encoded(value: unknown): Uint8Array<ArrayBuffer> {
 
 describe('notes paths and decoder', () => {
   it('derives notes/index.json beside POSIX and Windows boards', () => {
-    expect(deriveDevLeadNotesPaths({ boardPath: '/work/.dsh/devlead/board.json', schemaVersion: 1, pathPlatform: 'posix' })).toEqual({
+    expect(deriveDevLeadNotesPaths({ boardFilePath: '/work/.dsh/devlead/board.json', schemaVersion: 1, pathPlatform: 'posix' })).toEqual({
       root: '/work/.dsh/devlead/notes', indexPath: '/work/.dsh/devlead/notes/index.json', pathPlatform: 'posix',
     })
-    expect(deriveDevLeadNotesPaths({ boardPath: 'C:\\work\\.dsh\\devlead\\board.json', schemaVersion: 1, pathPlatform: 'win32' })).toEqual({
+    expect(deriveDevLeadNotesPaths({ boardFilePath: 'C:\\work\\.dsh\\devlead\\board.json', schemaVersion: 1, pathPlatform: 'win32' })).toEqual({
       root: 'C:\\work\\.dsh\\devlead\\notes', indexPath: 'C:\\work\\.dsh\\devlead\\notes\\index.json', pathPlatform: 'win32',
     })
   })
 
   it('joins only validated metadata beneath the fixed root', () => {
-    const paths = deriveDevLeadNotesPaths({ boardPath: '/work/board.json', schemaVersion: 1, pathPlatform: 'posix' })
+    const paths = deriveDevLeadNotesPaths({ boardFilePath: '/work/board.json', schemaVersion: 1, pathPlatform: 'posix' })
     const metadata = INDEX.projects[0]!.notes[0]!
     expect(resolveDevLeadNotePath(paths, metadata)).toBe('/work/notes/project-dir/note.md')
     for (const path of ['../outside.md', '/tmp/outside.md', 'project-dir/../../outside.md', 'project-dir\\outside.md']) {

@@ -119,7 +119,7 @@ const BOARD: DevLeadBoard = {
 }
 
 const READY: DevLeadBoardFileState = { status: 'ready', board: BOARD, lastSuccessAt: ISO, refreshing: false }
-const NOTES_PATHS = deriveDevLeadNotesPaths({ boardPath: '/work/project/.dsh/devlead/board.json', schemaVersion: 1, pathPlatform: 'posix' })
+const NOTES_PATHS = deriveDevLeadNotesPaths({ boardFilePath: '/work/project/.dsh/devlead/board.json', schemaVersion: 1, pathPlatform: 'posix' })
 const NOTES_INDEX: DevLeadNotesIndex = {
   schemaVersion: 1,
   revision: 1,

@@ -114,7 +114,7 @@ export const devLeadBoardSchema = devLeadBoardSchemaFor()
 
 /** Host-published browser configuration. */
 export interface DevLeadBoardConfig {
-  readonly boardPath: string
+  readonly boardFilePath: string
   readonly schemaVersion: typeof DEVLEAD_BOARD_SCHEMA_VERSION
   readonly pathPlatform: DevLeadBoardPathPlatform
 }
@@ -131,7 +131,7 @@ export interface DevLeadBoardConfig {
 export interface DevLeadBoardGlobal extends DevLeadBoardConfig {
   /** Lead Session whose original workspace root owns the published board. */
   readonly leadSessionId?: string
-  /** Whether `boardPath` came from the deployment Config override. */
+  /** Whether `boardFilePath` came from the deployment Config override. */
   readonly override?: boolean
 }
 
@@ -157,15 +157,15 @@ export function readDevLeadBoardConfig(value: unknown): DevLeadBoardGlobal | und
   const record = value as Record<string, unknown>
   if (record.schemaVersion !== DEVLEAD_BOARD_SCHEMA_VERSION) return undefined
   if (record.pathPlatform !== 'posix' && record.pathPlatform !== 'win32') return undefined
-  if (typeof record.boardPath !== 'string' || record.boardPath.trim().length === 0) return undefined
-  if (record.boardPath.length > DEVLEAD_BOARD_PATH_MAX
-    || !isAbsoluteWorkspacePath(record.boardPath, record.pathPlatform)) return undefined
+  if (typeof record.boardFilePath !== 'string' || record.boardFilePath.trim().length === 0) return undefined
+  if (record.boardFilePath.length > DEVLEAD_BOARD_PATH_MAX
+    || !isAbsoluteWorkspacePath(record.boardFilePath, record.pathPlatform)) return undefined
   if (record.leadSessionId !== undefined) {
     if (typeof record.leadSessionId !== 'string' || record.leadSessionId.length === 0) return undefined
   }
   if (record.override !== undefined && typeof record.override !== 'boolean') return undefined
   return {
-    boardPath: record.boardPath,
+    boardFilePath: record.boardFilePath,
     schemaVersion: DEVLEAD_BOARD_SCHEMA_VERSION,
     pathPlatform: record.pathPlatform,
     ...record.leadSessionId === undefined ? {} : { leadSessionId: record.leadSessionId },
@@ -270,7 +270,7 @@ export interface DevLeadBoardResolveInput {
 /** One validated global's path-only configuration. */
 function boardConfigOf(global: DevLeadBoardGlobal): DevLeadBoardConfig {
   return {
-    boardPath: global.boardPath,
+    boardFilePath: global.boardFilePath,
     schemaVersion: DEVLEAD_BOARD_SCHEMA_VERSION,
     pathPlatform: global.pathPlatform,
   }
@@ -312,7 +312,7 @@ export function resolveDevLeadBoardConfig(
   const platform = global?.pathPlatform ?? detectDevLeadBoardPathPlatform(root)
   if (platform === undefined || !isAbsoluteWorkspacePath(root, platform)) return undefined
   return {
-    boardPath: joinDevLeadBoardPath(root, platform),
+    boardFilePath: joinDevLeadBoardPath(root, platform),
     schemaVersion: DEVLEAD_BOARD_SCHEMA_VERSION,
     pathPlatform: platform,
   }

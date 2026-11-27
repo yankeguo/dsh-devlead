@@ -21,7 +21,7 @@ function boot(board: HostBoard): { emit(): IndexInjection[] } {
     devLead: {
       board: { path: board.path },
       boardLeadSessionId: board.leadSessionId,
-      boardPathOverride: board.override,
+      statePathOverride: board.override,
     },
     on: (name: string, callback: (table: IndexInjection[]) => void) => {
       expect(name).toBe('webserver/index-inject')
@@ -51,7 +51,7 @@ describe('board index injection', () => {
       kind: 'global',
       name: '__DSH_DEVLEAD_BOARD__',
       value: {
-        boardPath: '/workbox/project/.dsh/devlead/board.json',
+        boardFilePath: '/workbox/project/.dsh/devlead/board.json',
         schemaVersion: 1,
         pathPlatform: process.platform === 'win32' ? 'win32' : 'posix',
         leadSessionId: 'session-lead',
@@ -70,7 +70,7 @@ describe('board index injection', () => {
       kind: 'global',
       name: '__DSH_DEVLEAD_BOARD__',
       value: {
-        boardPath: 'C:\\workbox\\board.json',
+        boardFilePath: 'C:\\workbox\\board.json',
         schemaVersion: 1,
         pathPlatform: process.platform === 'win32' ? 'win32' : 'posix',
         leadSessionId: 'session-lead',

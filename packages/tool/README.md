@@ -68,7 +68,7 @@ once instead of repeatedly retrying. Ordinary Sessions see neither text nor boar
 
 The two notes tools use the same active-lead gate and board-project id/title/absolute-path resolver,
 but never accept a notes file path argument. They read and manage only `<workspace>/<statePath>/notes/`
-(equivalently, the Host's resolved absolute `dirname(boardPath)/notes/`): the strict
+(equivalently, the Host's resolved absolute `dirname(boardFilePath)/notes/`): the strict
 schema-v1 `index.json` contains `{ revision, updatedAt, projects:[{ id, directory, notes[] }] }` and
 metadata only, while each body is `<directory>/<note-id>.md`. Every read/create/update-metadata/delete result adds a
 Host-derived `absolutePath` to returned note metadata; it is not persisted in the disk index. `create` makes an
@@ -216,7 +216,7 @@ update-metadata 只改 title/summary。read/create/update-metadata/delete 返回
 Host 派生的 `absolutePath`（不写入磁盘 index），所有正文读写都用 DSH 原生 `read`/`write`/`edit` 作用于
 该绝对路径，不要手改 `notes/index.json`。project 仍按看板 id/title/绝对 path 解析，
 两个工具都不接受文件路径参数。notes 根目录固定为 `<workspace>/<statePath>/notes/`（等价于 Host 内部
-已解析绝对 `dirname(boardPath)/notes/`），index 只含 metadata，正文路径固定为
+已解析绝对 `dirname(boardFilePath)/notes/`），index 只含 metadata，正文路径固定为
 `<directory>/<note-id>.md`；工具管理的 index/metadata/删除写入使用跨进程文件锁、原子替换与
 `expected_revision` CAS，index 是提交事实、orphan Markdown 忽略。index ≤128 KiB、单 note ≤256 KiB 合法 UTF-8、
 每项目 ≤100 条。详见

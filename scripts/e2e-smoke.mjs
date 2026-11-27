@@ -1202,7 +1202,7 @@ async function runChecks(client, paths) {
   const boardGlobal = await client.injectedGlobal('__DSH_DEVLEAD_BOARD__')
   checks.expect(
     'default board global follows the lead workspace without configuration',
-    boardGlobal?.boardPath === defaultBoardPath
+    boardGlobal?.boardFilePath === defaultBoardPath
       && boardGlobal?.leadSessionId === leadId
       && boardGlobal?.override === false
       && boardGlobal?.schemaVersion === 1
@@ -1342,7 +1342,7 @@ async function runRehydrationChecks(client, paths, state) {
   }, 10_000)
   checks.expect(
     'restarted Host derives the cold lead board path from its persisted header',
-    coldBoardGlobal?.boardPath === derivedBoardPath(paths.workspace)
+    coldBoardGlobal?.boardFilePath === derivedBoardPath(paths.workspace)
       && coldBoardGlobal?.leadSessionId === leadId
       && coldBoardGlobal?.override === false,
     JSON.stringify(coldBoardGlobal),
@@ -1416,7 +1416,7 @@ async function runRehydrationChecks(client, paths, state) {
   const boardGlobalB = await client.injectedGlobal('__DSH_DEVLEAD_BOARD__')
   checks.expect(
     'switching the lead workspace switches the derived board path',
-    boardGlobalB?.boardPath === derivedBoardPath(workspaceB) && boardGlobalB?.leadSessionId === leadBId,
+    boardGlobalB?.boardFilePath === derivedBoardPath(workspaceB) && boardGlobalB?.leadSessionId === leadBId,
     JSON.stringify(boardGlobalB),
   )
   checks.expect(
@@ -1478,7 +1478,7 @@ async function runWorktreeChecks(client, paths) {
   const overrideGlobal = await client.injectedGlobal('__DSH_DEVLEAD_BOARD__')
   checks.expect(
     'configured statePath wins over the lead workspace derivation',
-    overrideGlobal?.boardPath === paths.board
+    overrideGlobal?.boardFilePath === paths.board
       && overrideGlobal?.override === true
       && overrideGlobal?.leadSessionId === leadId,
     JSON.stringify(overrideGlobal),
@@ -1699,11 +1699,11 @@ async function runCloseChecks(client, paths, dshVersion) {
   )
   checks.expect(
     'phase 3 board reports the derived workspace path and the lead identity',
-    board.report?.boardPath === derivedBoard
+    board.report?.boardFilePath === derivedBoard
       && board.report?.boardLeadSessionId === leadId
       && board.report?.boardOverride === false,
     JSON.stringify({
-      boardPath: board.report?.boardPath,
+      boardFilePath: board.report?.boardFilePath,
       boardLeadSessionId: board.report?.boardLeadSessionId,
       boardOverride: board.report?.boardOverride,
     }),
@@ -1711,7 +1711,7 @@ async function runCloseChecks(client, paths, dshVersion) {
   const boardGlobal = await client.injectedGlobal('__DSH_DEVLEAD_BOARD__')
   checks.expect(
     'phase 3 webserver/index-inject publishes the derived board global',
-    boardGlobal?.boardPath === derivedBoard
+    boardGlobal?.boardFilePath === derivedBoard
       && boardGlobal?.leadSessionId === leadId
       && boardGlobal?.override === false
       && boardGlobal?.schemaVersion === 1
@@ -2841,7 +2841,7 @@ async function runCloseChecks(client, paths, dshVersion) {
     'phase 3 disabling the mode releases the board store',
     boardStateOff.execution?.result?.kind === 'success'
       && boardStateOff.report?.enabled === false
-      && boardStateOff.report?.boardPath === null
+      && boardStateOff.report?.boardFilePath === null
       && boardStateOff.report?.boardLeadSessionId === null
       && boardStateOff.report?.error?.code === 'DEVLEAD_NOT_ENABLED',
     boardStateOff.text.slice(0, 500),

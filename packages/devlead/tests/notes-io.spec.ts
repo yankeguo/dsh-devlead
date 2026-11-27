@@ -58,11 +58,11 @@ const boards: DevLeadBoardStore[] = []
 const stores: DevLeadBoardNotesStore[] = []
 let clock = 1_800_000_000_000
 
-async function boot(): Promise<{ boardPath: string; notes: DevLeadBoardNotesStore }> {
+async function boot(): Promise<{ boardFilePath: string; notes: DevLeadBoardNotesStore }> {
   const root = await mkdtemp(join(tmpdir(), 'dsh-devlead-notes-io-'))
   roots.push(root)
-  const boardPath = join(root, 'board.json')
-  const board = new DevLeadBoardStore(boardPath, { warn: () => undefined }, () => clock++)
+  const boardFilePath = join(root, 'board.json')
+  const board = new DevLeadBoardStore(boardFilePath, { warn: () => undefined }, () => clock++)
   boards.push(board)
   await board.start()
   await board.update({
@@ -72,7 +72,7 @@ async function boot(): Promise<{ boardPath: string; notes: DevLeadBoardNotesStor
   const notes = new DevLeadBoardNotesStore(root, board, { warn: () => undefined }, () => clock++)
   stores.push(notes)
   await notes.start()
-  return { boardPath, notes }
+  return { boardFilePath, notes }
 }
 
 afterEach(async () => {
